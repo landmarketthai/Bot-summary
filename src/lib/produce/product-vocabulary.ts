@@ -120,6 +120,10 @@ const SAFE_AUTOCORRECT_ALIASES: Readonly<Record<string, string>> = {
   "มะม่วงฟ้าลั่่น": "มะม่วงฟ้าลั่น",
   "หัวไซเท้า": "หัวไชเท้า",
   "ทับมิม": "ทับทิม",
+  "ทับทิบ": "ทับทิม",
+  "อินทผรัม": "อินทผลัม",
+  "ฟักออ่น": "ฟักอ่อน",
+  "สลัดคอส": "สลัดคอต",
 };
 
 /** True when the name or a reviewed deterministic alias resolves. */

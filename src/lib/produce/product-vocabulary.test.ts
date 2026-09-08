@@ -279,7 +279,7 @@ describe("suggestions are never identity", () => {
 describe("guard scope", () => {
   it("applies to เบิกเพิ่ม, the additional withdrawal batch", () => {
     const parsed = session([
-      item({ product_name: "อินทผรัม", transaction_type: "เบิกเพิ่ม" }),
+      item({ product_name: "อินมผรัม", transaction_type: "เบิกเพิ่ม" }),
     ]);
     const result = validateProduceEntry({ parsed, roundRows: [], roundBound: true });
     expect(vocabulary(result)).toHaveLength(1);
@@ -288,7 +288,7 @@ describe("guard scope", () => {
   it("does not apply to คืน or คืนเสีย — a return is judged against the master", () => {
     const parsed = session([
       item({ product_name: "อินทผลัม", transaction_type: "เบิก", quantity: 5 }),
-      item({ product_name: "อินทผรัม", transaction_type: "คืน", quantity: 1 }),
+      item({ product_name: "อินมผรัม", transaction_type: "คืน", quantity: 1 }),
     ]);
     const result = validateProduceEntry({ parsed, roundRows: [], roundBound: true });
     expect(vocabulary(result)).toHaveLength(0);
@@ -300,7 +300,7 @@ describe("guard scope", () => {
 
   it("keeps unknown_product_vocabulary and product_not_withdrawn separate", () => {
     const parsed = session([
-      item({ product_name: "อินทผรัม", transaction_type: "เบิก", quantity: 5 }),
+      item({ product_name: "อินมผรัม", transaction_type: "เบิก", quantity: 5 }),
       item({ product_name: "องุ่นดำ", transaction_type: "คืน", quantity: 1 }),
     ]);
     const result = validateProduceEntry({ parsed, roundRows: [], roundBound: true });
@@ -313,7 +313,7 @@ describe("guard scope", () => {
   });
 
   it("reports one exception per distinct spelling, at its first item number", () => {
-    const result = withdraw("อินทผรัม", "มะม่วงเขียวมรกต", "อินทผรัม", "สับปรด");
+    const result = withdraw("อินมผรัม", "มะม่วงเขียวมรกต", "อินมผรัม", "สับปรด");
     const exceptions = vocabulary(result);
     expect(exceptions.map((exception) => exception.itemNumber)).toEqual([1, 4]);
   });
@@ -407,6 +407,10 @@ describe("safe auto-correction from reviewed Production typos", () => {
     ["น่อยหน่า", "น้อยหน่า", "ม16"],
     ["หัวไซเท้า", "หัวไชเท้า", "ผ93"],
     ["ทับมิม", "ทับทิม", "ม15"],
+    ["ทับทิบ", "ทับทิม", "ม15"],
+    ["อินทผรัม", "อินทผลัม", "ม60"],
+    ["ฟักออ่น", "ฟักอ่อน", "ผ68"],
+    ["สลัดคอส", "สลัดคอต", "ผ66"],
   ])("%s auto-corrects exactly to %s / %s", (entered, canonicalName, productCode) => {
     expect(resolveSafeAutoCorrectProductName(entered)).toEqual({ productCode, canonicalName, reason: "reviewed_typo" });
     expect(canonicalProduceProductIdentity(entered, "โล")).toBe(canonicalName);
@@ -414,7 +418,7 @@ describe("safe auto-correction from reviewed Production typos", () => {
   });
 
   it("keeps fuzzy or potentially distinct shop names under human review", () => {
-    for (const name of ["ทับทิบ", "อินทผรัม", "ฟักออ่น", "ผักกาดลุ้ย", "ผักแพว", "สลัดคอส"]) {
+    for (const name of ["ผักกาดลุ้ย", "ผักแพว"]) {
       expect(resolveSafeAutoCorrectProductName(name)).toBeNull();
     }
   });
