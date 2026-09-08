@@ -35,6 +35,10 @@ const CHINESE_JUJUBE_MIGRATION = join(
   HERE, "..", "..", "..", "..",
   "supabase", "migrations", "20260901093000_produce_product_dictionary_add_chinese_jujube.sql",
 );
+const UNCLASSIFIED_FRUIT_MIGRATION = join(
+  HERE, "..", "..", "..", "..",
+  "supabase", "migrations", "20260908090000_produce_product_dictionary_add_unclassified_fruit.sql",
+);
 const FAH_LAN_MIGRATION = join(
   HERE, "..", "..", "..", "..",
   "supabase", "migrations", "20260827055728_produce_product_dictionary_add_fah_lan_mango.sql",
@@ -117,6 +121,10 @@ const APPLIED_MIGRATIONS: AppliedMigration[] = [
     file: CHINESE_JUJUBE_MIGRATION,
     insertAfterCode: "ม73",
   },
+  {
+    file: UNCLASSIFIED_FRUIT_MIGRATION,
+    insertAfterCode: "ม74",
+  },
 ];
 
 /**
@@ -158,11 +166,11 @@ const moduleRows = (): Row[] =>
   }));
 
 describe("the approved dictionary is the source of truth", () => {
-  it("carries exactly the 265 approved codes", () => {
-    expect(PRODUCT_CODE_COUNT).toBe(265);
-    expect(PRODUCT_CODE_ENABLED_COUNT).toBe(265);
-    expect(PRODUCT_CODE_ENTRIES).toHaveLength(265);
-    expect(csvRows()).toHaveLength(265);
+  it("carries exactly the 271 approved codes", () => {
+    expect(PRODUCT_CODE_COUNT).toBe(271);
+    expect(PRODUCT_CODE_ENABLED_COUNT).toBe(271);
+    expect(PRODUCT_CODE_ENTRIES).toHaveLength(271);
+    expect(csvRows()).toHaveLength(271);
   });
 
   it("matches the CSV row for row, in the approved order and numbering", () => {
@@ -185,7 +193,7 @@ describe("the approved dictionary is the source of truth", () => {
       counts.set(entry.categoryCode, (counts.get(entry.categoryCode) ?? 0) + 1);
     }
     expect(Object.fromEntries(counts)).toEqual({
-      ม: 74, ผ: 118, ป: 36, ท: 26, ห: 4, พ: 7,
+      ม: 80, ผ: 118, ป: 36, ท: 26, ห: 4, พ: 7,
     });
   });
 
@@ -233,9 +241,9 @@ describe("real mappings from the approved CSV resolve", () => {
 });
 
 describe("unregistered codes do not resolve", () => {
-  // ม63-ม74 exist as of this extension, so ม75 — the code right past the new
-  // boundary — is the genuinely unissued example, not ม73 or ม74.
-  for (const code of ["ม99", "ม999", "ผ999", "ป99", "ท99", "ห99", "พ99", "ผ119", "ม75"]) {
+  // ม63-ม80 exist as of this extension, so ม81 — the code right past the new
+  // boundary — is the genuinely unissued example, not ม74 or ม80.
+  for (const code of ["ม99", "ม999", "ผ999", "ป99", "ท99", "ห99", "พ99", "ผ119", "ม81"]) {
     it(`${code} is unknown`, () => {
       expect(resolveProductCode(code)).toBeNull();
       expect(resolveItemLineProductCode(`${code} 50 บาท`)).toEqual({ kind: "unknown", code });
@@ -539,16 +547,17 @@ describe("dictionary extension 20260901093000 — ม74 (พุทราจี�
     expect(codes.filter((c) => c === "ม73")).toHaveLength(1);
   });
 
-  it("ม74 is the next unused code, not a reuse", () => {
+  it("ม74 was issued as the next code past ม73, not a reuse", () => {
     const mCodes = PRODUCT_CODE_ENTRIES
       .filter((e) => e.categoryCode === "ม")
       .map((e) => Number(e.code.slice(1)))
       .sort((a, b) => a - b);
-    expect(mCodes).toHaveLength(74);
-    expect(mCodes[mCodes.length - 1]).toBe(74);
-    // Contiguous 1..74: a gap would mean a code was retired and this one
-    // should have reused it instead of extending the range.
-    expect(mCodes).toEqual(Array.from({ length: 74 }, (_, i) => i + 1));
+    // The ม range has since been extended past ม74, so this asserts the
+    // property that mattered when ม74 landed rather than pinning the max:
+    // ม74 exists, and the range stays a gap-free 1..N. A gap would mean a
+    // code was retired and ม74 should have reused it instead of extending.
+    expect(mCodes).toContain(74);
+    expect(mCodes).toEqual(Array.from({ length: mCodes.length }, (_, i) => i + 1));
   });
 
   it("no pre-existing code changed by this extension", () => {
@@ -558,6 +567,136 @@ describe("dictionary extension 20260901093000 — ม74 (พุทราจี�
     expect(resolveProductCode("ม71")).toBe("ลิ้นจี่");
     expect(resolveProductCode("ม72")).toBe("มะม่วงแก้วขมิ้น");
     expect(resolveProductCode("ม73")).toBe("มะม่วงฟ้าลั่น");
+  });
+
+  it("the composed migration-parity check still holds with the new INSERT block", () => {
+    expect(migrationRows()).toEqual(csvRows());
+  });
+});
+
+describe("dictionary extension 20260908090000 — ม75–ม80 (six distinct ผลไม้)", () => {
+  const NEW_CODES: Array<[string, string]> = [
+    ["ม75", "มันแกว"],
+    ["ม76", "องุ่นไร้ออส"],
+    ["ม77", "แอปเปิ้ลแคระ"],
+    ["ม78", "เมล่อนกล่อง"],
+    ["ม79", "องุ่นลิ้นจี่"],
+    ["ม80", "องุ่นจักรพรรดิ์"],
+  ];
+
+  for (const [code, canonicalName] of NEW_CODES) {
+    it(`${code} → ${canonicalName}`, () => {
+      expect(resolveProductCode(code)).toBe(canonicalName);
+    });
+  }
+
+  describe("independence — six distinct products, not a merge of a lookalike", () => {
+    it("the near-neighbour codes they must never fold into keep their own identities", () => {
+      expect(resolveProductCode("ม62")).toBe("แอปเปิ้ล"); // vs ม77 แอปเปิ้ลแคระ
+      expect(resolveProductCode("ม58")).toBe("องุ่นไร้เม็ด"); // vs ม76 องุ่นไร้ออส
+      expect(resolveProductCode("ม71")).toBe("ลิ้นจี่"); // vs ม79 องุ่นลิ้นจี่
+    });
+
+    it("each new code resolves to a name distinct from its near neighbour", () => {
+      expect(resolveProductCode("ม77")).not.toBe(resolveProductCode("ม62"));
+      expect(resolveProductCode("ม76")).not.toBe(resolveProductCode("ม58"));
+      expect(resolveProductCode("ม79")).not.toBe(resolveProductCode("ม71"));
+    });
+
+    it("the six resolve to six distinct canonical names", () => {
+      const names = NEW_CODES.map(([code]) => resolveProductCode(code));
+      expect(new Set(names).size).toBe(6);
+      expect(names.every((name) => name !== null)).toBe(true);
+    });
+  });
+
+  it("no product code collision — ม75–ม80 each appear exactly once in the full set", () => {
+    const codes = PRODUCT_CODE_ENTRIES.map((e) => e.code);
+    expect(new Set(codes).size).toBe(codes.length);
+    for (const [code] of NEW_CODES) {
+      expect(codes.filter((c) => c === code)).toHaveLength(1);
+    }
+  });
+
+  it("ม75–ม80 are the next unused codes — contiguous 1..80, no reuse", () => {
+    const mCodes = PRODUCT_CODE_ENTRIES
+      .filter((e) => e.categoryCode === "ม")
+      .map((e) => Number(e.code.slice(1)))
+      .sort((a, b) => a - b);
+    expect(mCodes).toHaveLength(80);
+    expect(mCodes).toEqual(Array.from({ length: 80 }, (_, i) => i + 1));
+  });
+
+  it("no pre-existing code changed by this extension", () => {
+    expect(resolveProductCode("ม01")).toBe("กล้วยไข่");
+    expect(resolveProductCode("ม54")).toBe("ไซมัส");
+    expect(resolveProductCode("ม68")).toBe("องุ่นคิมสัน");
+    expect(resolveProductCode("ม74")).toBe("พุทราจีน");
+  });
+
+  it("the composed migration-parity check still holds with the new INSERT block", () => {
+    expect(migrationRows()).toEqual(csvRows());
+  });
+});
+
+describe("dictionary extension 20260908090000 — ม75–ม80 (unclassified fruit)", () => {
+  const NEW_CODES: Array<[string, string]> = [
+    ["ม75", "มันแกว"],
+    ["ม76", "องุ่นไร้ออส"],
+    ["ม77", "แอปเปิ้ลแคระ"],
+    ["ม78", "เมล่อนกล่อง"],
+    ["ม79", "องุ่นลิ้นจี่"],
+    ["ม80", "องุ่นจักรพรรดิ์"],
+  ];
+
+  for (const [code, canonicalName] of NEW_CODES) {
+    it(`${code} → ${canonicalName}`, () => {
+      expect(resolveProductCode(code)).toBe(canonicalName);
+    });
+  }
+
+  describe("independence — distinct products, not a merge of a lookalike code", () => {
+    it("the near-neighbour codes keep their own identities", () => {
+      expect(resolveProductCode("ม62")).toBe("แอปเปิ้ล");
+      expect(resolveProductCode("ม58")).toBe("องุ่นไร้เม็ด");
+      expect(resolveProductCode("ม71")).toBe("ลิ้นจี่");
+      expect(resolveProductCode("ม68")).toBe("องุ่นคิมสัน");
+    });
+
+    it("each new code resolves to a name distinct from its lookalike", () => {
+      expect(resolveProductCode("ม77")).not.toBe(resolveProductCode("ม62")); // แอปเปิ้ลแคระ !== แอปเปิ้ล
+      expect(resolveProductCode("ม76")).not.toBe(resolveProductCode("ม58")); // องุ่นไร้ออส !== องุ่นไร้เม็ด
+      expect(resolveProductCode("ม79")).not.toBe(resolveProductCode("ม71")); // องุ่นลิ้นจี่ !== ลิ้นจี่
+    });
+  });
+
+  it("no product code collision — ม75–ม80 each appear exactly once in the full set", () => {
+    const codes = PRODUCT_CODE_ENTRIES.map((e) => e.code);
+    expect(new Set(codes).size).toBe(codes.length);
+    for (const code of ["ม75", "ม76", "ม77", "ม78", "ม79", "ม80"]) {
+      expect(codes.filter((c) => c === code)).toHaveLength(1);
+    }
+  });
+
+  it("ม75–ม80 are the next unused codes, a contiguous 1..80, not a reuse", () => {
+    const mCodes = PRODUCT_CODE_ENTRIES
+      .filter((e) => e.categoryCode === "ม")
+      .map((e) => Number(e.code.slice(1)))
+      .sort((a, b) => a - b);
+    expect(mCodes).toHaveLength(80);
+    expect(mCodes[mCodes.length - 1]).toBe(80);
+    // A gap would mean a code was retired and one of these should have reused it
+    // instead of extending the range.
+    expect(mCodes).toEqual(Array.from({ length: 80 }, (_, i) => i + 1));
+  });
+
+  it("no pre-existing code changed by this extension", () => {
+    expect(resolveProductCode("ม01")).toBe("กล้วยไข่");
+    expect(resolveProductCode("ม54")).toBe("ไซมัส");
+    expect(resolveProductCode("ม62")).toBe("แอปเปิ้ล");
+    expect(resolveProductCode("ม71")).toBe("ลิ้นจี่");
+    expect(resolveProductCode("ม73")).toBe("มะม่วงฟ้าลั่น");
+    expect(resolveProductCode("ม74")).toBe("พุทราจีน");
   });
 
   it("the composed migration-parity check still holds with the new INSERT block", () => {
