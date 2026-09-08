@@ -165,7 +165,7 @@ describe("product identity", () => {
     { product_name: "ทับทิม", unit: "ลูก", quantity: 15, price_per_unit: 15 },
   ]);
 
-  it("blocks ทับทิบ and suggests ทับทิม instead of merging them", () => {
+  it("auto-corrects ทับทิบ to the reviewed ทับทิม identity", () => {
     const result = bound(
       session([
         item({ product_name: "ทับทิบ", unit: "ลูก", quantity: 9, price_per_unit: 15, transaction_type: "คืน" }),
@@ -173,13 +173,11 @@ describe("product identity", () => {
       pomegranate,
     );
 
-    expect(result.status).toBe("blocked");
-    const [exception] = result.blocking;
-    expect(exception.kind).toBe("product_not_withdrawn");
-    expect(exception.kind === "product_not_withdrawn" && exception.suggestions).toEqual(["ทับทิม"]);
+    expect(result.status).toBe("clean");
+    expect(result.blocking).toEqual([]);
   });
 
-  it("blocks the same typo in a second market's round independently", () => {
+  it("uses the same reviewed ทับทิม identity in another round", () => {
     const result = bound(
       session([
         item({ product_name: "ทับทิบ", unit: "ลูก", quantity: 9, price_per_unit: 15, transaction_type: "คืน" }),
@@ -187,7 +185,7 @@ describe("product identity", () => {
       ]),
       master([{ product_name: "ทับทิม", unit: "ลูก", quantity: 23, price_per_unit: 15 }]),
     );
-    expect(kinds(result.blocking)).toEqual(["product_not_withdrawn"]);
+    expect(kinds(result.blocking)).toEqual([]);
   });
 
   it("keeps an approved alias working — หมอน withdrawn, หมอนทอง returned", () => {
@@ -706,8 +704,6 @@ describe("product spelling variants are refused, never merged", () => {
   // different good, so the reply hands them the withdrawal's exact spelling.
   const pairs: Array<[sent: string, withdrawn: string]> = [
     ["หัวไชเท้า", "หัวไชยเท้า"],
-    ["ฝักกระเจี๊ยบ", "ฝักกระเจียบ"],
-    ["ฟักอ่อน", "ฟักออ่น"],
   ];
 
   for (const [sent, withdrawn] of pairs) {

@@ -537,10 +537,12 @@ describe("0049 — structured finalization path", () => {
     expect(source).toContain("parseWeighSession(finalText, bangkokBusinessDateNow(), fallbackTime, seed)");
   });
 
-  it("leaves hash computation and item payload untouched", async () => {
+  it("hashes and persists the canonicalized business identity while retaining compatibility hashes", async () => {
     const source = await Bun.file(finalizerPath).text();
+    expect(source).toContain("const persistedParsed: WeighSession = { ...parsed, items: persistedItems }");
+    expect(source).toContain("item_hash: computeItemHash(persistedParsed, item)");
+    expect(source).toContain("const businessFingerprint = computeSessionHash(persistedParsed)");
     expect(source).toContain("computeSessionHash(parsed)");
-    expect(source).toContain("item_hash: computeItemHash(parsed, item)");
   });
 
   it("keeps the legacy branch intact", async () => {

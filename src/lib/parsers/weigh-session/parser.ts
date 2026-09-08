@@ -13,6 +13,7 @@ import {
   resolveItemLineProductCode,
   unknownProductCodeError,
 } from "@/lib/produce/product-code/resolver";
+import { canonicalProduceProductIdentity } from "@/lib/produce/product-vocabulary";
 import { RE } from "./regex";
 import { conversionFactor, isKnownUnit, normalizeUnitAlias, resolveUnitQuantity } from "./units";
 import type {
@@ -893,6 +894,11 @@ export class WeighSessionParser extends BaseParser {
 
       persist: async (supabase, rawMessageId) => {
         assertWeighSessionFinalizable(parsed);
+        const persistedItems = parsed.items.map((item) => ({
+          ...item,
+          product_name: canonicalProduceProductIdentity(item.product_name, item.unit),
+        }));
+        const persistedParsed = { ...parsed, items: persistedItems };
 
         const { data: session, error: sessionErr } = await supabase
           .from("produce_sessions")
@@ -915,7 +921,7 @@ export class WeighSessionParser extends BaseParser {
         }
 
         try {
-          for (const item of parsed.items) {
+          for (const item of persistedItems) {
             const { error: itemErr } = await supabase
               .from("produce_items")
               .insert({
@@ -927,7 +933,7 @@ export class WeighSessionParser extends BaseParser {
                 unit:             item.unit        ?? undefined,
                 section:          item.section,
                 transaction_type: item.transaction_type,
-                item_hash:        computeItemHash(parsed, item),
+                item_hash:        computeItemHash(persistedParsed, item),
                 basis_quantity:   item.basis_quantity ?? undefined,
                 basis_unit:       item.basis_unit     ?? undefined,
                 basis_price:      item.basis_price    ?? undefined,
@@ -947,7 +953,7 @@ export class WeighSessionParser extends BaseParser {
         // White Sheet fails closed on missing price until an admin intervenes.
         await seedCentralPricesFromPersistedWithdrawals(supabase, {
           businessDate: parsed.date ?? bangkokBusinessDateNow(),
-          items: parsed.items,
+          items: persistedItems,
         });
       },
     };

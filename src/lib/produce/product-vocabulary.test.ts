@@ -12,8 +12,10 @@ import { parseWeighSession } from "@/lib/parsers/weigh-session/parser";
 import { PRODUCT_CODE_ENTRIES } from "./product-code/dictionary";
 import {
   approvedProductCode,
+  canonicalProduceProductIdentity,
   isApprovedProductName,
   resolveApprovedProductName,
+  resolveSafeAutoCorrectProductName,
   suggestDictionaryProducts,
 } from "./product-vocabulary";
 import {
@@ -277,7 +279,7 @@ describe("suggestions are never identity", () => {
 describe("guard scope", () => {
   it("applies to เบิกเพิ่ม, the additional withdrawal batch", () => {
     const parsed = session([
-      item({ product_name: "อินทผรัม", transaction_type: "เบิกเพิ่ม" }),
+      item({ product_name: "อินมผรัม", transaction_type: "เบิกเพิ่ม" }),
     ]);
     const result = validateProduceEntry({ parsed, roundRows: [], roundBound: true });
     expect(vocabulary(result)).toHaveLength(1);
@@ -286,7 +288,7 @@ describe("guard scope", () => {
   it("does not apply to คืน or คืนเสีย — a return is judged against the master", () => {
     const parsed = session([
       item({ product_name: "อินทผลัม", transaction_type: "เบิก", quantity: 5 }),
-      item({ product_name: "อินทผรัม", transaction_type: "คืน", quantity: 1 }),
+      item({ product_name: "อินมผรัม", transaction_type: "คืน", quantity: 1 }),
     ]);
     const result = validateProduceEntry({ parsed, roundRows: [], roundBound: true });
     expect(vocabulary(result)).toHaveLength(0);
@@ -298,7 +300,7 @@ describe("guard scope", () => {
 
   it("keeps unknown_product_vocabulary and product_not_withdrawn separate", () => {
     const parsed = session([
-      item({ product_name: "อินทผรัม", transaction_type: "เบิก", quantity: 5 }),
+      item({ product_name: "อินมผรัม", transaction_type: "เบิก", quantity: 5 }),
       item({ product_name: "องุ่นดำ", transaction_type: "คืน", quantity: 1 }),
     ]);
     const result = validateProduceEntry({ parsed, roundRows: [], roundBound: true });
@@ -311,7 +313,7 @@ describe("guard scope", () => {
   });
 
   it("reports one exception per distinct spelling, at its first item number", () => {
-    const result = withdraw("อินทผรัม", "มะม่วงเขียวมรกต", "อินทผรัม", "สับปรด");
+    const result = withdraw("อินมผรัม", "มะม่วงเขียวมรกต", "อินมผรัม", "สับปรด");
     const exceptions = vocabulary(result);
     expect(exceptions.map((exception) => exception.itemNumber)).toEqual([1, 4]);
   });
@@ -384,6 +386,41 @@ describe("dictionary cleanup extension — ม69–ม71 and the เขียว
   it("เขียวมรกต resolves to canonical ม31", () => {
     expect(isApprovedProductName("เขียวมรกต")).toBe(true);
     expect(approvedProductCode("เขียวมรกต")).toBe("ม31");
+  });
+});
+
+describe("safe auto-correction from reviewed Production typos", () => {
+  it.each([
+    ["กระปิ", "กะปิ", "ป01"],
+    ["ขิงออ่น", "ขิงอ่อน", "ผ22"],
+    ["ฝักกระเจียบ", "ฝักกระเจี๊ยบ", "ผ01"],
+    ["ใบกระเจียบ", "ใบกระเจี๊ยบ", "ผ95"],
+    ["กวางตุ้งยี่ปุ่น", "กวางตุ้งญี่ปุ่น", "ผ14"],
+    ["ใบต้งโอ้", "ใบตั้งโอ๋", "ผ99"],
+    ["คะน้าฮ้องกง", "คะน้าฮ่องกง", "ผ26"],
+    ["เห็ดแพครวม", "เห็ดแพ็ครวม", "ห02"],
+    ["หอยเชลย์", "หอยเชลล์", "ป36"],
+    ["แก้งมังกร", "แก้วมังกร", "ม05"],
+    ["สับรด", "สับปะรด", "ม49"],
+    ["คน้าใหญ่", "คะน้าใหญ่", "ผ25"],
+    ["แอปเปิ่ล", "แอปเปิ้ล", "ม62"],
+    ["น่อยหน่า", "น้อยหน่า", "ม16"],
+    ["หัวไซเท้า", "หัวไชเท้า", "ผ93"],
+    ["ทับมิม", "ทับทิม", "ม15"],
+    ["ทับทิบ", "ทับทิม", "ม15"],
+    ["อินทผรัม", "อินทผลัม", "ม60"],
+    ["ฟักออ่น", "ฟักอ่อน", "ผ68"],
+    ["สลัดคอส", "สลัดคอต", "ผ66"],
+  ])("%s auto-corrects exactly to %s / %s", (entered, canonicalName, productCode) => {
+    expect(resolveSafeAutoCorrectProductName(entered)).toEqual({ productCode, canonicalName, reason: "reviewed_typo" });
+    expect(canonicalProduceProductIdentity(entered, "โล")).toBe(canonicalName);
+    expect(withdraw(entered).status).toBe("clean");
+  });
+
+  it("keeps fuzzy or potentially distinct shop names under human review", () => {
+    for (const name of ["ผักกาดลุ้ย", "ผักแพว"]) {
+      expect(resolveSafeAutoCorrectProductName(name)).toBeNull();
+    }
   });
 });
 

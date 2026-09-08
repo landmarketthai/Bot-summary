@@ -70,6 +70,14 @@ export interface ApprovedProductResolution {
   readonly canonicalName: string;
 }
 
+export type SafeAutoCorrectionReason =
+  | "reviewed_alias"
+  | "reviewed_typo";
+
+export interface SafeAutoCorrectProductResolution extends ApprovedProductResolution {
+  readonly reason: SafeAutoCorrectionReason;
+}
+
 /** Deterministic alias normalization followed by exact canonical lookup. */
 export function resolveApprovedProductName(name: string): ApprovedProductResolution | null {
   const enteredName = mechanical(name);
@@ -81,6 +89,43 @@ export function resolveApprovedProductName(name: string): ApprovedProductResolut
   return productCode ? { productCode, canonicalName } : null;
 }
 
+/** Production-observed mechanical typos that are safe to fold exactly. */
+const SAFE_AUTOCORRECT_ALIASES: Readonly<Record<string, string>> = {
+  "กระปิ": "กะปิ",
+  "ขิงออ่น": "ขิงอ่อน",
+  "ฝักกระเจียบ": "ฝักกระเจี๊ยบ",
+  "ใบกระเจียบ": "ใบกระเจี๊ยบ",
+  "กวางตุ้งยี่ปุ่น": "กวางตุ้งญี่ปุ่น",
+  "ใบต้งโอ้": "ใบตั้งโอ๋",
+  "หน่อไม่ดอง": "หน่อไม้ดอง",
+  "หน่อไม่ต้ม": "หน่อไม้ต้ม",
+  "มะละกอก": "มะละกอ",
+  "กระหล่ำปลี": "กะหล่ำปลี",
+  "ใบกระเพรา": "ใบกะเพรา",
+  "เครื่องผักฉ่า": "เครื่องผัดฉ่า",
+  "ผักปรัง": "ผักปลัง",
+  "มะกรุด": "มะกรูด",
+  "คะน้าฮ้องกง": "คะน้าฮ่องกง",
+  "เห็ดแพครวม": "เห็ดแพ็ครวม",
+  "หอยเชลย์": "หอยเชลล์",
+  "ฝักกระเจ๊ยบ": "ฝักกระเจี๊ยบ",
+  "ใบกระเจ๊ยบ": "ใบกระเจี๊ยบ",
+  "แก้งมังกร": "แก้วมังกร",
+  "สับรด": "สับปะรด",
+  "ใบตั้งโอ้": "ใบตั้งโอ๋",
+  "คน้าใหญ่": "คะน้าใหญ่",
+  "องุุ่นไข่ปลา": "องุ่นไข่ปลา",
+  "แอปเปิ่ล": "แอปเปิ้ล",
+  "น่อยหน่า": "น้อยหน่า",
+  "มะม่วงฟ้าลั่่น": "มะม่วงฟ้าลั่น",
+  "หัวไซเท้า": "หัวไชเท้า",
+  "ทับมิม": "ทับทิม",
+  "ทับทิบ": "ทับทิม",
+  "อินทผรัม": "อินทผลัม",
+  "ฟักออ่น": "ฟักอ่อน",
+  "สลัดคอส": "สลัดคอต",
+};
+
 /** True when the name or a reviewed deterministic alias resolves. */
 export function isApprovedProductName(name: string): boolean {
   return resolveApprovedProductName(name) !== null;
@@ -89,6 +134,34 @@ export function isApprovedProductName(name: string): boolean {
 /** The code a canonical spelling or reviewed deterministic alias belongs to. */
 export function approvedProductCode(name: string): string | null {
   return resolveApprovedProductName(name)?.productCode ?? null;
+}
+
+/**
+ * Conservative automatic correction for persisted business identity.
+ *
+ * Only explicit reviewed aliases are automatic. Fuzzy/edit-distance matches
+ * remain suggestions for a human; a one-character difference can still be a
+ * different SKU in this shop.
+ */
+export function resolveSafeAutoCorrectProductName(
+  name: string,
+): SafeAutoCorrectProductResolution | null {
+  const entered = mechanical(name);
+  const approved = resolveApprovedProductName(entered);
+  if (approved) {
+    if (approved.canonicalName === entered) return null;
+    return { ...approved, reason: "reviewed_alias" };
+  }
+
+  const reviewedTypo = SAFE_AUTOCORRECT_ALIASES[entered];
+  if (reviewedTypo) {
+    const productCode = CODE_BY_CANONICAL_NAME.get(reviewedTypo);
+    if (productCode) {
+      return { productCode, canonicalName: reviewedTypo, reason: "reviewed_typo" };
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -139,6 +212,23 @@ export function canonicalProduceProductName(
   const stripped = name.slice(0, -BOX_SUFFIX.length).trim();
   if (!stripped) return name;
   return resolveApprovedProductName(stripped)?.canonicalName ?? name;
+}
+
+/**
+ * Canonical business identity used by validation and persistence. Unknown names
+ * stay mechanically normalized; only reviewed aliases, guarded box stripping,
+ * or reviewed typos are rewritten.
+ */
+export function canonicalProduceProductIdentity(
+  rawName: string,
+  rawUnit: string | null | undefined,
+): string {
+  const packaged = canonicalProduceProductName(rawName, rawUnit);
+  const corrected = resolveSafeAutoCorrectProductName(packaged);
+  if (corrected) return corrected.canonicalName;
+  const approved = resolveApprovedProductName(packaged);
+  if (approved) return approved.canonicalName;
+  return mechanical(normalizeProductName(packaged));
 }
 
 /**

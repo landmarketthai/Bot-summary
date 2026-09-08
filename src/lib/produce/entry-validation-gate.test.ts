@@ -284,7 +284,7 @@ describe("close gate", () => {
     await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal(), "E1");
     await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal(), "E2");
 
-    const changed = await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal("อินทผรัม"), "E3");
+    const changed = await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal("อินมผรัม"), "E3");
     expect(changed.decision).toBe("review_presented");
     expect(db.reviews).toHaveLength(2);
     expect(db.reviews[1].confirmed_at).toBeNull();
@@ -466,7 +466,7 @@ describe("unknown product vocabulary", () => {
     const db = new FakeDb({ [ROUND]: [] });
     const mixed = session([
       item({ product_name: "องุ่นดำ", transaction_type: "เบิก", quantity: 2 }),
-      item({ product_name: "อินทผรัม", transaction_type: "เบิก", quantity: 3 }),
+      item({ product_name: "อินมผรัม", transaction_type: "เบิก", quantity: 3 }),
     ]);
     const gate = await runProduceCloseGate(db.client(), REF, mixed, "E1");
     expect(gate.decision).toBe("review_presented");
@@ -486,7 +486,7 @@ describe("item-number gap at the close boundary", () => {
     [
       "ดำ-ตลาด เบิก 2/9/69",
       "1.องุ่นดำ100บาท", "10โล",
-      "2.อินทผรัม50บาท", "5โล",
+      "2.อินมผรัม50บาท", "5โล",
       "4.องุ่นดำ20บาท", "4โล",
     ].join("\n"),
     "2026-09-02",
@@ -521,7 +521,7 @@ describe("item-number gap at the close boundary", () => {
       [
         "ดำ-ตลาด เบิก 2/9/69",
         "1.องุ่นดำ100บาท", "10โล",
-        "2.อินทผรัม50บาท", "5โล",
+        "2.อินมผรัม50บาท", "5โล",
         "3.แอปเปิ้ล10บาท", "84ลูก",
         "4.องุ่นดำ20บาท", "4โล",
       ].join("\n"),

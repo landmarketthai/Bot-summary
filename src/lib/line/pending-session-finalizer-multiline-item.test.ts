@@ -231,7 +231,7 @@ describe("close barrier — pending events merged before validation (main sessio
     const call = db.rpcCalls.find((entry) => entry.name === "try_finalize_pending_generation")!;
     expect(call.args.p_items).toEqual([
       expect.objectContaining({
-        product_name: "อะโวคาโด้",
+        product_name: "อะโวคาโด",
         price_per_unit: 70,
         quantity: 3,
         unit: "โล",
