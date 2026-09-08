@@ -33,7 +33,7 @@ import {
 import { normalizeProductName } from "@/lib/summary/remaining-fruit";
 import { baseTransactionType } from "@/lib/summary/transactions";
 import {
-  canonicalProduceProductName,
+  canonicalProduceProductIdentity,
   isApprovedProductName,
   suggestDictionaryProducts,
   type ProductVocabularySuggestion,
@@ -206,7 +206,7 @@ export function masterCellKey(productName: string, unit: string): string {
  * neither invents a product.
  */
 function canonicalProductIdentity(productName: string, unit: string | null | undefined): string {
-  return normalizeProductName(canonicalProduceProductName(productName, unit));
+  return normalizeProductName(canonicalProduceProductIdentity(productName, unit));
 }
 
 export function emptyWithdrawalMaster(): WithdrawalMaster {
@@ -528,7 +528,7 @@ function vocabularyExceptions(parsed: WeighSession): ProduceValidationReview[] {
     // A box-suffixed spelling is judged on the identity the master will use,
     // so the operator is not asked to vouch for a name the round already
     // treats as แอปเปิ้ล. The suggestion list still describes what they typed.
-    if (isApprovedProductName(canonicalProduceProductName(name, item.unit))) continue;
+    if (isApprovedProductName(canonicalProduceProductIdentity(name, item.unit))) continue;
     exceptions.push({
       kind: "unknown_product_vocabulary",
       severity: "review_required",

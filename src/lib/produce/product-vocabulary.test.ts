@@ -12,8 +12,10 @@ import { parseWeighSession } from "@/lib/parsers/weigh-session/parser";
 import { PRODUCT_CODE_ENTRIES } from "./product-code/dictionary";
 import {
   approvedProductCode,
+  canonicalProduceProductIdentity,
   isApprovedProductName,
   resolveApprovedProductName,
+  resolveSafeAutoCorrectProductName,
   suggestDictionaryProducts,
 } from "./product-vocabulary";
 import {
@@ -384,6 +386,37 @@ describe("dictionary cleanup extension — ม69–ม71 and the เขียว
   it("เขียวมรกต resolves to canonical ม31", () => {
     expect(isApprovedProductName("เขียวมรกต")).toBe(true);
     expect(approvedProductCode("เขียวมรกต")).toBe("ม31");
+  });
+});
+
+describe("safe auto-correction from reviewed Production typos", () => {
+  it.each([
+    ["กระปิ", "กะปิ", "ป01"],
+    ["ขิงออ่น", "ขิงอ่อน", "ผ22"],
+    ["ฝักกระเจียบ", "ฝักกระเจี๊ยบ", "ผ01"],
+    ["ใบกระเจียบ", "ใบกระเจี๊ยบ", "ผ95"],
+    ["กวางตุ้งยี่ปุ่น", "กวางตุ้งญี่ปุ่น", "ผ14"],
+    ["ใบต้งโอ้", "ใบตั้งโอ๋", "ผ99"],
+    ["คะน้าฮ้องกง", "คะน้าฮ่องกง", "ผ26"],
+    ["เห็ดแพครวม", "เห็ดแพ็ครวม", "ห02"],
+    ["หอยเชลย์", "หอยเชลล์", "ป36"],
+    ["แก้งมังกร", "แก้วมังกร", "ม05"],
+    ["สับรด", "สับปะรด", "ม49"],
+    ["คน้าใหญ่", "คะน้าใหญ่", "ผ25"],
+    ["แอปเปิ่ล", "แอปเปิ้ล", "ม62"],
+    ["น่อยหน่า", "น้อยหน่า", "ม16"],
+    ["หัวไซเท้า", "หัวไชเท้า", "ผ93"],
+    ["ทับมิม", "ทับทิม", "ม15"],
+  ])("%s auto-corrects exactly to %s / %s", (entered, canonicalName, productCode) => {
+    expect(resolveSafeAutoCorrectProductName(entered)).toEqual({ productCode, canonicalName, reason: "reviewed_typo" });
+    expect(canonicalProduceProductIdentity(entered, "โล")).toBe(canonicalName);
+    expect(withdraw(entered).status).toBe("clean");
+  });
+
+  it("keeps fuzzy or potentially distinct shop names under human review", () => {
+    for (const name of ["ทับทิบ", "อินทผรัม", "ฟักออ่น", "ผักกาดลุ้ย", "ผักแพว", "สลัดคอส"]) {
+      expect(resolveSafeAutoCorrectProductName(name)).toBeNull();
+    }
   });
 });
 

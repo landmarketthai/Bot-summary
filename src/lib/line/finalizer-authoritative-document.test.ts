@@ -616,3 +616,32 @@ describe("guided price advisories survive deferred finalization", () => {
     expect(db.rows("produce_items")).toHaveLength(0);
   });
 });
+
+describe("safe product auto-correction reaches authoritative finalization", () => {
+  it("persists canonical กะปิ and records the correction in the success notification", async () => {
+    const snapshot = guidedReturnSnapshot(["1.กระปิ50บาท", "2ถุง"].join("\n"));
+    const withdrawal = {
+      accountability_round_id: ROUND_ID,
+      product_name: "กะปิ",
+      unit: "ถุง",
+      quantity: 5,
+      price_per_unit: 50,
+      transaction_type: "เบิก",
+    };
+    const db = new FinalizerDocDouble(guidedFlowTables(snapshot, [withdrawal]));
+    const closed = await closeGuidedReturn(db);
+    expect(closed.status).toBe("closed");
+    if (closed.status !== "closed") return;
+
+    const finalized = await finalizePendingGeneration(db.asClient(), closed.session, async () => ({}));
+    expect(finalized.status).toBe("finalized");
+    const call = db.rpcCalls.find((candidate) => candidate.name === "try_finalize_pending_generation");
+    const [persisted] = (call?.args.p_items ?? []) as Row[];
+    expect(persisted.product_name).toBe("กะปิ");
+    expect(db.rows("produce_entry_validation_reviews")).toHaveLength(0);
+
+    const payload = String(db.rows("produce_session_notifications")[0]?.notification_payload);
+    expect(payload).toContain("✏️ ระบบแก้ชื่อสินค้าอัตโนมัติ");
+    expect(payload).toContain("ข้อ 1: กระปิ → กะปิ");
+  });
+});

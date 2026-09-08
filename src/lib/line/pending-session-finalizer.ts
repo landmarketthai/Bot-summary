@@ -25,6 +25,7 @@ import {
   weighSessionCompatibilityFingerprints,
 } from "@/lib/produce/business-fingerprint";
 import { supersedeReplacedPendingGenerations } from "@/lib/produce/pending-supersession";
+import { canonicalProduceProductIdentity } from "@/lib/produce/product-vocabulary";
 import { loadHistoricalWithdrawalCandidates } from "@/lib/produce/historical-withdrawal-candidates";
 import { buildSeedFromStructuredMetadata } from "@/lib/parsers/weigh-session/seed";
 import {
@@ -614,17 +615,49 @@ export async function finalizePendingGeneration(
     entryGateAdvisories = gate.advisories;
   }
 
+  const productNameCorrections: Array<{ itemNumber: number; from: string; to: string }> = [];
+  const persistedItems = parsed.items.map((item) => {
+    const canonicalName = canonicalProduceProductIdentity(item.product_name, item.unit);
+    if (canonicalName !== item.product_name) {
+      productNameCorrections.push({
+        itemNumber: item.item_number,
+        from: item.product_name,
+        to: canonicalName,
+      });
+    }
+    return canonicalName === item.product_name
+      ? item
+      : { ...item, product_name: canonicalName };
+  });
+  const persistedParsed: WeighSession = { ...parsed, items: persistedItems };
+
   const rawMessageId = await findCloseRawMessageId(supabase, snapshot);
   if (!rawMessageId) validationErrors.push("close raw message was not found");
 
   // Success notification is snapshotted before the authoritative RPC. For an
   // addition it reports batch and cumulative day totals and never claims the
   // original session was modified.
-  const notificationSummary = isAdditional && validationErrors.length === 0
-    ? buildAdditionalSessionSummary(parsed, await loadAdditionalDayContext(supabase, parsed))
-    : buildWeighSessionSummary(parsed);
+  const notificationBase = isAdditional && validationErrors.length === 0
+    ? buildAdditionalSessionSummary(
+        persistedParsed,
+        await loadAdditionalDayContext(supabase, persistedParsed),
+      )
+    : buildWeighSessionSummary(persistedParsed);
+  const listedCorrections = productNameCorrections.slice(0, 10);
+  const hiddenCorrections = productNameCorrections.length - listedCorrections.length;
+  const correctionNotice = listedCorrections.length > 0
+    ? [
+        "",
+        "✏️ ระบบแก้ชื่อสินค้าอัตโนมัติ",
+        ...listedCorrections.map(
+          (correction) =>
+            `• ข้อ ${correction.itemNumber}: ${correction.from} → ${correction.to}`,
+        ),
+        ...(hiddenCorrections > 0 ? [`…และอีก ${hiddenCorrections} รายการ`] : []),
+      ].join("\n")
+    : "";
   const notificationPayload = buildPriceAdvisoryNotification(
-    notificationSummary,
+    `${notificationBase}${correctionNotice}`,
     entryGateAdvisories,
   );
 
@@ -656,7 +689,7 @@ export async function finalizePendingGeneration(
     // withdrawal, so `เบิกเพิ่ม` and every return are neither guarded nor
     // stored as candidates. Riding inside the existing payload keeps the RPC
     // signature unchanged, so neither deploy order can break.
-    canonical_withdrawal_item_lines: canonicalWithdrawalItemLines(parsed),
+    canonical_withdrawal_item_lines: canonicalWithdrawalItemLines(persistedParsed),
     // Sessions recorded before that column existed carry NULL forever, so the
     // guard cannot see them from SQL alone. Their canonical lines are computed
     // here with the SAME canonicalizer and re-validated by the RPC under the
@@ -666,7 +699,7 @@ export async function finalizePendingGeneration(
       sessionDate: parsed.date,
       staffName: parsed.staff_name,
       marketLabel: parsed.session_title,
-      canonicalLines: canonicalWithdrawalItemLines(parsed),
+      canonicalLines: canonicalWithdrawalItemLines(persistedParsed),
     }),
     // Task 2 (20260825091000): forwarded verbatim to try_finalize_pending_generation.
     // The RPC — not this file — decides whether the named predecessor may
@@ -685,7 +718,7 @@ export async function finalizePendingGeneration(
   // contradictory price on the wire; today's RPC extracts named keys and drops
   // it, but nothing in SQL enforces that, and the field it would resurrect is
   // the exact bug this path was corrected for.
-  const itemPayload = parsed.items.map((item) => ({
+  const itemPayload = persistedItems.map((item) => ({
     item_number: item.item_number,
     product_name: item.product_name,
     price_per_unit: item.price_per_unit,
@@ -697,7 +730,7 @@ export async function finalizePendingGeneration(
     basis_quantity: item.basis_quantity,
     basis_unit: item.basis_unit,
     basis_price: item.basis_price,
-    item_hash: computeItemHash(parsed, item),
+    item_hash: computeItemHash(persistedParsed, item),
   }));
 
   // The document's own identity is the current-generation hash. The
@@ -705,8 +738,12 @@ export async function finalizePendingGeneration(
   // generation, under the market's other reviewed spellings; the RPC reserves
   // it atomically so neither a historical row nor a concurrent old-build
   // submission can be missed. See business-fingerprint.ts for V0/V1/V2.
-  const businessFingerprint = computeSessionHash(parsed);
-  const compatibilityFingerprints = weighSessionCompatibilityFingerprints(parsed);
+  const businessFingerprint = computeSessionHash(persistedParsed);
+  const compatibilityFingerprints = [...new Set([
+    ...weighSessionCompatibilityFingerprints(persistedParsed),
+    computeSessionHash(parsed),
+    ...weighSessionCompatibilityFingerprints(parsed),
+  ])].filter((fingerprint) => fingerprint !== businessFingerprint);
   const result = await service.tryFinalizeGeneration(
     snapshot.session_key,
     snapshot.session_generation,
@@ -793,7 +830,7 @@ export async function finalizePendingGeneration(
       if (parsed.date) {
         await seedCentralPricesFromPersistedWithdrawals(supabase, {
           businessDate: parsed.date,
-          items: parsed.items,
+          items: persistedItems,
         });
       }
     } catch (error) {
@@ -813,7 +850,7 @@ export async function finalizePendingGeneration(
           sessionKey: snapshot.session_key,
           sessionGeneration: snapshot.session_generation,
           sourceId: snapshot.source_id,
-          parsed,
+          parsed: persistedParsed,
           accountabilityRoundId,
         });
       }

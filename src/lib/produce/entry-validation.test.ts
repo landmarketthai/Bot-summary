@@ -706,7 +706,6 @@ describe("product spelling variants are refused, never merged", () => {
   // different good, so the reply hands them the withdrawal's exact spelling.
   const pairs: Array<[sent: string, withdrawn: string]> = [
     ["หัวไชเท้า", "หัวไชยเท้า"],
-    ["ฝักกระเจี๊ยบ", "ฝักกระเจียบ"],
     ["ฟักอ่อน", "ฟักออ่น"],
   ];
 
