@@ -59,7 +59,7 @@ export type DataQualityCategory =
   | "financial_reconciliation_mismatch"
   /** No reconciliation row yet, or a manual slip session is still open. */
   | "financial_evidence_incomplete"
-  // ── Financial Settlement (future — see adapters/financial-settlement-port.ts) ──
+  // ── Daily Financial Settlement ─────────────────────────────────────────
   /** getDailyFinancialSettlement reports a close-time mismatch. */
   | "financial_settlement_mismatch";
 
