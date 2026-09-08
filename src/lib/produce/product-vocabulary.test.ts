@@ -150,6 +150,16 @@ describe("Production 2026-08-15 withdrawal spellings", () => {
     expect(withdraw("ไชมัส").status).toBe("clean");
   });
 
+  it("CASE D2 — องุ่นคินสัน resolves to ม68 องุ่นคิมสัน (reviewed one-char typo)", () => {
+    // A single-character typo (น for ม) of the existing canonical name, folded
+    // as a reviewed alias — NOT a new identity and NOT one of the ม75–ม80 codes.
+    expect(resolveApprovedProductName("องุ่นคินสัน")).toEqual({
+      productCode: "ม68",
+      canonicalName: "องุ่นคิมสัน",
+    });
+    expect(withdraw("องุ่นคินสัน").status).toBe("clean");
+  });
+
   it("CASE E — อินทผรัม suggests อินทผลัม", () => {
     expect(suggestedNames("อินทผรัม")[0]).toBe("อินทผลัม");
   });
@@ -382,6 +392,7 @@ describe("deterministic product-name aliases", () => {
     ["อะโวคาโด้", "อะโวคาโด", "ม59"],
     ["ไชมัส", "ไซมัส", "ม54"],
     ["สาลี", "สาลี่", "ม50"],
+    ["องุ่นคินสัน", "องุ่นคิมสัน", "ม68"],
   ])("%s resolves to canonical %s / %s without review", (alias, canonicalName, productCode) => {
     expect(resolveApprovedProductName(alias)).toEqual({ productCode, canonicalName });
     expect(approvedProductCode(alias)).toBe(approvedProductCode(canonicalName));
@@ -563,5 +574,61 @@ describe("พุทราจีน (ม74) is its own vocabulary identity", () =
     expect(matches[0].code).toBe("ม74");
     expect(matches[0].enabled).toBe(true);
     expect(matches[0].categoryCode).toBe("ม");
+  });
+});
+
+describe("dictionary extension 20260908090000 — ม75–ม80 vocabulary identities", () => {
+  const NEW: Array<[string, string]> = [
+    ["มันแกว", "ม75"],
+    ["องุ่นไร้ออส", "ม76"],
+    ["แอปเปิ้ลแคระ", "ม77"],
+    ["เมล่อนกล่อง", "ม78"],
+    ["องุ่นลิ้นจี่", "ม79"],
+    ["องุ่นจักรพรรดิ์", "ม80"],
+  ];
+
+  it.each(NEW)("%s is an approved name resolving to its own code %s", (name, code) => {
+    expect(isApprovedProductName(name)).toBe(true);
+    expect(approvedProductCode(name)).toBe(code);
+    expect(resolveApprovedProductName(name)).toEqual({ productCode: code, canonicalName: name });
+    expect(withdraw(name).status).toBe("clean");
+  });
+
+  it("no lookalike is folded into one of the new products", () => {
+    // PRODUCT_ALIASES folds business identity, not just report labels, so a
+    // wrong fold here would merge a product's stock and money with a different
+    // one. Each near-neighbour must keep its own distinct code.
+    expect(approvedProductCode("แอปเปิ้ล")).toBe("ม62");
+    expect(approvedProductCode("องุ่นไร้เม็ด")).toBe("ม58");
+    expect(approvedProductCode("ลิ้นจี่")).toBe("ม71");
+
+    expect(approvedProductCode("แอปเปิ้ลแคระ")).not.toBe(approvedProductCode("แอปเปิ้ล"));
+    expect(approvedProductCode("องุ่นไร้ออส")).not.toBe(approvedProductCode("องุ่นไร้เม็ด"));
+    expect(approvedProductCode("องุ่นลิ้นจี่")).not.toBe(approvedProductCode("ลิ้นจี่"));
+
+    const codes = [
+      "มันแกว", "องุ่นไร้ออส", "แอปเปิ้ลแคระ", "เมล่อนกล่อง", "องุ่นลิ้นจี่", "องุ่นจักรพรรดิ์",
+      "แอปเปิ้ล", "องุ่นไร้เม็ด", "ลิ้นจี่",
+    ].map((name) => approvedProductCode(name));
+    expect(new Set(codes).size).toBe(codes.length);
+  });
+
+  it("no shorter form reaches the new products through an alias", () => {
+    // A bare แอปเปิ้ล must keep meaning ม62, องุ่น must never resolve at all.
+    expect(approvedProductCode("แอปเปิ้ล")).toBe("ม62");
+    expect(resolveApprovedProductName("แคระ")).toBeNull();
+    expect(resolveApprovedProductName("องุ่น")).toBeNull();
+    expect(resolveApprovedProductName("เมล่อน")).toBeNull();
+  });
+
+  it("องุ่นคินสัน is a confirmed typo of ม68 องุ่นคิมสัน, not a new identity", () => {
+    expect(resolveApprovedProductName("องุ่นคินสัน")).toEqual({
+      productCode: "ม68",
+      canonicalName: "องุ่นคิมสัน",
+    });
+    expect(approvedProductCode("องุ่นคินสัน")).toBe("ม68");
+    expect(withdraw("องุ่นคินสัน").status).toBe("clean");
+    // It resolves to an existing code, never mints a new one.
+    expect(PRODUCT_CODE_ENTRIES.filter((e) => e.canonicalName === "องุ่นคินสัน")).toHaveLength(0);
   });
 });

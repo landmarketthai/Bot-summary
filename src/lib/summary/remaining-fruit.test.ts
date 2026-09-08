@@ -645,3 +645,22 @@ describe("PRODUCT_ALIASES — เขียวมรกต shop-floor short form 
     }
   });
 });
+
+describe("PRODUCT_ALIASES — องุ่นคินสัน typo of องุ่นคิมสัน (ม68)", () => {
+  // Required by the alias map's own rule: every entry gets a regression test.
+  // Production audit 2026-09-08: a one-character typo (น for ม) of the existing
+  // ม68 canonical name องุ่นคิมสัน, folded so both keyings share one identity.
+  test("the typo is the same product as the canonical องุ่นคิมสัน", () => {
+    expect(normalizeProductName("องุ่นคินสัน")).toBe("องุ่นคิมสัน");
+  });
+
+  test("the canonical name is left unchanged (it is already canonical)", () => {
+    expect(normalizeProductName("องุ่นคิมสัน")).toBe("องุ่นคิมสัน");
+  });
+
+  test("distinct grape names are not swept in", () => {
+    for (const name of ["องุ่นดำ", "องุ่นแดง", "องุ่นไร้ออส", "องุ่นเคียวโฮ"]) {
+      expect(normalizeProductName(name)).not.toBe("องุ่นคิมสัน");
+    }
+  });
+});

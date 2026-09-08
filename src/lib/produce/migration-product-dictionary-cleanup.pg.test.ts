@@ -184,12 +184,11 @@ describe.skipIf(!pgAvailable)("Produce Product Dictionary Cleanup on PostgreSQL 
     // beforeAll applies the base seed + this cleanup migration and
     // deliberately does not apply 20260824090000 or any migration after it.
     // PRODUCT_CODE_ENTRIES is the full current approved set, so codes owned
-    // by a later migration (ม72 from 20260824090000, ม73 from 20260827090000, ม74 from 20260901093000)
-    // are excluded from this comparison — the unscoped, full-table equality
+    // by later dictionary migrations (ม72–ม80) are excluded from this comparison — the unscoped, full-table equality
     // against PRODUCT_CODE_ENTRIES is proven in
     // migration-product-code-dictionary.pg.test.ts, which composes every
     // migration in order.
-    const CODES_FROM_LATER_MIGRATIONS = new Set(["ม72", "ม73", "ม74"]);
+    const CODES_FROM_LATER_MIGRATIONS = new Set(["ม72", "ม73", "ม74", "ม75", "ม76", "ม77", "ม78", "ม79", "ม80"]);
     const actual = JSON.parse(await scalar(
       "SELECT jsonb_object_agg(product_code, canonical_name)::text FROM public.produce_product_codes",
     )) as Record<string, string>;
