@@ -27,6 +27,7 @@ function makeFullSupabase(cfg: {
   incompleteSessionSourceMatch?: boolean;
   /** pending_sessions rows with terminalized=true, finalization_status='failed_closed'. */
   failedClosedPendingSessions?: Array<{ close_event_timestamp_ms: number }>;
+  manualEntryError?: { message: string } | null;
 }) {
   let manualSessionCallCount = 0;
 
@@ -110,7 +111,7 @@ function makeFullSupabase(cfg: {
           select: () => ({
             in: async () => ({
               data: cfg.entryAmounts.map(a => ({ amount: a })),
-              error: null,
+              error: cfg.manualEntryError ?? null,
             }),
           }),
         };
@@ -252,6 +253,32 @@ describe("loadAiVerifiedTransferTotal", () => {
     await expect(
       loadAiVerifiedTransferTotal(db as never, "grp1", "2026-06-17"),
     ).rejects.toThrow("global reference resolution incomplete");
+  });
+
+  it("round-bound evidence outranks receipt-time cutoff", async () => {
+    const base = makeFullSupabase({
+      openSession: false, transferAmounts: [500], transferRefs: ["REF-LATE"],
+      closedSessions: [], entryAmounts: [],
+    });
+    const roundEvidence = {
+      select: () => {
+        const builder: Record<string, unknown> = {};
+        builder.eq = (column: string) => {
+          if (column === "accountability_round_id") return builder;
+          return builder;
+        };
+        builder.gte = () => { throw new Error("receipt-time filter must not run for bound round"); };
+        builder.lt = () => { throw new Error("receipt-time filter must not run for bound round"); };
+        builder.then = (resolve: (value: unknown) => void) => resolve({
+          data: [{ id: "ev1", market_label: null, received_at: "2026-06-18T03:30:00Z" }],
+          error: null,
+        });
+        return builder;
+      },
+    };
+    const client = { ...base, from: (table: string) => table === "slip_evidences" ? roundEvidence : base.from(table) };
+    await expect(loadAiVerifiedTransferTotal(client as never, "grp1", "2026-06-17", "round-1"))
+      .resolves.toBe(500);
   });
 });
 
@@ -454,6 +481,23 @@ describe("reconcile", () => {
       submitted_transfer_total: 0,
     });
     expect(Object.prototype.hasOwnProperty.call(upserts[0]!.row, "work_round_id")).toBe(false);
+  });
+
+  it("fails closed on manual-slip entry read failure and writes no matched zero row", async () => {
+    const upserts: UpsertCapture[] = [];
+    const db = makeFullSupabase({
+      openSession: false, transferAmounts: [], closedSessions: ["closed-1"],
+      entryAmounts: [100], manualEntryError: { message: "injected temporary read failure" }, upserts,
+    });
+    const emptyEvidences = {
+      select: () => ({ eq: () => ({ gte: () => ({ lt: async () => ({ data: [], error: null }) }) }) }),
+    };
+
+    await expect(reconcile(
+      { ...db, from: (t: string) => (t === "slip_evidences" ? emptyEvidences : db.from(t)) } as never,
+      "grp1", "2026-07-30", 0,
+    )).rejects.toThrow("manual_slip_entries query failed: injected temporary read failure");
+    expect(upserts).toHaveLength(0);
   });
 });
 
