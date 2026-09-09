@@ -39,6 +39,14 @@ const UNCLASSIFIED_FRUIT_MIGRATION = join(
   HERE, "..", "..", "..", "..",
   "supabase", "migrations", "20260908090000_produce_product_dictionary_add_unclassified_fruit.sql",
 );
+const MARKET_VEGETABLE_SKUS_MIGRATION = join(
+  HERE, "..", "..", "..", "..",
+  "supabase", "migrations", "20260909030000_produce_product_dictionary_add_market_vegetable_skus.sql",
+);
+const MARKET_FISH_SKU_MIGRATION = join(
+  HERE, "..", "..", "..", "..",
+  "supabase", "migrations", "20260909030100_produce_product_dictionary_add_market_fish_sku.sql",
+);
 const FAH_LAN_MIGRATION = join(
   HERE, "..", "..", "..", "..",
   "supabase", "migrations", "20260827055728_produce_product_dictionary_add_fah_lan_mango.sql",
@@ -125,6 +133,8 @@ const APPLIED_MIGRATIONS: AppliedMigration[] = [
     file: UNCLASSIFIED_FRUIT_MIGRATION,
     insertAfterCode: "ม74",
   },
+  { file: MARKET_VEGETABLE_SKUS_MIGRATION, insertAfterCode: "ผ118" },
+  { file: MARKET_FISH_SKU_MIGRATION, insertAfterCode: "ป36" },
 ];
 
 /**
@@ -166,11 +176,11 @@ const moduleRows = (): Row[] =>
   }));
 
 describe("the approved dictionary is the source of truth", () => {
-  it("carries exactly the 271 approved codes", () => {
-    expect(PRODUCT_CODE_COUNT).toBe(271);
-    expect(PRODUCT_CODE_ENABLED_COUNT).toBe(271);
-    expect(PRODUCT_CODE_ENTRIES).toHaveLength(271);
-    expect(csvRows()).toHaveLength(271);
+  it("carries exactly the 283 approved codes", () => {
+    expect(PRODUCT_CODE_COUNT).toBe(283);
+    expect(PRODUCT_CODE_ENABLED_COUNT).toBe(283);
+    expect(PRODUCT_CODE_ENTRIES).toHaveLength(283);
+    expect(csvRows()).toHaveLength(283);
   });
 
   it("matches the CSV row for row, in the approved order and numbering", () => {
@@ -193,7 +203,7 @@ describe("the approved dictionary is the source of truth", () => {
       counts.set(entry.categoryCode, (counts.get(entry.categoryCode) ?? 0) + 1);
     }
     expect(Object.fromEntries(counts)).toEqual({
-      ม: 80, ผ: 118, ป: 36, ท: 26, ห: 4, พ: 7,
+      ม: 80, ผ: 129, ป: 37, ท: 26, ห: 4, พ: 7,
     });
   });
 
@@ -218,8 +228,12 @@ describe("real mappings from the approved CSV resolve", () => {
     ["ผ99", "ใบตั้งโอ๋"],
     ["ผ100", "ใบบัวบก"],
     ["ผ118", "ข้าวคั่ว"],
+    ["ผ119", "ผักกาดลุ้ย"],
+    ["ผ126", "ผักแพว"],
+    ["ผ129", "มะเขือม่วง"],
     ["ป01", "กะปิ"],
     ["ป36", "หอยเชลล์"],
+    ["ป37", "ปลาทู"],
     ["ท01", "ทุเรียน"],
     ["ท26", "ภูเขาไฟลูกค้าเคลม"],
     ["ห01", "เห็ดนางฟ้า"],
@@ -234,16 +248,16 @@ describe("real mappings from the approved CSV resolve", () => {
     });
   }
 
-  it("resolves codes past two digits — ผ runs to ผ118", () => {
+  it("resolves codes past two digits — ผ runs to ผ129", () => {
     expect(resolveProductCode("ผ100")).not.toBeNull();
-    expect(resolveProductCode("ผ118")).not.toBeNull();
+    expect(resolveProductCode("ผ129")).not.toBeNull();
   });
 });
 
 describe("unregistered codes do not resolve", () => {
   // ม63-ม80 exist as of this extension, so ม81 — the code right past the new
   // boundary — is the genuinely unissued example, not ม74 or ม80.
-  for (const code of ["ม99", "ม999", "ผ999", "ป99", "ท99", "ห99", "พ99", "ผ119", "ม81"]) {
+  for (const code of ["ม99", "ม999", "ผ999", "ป99", "ท99", "ห99", "พ99", "ผ130", "ม81"]) {
     it(`${code} is unknown`, () => {
       expect(resolveProductCode(code)).toBeNull();
       expect(resolveItemLineProductCode(`${code} 50 บาท`)).toEqual({ kind: "unknown", code });
