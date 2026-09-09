@@ -24,6 +24,8 @@ export interface ReconciliationReportRow {
   source_id:                string;
   /** Business date (ISO yyyy-mm-dd, 04:00 Bangkok cutoff). */
   business_date:            string;
+  /** Accountability round identity; null only for legacy/unbound records. */
+  accountability_round_id:   string | null;
   /** Display market label, or the raw source_id when no label is known. */
   market:                   string;
   /** null when no reconciliation row exists for this key (missing data). */

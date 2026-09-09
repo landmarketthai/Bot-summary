@@ -15,6 +15,7 @@ function row(
   return {
     source_id:                "grp1",
     business_date:            "2026-06-17",
+    accountability_round_id:   null,
     market:                   "ตลาดA",
     submitted_transfer_total: 1000,
     ai_verified_total:        800,
