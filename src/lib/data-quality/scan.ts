@@ -2,10 +2,10 @@
  * Data Quality Inbox — the ONE scan/upsert function.
  *
  * Gathers candidates from every wired source (produce preflight, financial
- * reconciliation, and the not-yet-built Financial Settlement port), then
+ * reconciliation, and Daily Financial Settlement), then
  * persists the complete set through inbox.ts. Exposed by the authenticated,
  * cron-compatible route at src/app/api/cron/data-quality-scan/route.ts;
- * scheduling is intentionally not activated. Safe to call again for the same
+ * the Production scheduler calls this route daily. Safe to call again for the same
  * business date — see inbox.ts for the idempotent lifecycle contract.
  */
 
@@ -16,7 +16,7 @@ import { fetchReconciliationReport } from "@/lib/reconciliation-report-service";
 import { preflightIssuesToCandidates } from "./sources/preflight-source";
 import { reconciliationRowsToCandidates } from "./sources/reconciliation-source";
 import {
-  noopFinancialSettlementPort,
+  createFinancialSettlementPort,
   type FinancialSettlementPort,
   type FinancialSettlementSignal,
 } from "./adapters/financial-settlement-port";
@@ -53,7 +53,7 @@ export function financialSettlementSignalsToCandidates(
 }
 
 export interface ScanDataQualityIssuesOptions {
-  /** Injected for tests, or once feat/daily-financial-settlement lands. */
+  /** Optional test override. Production defaults to the real settlement adapter. */
   financialSettlementPort?: FinancialSettlementPort;
 }
 
@@ -68,7 +68,7 @@ export async function scanDataQualityIssues(
   businessDate: string,
   options: ScanDataQualityIssuesOptions = {},
 ): Promise<ScanDataQualityIssuesResult> {
-  const settlementPort = options.financialSettlementPort ?? noopFinancialSettlementPort;
+  const settlementPort = options.financialSettlementPort ?? createFinancialSettlementPort(supabase);
   // The occurrence time is captured before discovery. If an operator resolves
   // or ignores an issue while the scan is loading, the older observation must
   // not overwrite that newer human decision when the RPC eventually commits.
