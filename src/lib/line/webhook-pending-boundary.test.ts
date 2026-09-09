@@ -448,6 +448,39 @@ describe("produce pending-session generation boundary", () => {
     expect(db.appendCalls).toBe(0);
   });
 
+  it("rotates the same full header after a current-generation close refusal", async () => {
+    const header = "พี่ปลา-โรงถ่าน คืนเสีย 8/9/2569";
+    const oldGeneration = "44444444-4444-4444-8444-444444444444";
+    const staleText = [
+      header,
+      "7.องุ่นแดง70บาท",
+      "0.2โล",
+      "1.สับปะรด50บาท",
+      "5ถุง",
+      "2.ลูกไหนดำ60บาท",
+      "0.9โล",
+    ].join("\n");
+    const refused = pendingSession(staleText, oldGeneration);
+    refused.close_refused_at = "2026-09-09T11:13:52.553Z";
+    refused.close_refused_session_generation = oldGeneration;
+    const db = new BoundaryDatabase(refused);
+
+    await service(db).processEvents([textEvent(header, 4_000)], "destination");
+
+    const [rotated] = db.rows("pending_sessions");
+    expect(rotated.session_generation).not.toBe(oldGeneration);
+    expect(rotated.accumulated_text).toBe(header);
+    expect(String(rotated.accumulated_text)).not.toContain("7.องุ่นแดง");
+    expect(db.appendCalls).toBe(0);
+
+    const rotatedGeneration = String(rotated.session_generation);
+    await service(db).processEvents([textEvent(header, 5_000)], "destination");
+
+    const [sameGeneration] = db.rows("pending_sessions");
+    expect(sameGeneration.session_generation).toBe(rotatedGeneration);
+    expect(db.appendCalls).toBe(1);
+  });
+
   it("does not treat an in-session คืนเสีย section as a different session header", () => {
     const header = "โอม-พาซิโอ้ผลไม้ เบิก 30/06/2569";
     const currentText = [
