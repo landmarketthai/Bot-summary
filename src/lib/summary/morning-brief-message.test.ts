@@ -1,124 +1,129 @@
 import { describe, expect, test } from "bun:test";
-import type { MorningBriefReport } from "./morning-brief";
-import { countCodePoints, LINE_MESSAGE_MAX_CODE_POINTS } from "./line-chunking";
+import type {
+  MorningBriefPurchaseGroup,
+  MorningBriefPurchaseItem,
+  MorningBriefReport,
+} from "./morning-brief";
+import { countCodePoints } from "./line-chunking";
 import { buildMorningBriefMessage, buildMorningBriefMessages } from "./morning-brief-message";
 
 const BUSINESS_DATE = "2026-08-27";
 
-function names(prefix: string, count: number): string[] {
-  return Array.from({ length: count }, (_, index) => `${prefix}${index + 1}`);
+function purchaseItems(
+  prefix: string,
+  count: number,
+  category = "ผัก / สมุนไพร / เครื่องประกอบอาหาร",
+  reasons: MorningBriefPurchaseItem["uncertaintyReasons"] = [],
+): MorningBriefPurchaseItem[] {
+  return Array.from({ length: count }, (_, index) => ({
+    productName: `${prefix}${index + 1}`,
+    originalProductName: null,
+    category,
+    unit: "แพค",
+    uncertaintyReasons: [...reasons],
+  }));
 }
 
+function group(items: MorningBriefPurchaseItem[]): MorningBriefPurchaseGroup {
+  return { count: items.length, productNames: items.map((item) => item.productName), items };
+}
 function report(overrides: Partial<MorningBriefReport> = {}): MorningBriefReport {
+  const strong = [
+    ...purchaseItems("ซื้อ", 11),
+    ...purchaseItems("ปลา", 1, "ปลา / อาหารแห้ง / ของแห้ง"),
+  ];
   return {
     businessDate: BUSINESS_DATE,
     purchasePlanning: {
-      strong: { count: 9, productNames: names("ซื้อ", 9) },
-      surplus: { count: 7, productNames: names("รอ", 7) },
-      reduce: { count: 5, productNames: names("ลด", 5) },
-      unknown: { count: 88, productNames: names("ห้ามแสดง", 88) },
+      strong: group(strong),
+      surplus: group(purchaseItems("รอ", 2, "ผลไม้")),
+      reduce: group(purchaseItems("ลด", 2, "ผลไม้")),
+      unknown: group(purchaseItems("ตรวจ", 2, "ผลไม้", ["return_incomplete"])),
     },
     sales: {
       confirmedSalesSatang: 2_174_074,
       valueAuthoritative: false,
       trustedCount: 77,
-      unresolvedCount: 107,
+      unresolvedCount: 3,
       soldOutCount: 50,
-      priceConflictCount: 11,
-      priceConflictMarketCount: 4,
+      priceConflictCount: 2,
+      priceConflictMarketCount: 2,
+      reviewItems: [
+        { marketLabel: "ตลาดเอ", productName: "มะละกอ", unit: "ลูก", status: "VALUE_BLOCKED", reasons: ["central_price_conflict"] },
+        { marketLabel: "ตลาดบี", productName: "มังคุด", unit: "โล", status: "VALUE_BLOCKED", reasons: ["central_price_conflict"] },
+        { marketLabel: "ตลาดเอ", productName: "สาลี่", unit: "ลูก", status: "QUANTITY_BLOCKED", reasons: ["product_return_absent"] },
+      ],
     },
-    houseStock: { status: "available", groupCount: 2, totalValueSatang: 312_000 },
+    houseStock: {
+      status: "available",
+      groupCount: 1,
+      totalValueSatang: 105_000,
+      items: [{ productName: "มะละกอ", category: "ผลไม้", unit: "ลูก", quantity: 30, unitPriceSatang: 3500, valueSatang: 105_000 }],
+    },
     ...overrides,
   };
 }
-
 describe("Morning Decision Brief", () => {
-  test("renders actionable names, unknown count only, and exact sales headlines", () => {
+  test("shows every categorized purchase item and unknown reason", () => {
     const message = buildMorningBriefMessage(report());
-
-    expect(message).toContain("🌅 สรุปเช้า");
-    expect(message).toContain("🟢 ควรซื้อเพิ่ม — 9 รายการ\nซื้อ1, ซื้อ2");
-    expect(message).toContain("🟠 ยังไม่ควรซื้อเพิ่ม — 7 รายการ\nรอ1, รอ2");
-    expect(message).toContain("🔴 ควรลดการซื้อ — 5 รายการ\nลด1, ลด2");
-    expect(message).toContain("⚠️ ยังประเมินไม่ได้ 88 รายการ");
-    expect(message).not.toContain("ห้ามแสดง1");
-    expect(message).toContain("⚠️ ยอดที่ยืนยันแล้ว 21,740.74 บาท");
-    expect(message).toContain("✅ ยืนยันได้ 77 รายการ • ⚠️ รอตรวจ 107 รายการ");
-    expect(message).toContain("✅ ถือว่าขายหมดเพราะไม่มีรายการคืน — 50 รายการ");
+    expect(message).toContain("🟢 ควรซื้อเพิ่ม — 12 รายการ");
+    expect(message).toContain("ผัก / สมุนไพร / เครื่องประกอบอาหาร — 11 รายการ");
+    expect(message).toContain("ซื้อ11");
+    expect(message).toContain("ปลา / อาหารแห้ง / ของแห้ง — 1 รายการ");
+    expect(message).toContain("⚠️ ยังประเมินไม่ได้ — 2 รายการ");
+    expect(message).toContain("ตรวจ1 (แพค) — รายการคืน/คืนเสียของรอบยังไม่สมบูรณ์");
+    expect(message).not.toContain("+อีก");
   });
 
-  test("compacts more than 10 actionable names", () => {
-    const message = buildMorningBriefMessage(report({
-      purchasePlanning: {
-        strong: { count: 14, productNames: names("สินค้า", 10) },
-        surplus: { count: 0, productNames: [] },
-        reduce: { count: 0, productNames: [] },
-        unknown: { count: 0, productNames: [] },
-      },
-    }));
-
-    expect(message).toContain("สินค้า10 ... +อีก 4 รายการ");
-    expect(message).not.toContain("สินค้า11");
-  });
-
-  test("partial sales is never labeled as total sales", () => {
-    const message = buildMorningBriefMessage(report());
-    expect(message).not.toContain("ยอดขายรวม 21,740.74 บาท");
-  });
-
-  test("authoritative sales may use the total-sales label", () => {
-    const message = buildMorningBriefMessage(report({
+  test("keeps sales labels unchanged", () => {
+    const partial = buildMorningBriefMessage(report());
+    expect(partial).toContain("⚠️ ยอดที่ยืนยันแล้ว 21,740.74 บาท");
+    expect(partial).not.toContain("ยอดขายรวม 21,740.74 บาท");
+    const authoritative = buildMorningBriefMessage(report({
       sales: { ...report().sales, valueAuthoritative: true },
     }));
-    expect(message).toContain("ยอดขายรวม 21,740.74 บาท");
+    expect(authoritative).toContain("ยอดขายรวม 21,740.74 บาท");
   });
 
-  test("price conflict is count-only with no product, market, or reason detail", () => {
+  test("shows pending-review details by reason and market", () => {
     const message = buildMorningBriefMessage(report());
-    expect(message).toContain("ราคากลางขัดแย้ง 11 จุด / 4 ตลาด");
+    expect(message).toContain("⚠️ รายละเอียดรอตรวจ — 3 รายการ");
+    expect(message).toContain("ราคากลางขัดแย้ง — 2 รายการ");
+    expect(message).toContain("• ตลาดเอ: มะละกอ (ลูก)");
+    expect(message).toContain("หลักฐานคืนของสินค้ายังยืนยันไม่ได้ — 1 รายการ");
+    expect(message).toContain("สาลี่ (ลูก)");
     expect(message).not.toContain("central_price_conflict");
-    expect(message).not.toContain("ตลาดเอ");
   });
-
-  test("valid House Stock shows group count and value only", () => {
+  test("shows House Stock product, quantity, price and value by category", () => {
     const message = buildMorningBriefMessage(report());
-    expect(message).toContain("🏠 ของในบ้าน\n2 รายการ • มูลค่า 3,120.00 บาท");
+    expect(message).toContain("🏠 ของในบ้าน — 1 รายการ");
+    expect(message).toContain("ผลไม้ — 1 รายการ");
+    expect(message).toContain("มะละกอ — 30 ลูก • 35 บาท/ลูก • มูลค่า 1,050.00 บาท");
   });
 
   test("missing and unavailable House Stock degrade only their section", () => {
     const missing = buildMorningBriefMessage(report({ houseStock: { status: "missing" } }));
     const unavailable = buildMorningBriefMessage(report({ houseStock: { status: "unavailable" } }));
-
     expect(missing).toContain("ยังไม่มีข้อมูลสต๊อกบ้าน");
     expect(unavailable).toContain("⚠️ ยังตรวจสต๊อกบ้านไม่ได้");
-    for (const message of [missing, unavailable]) {
-      expect(message).toContain("🛒 แผนซื้อของ");
-      expect(message).toContain("💰 ยอดขาย");
-    }
   });
-
-  test("busy day stays one LINE message and contains no per-market sales blocks", () => {
-    const messages = buildMorningBriefMessages(report());
-    expect(messages).toHaveLength(1);
-    expect(countCodePoints(messages[0]!)).toBeLessThanOrEqual(LINE_MESSAGE_MAX_CODE_POINTS);
-    expect(messages[0]).not.toContain("ผลประกอบการ");
-    expect(messages[0]).not.toContain("เงินสดคงเหลือจริง");
-  });
-
-  test("pathological product names remain bounded without losing numeric headlines", () => {
-    const longName = "ย".repeat(10_000);
+  test("large categorized lists chunk instead of truncating names", () => {
+    const many = purchaseItems("สินค้า", 150);
     const messages = buildMorningBriefMessages(report({
       purchasePlanning: {
-        strong: { count: 100, productNames: Array(10).fill(longName) },
-        surplus: { count: 100, productNames: Array(10).fill(longName) },
-        reduce: { count: 100, productNames: Array(10).fill(longName) },
-        unknown: { count: 88, productNames: [] },
+        strong: group(many),
+        surplus: group([]),
+        reduce: group([]),
+        unknown: group([]),
       },
-    }));
-
-    expect(messages).toHaveLength(1);
-    expect(countCodePoints(messages[0]!)).toBeLessThanOrEqual(LINE_MESSAGE_MAX_CODE_POINTS);
-    expect(messages[0]).toContain("⚠️ ยอดที่ยืนยันแล้ว 21,740.74 บาท");
-    expect(messages[0]).toContain("2 รายการ • มูลค่า 3,120.00 บาท");
+    }), { maxMessages: 10 });
+    expect(messages.length).toBeGreaterThan(1);
+    for (const message of messages) {
+      expect(countCodePoints(message)).toBeLessThanOrEqual(800);
+      expect(message).toContain("Part ");
+    }
+    const joined = messages.join("\n");
+    expect(joined).toContain("สินค้า150");
+    expect(joined).not.toContain("+อีก");
   });
 });

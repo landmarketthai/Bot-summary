@@ -27,10 +27,10 @@ describe("loadMorningBriefReport", () => {
 
     expect(report.businessDate).toBe(BUSINESS_DATE);
     expect(report.purchasePlanning).toEqual({
-      strong: { count: 0, productNames: [] },
-      surplus: { count: 0, productNames: [] },
-      reduce: { count: 0, productNames: [] },
-      unknown: { count: 0, productNames: [] },
+      strong: { count: 0, productNames: [], items: [] },
+      surplus: { count: 0, productNames: [], items: [] },
+      reduce: { count: 0, productNames: [], items: [] },
+      unknown: { count: 0, productNames: [], items: [] },
     });
     expect(report.sales).toMatchObject({
       confirmedSalesSatang: 0,
@@ -65,6 +65,7 @@ describe("loadMorningBriefReport", () => {
       status: "available",
       groupCount: 1,
       totalValueSatang: 31_200,
+      items: [{ productName: "มะม่วง", category: "อื่นๆ / ยังไม่เข้าหมวด", unit: "กก.", quantity: 2, unitPriceSatang: 15_600, valueSatang: 31_200 }],
     });
   });
 

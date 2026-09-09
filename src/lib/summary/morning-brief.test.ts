@@ -77,19 +77,17 @@ function salesReport(markets: SalesMarketSummary[]): SalesReport {
 }
 
 describe("summarizePurchasePlanning", () => {
-  test("uses existing status, preserves ordering, caps actionable names, and hides unknown names", () => {
-    const strong = Array.from({ length: 14 }, (_, index) =>
-      purchaseItem("strong", `ซื้อ-${index + 1}`),
-    );
-    const unknown = Array.from({ length: 88 }, (_, index) =>
-      purchaseItem("unknown", `ไม่รู้-${index + 1}`),
-    );
-
+  test("keeps every classified item, including unknown details", () => {
+    const strong = Array.from({ length: 14 }, (_, index) => purchaseItem("strong", `ซื้อ-${index + 1}`));
+    const unknown = Array.from({ length: 88 }, (_, index) => purchaseItem("unknown", `ไม่รู้-${index + 1}`));
+    unknown[0]!.uncertaintyReasons = ["return_incomplete"];
     const summary = summarizePurchasePlanning({ items: [...strong, ...unknown] });
-
     expect(summary.strong.count).toBe(14);
-    expect(summary.strong.productNames).toEqual(strong.slice(0, 10).map((item) => item.productName));
-    expect(summary.unknown).toEqual({ count: 88, productNames: [] });
+    expect(summary.strong.productNames).toEqual(strong.map((item) => item.productName));
+    expect(summary.strong.items).toHaveLength(14);
+    expect(summary.unknown.count).toBe(88);
+    expect(summary.unknown.productNames).toEqual(unknown.map((item) => item.productName));
+    expect(summary.unknown.items?.[0]?.uncertaintyReasons).toEqual(["return_incomplete"]);
   });
 });
 
@@ -130,6 +128,10 @@ describe("summarizeSales", () => {
       soldOutCount: 2,
       priceConflictCount: 2,
       priceConflictMarketCount: 2,
+      reviewItems: [
+        { marketLabel: "ตลาดเอ", productName: "ขัดแย้งเอ", unit: "กก.", status: "VALUE_BLOCKED", reasons: ["central_price_conflict"] },
+        { marketLabel: "ตลาดบี", productName: "ขัดแย้งบี", unit: "กก.", status: "QUANTITY_BLOCKED", reasons: ["central_price_conflict"] },
+      ],
     });
   });
 });
