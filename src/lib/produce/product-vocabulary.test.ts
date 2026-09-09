@@ -214,12 +214,13 @@ describe("Production 2026-08-15 withdrawal spellings", () => {
     });
   });
 
-  it("CASE J — ปลาอินทรีย์ may suggest ปลาอินทรี but is never mapped to it", () => {
-    expect(suggestedNames("ปลาอินทรีย์")).toContain("ปลาอินทรี");
-    expect(isApprovedProductName("ปลาอินทรีย์")).toBe(false);
-    expect(vocabulary(withdraw("ปลาอินทรีย์"))[0]).toMatchObject({
-      productName: "ปลาอินทรีย์",
+  it("CASE J — ปลาอินทรีย์ is now an explicitly reviewed auto-correction to ปลาอินทรี", () => {
+    expect(resolveSafeAutoCorrectProductName("ปลาอินทรีย์")).toEqual({
+      productCode: "ป35",
+      canonicalName: "ปลาอินทรี",
+      reason: "reviewed_typo",
     });
+    expect(withdraw("ปลาอินทรีย์").status).toBe("clean");
   });
 
   it("CASE K — หมึกกระตอย reaches ปลาหมึกกะตอย through the shared run, not a merge", () => {
@@ -411,6 +412,22 @@ describe("safe auto-correction from reviewed Production typos", () => {
     ["อินทผรัม", "อินทผลัม", "ม60"],
     ["ฟักออ่น", "ฟักอ่อน", "ผ68"],
     ["สลัดคอส", "สลัดคอต", "ผ66"],
+    ["ไชเท้า", "หัวไชเท้า", "ผ93"],
+    ["ดอกกะหล่ำ", "กะหล่ำดอก", "ผ12"],
+    ["ดอกกระหล่ำ", "กะหล่ำดอก", "ผ12"],
+    ["บรอกโคลี่", "บรอกโคลี", "ผ49"],
+    ["ผักชีไทบ", "ผักชีไทย", "ผ59"],
+    ["ปลานหวานไม่งา", "ปลาหวานไม่งา", "ป33"],
+    ["ผักกะเฉด", "ผักกระเฉด", "ผ50"],
+    ["ปลาหมึกกระตอย", "ปลาหมึกกะตอย", "ป27"],
+    ["กวางตุ้งญี่ปุ่นปุ่น", "กวางตุ้งญี่ปุ่น", "ผ14"],
+    ["ใบต๊งโอ๋", "ใบตั้งโอ๋", "ผ99"],
+    ["ใบต๊งโอ้", "ใบตั้งโอ๋", "ผ99"],
+    ["น้อนหน่ย", "น้อยหน่า", "ม16"],
+    ["แก้วมังแดง", "แก้วมังกรแดง", "ม07"],
+    ["ปลาอินทรีย์", "ปลาอินทรี", "ป35"],
+    ["ผักแพรว", "ผักแพว", "ผ126"],
+    ["ใบกระเพราขาว", "ใบกะเพราขาว", "ผ127"],
   ])("%s auto-corrects exactly to %s / %s", (entered, canonicalName, productCode) => {
     expect(resolveSafeAutoCorrectProductName(entered)).toEqual({ productCode, canonicalName, reason: "reviewed_typo" });
     expect(canonicalProduceProductIdentity(entered, "โล")).toBe(canonicalName);
@@ -418,7 +435,7 @@ describe("safe auto-correction from reviewed Production typos", () => {
   });
 
   it("keeps fuzzy or potentially distinct shop names under human review", () => {
-    for (const name of ["ผักกาดลุ้ย", "ผักแพว"]) {
+    for (const name of ["มะระลูก", "ใบกระเพราขา"]) {
       expect(resolveSafeAutoCorrectProductName(name)).toBeNull();
     }
   });

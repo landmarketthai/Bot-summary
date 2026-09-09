@@ -56,6 +56,12 @@ const CHINESE_JUJUBE_MIGRATION = join(
 const UNCLASSIFIED_FRUIT_MIGRATION = join(
   ROOT, "supabase", "migrations", "20260908090000_produce_product_dictionary_add_unclassified_fruit.sql",
 );
+const MARKET_VEGETABLE_SKUS_MIGRATION = join(
+  ROOT, "supabase", "migrations", "20260909030000_produce_product_dictionary_add_market_vegetable_skus.sql",
+);
+const MARKET_FISH_SKU_MIGRATION = join(
+  ROOT, "supabase", "migrations", "20260909030100_produce_product_dictionary_add_market_fish_sku.sql",
+);
 const BOOTSTRAP = join(
   ROOT, "supabase", "tests", "produce_product_code_dictionary_bootstrap.sql",
 );
@@ -148,6 +154,8 @@ describe.skipIf(!pgAvailable)("Produce Product Code Dictionary on PostgreSQL 17"
     await apply(FAH_LAN_MIGRATION);
     await apply(CHINESE_JUJUBE_MIGRATION);
     await apply(UNCLASSIFIED_FRUIT_MIGRATION);
+    await apply(MARKET_VEGETABLE_SKUS_MIGRATION);
+    await apply(MARKET_FISH_SKU_MIGRATION);
   });
 
   afterAll(async () => {
@@ -157,11 +165,11 @@ describe.skipIf(!pgAvailable)("Produce Product Code Dictionary on PostgreSQL 17"
 
   // ── The seed is the approved dictionary ───────────────────────────────────
 
-  test("seeds exactly the 271 approved codes (base + cleanup + kaeo khamin + fah lan + chinese jujube + unclassified fruit), all enabled", async () => {
-    expect(await scalar("SELECT count(*)::text FROM public.produce_product_codes")).toBe("271");
+  test("seeds exactly the 283 approved codes (base + cleanup + kaeo khamin + fah lan + chinese jujube + unclassified fruit), all enabled", async () => {
+    expect(await scalar("SELECT count(*)::text FROM public.produce_product_codes")).toBe("283");
     expect(await scalar(
       "SELECT count(*)::text FROM public.produce_product_codes WHERE code_enabled",
-    )).toBe("271");
+    )).toBe("283");
   });
 
   test("keeps the approved namespace ranges", async () => {
@@ -171,7 +179,7 @@ describe.skipIf(!pgAvailable)("Produce Product Code Dictionary on PostgreSQL 17"
         SELECT category_code, count(*) AS n
         FROM public.produce_product_codes GROUP BY category_code
       ) t`);
-    expect(rows).toBe("ท=26,ป=36,ผ=118,พ=7,ม=80,ห=4");
+    expect(rows).toBe("ท=26,ป=37,ผ=129,พ=7,ม=80,ห=4");
   });
 
   test("stores the canonical name of every code exactly as approved", async () => {
@@ -193,7 +201,7 @@ describe.skipIf(!pgAvailable)("Produce Product Code Dictionary on PostgreSQL 17"
 
   test("resolves representative codes across every namespace", async () => {
     for (const [code, name] of [
-      ["ม02", "กล้วยน้ำว้า"], ["ม72", "มะม่วงแก้วขมิ้น"], ["ม73", "มะม่วงฟ้าลั่น"], ["ผ118", "ข้าวคั่ว"], ["ป36", "หอยเชลล์"],
+      ["ม02", "กล้วยน้ำว้า"], ["ม72", "มะม่วงแก้วขมิ้น"], ["ม73", "มะม่วงฟ้าลั่น"], ["ผ129", "มะเขือม่วง"], ["ป37", "ปลาทู"],
       ["ท26", "ภูเขาไฟลูกค้าเคลม"], ["ห04", "เห็ดออรินจิ"], ["พ07", "มะระถุง"],
     ]) {
       expect(await scalar(
@@ -209,7 +217,7 @@ describe.skipIf(!pgAvailable)("Produce Product Code Dictionary on PostgreSQL 17"
       "DELETE FROM public.produce_product_codes WHERE product_code = 'ม02'",
     );
     expect(error).toContain("must not be deleted");
-    expect(await scalar("SELECT count(*)::text FROM public.produce_product_codes")).toBe("271");
+    expect(await scalar("SELECT count(*)::text FROM public.produce_product_codes")).toBe("283");
   });
 
   test("refuses to repoint a code at a different product", async () => {
