@@ -41,6 +41,7 @@ function event(overrides: Partial<RecoverableDeferredEvent> & Pick<
     close_line_timestamp_ms: null,
     expires_at: new Date(Date.now() + 30_000).toISOString(),
     recovery_bundle_id: null,
+    received_at: new Date().toISOString(),
     ...overrides,
   };
 }
@@ -96,6 +97,29 @@ describe("rejected Produce bundle clustering", () => {
     expect(bundles).toHaveLength(1);
     expect(bundles[0]?.key).toBe("waiting");
     expect(bundles[0]?.events.map((row) => row.line_event_id)).toEqual(["a"]);
+  });
+
+  it("hides rejected bundles from a prior Bangkok business day", () => {
+    const now = Date.parse("2026-09-14T05:06:00.000Z");
+    const stale = event({
+      line_event_id: "stale-6", status: "rejected_after_close", close_line_event_id: "close-old",
+      received_at: "2026-09-13T10:01:18.000Z",
+    });
+    expect(selectRecoveryBundle([stale], now)).toEqual({ kind: "none" });
+    const fresh = event({
+      line_event_id: "fresh", status: "rejected_after_close", close_line_event_id: "close-new",
+      received_at: "2026-09-14T04:59:00.000Z",
+    });
+    expect(selectRecoveryBundle([fresh], now).kind).toBe("one");
+  });
+
+  it("keeps rejected evidence recoverable across midnight before the 04:00 cutoff", () => {
+    const now = Date.parse("2026-09-14T20:30:00.000Z"); // 03:30 Bangkok on Sep 15
+    const sameBusinessDay = event({
+      line_event_id: "late-night", status: "rejected_after_close", close_line_event_id: "close-night",
+      received_at: "2026-09-14T15:00:00.000Z", // 22:00 Bangkok on Sep 14
+    });
+    expect(selectRecoveryBundle([sameBusinessDay], now).kind).toBe("one");
   });
 
   it("separates before-opener episodes by opener_line_event_id", () => {
