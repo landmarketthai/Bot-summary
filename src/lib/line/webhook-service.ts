@@ -1412,6 +1412,10 @@ export class WebhookService {
         incomingHeader
         && (
           pending.terminalized
+          || (
+            pending.close_refused_at != null
+            && pending.close_refused_session_generation === pending.session_generation
+          )
           || requiresFreshPendingGeneration(pending.accumulated_text, incomingHeader)
         )
       ) {
