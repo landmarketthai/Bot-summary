@@ -95,6 +95,24 @@ const FINALIZER_REVIEW_CLOSE_COMMAND = "จบรายการ";
 
 const defaultPush: PushMessage = (to, text) => pushLineMessage(to, text);
 
+export function buildTransientFinalizationRetryMessage(): string {
+  return [
+    "⚠️ ระบบตรวจสอบรายการขัดข้องชั่วคราว",
+    "รายการที่ส่งมายังอยู่ครบ ไม่ต้องพิมพ์ใหม่",
+    "ระบบจะลองตรวจสอบให้อีกครั้งอัตโนมัติ",
+    "หากยังไม่มีข้อความยืนยัน สามารถส่งคำสั่งจบรายการเดิมอีกครั้งได้",
+  ].join("\n");
+}
+
+export function isTransientFinalizationReadError(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return [
+    "gateway timeout", "timed out", "timeout", "connection reset",
+    "connection terminated", "fetch failed", "network error",
+    "socket hang up", "502", "503", "504",
+  ].some((needle) => message.includes(needle));
+}
+
 export function formatMissingItemNumbers(missing: number[]): string {
   return missing.join(", ");
 }
@@ -487,9 +505,39 @@ export async function finalizePendingGeneration(
       finalText = await service.rebuildForFinalization(snapshot, closeTimestamp);
     }
   } catch (error) {
-    reconstructionErrors.push(
-      error instanceof Error ? error.message : "session reconstruction failed",
-    );
+    const reconstructionError = error instanceof Error
+      ? error.message
+      : "session reconstruction failed";
+    if (isTransientFinalizationReadError(error)) {
+      const priorReason = snapshot.finalization_error
+        && typeof snapshot.finalization_error === "object"
+        && !Array.isArray(snapshot.finalization_error)
+        ? String((snapshot.finalization_error as Record<string, unknown>).reason ?? "")
+        : "";
+      const deferred = await service.deferTransientFinalizationRetry(
+        snapshot.session_key, snapshot.session_generation, snapshot.ingest_revision, reconstructionError,
+      );
+      log.warn("produce finalization deferred after transient reconstruction error", {
+        error: reconstructionError, scheduled: deferred.scheduled, nextAttemptAt: deferred.nextAttemptAt,
+      });
+      if (!deferred.scheduled) {
+        return { status: "stale_snapshot", reason: "transient_retry_snapshot_moved" };
+      }
+      if (deferred.scheduled && priorReason !== "transient_reconstruction_error") {
+        try {
+          await push(snapshot.source_id, buildTransientFinalizationRetryMessage());
+        } catch (pushError) {
+          log.error("transient finalization retry notice failed", {
+            error: pushError instanceof Error ? pushError.message : String(pushError),
+          });
+        }
+      }
+      return {
+        status: "pending", reason: "transient_reconstruction_error",
+        next_attempt_at: deferred.nextAttemptAt,
+      };
+    }
+    reconstructionErrors.push(reconstructionError);
   }
 
   const fallbackTime = bangkokTimeFromTimestamp(
