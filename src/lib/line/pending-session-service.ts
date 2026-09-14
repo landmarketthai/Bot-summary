@@ -918,6 +918,35 @@ export class PendingSessionService {
     return data as ClaimFinalizeResult;
   }
 
+  async deferTransientFinalizationRetry(
+    sessionKey: string,
+    sessionGeneration: string,
+    ingestRevision: number,
+    errorMessage: string,
+    retryAfterMs = 15_000,
+  ): Promise<{ scheduled: boolean; nextAttemptAt: string }> {
+    const now = new Date();
+    const nextAttemptAt = new Date(now.getTime() + retryAfterMs).toISOString();
+    const { data, error } = await (this.supabase as SupabaseClient)
+      .from("pending_sessions")
+      .update({
+        next_attempt_at: nextAttemptAt,
+        finalization_status: "pending",
+        finalization_error: {
+          reason: "transient_reconstruction_error",
+          retryable: true,
+          error: errorMessage,
+          last_failed_at: now.toISOString(),
+        },
+      })
+      .eq("session_key", sessionKey)
+      .eq("session_generation", sessionGeneration)
+      .eq("ingest_revision", ingestRevision)
+      .eq("terminalized", false)
+      .select("session_generation");
+    if (error) throw new Error(`defer transient finalization retry failed: ${error.message}`);
+    return { scheduled: (data ?? []).length > 0, nextAttemptAt };
+  }
   async loadIngestRows(
     sessionKey:        string,
     sessionGeneration: string,
