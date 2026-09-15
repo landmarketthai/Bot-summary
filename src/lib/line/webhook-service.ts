@@ -601,6 +601,19 @@ export function normalizeText(text: string): string {
   return text.split("\n").map(normalizeLine).join("\n");
 }
 
+export function isProduceOrderingEvent(event: LineEvent): boolean {
+  if (event.type !== "message" || event.message.type !== "text") return false;
+  const text = normalizeText(event.message.text).trim();
+  if (!text) return false;
+  return hasSessionStart(text)
+    || hasItemLine(text)
+    || hasSessionEnd(text)
+    || isExactCancelActiveDraftCommand(text)
+    || isExactRecoverLatestCommand(text)
+    || isIncompleteProduceCloser(text)
+    || findDraftItemCommand(text) !== null;
+}
+
 // ── Service ───────────────────────────────────────────────────────────────────
 
 export class WebhookService {
@@ -4279,7 +4292,7 @@ export class WebhookService {
     const source  = event.source  ?? {};
     const message = event.message as LineMessage | undefined;
 
-    if (this.isWhiteSheetOrderingEvent(event) && this.orderedQueueAvailable !== false) {
+    if ((this.isWhiteSheetOrderingEvent(event) || isProduceOrderingEvent(event)) && this.orderedQueueAvailable !== false) {
       let data: unknown;
       let error: { code?: string; message: string } | null = null;
       try {
@@ -4324,7 +4337,7 @@ export class WebhookService {
         // Schema-cache and other receive failures must surface. Do not poison
         // orderedQueueAvailable and do not silently take the direct insert path
         // when ordering infrastructure exists (Second UAT: empty queue).
-        logger.error("ordered webhook receive failed for White Sheet event", {
+        logger.error("ordered webhook receive failed for stateful event", {
           code: error.code,
           message: error.message,
           eventId: event.webhookEventId,
