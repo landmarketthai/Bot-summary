@@ -324,7 +324,7 @@ describe("cancelling the active draft", () => {
     expect(db.pending!.accumulated_text).toBe(WITHDRAWAL);
     expect(String(db.pending!.accumulated_text)).not.toContain(CANCEL_ACTIVE_DRAFT_COMMAND);
     // No append, no reorder admission, no generation rotation, no close.
-    expect(db.rpcCalls).toEqual(["cancel_active_pending_produce_draft"]);
+    expect(db.rpcCalls).toEqual(["receive_line_webhook_event", "cancel_active_pending_produce_draft"]);
     expect(db.pending!.close_event_timestamp_ms).toBeNull();
     expect(db.pending!.close_line_event_id).toBeNull();
     expect(db.pending!.session_generation).toBe(GENERATION);
@@ -341,7 +341,7 @@ describe("cancelling the active draft", () => {
     );
 
     expect(replies).toEqual([CANCEL_ACTIVE_DRAFT_SUCCESS_REPLY]);
-    expect(db.rpcCalls).toEqual(["cancel_active_pending_produce_draft"]);
+    expect(db.rpcCalls).toEqual(["receive_line_webhook_event", "cancel_active_pending_produce_draft"]);
     expect(db.pending!.accumulated_text).toBe(WITHDRAWAL);
   });
 
@@ -359,7 +359,7 @@ describe("cancelling the active draft", () => {
       expect(replies[0]).not.toContain("✅");
       expect(db.pending!.terminalized).toBe(false);
       expect(db.pending!.accumulated_text).toBe(WITHDRAWAL);
-      expect(db.rpcCalls).toEqual(["cancel_active_pending_produce_draft"]);
+      expect(db.rpcCalls).toEqual(["receive_line_webhook_event", "cancel_active_pending_produce_draft"]);
     }
   });
 
@@ -494,10 +494,10 @@ describe("cancelling with nothing to cancel", () => {
     );
 
     expect(replies).toEqual([CANCEL_ACTIVE_DRAFT_NONE_REPLY]);
-    // ZERO mutation: no pending row created, no RPC of any kind, and the
-    // command never fell through to the legacy parse-and-persist path.
+    // ZERO domain mutation: no pending row is created and the command never
+    // reaches a Produce handler. The durable receive RPC is expected.
     expect(db.tables.pending_sessions).toHaveLength(0);
-    expect(db.rpcCalls).toEqual([]);
+    expect(db.rpcCalls).toEqual(["receive_line_webhook_event"]);
     expect(db.tables.produce_transactions).toHaveLength(0);
   });
 });
