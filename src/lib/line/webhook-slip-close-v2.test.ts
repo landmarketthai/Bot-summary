@@ -24,6 +24,12 @@ import type { Database } from "@/types/database";
 
 function makeRawMessageSupabase(rawId = "raw-txt"): SupabaseClient<Database> {
   return {
+    async rpc(name: string) {
+      if (name === "receive_line_webhook_event") {
+        return { data: { raw_message_id: rawId, duplicate: false }, error: null };
+      }
+      throw new Error(`Unexpected rpc: ${name}`);
+    },
     from(table: string) {
       if (table === "raw_messages") {
         return {

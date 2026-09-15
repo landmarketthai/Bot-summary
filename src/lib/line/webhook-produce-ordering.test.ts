@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { isProduceOrderingEvent } from "./webhook-service";
+import { WebhookService, isProduceOrderingEvent } from "./webhook-service";
 import type { LineEvent, LineMessageEvent } from "./types";
 
 function textEvent(text: string): LineMessageEvent {
@@ -26,6 +26,22 @@ describe("Produce durable ordering classification", () => {
     expect(isProduceOrderingEvent(textEvent(text))).toBe(true);
   });
 
+  it("fails closed when the durable receive RPC returns no receipt", async () => {
+    const supabase = {
+      rpc: async (name: string) => {
+        if (name === "receive_line_webhook_event") return { data: null, error: null };
+        throw new Error(`unexpected rpc: ${name}`);
+      },
+    };
+    const service = new WebhookService(supabase as never, {
+      replyMessage: async () => {},
+    });
+    const [result] = await service.processEvents(
+      [textEvent("1พุทราจีน100บาท\n1.4โล")],
+      "destination",
+    );
+    expect(result.status).toBe("error");
+  });
   it("keeps unrelated chatter and non-message events off the Produce ordered path", () => {
     expect(isProduceOrderingEvent(textEvent("สวัสดีครับ"))).toBe(false);
     expect(isProduceOrderingEvent({

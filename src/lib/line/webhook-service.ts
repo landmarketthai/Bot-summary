@@ -4322,6 +4322,18 @@ export class WebhookService {
         }
       }
       if (!error) {
+        if (
+          typeof data !== "object"
+          || data === null
+          || typeof (data as { raw_message_id?: unknown }).raw_message_id !== "string"
+          || typeof (data as { duplicate?: unknown }).duplicate !== "boolean"
+        ) {
+          logger.error("ordered webhook receive returned invalid receipt", {
+            eventId: event.webhookEventId,
+            hasData: data !== null && data !== undefined,
+          });
+          return "error";
+        }
         this.orderedQueueAvailable = true;
         const receipt = data as { raw_message_id: string; duplicate: boolean };
         return {

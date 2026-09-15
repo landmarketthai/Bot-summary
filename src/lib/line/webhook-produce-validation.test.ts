@@ -21,8 +21,19 @@ class RecordingDatabase {
   readonly updates: Record<string, Row[]> = {};
   duplicateSessions = false;
 
-  async rpc() {
-    return { data: null, error: null };
+  async rpc(name: string, args?: Row) {
+    if (name === "receive_line_webhook_event") {
+      const rows = (this.inserts.raw_messages ??= []);
+      const rawMessageId = `raw_messages-${rows.length + 1}`;
+      rows.push({
+        id: rawMessageId,
+        line_event_id: args?.p_line_event_id,
+        source_id: args?.p_source_id,
+        raw_text: args?.p_raw_text,
+      });
+      return { data: { raw_message_id: rawMessageId, duplicate: false }, error: null };
+    }
+    throw new Error(`unexpected rpc: ${name}`);
   }
 
   validationErrors(): Row[] {
