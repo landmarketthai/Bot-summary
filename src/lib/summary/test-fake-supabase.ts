@@ -217,8 +217,19 @@ export class FakeDatabase {
   /** Names of every RPC the code under test attempted, in order. */
   readonly rpcCalls: string[] = [];
 
-  rpc(name: string) {
+  rpc(name: string, args?: Row) {
     this.rpcCalls.push(name);
-    return Promise.resolve({ data: null, error: null });
+    if (name === "receive_line_webhook_event") {
+      const row = this.insert("raw_messages", {
+        line_event_id: args?.p_line_event_id,
+        source_id: args?.p_source_id,
+        raw_text: args?.p_raw_text,
+      }, "insert");
+      return Promise.resolve({
+        data: { raw_message_id: row.id, duplicate: false },
+        error: null,
+      });
+    }
+    throw new Error(`unexpected rpc: ${name}`);
   }
 }

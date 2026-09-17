@@ -1,12 +1,18 @@
 import { after, NextRequest, NextResponse } from "next/server";
 import { verifyLineSignature } from "@/lib/line/verify";
-import { WebhookService } from "@/lib/line/webhook-service";
+import { WebhookService, type WebhookProcessResult } from "@/lib/line/webhook-service";
 import { createServiceClient } from "@/lib/supabase/server";
 import { logger } from "@/lib/logger";
 import type { LineWebhookBody } from "@/lib/line/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
+
+export function webhookResponseStatus(
+  results: Pick<WebhookProcessResult, "retryable">[],
+): number {
+  return results.some((result) => result.retryable === true) ? 503 : 200;
+}
 
 export async function POST(req: NextRequest) {
   // ── Signature verification ──────────────────────────────────────────────────
@@ -54,9 +60,14 @@ export async function POST(req: NextRequest) {
   const saved     = results.filter((r) => r.status === "saved").length;
   const duplicate = results.filter((r) => r.status === "duplicate").length;
   const errors    = results.filter((r) => r.status === "error").length;
+  const retryable = results.filter((r) => r.retryable === true).length;
+  const status = webhookResponseStatus(results);
 
-  logger.info("webhook processed", { saved, duplicate, errors });
+  logger.info("webhook processed", { saved, duplicate, errors, retryable, status });
 
-  // LINE requires 200 OK regardless of processing outcome
-  return NextResponse.json({ received: body.events.length, saved, duplicate, errors }, { status: 200 });
+  // Non-2xx is deliberate only when durable processing asks LINE to redeliver.
+  return NextResponse.json(
+    { received: body.events.length, saved, duplicate, errors, retryable },
+    { status },
+  );
 }

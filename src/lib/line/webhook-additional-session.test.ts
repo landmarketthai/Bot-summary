@@ -113,7 +113,17 @@ class MemoryDatabase {
     delete: () => new MemoryQuery(this, table, "delete"),
   });
 
-  rpc = async () => ({ data: null, error: null });
+  rpc = async (name: string, args?: Row) => {
+    if (name === "receive_line_webhook_event") {
+      const row = this.insert("raw_messages", {
+        line_event_id: args?.p_line_event_id,
+        source_id: args?.p_source_id,
+        raw_text: args?.p_raw_text,
+      }, "insert");
+      return { data: { raw_message_id: row.id, duplicate: false }, error: null };
+    }
+    throw new Error(`unexpected rpc: ${name}`);
+  };
 }
 
 let eventSequence = 0;

@@ -201,6 +201,10 @@ type ReplyLineApiMessages = (
   replyToken: string,
   messages: LineApiMessage[],
 ) => Promise<void>;
+type DeferredReply =
+  | { kind: "text"; args: Parameters<ReplyLineMessage> }
+  | { kind: "texts"; args: Parameters<ReplyLineMessages> }
+  | { kind: "api"; args: Parameters<ReplyLineApiMessages> };
 type ScheduleBackgroundTask = (task: () => Promise<void>) => void;
 type PhysicalInventoryFinalizer = (params: {
   sessionId: string;
@@ -504,6 +508,8 @@ export interface WebhookProcessResult {
   status:    "saved" | "duplicate" | "error";
   parsed?:   boolean;
   error?:    string;
+  /** True only when LINE should redeliver this event. */
+  retryable?: boolean;
   pendingSessionClosed?: boolean;
   claimConflict?: boolean;
 }
@@ -536,7 +542,14 @@ export function parseExpectedItemCount(text: string): number | null {
 }
 
 function hasItemLine(text: string): boolean {
-  return text.split("\n").some((l) => RE.ITEM.test(l.trim()));
+  return text.split("\n").some((rawLine) => {
+    const line = rawLine.trim();
+    return RE.ITEM.test(line)
+      || RE.ITEM_WITH_BASIS.test(line)
+      || RE.ITEM_NAME_ONLY.test(line)
+      || RE.PRICE_ONLY.test(line)
+      || RE.QUANTITY.test(line);
+  });
 }
 
 // SESSION_END lines like "จบรายการคืน" contain "คืน" which also matches SESSION_START.
@@ -601,6 +614,19 @@ export function normalizeText(text: string): string {
   return text.split("\n").map(normalizeLine).join("\n");
 }
 
+export function isProduceOrderingEvent(event: LineEvent): boolean {
+  if (event.type !== "message" || event.message.type !== "text") return false;
+  const text = normalizeText(event.message.text).trim();
+  if (!text) return false;
+  return hasSessionStart(text)
+    || hasItemLine(text)
+    || hasSessionEnd(text)
+    || isExactCancelActiveDraftCommand(text)
+    || isExactRecoverLatestCommand(text)
+    || isIncompleteProduceCloser(text)
+    || findDraftItemCommand(text) !== null;
+}
+
 // ── Service ───────────────────────────────────────────────────────────────────
 
 export class WebhookService {
@@ -608,9 +634,9 @@ export class WebhookService {
   private readonly checkProcessor: SlipCheckProcessor;
   private readonly batchService: SlipBatchIngestor;
   private readonly slipSessionService: SlipSessionIngestor;
-  private readonly replyMessage: ReplyLineMessage;
-  private readonly replyMessages: ReplyLineMessages;
-  private readonly replyApiMessages: ReplyLineApiMessages;
+  private replyMessage: ReplyLineMessage;
+  private replyMessages: ReplyLineMessages;
+  private replyApiMessages: ReplyLineApiMessages;
   private readonly guidedMenuHandler: GuidedMenuUxHandler;
   private readonly guidedJourney: GuidedJourneyService;
   private readonly guidedRounds: GuidedRoundService;
@@ -687,6 +713,7 @@ export class WebhookService {
           eventType: event.type,
           status: "error",
           error: "db insert failed",
+          retryable: true,
         });
       } else {
         const ordered = typeof saved === "object";
@@ -711,9 +738,9 @@ export class WebhookService {
       const orderedReceipts = receipts.filter((receipt) => receipt.ordered);
       const sourceIds = [...new Set(orderedReceipts.map(({ sourceId }) => sourceId))];
       try {
-        await Promise.all(
-          sourceIds.map((sourceId) => this.drainOrderedSource(sourceId, destination, resultByEventId)),
-        );
+        for (const sourceId of sourceIds) {
+          await this.drainOrderedSource(sourceId, destination, resultByEventId);
+        }
         for (const receipt of receipts.filter((item) => !item.ordered)) {
           resultByEventId.set(receipt.event.webhookEventId, await this.processOne(
             receipt.event, destination, 0, 1, receipt.rawMessageId,
@@ -749,6 +776,8 @@ export class WebhookService {
     eventCount: number,
     existingRawMessageId?: string,
     replyMessage: ReplyLineMessage = this.replyMessage,
+    replyMessages: ReplyLineMessages = this.replyMessages,
+    replyApiMessages: ReplyLineApiMessages = this.replyApiMessages,
   ): Promise<WebhookProcessResult> {
     const eventId = event.webhookEventId;
     const log     = logger.child({
@@ -769,7 +798,13 @@ export class WebhookService {
       return { eventId, eventType: event.type, status: "duplicate" };
     }
     if (rawMessageId === "error") {
-      return { eventId, eventType: event.type, status: "error", error: "db insert failed" };
+      return {
+        eventId,
+        eventType: event.type,
+        status: "error",
+        error: "db insert failed",
+        retryable: existingRawMessageId === undefined,
+      };
     }
 
     log.debug("raw message saved", { rawMessageId });
@@ -1123,7 +1158,7 @@ export class WebhookService {
             reply = CANCEL_ACTIVE_DRAFT_REFUSED_REPLY;
           }
           try {
-            await this.replyMessage(replyToken, reply);
+            await replyMessage(replyToken, reply);
           } catch (replyError) {
             log.error("produce draft cancellation reply failed", {
               error: String(replyError),
@@ -1140,7 +1175,7 @@ export class WebhookService {
             sessionKey: pending.session_key,
             sessionGeneration: pending.session_generation,
           });
-          if (replyToken) await this.replyMessage(replyToken, STALE_PRODUCE_SESSION_REPLY);
+          if (replyToken) await replyMessage(replyToken, STALE_PRODUCE_SESSION_REPLY);
           return { eventId, eventType: event.type, status: "saved", parsed: false };
         }
         const structured = pending as StructuredPendingSession;
@@ -1166,7 +1201,7 @@ export class WebhookService {
               parsed,
             );
             if (binding.status === "refused") {
-              if (replyToken) await this.replyMessage(replyToken, binding.detail);
+              if (replyToken) await replyMessage(replyToken, binding.detail);
               return { eventId, eventType: event.type, status: "saved", parsed: false };
             }
             if (binding.status === "bound") roundId = binding.accountabilityRoundId;
@@ -1196,7 +1231,7 @@ export class WebhookService {
           // but never proven shown) and terminalized must never read as
           // "✅ ยืนยันแล้ว" — that would tell the operator a subunit was
           // confirmed when nothing authorized it.
-          if (replyToken) await this.replyMessage(replyToken,
+          if (replyToken) await replyMessage(replyToken,
             isProduceReviewApproved(result)
               ? `✅ ยืนยันข้อ ${subunitConfirm.itemNumber} แล้ว\nกรุณาส่ง “จบรายการ” อีกครั้งเมื่อยืนยันครบทุกข้อ`
               : `⛔ ยืนยันข้อ ${subunitConfirm.itemNumber} ไม่ได้\nรายการนี้ไม่ใช่รายการย่อยที่ต้องยืนยัน หรือข้อมูลเปลี่ยนแล้ว`,
@@ -1206,7 +1241,7 @@ export class WebhookService {
             sessionKey: pending.session_key,
             error: error instanceof Error ? error.message : String(error),
           });
-          if (replyToken) await this.replyMessage(replyToken, PRODUCE_ENTRY_GATE_UNAVAILABLE_REPLY);
+          if (replyToken) await replyMessage(replyToken, PRODUCE_ENTRY_GATE_UNAVAILABLE_REPLY);
         }
         return { eventId, eventType: event.type, status: "saved", parsed: false };
       }
@@ -1224,7 +1259,7 @@ export class WebhookService {
           count: recovered.status === "recovered" ? recovered.count : 0,
         });
         if (replyToken) {
-          await this.replyMessage(replyToken, recoverCommandReply(recovered));
+          await replyMessage(replyToken, recoverCommandReply(recovered));
         }
         return { eventId, eventType: event.type, status: "saved", parsed: true };
       }
@@ -1249,7 +1284,7 @@ export class WebhookService {
           predecessorSessionId: started.status === "started" ? started.predecessorSessionId : null,
         });
         if (replyToken) {
-          await this.replyMessage(replyToken, replacementDraftCommandReply(started));
+          await replyMessage(replyToken, replacementDraftCommandReply(started));
         }
         return { eventId, eventType: event.type, status: "saved", parsed: true };
       }
@@ -1257,7 +1292,7 @@ export class WebhookService {
       if (isIncompleteProduceCloser(text)) {
         log.info("incomplete Produce closer intercepted", { sessionKey, text });
         if (replyToken) {
-          await this.replyMessage(
+          await replyMessage(
             replyToken,
             incompleteCloserReply(pending.accumulated_text),
           );
@@ -1283,7 +1318,7 @@ export class WebhookService {
           sessionKey,
           sessionGeneration: pending.session_generation,
         });
-        if (replyToken) await this.replyMessage(replyToken, STALE_PRODUCE_SESSION_REPLY);
+        if (replyToken) await replyMessage(replyToken, STALE_PRODUCE_SESSION_REPLY);
         return { eventId, eventType: event.type, status: "saved", parsed: false };
       }
 
@@ -1299,7 +1334,7 @@ export class WebhookService {
           sessionGeneration: pending.session_generation,
         });
         if (replyToken) {
-          await this.replyMessage(replyToken, STRUCTURED_TEXT_CLOSE_REFUSED_REPLY);
+          await replyMessage(replyToken, STRUCTURED_TEXT_CLOSE_REFUSED_REPLY);
         }
         return { eventId, eventType: event.type, status: "saved", parsed: false };
       }
@@ -1316,7 +1351,7 @@ export class WebhookService {
           sessionGeneration: pending.session_generation,
           activeType: closerRefusal.activeType,
         });
-        if (replyToken) await this.replyMessage(replyToken, closerRefusal.message);
+        if (replyToken) await replyMessage(replyToken, closerRefusal.message);
         return { eventId, eventType: event.type, status: "saved", parsed: false };
       }
 
@@ -1325,7 +1360,7 @@ export class WebhookService {
         && !pending.terminalized
         && pending.close_event_timestamp_ms !== null
       ) {
-        if (replyToken) await this.replyMessage(replyToken, STALE_PRODUCE_SESSION_REPLY);
+        if (replyToken) await replyMessage(replyToken, STALE_PRODUCE_SESSION_REPLY);
         return { eventId, eventType: event.type, status: "saved", parsed: false };
       }
 
@@ -1405,7 +1440,7 @@ export class WebhookService {
             staleSessionGeneration: pending.session_generation,
             lineEventId: eventId,
           });
-          if (replyToken) await this.replyMessage(replyToken, STALE_PRODUCE_SESSION_REPLY);
+          if (replyToken) await replyMessage(replyToken, STALE_PRODUCE_SESSION_REPLY);
           return { eventId, eventType: event.type, status: "saved", parsed: false };
         }
       } else if (
@@ -1441,7 +1476,7 @@ export class WebhookService {
               reason: opened.reason,
             });
             if (replyToken) {
-              await this.replyMessage(replyToken, STALE_PRODUCE_SESSION_REPLY);
+              await replyMessage(replyToken, STALE_PRODUCE_SESSION_REPLY);
             }
             return { eventId, eventType: event.type, status: "saved", parsed: false };
           }
@@ -1465,7 +1500,7 @@ export class WebhookService {
           });
           if (replyToken) {
             try {
-              await this.replyMessage(replyToken, STALE_PRODUCE_SESSION_REPLY);
+              await replyMessage(replyToken, STALE_PRODUCE_SESSION_REPLY);
             } catch (replyError) {
               log.error("pending session replacement fail-closed reply failed", {
                 error: String(replyError),
@@ -1477,7 +1512,7 @@ export class WebhookService {
         if (!markClose && replyToken) {
           const notice = await retainedBundleNotice(pendingService, sessionKey);
           if (notice) {
-            await this.replyMessage(replyToken, notice);
+            await replyMessage(replyToken, notice);
             return { eventId, eventType: event.type, status: "saved", parsed: false };
           }
         }
@@ -1519,7 +1554,7 @@ export class WebhookService {
             || reordered.action === "deferred"
           ) {
             if (replyToken) {
-              await this.replyMessage(
+              await replyMessage(
                 replyToken,
                 await rejectedBundleNotice(
                   pendingService,
@@ -1533,7 +1568,7 @@ export class WebhookService {
               parseWeighSession(reordered.session.accumulated_text, bangkokToday()),
             );
             if (action) {
-              await this.replyMessage(replyToken, buildDraftItemActionReply(action));
+              await replyMessage(replyToken, buildDraftItemActionReply(action));
             }
           }
           return { eventId, eventType: event.type, status: "saved", parsed: false };
@@ -1590,7 +1625,7 @@ export class WebhookService {
             });
             if (replyToken) {
               try {
-                await this.replyMessage(replyToken, CLOSE_RACED_LATE_ITEM_REPLY);
+                await replyMessage(replyToken, CLOSE_RACED_LATE_ITEM_REPLY);
               } catch (replyError) {
                 log.error("stale close reply failed", { error: String(replyError) });
               }
@@ -1608,7 +1643,7 @@ export class WebhookService {
             });
             if (replyToken) {
               try {
-                await this.replyMessage(replyToken, STALE_PRODUCE_SESSION_REPLY);
+                await replyMessage(replyToken, STALE_PRODUCE_SESSION_REPLY);
               } catch (replyError) {
                 log.error("generation conflict reply failed", { error: String(replyError) });
               }
@@ -1650,7 +1685,7 @@ export class WebhookService {
             }
             if (replyToken) {
               try {
-                await this.replyMessage(
+                await replyMessage(
                   replyToken,
                   await rejectedBundleNotice(pendingService, sessionKey, "after_close"),
                 );
@@ -1741,8 +1776,8 @@ export class WebhookService {
                 closeGateRefusal.refusalText,
                 ...(closeGateRefusal.refusalPages ?? []),
               ];
-              if (texts.length > 1) await this.replyMessages(replyToken, texts);
-              else await this.replyMessage(replyToken, texts[0]);
+              if (texts.length > 1) await replyMessages(replyToken, texts);
+              else await replyMessage(replyToken, texts[0]);
               delivered = true;
             } catch (replyError) {
               log.error("produce entry gate refusal reply failed", {
@@ -1809,7 +1844,7 @@ export class WebhookService {
             parseWeighSession(updated.accumulated_text, bangkokToday()),
           );
           if (action) {
-            await this.replyMessage(replyToken, buildDraftItemActionReply(action));
+            await replyMessage(replyToken, buildDraftItemActionReply(action));
             return { eventId, eventType: event.type, status: "saved", parsed: false };
           }
         }
@@ -1826,7 +1861,7 @@ export class WebhookService {
               preferDraftItemAction: draftItemCommand !== null,
             });
             if (ack) {
-              await this.replyApiMessages(
+              await replyApiMessages(
                 replyToken,
                 ack.messages as LineApiMessage[],
               );
@@ -1852,7 +1887,7 @@ export class WebhookService {
       });
       if (replyToken) {
         try {
-          await this.replyMessage(replyToken, PRODUCE_CLOSE_PENDING_REPLY);
+          await replyMessage(replyToken, PRODUCE_CLOSE_PENDING_REPLY);
         } catch (replyError) {
           log.error("additional close acknowledgement failed", {
             error: String(replyError),
@@ -1873,7 +1908,7 @@ export class WebhookService {
       log.info("produce draft cancellation requested with no active draft", { sessionKey });
       if (replyToken) {
         try {
-          await this.replyMessage(replyToken, CANCEL_ACTIVE_DRAFT_NONE_REPLY);
+          await replyMessage(replyToken, CANCEL_ACTIVE_DRAFT_NONE_REPLY);
         } catch (replyError) {
           log.error("produce draft cancellation reply failed", { error: String(replyError) });
         }
@@ -1884,7 +1919,7 @@ export class WebhookService {
     if (isExactRecoverLatestCommand(text)) {
       log.info("produce boundary recovery requested with no open header", { sessionKey });
       if (replyToken) {
-        await this.replyMessage(replyToken, recoverCommandReply({ status: "no_header" }));
+        await replyMessage(replyToken, recoverCommandReply({ status: "no_header" }));
       }
       return { eventId, eventType: event.type, status: "saved", parsed: true };
     }
@@ -1892,7 +1927,7 @@ export class WebhookService {
     if (isExactReplaceFinalizedSessionCommand(text)) {
       log.info("produce finalized session replacement requested with no open header", { sessionKey });
       if (replyToken) {
-        await this.replyMessage(replyToken, replacementDraftCommandReply({ status: "no_header" }));
+        await replyMessage(replyToken, replacementDraftCommandReply({ status: "no_header" }));
       }
       return { eventId, eventType: event.type, status: "saved", parsed: true };
     }
@@ -1909,7 +1944,7 @@ export class WebhookService {
           sessionKey,
           activeType: closerRefusal.activeType,
         });
-        if (replyToken) await this.replyMessage(replyToken, closerRefusal.message);
+        if (replyToken) await replyMessage(replyToken, closerRefusal.message);
         return { eventId, eventType: event.type, status: "saved", parsed: false };
       }
 
@@ -1991,7 +2026,7 @@ export class WebhookService {
       }
       if (replyToken) {
         const notice = await retainedBundleNotice(pendingService, sessionKey);
-        if (notice) await this.replyMessage(replyToken, notice);
+        if (notice) await replyMessage(replyToken, notice);
       }
       return { eventId, eventType: event.type, status: "saved", parsed: false };
     }
@@ -2024,7 +2059,7 @@ export class WebhookService {
         });
         if (reordered.action !== "admitted"
             && reordered.action !== "reconciled" && replyToken) {
-          await this.replyMessage(
+          await replyMessage(
             replyToken,
             await rejectedBundleNotice(
               pendingService,
@@ -3168,7 +3203,7 @@ export class WebhookService {
     const svc        = new WhiteSheetNoteSessionService(this.supabase);
 
     if (parseResult.kind === "open_invalid") {
-      if (replyToken) await replyMessage(replyToken, parseResult.message);
+      if (replyToken) await this.replyMessage(replyToken, parseResult.message);
       return { eventId, eventType, status: "saved", parsed: false };
     }
 
@@ -3181,7 +3216,7 @@ export class WebhookService {
         });
         if (replyToken) {
           if (result.opened) {
-            await replyMessage(
+            await this.replyMessage(
               replyToken,
               `เปิดใบขาวมือแล้ว\nตลาด: ${marketLabel}\nวันที่: ${isoDateToBuddhistDisplay(businessDate)}\nส่งค่าใช้จ่ายทีละรายการได้เลย เช่น\nค่าแรง 500\nพิมพ์ จบใบขาวมือ เมื่อส่งครบ`,
             );
@@ -3190,9 +3225,9 @@ export class WebhookService {
             && result.session.business_date === businessDate
           ) {
             // Same market/date already open — resume, never claim closed/saved.
-            await replyMessage(replyToken, buildWhiteSheetNoteResumeSummary(result.session));
+            await this.replyMessage(replyToken, buildWhiteSheetNoteResumeSummary(result.session));
           } else {
-            await replyMessage(
+            await this.replyMessage(
               replyToken,
               `ยังมีใบขาวมือของ ${result.session.market_label} วันที่ ${isoDateToBuddhistDisplay(result.session.business_date)} ที่ยังไม่จบ\nกรุณาพิมพ์ จบใบขาวมือ หรือ ยกเลิกใบขาวมือ ก่อนเปิดใบใหม่`,
             );
@@ -3218,7 +3253,7 @@ export class WebhookService {
       log.error("white sheet note open-session lookup failed", { sourceId, error: errorMessage });
       if (replyToken) {
         try {
-          await replyMessage(replyToken, WHITE_SHEET_NOTE_LOOKUP_ERROR_REPLY);
+          await this.replyMessage(replyToken, WHITE_SHEET_NOTE_LOOKUP_ERROR_REPLY);
         } catch { /* ignore reply error */ }
       }
       return { eventId, eventType, status: "error", parsed: false, error: errorMessage };
@@ -3232,7 +3267,7 @@ export class WebhookService {
       // "no open session" when it was in fact already closed/cancelled.
       try {
         const latest = await svc.findLatestSessionForSource(sourceId);
-        if (replyToken) await replyMessage(replyToken, buildWhiteSheetNoteTerminalReply(latest));
+        if (replyToken) await this.replyMessage(replyToken, buildWhiteSheetNoteTerminalReply(latest));
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : String(err);
         log.error("white sheet note latest-session lookup failed", { sourceId, error: errorMessage });
@@ -3243,7 +3278,7 @@ export class WebhookService {
 
     try {
       if (parseResult.kind === "field_invalid") {
-        if (replyToken) await replyMessage(replyToken, parseResult.message);
+        if (replyToken) await this.replyMessage(replyToken, parseResult.message);
         return { eventId, eventType, status: "saved", parsed: false };
       }
 
@@ -3253,7 +3288,7 @@ export class WebhookService {
           // A racing close/cancel already terminated this session — never
           // report false success for the field write.
           const latest = await svc.findLatestSessionForSource(sourceId);
-          if (replyToken) await replyMessage(replyToken, buildWhiteSheetNoteTerminalReply(latest));
+          if (replyToken) await this.replyMessage(replyToken, buildWhiteSheetNoteTerminalReply(latest));
           log.info("white sheet note field update conflict", {
             sourceId,
             fields: parseResult.fields.map((f) => f.key),
@@ -3261,7 +3296,7 @@ export class WebhookService {
           return { eventId, eventType, status: "saved", parsed: false };
         }
         if (replyToken) {
-          await replyMessage(replyToken, buildWhiteSheetNoteFieldSaveReply(parseResult.fields));
+          await this.replyMessage(replyToken, buildWhiteSheetNoteFieldSaveReply(parseResult.fields));
         }
         log.info("white sheet note fields applied", {
           sourceId,
@@ -3275,7 +3310,7 @@ export class WebhookService {
         // Fast-path UX check only — the RPC re-validates against the row it
         // locks and is the authoritative source of truth for "empty".
         if (!svc.hasAnyValue(openSession)) {
-          if (replyToken) await replyMessage(replyToken, WHITE_SHEET_NOTE_CLOSE_EMPTY_REPLY);
+          if (replyToken) await this.replyMessage(replyToken, WHITE_SHEET_NOTE_CLOSE_EMPTY_REPLY);
           return { eventId, eventType, status: "saved", parsed: false };
         }
 
@@ -3283,7 +3318,7 @@ export class WebhookService {
         switch (result.outcome) {
           case "closed":
             if (replyToken) {
-              await replyMessage(
+              await this.replyMessage(
                 replyToken,
                 buildWhiteSheetNoteCanonicalSummary(
                   result.session.market_label,
@@ -3295,20 +3330,20 @@ export class WebhookService {
             log.info("white sheet note closed", { sourceId, sessionId: result.session.id });
             break;
           case "already_closed":
-            if (replyToken) await replyMessage(replyToken, WHITE_SHEET_NOTE_ALREADY_CLOSED_REPLY);
+            if (replyToken) await this.replyMessage(replyToken, WHITE_SHEET_NOTE_ALREADY_CLOSED_REPLY);
             break;
           case "already_cancelled":
-            if (replyToken) await replyMessage(replyToken, WHITE_SHEET_NOTE_ALREADY_CANCELLED_REPLY);
+            if (replyToken) await this.replyMessage(replyToken, WHITE_SHEET_NOTE_ALREADY_CANCELLED_REPLY);
             break;
           case "empty":
-            if (replyToken) await replyMessage(replyToken, WHITE_SHEET_NOTE_CLOSE_EMPTY_REPLY);
+            if (replyToken) await this.replyMessage(replyToken, WHITE_SHEET_NOTE_CLOSE_EMPTY_REPLY);
             break;
           case "finalized":
             log.info("white sheet note close rejected — canonical row finalized", { sourceId });
-            if (replyToken) await replyMessage(replyToken, WHITE_SHEET_NOTE_FINALIZED_REPLY);
+            if (replyToken) await this.replyMessage(replyToken, WHITE_SHEET_NOTE_FINALIZED_REPLY);
             break;
           case "not_found":
-            if (replyToken) await replyMessage(replyToken, WHITE_SHEET_NOTE_NO_OPEN_SESSION_REPLY);
+            if (replyToken) await this.replyMessage(replyToken, WHITE_SHEET_NOTE_NO_OPEN_SESSION_REPLY);
             break;
         }
         return { eventId, eventType, status: "saved", parsed: false };
@@ -3319,10 +3354,10 @@ export class WebhookService {
       if (!cancelResult.ok) {
         // Raced against a close/another cancel — report what actually won.
         const latest = await svc.findLatestSessionForSource(sourceId);
-        if (replyToken) await replyMessage(replyToken, buildWhiteSheetNoteTerminalReply(latest));
+        if (replyToken) await this.replyMessage(replyToken, buildWhiteSheetNoteTerminalReply(latest));
         return { eventId, eventType, status: "saved", parsed: false };
       }
-      if (replyToken) await replyMessage(replyToken, "ยกเลิกใบขาวมือแล้ว");
+      if (replyToken) await this.replyMessage(replyToken, "ยกเลิกใบขาวมือแล้ว");
       log.info("white sheet note cancelled", { sourceId, sessionId: cancelResult.session.id });
       return { eventId, eventType, status: "saved", parsed: false };
     } catch (err) {
@@ -4139,18 +4174,20 @@ export class WebhookService {
       if (!claim) return;
 
       let result: WebhookProcessResult;
-      const replies: Parameters<ReplyLineMessage>[] = [];
+      const replies: DeferredReply[] = [];
+      const originalReplyMessage = this.replyMessage;
+      const originalReplyMessages = this.replyMessages;
+      const originalReplyApiMessages = this.replyApiMessages;
+      const captureText: ReplyLineMessage = async (...args) => { replies.push({ kind: "text", args }); };
+      const captureTexts: ReplyLineMessages = async (...args) => { replies.push({ kind: "texts", args }); };
+      const captureApi: ReplyLineApiMessages = async (...args) => { replies.push({ kind: "api", args }); };
+      this.replyMessage = captureText;
+      this.replyMessages = captureTexts;
+      this.replyApiMessages = captureApi;
       try {
         const event = await this.loadQueuedEvent(claim.raw_message_id);
         result = event
-          ? await this.processOne(
-            event,
-            destination,
-            0,
-            1,
-            claim.raw_message_id,
-            async (...reply) => { replies.push(reply); },
-          )
+          ? await this.processOne(event, destination, 0, 1, claim.raw_message_id, captureText, captureTexts, captureApi)
           : {
             eventId: claim.line_event_id,
             eventType: "message",
@@ -4164,13 +4201,32 @@ export class WebhookService {
           status: "error",
           error: error instanceof Error ? error.message : String(error),
         };
+      } finally {
+        this.replyMessage = originalReplyMessage;
+        this.replyMessages = originalReplyMessages;
+        this.replyApiMessages = originalReplyApiMessages;
+      }
+
+      if (result.status === "error" || Boolean(result.error)) {
+        const released = await this.completeOrderedEvent(
+          claim.raw_message_id,
+          claim.claim_token,
+          "pending",
+          result.error,
+        );
+        if (released) {
+          resultByEventId.set(result.eventId, { ...result, retryable: true });
+          // Do not reclaim the same row again inside this request. LINE will
+          // redeliver after the route returns a non-2xx response.
+          return;
+        }
+        continue;
       }
 
       const completed = await this.completeOrderedEvent(
         claim.raw_message_id,
         claim.claim_token,
-        result.status === "error" || Boolean(result.error) ? "failed" : "processed",
-        result.error,
+        "processed",
       );
       if (!completed) {
         if (!resultByEventId.has(result.eventId)) {
@@ -4183,7 +4239,24 @@ export class WebhookService {
         }
         continue;
       }
-      for (const reply of replies) await this.replyMessage(...reply);
+
+      // Business processing is now durably complete. LINE reply tokens are
+      // single-use and cannot be retried safely after an ambiguous network
+      // failure, so reply delivery is best-effort and never reopens the event.
+      try {
+        for (const reply of replies) {
+          if (reply.kind === "text") await this.replyMessage(...reply.args);
+          else if (reply.kind === "texts") await this.replyMessages(...reply.args);
+          else await this.replyApiMessages(...reply.args);
+        }
+      } catch (replyError) {
+        logger.error("ordered webhook reply failed after durable processing", {
+          sourceId,
+          lineEventId: result.eventId,
+          error: replyError instanceof Error ? replyError.message : String(replyError),
+        });
+      }
+
       resultByEventId.set(result.eventId, result);
     }
   }
@@ -4209,7 +4282,7 @@ export class WebhookService {
   private async completeOrderedEvent(
     rawMessageId: string,
     claimToken: string,
-    status: "processed" | "failed",
+    status: "pending" | "processed" | "failed",
     errorMessage?: string,
   ): Promise<boolean> {
     const { data, error } = await this.supabase.rpc("complete_line_webhook_event", {
@@ -4279,7 +4352,7 @@ export class WebhookService {
     const source  = event.source  ?? {};
     const message = event.message as LineMessage | undefined;
 
-    if (this.isWhiteSheetOrderingEvent(event) && this.orderedQueueAvailable !== false) {
+    if ((this.isWhiteSheetOrderingEvent(event) || isProduceOrderingEvent(event)) && this.orderedQueueAvailable !== false) {
       let data: unknown;
       let error: { code?: string; message: string } | null = null;
       try {
@@ -4309,6 +4382,18 @@ export class WebhookService {
         }
       }
       if (!error) {
+        if (
+          typeof data !== "object"
+          || data === null
+          || typeof (data as { raw_message_id?: unknown }).raw_message_id !== "string"
+          || typeof (data as { duplicate?: unknown }).duplicate !== "boolean"
+        ) {
+          logger.error("ordered webhook receive returned invalid receipt", {
+            eventId: event.webhookEventId,
+            hasData: data !== null && data !== undefined,
+          });
+          return "error";
+        }
         this.orderedQueueAvailable = true;
         const receipt = data as { raw_message_id: string; duplicate: boolean };
         return {
@@ -4324,7 +4409,7 @@ export class WebhookService {
         // Schema-cache and other receive failures must surface. Do not poison
         // orderedQueueAvailable and do not silently take the direct insert path
         // when ordering infrastructure exists (Second UAT: empty queue).
-        logger.error("ordered webhook receive failed for White Sheet event", {
+        logger.error("ordered webhook receive failed for stateful event", {
           code: error.code,
           message: error.message,
           eventId: event.webhookEventId,

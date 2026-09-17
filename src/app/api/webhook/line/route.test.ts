@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { NextRequest } from "next/server";
-import { POST } from "./route";
+import { POST, webhookResponseStatus } from "./route";
 
 const originalSecret = process.env.LINE_CHANNEL_SECRET;
 
@@ -16,6 +16,13 @@ function postWebhook(headers: Record<string, string>, body = "{}"): NextRequest 
     body,
   });
 }
+
+describe("webhook retry status", () => {
+  it("returns 503 only when durable processing requests redelivery", () => {
+    expect(webhookResponseStatus([{ retryable: true }])).toBe(503);
+    expect(webhookResponseStatus([{ retryable: false }, {}])).toBe(200);
+  });
+});
 
 describe("POST /api/webhook/line — signature verification", () => {
   it("rejects a request with no x-line-signature header", async () => {

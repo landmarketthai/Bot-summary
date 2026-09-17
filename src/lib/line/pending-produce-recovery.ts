@@ -12,6 +12,7 @@ import {
   mainSessionTypeFromText,
 } from "@/lib/parsers/weigh-session/main-closer";
 import { parseWeighSession } from "@/lib/parsers/weigh-session/parser";
+import { bangkokBusinessDateFromTimestamp } from "@/lib/business-date";
 import { RE } from "@/lib/parsers/weigh-session/regex";
 import type { BaseTransactionType } from "@/lib/parsers/weigh-session/types";
 import {
@@ -47,6 +48,7 @@ export const RECOVERABLE_DEFERRED_STATUSES = [
 ] as const;
 
 export type RecoverableDeferredStatus = (typeof RECOVERABLE_DEFERRED_STATUSES)[number];
+export const RECOVERY_VISIBILITY_MS = 6 * 60 * 60 * 1000;
 export type RecoveryReason = "before_opener" | "after_close" | "orphan";
 
 export type RecoverableDeferredEvent = RecoverableDeferredEventRow;
@@ -172,11 +174,22 @@ export function clusterRecoverableEvents(
   }));
 }
 
-export function selectRecoveryBundle(events: RecoverableDeferredEvent[]): BundleSelection {
-  const bundles = clusterRecoverableEvents(events);
+export function selectRecoveryBundle(
+  events: RecoverableDeferredEvent[],
+  nowMs = Date.now(),
+): BundleSelection {
+  const currentBusinessDate = bangkokBusinessDateFromTimestamp(nowMs);
+  const freshEvents = events.filter((event) => {
+    if (event.status === "waiting") return true;
+    const receivedAt = Date.parse(event.received_at);
+    return Number.isFinite(receivedAt)
+      && currentBusinessDate !== null
+      && bangkokBusinessDateFromTimestamp(receivedAt) === currentBusinessDate;
+  });
+  const bundles = clusterRecoverableEvents(freshEvents);
   const keyedCount = bundles.reduce((sum, bundle) => sum + bundle.events.length, 0);
   if (bundles.length === 0) {
-    return events.length > 0 && keyedCount === 0 ? { kind: "unkeyed" } : { kind: "none" };
+    return freshEvents.length > 0 && keyedCount === 0 ? { kind: "unkeyed" } : { kind: "none" };
   }
   if (bundles.length > 1) return { kind: "ambiguous", bundles };
   return { kind: "one", bundle: bundles[0]! };

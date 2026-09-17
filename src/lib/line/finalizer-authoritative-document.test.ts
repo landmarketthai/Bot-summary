@@ -43,6 +43,7 @@ class FinalizerDocDouble {
   rpcCalls: Array<{ name: string; args: Row }> = [];
   fromCalls: string[] = [];
   rpcResult: Row = { status: "finalized", session_id: "produce-1", notification_id: "notify-1" };
+  tableErrors: Record<string, string> = {};
 
   constructor(private readonly tables: Record<string, Row[]>) {}
 
@@ -75,12 +76,12 @@ class FinalizerDocDouble {
       limit: () => builder,
       maybeSingle: async () => ({
         data: rows.filter((row) => filters.every((f) => f(row)))[0] ?? null,
-        error: null,
+        error: this.tableErrors[table] ? { message: this.tableErrors[table] } : null,
       }),
-      then: (resolve: (value: { data: Row[]; error: null }) => unknown) =>
+      then: (resolve: (value: { data: Row[]; error: { message: string } | null }) => unknown) =>
         Promise.resolve({
           data: rows.filter((row) => filters.every((f) => f(row))),
-          error: null,
+          error: this.tableErrors[table] ? { message: this.tableErrors[table] } : null,
         }).then(resolve),
     };
     return builder;
@@ -382,6 +383,71 @@ describe("finalizer reads the same authoritative document as review/close/confir
     expect(db.fromCalls).not.toContain("pending_session_admission");
     const call = tryFinalizeCall(db);
     expect(call.args.p_raw_text).toBe(legacyText);
+  });
+
+  it("9. a pinned plain-text round is reused by the finalizer without binding again", async () => {
+    const text = [
+      "น้อย-ราชพฤกษ์ ชั่งคืน 13/9/2569",
+      "1.สับปะรด25บาท", "12ลูก", "จบรายการชั่งคืน",
+    ].join("\n");
+    const snap = structuredSnapshot({
+      accumulated_text: text, entry_origin: null, command_contract_version: null,
+      business_date: null, transaction_time: null, transaction_time_source: null,
+      staff_label: null, market_label: null, session_kind: null, initial_transaction_type: null,
+      opened_line_event_id: null, accountability_round_id: ROUND_ID,
+      plain_text_opened_line_event_id: "open-return", plain_text_opened_line_timestamp_ms: 1_000,
+      close_event_timestamp_ms: 3_000, close_line_event_id: "close-return", close_session_generation: GENERATION,
+    });
+    const db = new FinalizerDocDouble({
+      pending_sessions: [snap as unknown as Row],
+      pending_session_ingest: [
+        { session_key: SESSION_KEY, session_generation: GENERATION, line_event_id: "open-return", line_timestamp_ms: 1_000, raw_text: "น้อย-ราชพฤกษ์ ชั่งคืน 13/9/2569" },
+        { session_key: SESSION_KEY, session_generation: GENERATION, line_event_id: "item-return", line_timestamp_ms: 2_000, raw_text: "1.สับปะรด25บาท\n12ลูก" },
+        { session_key: SESSION_KEY, session_generation: GENERATION, line_event_id: "close-return", line_timestamp_ms: 3_000, raw_text: "จบรายการชั่งคืน" },
+      ],
+      raw_messages: [{ id: "raw-close-return", line_event_id: "close-return" }],
+      produce_transactions: [{ accountability_round_id: ROUND_ID, product_name: "สับปะรด", unit: "ลูก", quantity: 20, price_per_unit: 25, transaction_type: "เบิก" }],
+      produce_sessions: [], produce_items: [], produce_session_notifications: [],
+    });
+    const result = await finalizePendingGeneration(db.asClient(), snap, async () => ({}));
+    expect(result.status).toBe("finalized");
+    expect(db.rpcCalls.map((call) => call.name)).not.toContain("bind_plain_text_accountability_round");
+    expect((tryFinalizeCall(db).args.p_session as Row).accountability_round_id).toBe(ROUND_ID);
+  });
+
+  it("10. a transient round-master read error stays retryable instead of failing clean input closed", async () => {
+    const text = [
+      "น้อย-ราชพฤกษ์ คืนเสีย 13/9/2569",
+      "1.องุ่นแดง70บาท", "0.8โล", "จบรายการคืนเสีย",
+    ].join("\n");
+    const snap = structuredSnapshot({
+      accumulated_text: text, entry_origin: null, command_contract_version: null,
+      business_date: null, transaction_time: null, transaction_time_source: null,
+      staff_label: null, market_label: null, session_kind: null, initial_transaction_type: null,
+      opened_line_event_id: null, accountability_round_id: ROUND_ID,
+      plain_text_opened_line_event_id: "open-damaged", plain_text_opened_line_timestamp_ms: 1_000,
+      close_event_timestamp_ms: 3_000, close_line_event_id: "close-damaged", close_session_generation: GENERATION,
+    });
+    const db = new FinalizerDocDouble({
+      pending_sessions: [snap as unknown as Row],
+      pending_session_ingest: [
+        { session_key: SESSION_KEY, session_generation: GENERATION, line_event_id: "open-damaged", line_timestamp_ms: 1_000, raw_text: "น้อย-ราชพฤกษ์ คืนเสีย 13/9/2569" },
+        { session_key: SESSION_KEY, session_generation: GENERATION, line_event_id: "item-damaged", line_timestamp_ms: 2_000, raw_text: "1.องุ่นแดง70บาท\n0.8โล" },
+        { session_key: SESSION_KEY, session_generation: GENERATION, line_event_id: "close-damaged", line_timestamp_ms: 3_000, raw_text: "จบรายการคืนเสีย" },
+      ],
+      raw_messages: [{ id: "raw-close-damaged", line_event_id: "close-damaged" }],
+      produce_transactions: [], produce_sessions: [], produce_items: [], produce_session_notifications: [],
+    });
+    db.tableErrors.produce_transactions = "Gateway Timeout";
+    const pushes: string[] = [];
+    const result = await finalizePendingGeneration(db.asClient(), snap, async (_to, message) => { pushes.push(message); return {}; });
+    expect(result.status).toBe("pending");
+    expect(result.reason).toBe("transient_reconstruction_error");
+    expect(db.rpcCalls.map((call) => call.name)).not.toContain("try_finalize_pending_generation");
+    expect(db.rpcCalls.map((call) => call.name)).not.toContain("bind_plain_text_accountability_round");
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]).toContain("ระบบตรวจสอบรายการขัดข้องชั่วคราว");
+    expect(pushes[0]).not.toContain("อ่านรายการไม่ครบ");
   });
 });
 

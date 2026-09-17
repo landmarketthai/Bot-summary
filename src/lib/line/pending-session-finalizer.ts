@@ -573,7 +573,7 @@ export async function finalizePendingGeneration(
   let accountabilityRoundId = snapshot.accountability_round_id ?? null;
   let entryGateDetail: string | null = null;
   let entryGateAdvisories: ProduceValidationAdvisory[] = [];
-  if (validationErrors.length === 0 && !seed) {
+  if (validationErrors.length === 0 && !seed && !accountabilityRoundId) {
     const binding = await bindPlainTextRound(
       supabase,
       {
@@ -621,46 +621,60 @@ export async function finalizePendingGeneration(
   // Only reached when the parse itself is sound; a document that already failed
   // validation is reported as such rather than as an unmatched product list.
   if (validationErrors.length === 0) {
-    const gate = await runEntryGateForFinalization(
-      supabase,
-      snapshot,
-      accountabilityRoundId,
-      parsed,
-    );
-
-    // 2026-08-30: a legitimate item whose LINE timestamp preceded the close
-    // committed after the boundary was stamped, and its content required a
-    // review. Terminalizing here is what turned a confirmable review into a
-    // silent failed_closed and stranded the operator's accepted items.
-    //
-    // A presented-but-unconfirmed review is a question waiting on the
-    // operator, not a validation failure. Park finalization instead: the
-    // review reply goes out, a distinct later close confirms it, and
-    // resume_pending_close_finalization re-schedules this generation.
-    //
-    // The hold is revision-pinned. If the document moved again between the
-    // gate reading it and the hold being taken, the hold is refused and this
-    // falls through to the normal path rather than parking a stale decision.
-    if (gate.reviewPresented && gate.reviewResult && snapshot.line_user_id) {
-      const heldStatus = await holdAndPresentFinalizerReview(
+    try {
+      const gate = await runEntryGateForFinalization(
         supabase,
-        service,
         snapshot,
         accountabilityRoundId,
-        gate.reviewResult,
         parsed,
-        push,
-        log,
       );
-      if (heldStatus) return heldStatus;
-      log.warn("validation hold refused; falling through to normal finalization", {
-        ingestRevision: snapshot.ingest_revision,
-      });
-    }
 
-    validationErrors.push(...gate.errors);
-    entryGateDetail = gate.detail;
-    entryGateAdvisories = gate.advisories;
+      if (gate.reviewPresented && gate.reviewResult && snapshot.line_user_id) {
+        const heldStatus = await holdAndPresentFinalizerReview(
+          supabase,
+          service,
+          snapshot,
+          accountabilityRoundId,
+          gate.reviewResult,
+          parsed,
+          push,
+          log,
+        );
+        if (heldStatus) return heldStatus;
+        log.warn("validation hold refused; falling through to normal finalization", {
+          ingestRevision: snapshot.ingest_revision,
+        });
+      }
+
+      validationErrors.push(...gate.errors);
+      entryGateDetail = gate.detail;
+      entryGateAdvisories = gate.advisories;
+    } catch (error) {
+      if (!isTransientFinalizationReadError(error)) throw error;
+      const gateError = error instanceof Error ? error.message : "entry validation failed";
+      const priorReason = snapshot.finalization_error
+        && typeof snapshot.finalization_error === "object"
+        && !Array.isArray(snapshot.finalization_error)
+        ? String((snapshot.finalization_error as Record<string, unknown>).reason ?? "")
+        : "";
+      const deferred = await service.deferTransientFinalizationRetry(
+        snapshot.session_key, snapshot.session_generation, snapshot.ingest_revision, gateError,
+      );
+      log.warn("produce finalization deferred after transient entry-gate error", {
+        error: gateError, scheduled: deferred.scheduled, nextAttemptAt: deferred.nextAttemptAt,
+      });
+      if (!deferred.scheduled) return { status: "stale_snapshot", reason: "transient_retry_snapshot_moved" };
+      if (priorReason !== "transient_reconstruction_error") {
+        try {
+          await push(snapshot.source_id, buildTransientFinalizationRetryMessage());
+        } catch (pushError) {
+          log.error("transient finalization retry notice failed", {
+            error: pushError instanceof Error ? pushError.message : String(pushError),
+          });
+        }
+      }
+      return { status: "pending", reason: "transient_reconstruction_error", next_attempt_at: deferred.nextAttemptAt };
+    }
   }
 
   const productNameCorrections: Array<{ itemNumber: number; from: string; to: string }> = [];
@@ -1087,6 +1101,7 @@ async function runEntryGateForFinalization(
       parsed,
     );
   } catch (error) {
+    if (isTransientFinalizationReadError(error)) throw error;
     return {
       errors: [error instanceof Error ? error.message : "entry validation failed"],
       detail: null,

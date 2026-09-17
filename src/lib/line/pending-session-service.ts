@@ -183,6 +183,7 @@ export interface RecoverableDeferredEventRow {
   expires_at: string | null;
   /** Durable no-header-burst identity — see 20260825090000. NULL pre-migration. */
   recovery_bundle_id: string | null;
+  received_at: string;
 }
 
 export interface ConfirmFinalizationResult {
@@ -423,7 +424,7 @@ export class PendingSessionService {
     const { data, error } = await this.supabase
       .from("pending_produce_deferred_events")
       .select(
-        "line_event_id, raw_message_id, session_key, source_id, line_user_id, line_timestamp_ms, raw_text, status, defer_reason, session_generation, opener_line_event_id, close_line_event_id, close_line_timestamp_ms, expires_at, recovery_bundle_id",
+        "line_event_id, raw_message_id, session_key, source_id, line_user_id, line_timestamp_ms, raw_text, status, defer_reason, session_generation, opener_line_event_id, close_line_event_id, close_line_timestamp_ms, expires_at, recovery_bundle_id, received_at",
       )
       .eq("session_key", sessionKey)
       .eq("runtime_environment", getRuntimeEnvironment())
