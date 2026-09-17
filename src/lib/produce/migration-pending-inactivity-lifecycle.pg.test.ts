@@ -150,7 +150,7 @@ async function seedPending(options: PendingOptions = {}): Promise<{ key: string;
       accountability_round_id, terminalized, created_at, updated_at,
       close_requested_at, close_event_timestamp_ms, close_deadline_at,
       next_attempt_at, finalization_status, finalization_started_at,
-      close_refused_at, runtime_environment
+      close_refused_at, close_refused_session_generation, runtime_environment
     ) VALUES (
       ${q(key)}, ${q(generation)}::uuid, ${q(SOURCE)}, ${q(OWNER)},
       ${q(`${SELLER}-${MARKET} ชั่งคืน`)},
@@ -166,6 +166,7 @@ async function seedPending(options: PendingOptions = {}): Promise<{ key: string;
       ${q(options.finalizationStatus ?? "pending")},
       ${options.processing ? "now()" : "NULL"},
       ${options.closeRefused ? "now()" : "NULL"},
+      ${options.closeRefused ? `${q(generation)}::uuid` : "NULL"},
       ${options.environment === null ? "NULL" : q(options.environment ?? "production")}
     ) RETURNING 1`);
 
@@ -257,6 +258,10 @@ describe.skipIf(!pgAvailable)("pending session inactivity lifecycle on PostgreSQ
       ROOT, "supabase", "migrations",
       "20260829090000_produce_pending_inactivity_lifecycle.sql",
     ));
+    await apply(join(
+      ROOT, "supabase", "migrations",
+      "20260915170000_pending_inactivity_generation_hardening.sql",
+    ));
   }, 120_000);
 
   afterAll(async () => {
@@ -280,7 +285,7 @@ describe.skipIf(!pgAvailable)("pending session inactivity lifecycle on PostgreSQ
   test("the migration is idempotent", async () => {
     await apply(join(
       ROOT, "supabase", "migrations",
-      "20260829090000_produce_pending_inactivity_lifecycle.sql",
+      "20260915170000_pending_inactivity_generation_hardening.sql",
     ));
     expect(await scalar(`
       SELECT count(*)::text FROM information_schema.columns
@@ -456,6 +461,21 @@ describe.skipIf(!pgAvailable)("pending session inactivity lifecycle on PostgreSQ
     // The refused row is left for recover_stranded_plain_text_closes, not
     // silently terminalized by this migration.
     expect(await pendingField(refused.key, "terminalized")).toBe("false");
+  });
+
+  test("T9b — a refusal stamp from an older generation does not strand the current draft", async () => {
+    const { key, generation } = await seedPending({ idleMinutes: 40, admissionCount: 2 });
+    const oldGeneration = nextUuid();
+    expect(oldGeneration).not.toBe(generation);
+    await scalar(`
+      UPDATE public.pending_sessions
+      SET close_refused_at = now() - interval '40 minutes',
+          close_refused_session_generation = ${q(oldGeneration)}::uuid
+      WHERE session_key = ${q(key)} RETURNING 1`);
+
+    const expired = await expire();
+    expect(expired).toContainEqual({ sessionKey: key, outcome: "failed_closed", acceptedItemCount: "2" });
+    expect(await pendingField(key, "terminalized")).toBe("true");
   });
 
   // ── T10: the P1-A/P1-B lifecycle this migration sits on top of ─────────

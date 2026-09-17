@@ -90,6 +90,7 @@ describe.skipIf(!pgAvailable)("0060 separated webhook ordering on PostgreSQL 17"
       "0043_white_sheet_lifecycle.sql",
       "20260801092255_manual_white_sheet_note_sessions.sql",
       "20260801140442_manual_white_sheet_event_ordering.sql",
+      "20260915170100_line_webhook_queue_retryable_completion.sql",
     ]) await apply(join(ROOT, "supabase", "migrations", name));
   }, 60_000);
 
@@ -126,6 +127,20 @@ describe.skipIf(!pgAvailable)("0060 separated webhook ordering on PostgreSQL 17"
     expect(await scalar("SELECT public.claim_line_webhook_event('S-barrier')")).toBe("");
     await scalar(`SELECT public.complete_line_webhook_event('${fieldRaw}', '${fieldClaim.claim_token}', 'processed')`);
     expect(JSON.parse(await scalar("SELECT public.claim_line_webhook_event('S-barrier')"))).toMatchObject({ raw_message_id: closeRaw });
+  });
+
+  test("retryable completion returns the same event to pending before later events", async () => {
+    const source = "S-retryable";
+    const first = await receive("evt-retryable-1", source);
+    const second = await receive("evt-retryable-2", source);
+    const claim = JSON.parse(await scalar("SELECT public.claim_line_webhook_event('S-retryable')"));
+    expect(claim).toMatchObject({ raw_message_id: first });
+    expect(await scalar(`SELECT public.complete_line_webhook_event('${first}', '${claim.claim_token}', 'pending', 'Gateway Timeout')`)).toBe("t");
+    expect(await scalar(`SELECT status || '|' || (claim_token IS NULL)::text || '|' || (completed_at IS NULL)::text FROM public.line_webhook_event_queue WHERE raw_message_id='${first}'`)).toBe("pending|true|true");
+    const retry = JSON.parse(await scalar("SELECT public.claim_line_webhook_event('S-retryable')"));
+    expect(retry).toMatchObject({ raw_message_id: first });
+    await scalar(`SELECT public.complete_line_webhook_event('${first}', '${retry.claim_token}', 'processed')`);
+    expect(JSON.parse(await scalar("SELECT public.claim_line_webhook_event('S-retryable')"))).toMatchObject({ raw_message_id: second });
   });
 
   test("failed earlier event explicitly unblocks later close", async () => {

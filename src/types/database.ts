@@ -2235,7 +2235,7 @@ export interface Database {
         Args: {
           p_raw_message_id: string;
           p_claim_token: string;
-          p_status: "processed" | "failed";
+          p_status: "pending" | "processed" | "failed";
           p_error_message?: string | null;
         };
         Returns: boolean;

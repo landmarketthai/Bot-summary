@@ -33,6 +33,7 @@ function makeQueueDb(seed?: { event: LineMessageEvent; status: QueueStatus; stal
   let conflictNextCompletion = false;
   let receiveCalls = 0;
   let lastCompletedToken: string | null = null;
+  let failNextRawLookup = false;
 
   function insertOrdered(item: LineMessageEvent, status: QueueStatus, stale = false) {
     const rawMessageId = `raw-${++sequence}`;
@@ -123,6 +124,10 @@ function makeQueueDb(seed?: { event: LineMessageEvent; status: QueueStatus; stal
             eq(_column: string, rawMessageId: unknown) {
               return {
                 async maybeSingle() {
+                  if (failNextRawLookup) {
+                    failNextRawLookup = false;
+                    return { data: null, error: { message: "Gateway Timeout" } };
+                  }
                   const raw = [...raws.values()].find((row) => row.id === rawMessageId);
                   return { data: raw ? { payload: raw.payload } : null, error: null };
                 },
@@ -156,6 +161,7 @@ function makeQueueDb(seed?: { event: LineMessageEvent; status: QueueStatus; stal
     get lastCompletedToken() { return lastCompletedToken; },
     makeStale() { if (queue) queue.stale = true; },
     conflictOnNextCompletion() { conflictNextCompletion = true; },
+    failRawLookupOnce() { failNextRawLookup = true; },
     repeatCompletion() {
       return rpc("complete_line_webhook_event", {
         p_raw_message_id: queue?.rawMessageId,
@@ -241,6 +247,46 @@ describe("ordered White Sheet duplicate recovery", () => {
     expect(db.receiveCalls).toBe(0);
     expect(db.rawCount).toBe(1);
     expect(db.queueCount).toBe(0);
+  });
+});
+
+describe("ordered White Sheet retryable delivery", () => {
+  it("releases a transient raw lookup failure back to pending", async () => {
+    const item = event("evt-transient-lookup");
+    const db = makeQueueDb();
+    db.failRawLookupOnce();
+    const replies: string[] = [];
+    const svc = service(db, replies);
+
+    const [failed] = await svc.processEvents([item], "destination");
+    expect(failed).toMatchObject({ status: "error", retryable: true });
+    expect(db.queue?.status).toBe("pending");
+    expect(replies).toHaveLength(0);
+
+    const [recovered] = await svc.processEvents([item], "destination");
+    expect(recovered.status).toBe("duplicate");
+    expect(db.queue?.status).toBe("processed");
+    expect(replies).toHaveLength(1);
+  });
+
+  it("keeps business processing terminal when LINE reply delivery is ambiguous", async () => {
+    const item = event("evt-reply-failure");
+    const db = makeQueueDb();
+    const delivered: string[] = [];
+    const svc = new WebhookService(db as unknown as SupabaseClient<Database>, {
+      replyMessage: async () => { throw new Error("LINE reply network error"); },
+      scheduleBackgroundTask: () => {},
+    });
+
+    const [result] = await svc.processEvents([item], "destination");
+    expect(result.status).toBe("saved");
+    expect(result.retryable).not.toBe(true);
+    expect(db.queue?.status).toBe("processed");
+    expect(delivered).toHaveLength(0);
+
+    const [duplicate] = await svc.processEvents([item], "destination");
+    expect(duplicate.status).toBe("duplicate");
+    expect(db.queue?.status).toBe("processed");
   });
 });
 
