@@ -144,7 +144,10 @@ function itemsToJson(items: PhysicalInventoryParsedItem[]): Json {
   })) as unknown as Json;
 }
 
-function mapRpcError(message: string, kind: "admit" | "finalize" | "open" | "candidate"): Error {
+function mapRpcError(
+  message: string,
+  kind: "admit" | "finalize" | "open" | "candidate" | "cancel",
+): Error {
   if (message.includes("generation_conflict")) return new PhysicalInventoryGenerationConflictError();
   if (message.includes("session_closed")) return new PhysicalInventoryAfterCloseError();
   if (message.includes("after_close_boundary") || message.includes("deadline_elapsed")) {
@@ -356,6 +359,10 @@ export class PhysicalInventorySessionService {
       .from("physical_inventory_session_ingests")
       .select("raw_text, ingest_revision")
       .eq("session_id", sessionId)
+      // Close rows are delimiters, not inventory state. A canceled close stays
+      // immutable evidence but must not truncate admission-time contradiction
+      // checks after the session has been reopened.
+      .neq("kind", "close")
       .order("ingest_revision", { ascending: true });
     if (error) throw new Error(`listIngestTexts failed: ${error.message}`);
     return (data ?? []).map((r) => r.raw_text);
@@ -450,6 +457,53 @@ export class PhysicalInventorySessionService {
       finalizedIngestRevision: row.finalized_ingest_revision ?? null,
       finalizedIngestHash: row.finalized_ingest_hash ?? null,
     };
+  }
+
+  /**
+   * Look up the close ingest evidence row an unsent LINE message refers to.
+   * Read-only — never mutates evidence. Returns null when the unsent message
+   * was not a House Stock close (a header/item unsend, or no match at all).
+   */
+  async findCloseIngestByLineMessageId(lineMessageId: string): Promise<{
+    sessionId: string;
+    lineEventId: string;
+  } | null> {
+    const { data, error } = await this.supabase
+      .from("physical_inventory_session_ingests")
+      .select("session_id, line_event_id")
+      .eq("line_message_id", lineMessageId)
+      .eq("kind", "close")
+      .maybeSingle();
+    if (error) throw new Error(`findCloseIngestByLineMessageId failed: ${error.message}`);
+    return data ? { sessionId: data.session_id, lineEventId: data.line_event_id } : null;
+  }
+
+  /**
+   * Cancel a still-recoverable pending close (LINE unsend of "จบ" before
+   * finalize). Atomic + generation-safe via RPC. Never reopens or mutates a
+   * finalized/failed_closed/voided session — that case comes back with
+   * canceled=false, reason="already_terminal" for the caller to fail closed.
+   */
+  async cancelClose(params: {
+    sessionId: string;
+    expectedGeneration: string;
+    closeLineEventId: string;
+  }): Promise<{
+    ok: boolean;
+    canceled: boolean;
+    reason: string;
+    session: PhysicalInventorySessionRow;
+  }> {
+    const { data, error } = await this.supabase.rpc("cancel_physical_inventory_close", {
+      p_session_id: params.sessionId,
+      p_expected_generation: params.expectedGeneration,
+      p_close_line_event_id: params.closeLineEventId,
+    });
+    if (error) throw mapRpcError(error.message ?? "", "cancel");
+    const row = data as { ok: boolean; canceled: boolean; reason: string; session_id: string };
+    const session = await this.getSession(row.session_id);
+    if (!session) throw new Error("session missing after cancel close");
+    return { ok: row.ok, canceled: row.canceled, reason: row.reason, session };
   }
 
   async getSnapshot(snapshotId: string): Promise<PhysicalInventorySnapshotRow | null> {

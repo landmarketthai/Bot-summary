@@ -61,7 +61,12 @@ export type DataQualityCategory =
   | "financial_evidence_incomplete"
   // ── Financial Settlement (future — see adapters/financial-settlement-port.ts) ──
   /** getDailyFinancialSettlement reports a close-time mismatch. */
-  | "financial_settlement_mismatch";
+  | "financial_settlement_mismatch"
+  // ── House Stock (from src/lib/line/webhook-service.ts unsend handling) ──
+  /** LINE unsend of a House Stock close arrived after the session already
+   *  finalized. The snapshot is never reopened/mutated automatically — a
+   *  human must review whether the finalized count still reflects reality. */
+  | "house_stock_unsend_close_after_finalize";
 
 const CATEGORY_SEVERITY: Record<DataQualityCategory, DataQualitySeverity> = {
   produce_no_return:                  "ACTION_REQUIRED",
@@ -76,6 +81,7 @@ const CATEGORY_SEVERITY: Record<DataQualityCategory, DataQualitySeverity> = {
   financial_reconciliation_mismatch:  "CRITICAL",
   financial_evidence_incomplete:      "ACTION_REQUIRED",
   financial_settlement_mismatch:      "CRITICAL",
+  house_stock_unsend_close_after_finalize: "ACTION_REQUIRED",
 };
 
 export const ALL_DATA_QUALITY_CATEGORIES: readonly DataQualityCategory[] =

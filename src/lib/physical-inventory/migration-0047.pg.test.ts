@@ -39,6 +39,12 @@ const EMPTY_SNAPSHOT_MIGRATION = join(
   "migrations",
   "20260826102627_house_stock_explicit_empty.sql",
 );
+const UNSEND_CLOSE_CANCEL_MIGRATION = join(
+  REPO_ROOT,
+  "supabase",
+  "migrations",
+  "20260918090000_house_stock_unsend_close_cancel.sql",
+);
 const HARDENING = join(REPO_ROOT, "supabase", "tests", "p2a_0047_hardening.sql");
 
 type PsqlResult = { code: number; stdout: string; stderr: string };
@@ -172,6 +178,7 @@ describe.skipIf(!pgAvailable)("P2A migration 0047 PostgreSQL hardening", () => {
       expect(existsSync(MIGRATION)).toBe(true);
       expect(existsSync(PRICED_MIGRATION)).toBe(true);
       expect(existsSync(EMPTY_SNAPSHOT_MIGRATION)).toBe(true);
+      expect(existsSync(UNSEND_CLOSE_CANCEL_MIGRATION)).toBe(true);
       expect(existsSync(HARDENING)).toBe(true);
 
       const create = await runPsql(psqlPath, [
@@ -261,6 +268,15 @@ describe.skipIf(!pgAvailable)("P2A migration 0047 PostgreSQL hardening", () => {
       expect(
         emptySnap.code,
         `explicit-empty migration failed:\n${emptySnap.stderr}\n${emptySnap.stdout}`,
+      ).toBe(0);
+      const unsendCancel = await runPsql(
+        psqlPath,
+        ["-v", "ON_ERROR_STOP=1", "-d", dbName, "-f", UNSEND_CLOSE_CANCEL_MIGRATION],
+        { database: dbName },
+      );
+      expect(
+        unsendCancel.code,
+        `unsend close-cancel migration failed:\n${unsendCancel.stderr}\n${unsendCancel.stdout}`,
       ).toBe(0);
       ready = true;
       console.info("P2A 0047 hardening: PASS (real PostgreSQL)");
@@ -938,6 +954,299 @@ SELECT public.finalize_physical_inventory_session(
         true,
       );
       console.info("candidate consistency under concurrent ingest: PASS");
+    },
+    { timeout: 60_000 },
+  );
+
+  test(
+    "cancel_physical_inventory_close reopens a still-closing session; a stale finalize then fails",
+    async () => {
+      expect(ready).toBe(true);
+      const tag = randomBytes(3).toString("hex");
+      const groupId = sqlLiteral(`G-unsend-${tag}`);
+      const senderId = sqlLiteral(`U-unsend-${tag}`);
+
+      const opened = await psqlJson(
+        psqlPath,
+        dbName,
+        `SELECT public.open_physical_inventory_session(
+          'group', ${groupId}, ${senderId},
+          ${sqlLiteral(`evt-unsend-h-${tag}`)}, 1000, 'header', NULL, NULL, NULL, 'test'
+        )::text`,
+      );
+      const sid = String(opened.session_id);
+      const gen = String(opened.session_generation);
+
+      // Reproduce the real operator shape: four items exist before the
+      // accidentally-sent close.
+      for (let i = 1; i <= 4; i += 1) {
+        const admitted = await psqlJson(
+          psqlPath,
+          dbName,
+          `SELECT public.admit_physical_inventory_event(
+            ${sqlLiteral(sid)}::uuid, ${sqlLiteral(gen)}::uuid,
+            ${sqlLiteral(`evt-unsend-item-${i}-${tag}`)}, ${1100 + i * 100},
+            'item', ${sqlLiteral(`item ${i}`)}, NULL, NULL
+          )::text`,
+        );
+        expect(admitted.accepted).toBe(true);
+      }
+
+      const closeEventId = `evt-unsend-close-${tag}`;
+      const closed = await psqlJson(
+        psqlPath,
+        dbName,
+        `SELECT public.admit_physical_inventory_event(
+          ${sqlLiteral(sid)}::uuid, ${sqlLiteral(gen)}::uuid,
+          ${sqlLiteral(closeEventId)}, 2000, 'close', 'จบ', NULL, NULL
+        )::text`,
+      );
+      expect(closed.status).toBe("closing");
+
+      // Capture what a finalizer could have read before the unsend wins.
+      const staleCandidate = await psqlJson(
+        psqlPath,
+        dbName,
+        `SELECT public.get_physical_inventory_finalize_candidate(
+          ${sqlLiteral(sid)}::uuid, ${sqlLiteral(gen)}::uuid
+        )::text`,
+      );
+
+      // Real finalize would still fail here (quiet window not elapsed) — the
+      // cancel must win the race deterministically, not by timing luck.
+      const canceled = await psqlJson(
+        psqlPath,
+        dbName,
+        `SELECT public.cancel_physical_inventory_close(
+          ${sqlLiteral(sid)}::uuid, ${sqlLiteral(gen)}::uuid, ${sqlLiteral(closeEventId)}
+        )::text`,
+      );
+      expect(canceled.canceled).toBe(true);
+      expect(canceled.status).toBe("open");
+
+      const reopened = await psqlScalar(
+        psqlPath,
+        dbName,
+        `SELECT status FROM public.physical_inventory_sessions WHERE id = ${sqlLiteral(sid)}::uuid`,
+      );
+      expect(reopened).toBe("open");
+      const boundaryCleared = await psqlScalar(
+        psqlPath,
+        dbName,
+        `SELECT (
+           close_event_timestamp_ms IS NULL
+           AND close_quiet_until IS NULL
+           AND close_deadline_at IS NULL
+           AND close_line_event_id IS NULL
+         )::text
+         FROM public.physical_inventory_sessions WHERE id = ${sqlLiteral(sid)}::uuid`,
+      );
+      expect(boundaryCleared).toBe("true");
+
+      // The canceled close's own ingest evidence row must still exist, untouched.
+      const closeIngestStillPresent = await psqlScalar(
+        psqlPath,
+        dbName,
+        `SELECT (count(*) = 1)::text FROM public.physical_inventory_session_ingests
+         WHERE session_id = ${sqlLiteral(sid)}::uuid AND line_event_id = ${sqlLiteral(closeEventId)}
+           AND kind = 'close'`,
+      );
+      expect(closeIngestStillPresent).toBe("true");
+
+      // A following item admits into the SAME session/generation.
+      const admitted = await psqlJson(
+        psqlPath,
+        dbName,
+        `SELECT public.admit_physical_inventory_event(
+          ${sqlLiteral(sid)}::uuid, ${sqlLiteral(gen)}::uuid,
+          ${sqlLiteral(`evt-unsend-item-5-${tag}`)}, 3000, 'item', 'item 5', NULL, NULL
+        )::text`,
+      );
+      expect(admitted.accepted).toBe(true);
+      expect(admitted.status).toBe("open");
+
+      // A later new close finalizes normally after the barrier elapses.
+      const secondCloseEventId = `evt-unsend-close2-${tag}`;
+      const closedAgain = await psqlJson(
+        psqlPath,
+        dbName,
+        `SELECT public.admit_physical_inventory_event(
+          ${sqlLiteral(sid)}::uuid, ${sqlLiteral(gen)}::uuid,
+          ${sqlLiteral(secondCloseEventId)}, 3100, 'close', 'จบ', NULL, NULL
+        )::text`,
+      );
+      expect(closedAgain.status).toBe("closing");
+
+      await psqlScalar(psqlPath, dbName, "SELECT pg_sleep(8.1)::text");
+      const candidate = await psqlJson(
+        psqlPath,
+        dbName,
+        `SELECT public.get_physical_inventory_finalize_candidate(
+          ${sqlLiteral(sid)}::uuid, ${sqlLiteral(gen)}::uuid
+        )::text`,
+      );
+      const candidateIngests = candidate.ingests as Array<{
+        line_event_id: string;
+        kind: string;
+        raw_text: string;
+      }>;
+      expect(candidateIngests).toHaveLength(7);
+      expect(candidateIngests.filter((row) => row.kind === "item")).toHaveLength(5);
+      expect(candidateIngests.map((row) => row.line_event_id)).not.toContain(closeEventId);
+      expect(candidateIngests.map((row) => row.line_event_id)).toContain(secondCloseEventId);
+      expect(candidateIngests.at(-1)?.line_event_id).toBe(secondCloseEventId);
+
+      // A finalizer that captured the first close before the unsend must lose
+      // after cancellation/re-close; stale evidence can never terminalize.
+      let staleFinalizeError = "";
+      try {
+        await psqlJson(
+          psqlPath,
+          dbName,
+          `SELECT public.finalize_physical_inventory_session(
+            ${sqlLiteral(sid)}::uuid, ${sqlLiteral(gen)}::uuid,
+            ${Number(staleCandidate.ingest_revision)},
+            ${sqlLiteral(String(staleCandidate.ingest_set_hash))},
+            '2026-09-18', 'test', '[]'::jsonb, '[]'::jsonb,
+            true, 'stale-probe'
+          )::text`,
+        );
+      } catch (error) {
+        staleFinalizeError = error instanceof Error ? error.message : String(error);
+      }
+      expect(staleFinalizeError).toContain("stale_ingest_revision");
+
+      const finalized = await psqlJson(
+        psqlPath,
+        dbName,
+        `SELECT public.finalize_physical_inventory_session(
+          ${sqlLiteral(sid)}::uuid, ${sqlLiteral(gen)}::uuid,
+          ${Number(candidate.ingest_revision)}, ${sqlLiteral(String(candidate.ingest_set_hash))},
+          '2026-09-18', 'test', '[]'::jsonb,
+          ${sqlLiteral(JSON.stringify(
+            Array.from({ length: 5 }, (_, index) => ({
+              staff_sequence: index + 1,
+              raw_text: `item ${index + 1}`,
+              raw_product_description: `item ${index + 1}`,
+              normalized_product: `item ${index + 1}`,
+              quantity: 1,
+              raw_unit: "หน่วย",
+              normalized_unit: "หน่วย",
+              resolution_status: "ACCEPTED_RAW",
+              reason: null,
+            })),
+          ))}::jsonb, false, NULL
+        )::text`,
+      );
+      expect(finalized.status).toBe("finalized");
+      expect(finalized.item_count).toBe(5);
+      const persistedItemCount = await psqlScalar(
+        psqlPath,
+        dbName,
+        `SELECT count(*)::text
+         FROM public.physical_inventory_items
+         WHERE snapshot_id = ${sqlLiteral(String(finalized.snapshot_id))}::uuid`,
+      );
+      expect(persistedItemCount).toBe("5");
+
+      // Cancel is a terminal no-op after the replacement close finalized.
+      const staleCancel = await psqlJson(
+        psqlPath,
+        dbName,
+        `SELECT public.cancel_physical_inventory_close(
+          ${sqlLiteral(sid)}::uuid, ${sqlLiteral(gen)}::uuid, ${sqlLiteral(closeEventId)}
+        )::text`,
+      );
+      expect(staleCancel.canceled).toBe(false);
+      expect(staleCancel.reason).toBe("already_terminal");
+      expect(staleCancel.status).toBe("finalized");
+
+      console.info("cancel_physical_inventory_close reopen + reclose + finalize: PASS");
+    },
+    { timeout: 60_000 },
+  );
+
+  test(
+    "cancel_physical_inventory_close never reopens or mutates an already-finalized session",
+    async () => {
+      expect(ready).toBe(true);
+      const tag = randomBytes(3).toString("hex");
+      const opened = await psqlJson(
+        psqlPath,
+        dbName,
+        `SELECT public.open_physical_inventory_session(
+          'group', ${sqlLiteral(`G-term-${tag}`)}, ${sqlLiteral(`U-term-${tag}`)},
+          ${sqlLiteral(`evt-term-h-${tag}`)}, 1000, 'header', NULL, NULL, NULL, 'test'
+        )::text`,
+      );
+      const sid = String(opened.session_id);
+      const gen = String(opened.session_generation);
+      const closeEventId = `evt-term-close-${tag}`;
+      await psqlScalar(
+        psqlPath,
+        dbName,
+        `SELECT public.admit_physical_inventory_event(
+          ${sqlLiteral(sid)}::uuid, ${sqlLiteral(gen)}::uuid,
+          ${sqlLiteral(closeEventId)}, 2000, 'close', 'จบ', NULL, NULL
+        )::text`,
+      );
+      await psqlScalar(psqlPath, dbName, "SELECT pg_sleep(8.1)::text");
+      const candidate = await psqlJson(
+        psqlPath,
+        dbName,
+        `SELECT public.get_physical_inventory_finalize_candidate(
+          ${sqlLiteral(sid)}::uuid, ${sqlLiteral(gen)}::uuid
+        )::text`,
+      );
+      const finalized = await psqlJson(
+        psqlPath,
+        dbName,
+        `SELECT public.finalize_physical_inventory_session(
+          ${sqlLiteral(sid)}::uuid, ${sqlLiteral(gen)}::uuid,
+          ${Number(candidate.ingest_revision)}, ${sqlLiteral(String(candidate.ingest_set_hash))},
+          '2026-09-18', 'test', '[]'::jsonb,
+          ${sqlLiteral(JSON.stringify([{
+            staff_sequence: 1,
+            raw_text: "1",
+            raw_product_description: "1",
+            normalized_product: "1",
+            quantity: 1,
+            raw_unit: "หน่วย",
+            normalized_unit: "หน่วย",
+            resolution_status: "ACCEPTED_RAW",
+            reason: null,
+          }]))}::jsonb, false, NULL
+        )::text`,
+      );
+      expect(finalized.status).toBe("finalized");
+      const snapshotId = String(finalized.snapshot_id);
+
+      const canceled = await psqlJson(
+        psqlPath,
+        dbName,
+        `SELECT public.cancel_physical_inventory_close(
+          ${sqlLiteral(sid)}::uuid, ${sqlLiteral(gen)}::uuid, ${sqlLiteral(closeEventId)}
+        )::text`,
+      );
+      expect(canceled.canceled).toBe(false);
+      expect(canceled.reason).toBe("already_terminal");
+      expect(canceled.status).toBe("finalized");
+
+      const stillFinalized = await psqlScalar(
+        psqlPath,
+        dbName,
+        `SELECT status FROM public.physical_inventory_sessions WHERE id = ${sqlLiteral(sid)}::uuid`,
+      );
+      expect(stillFinalized).toBe("finalized");
+      const snapshotUntouched = await psqlScalar(
+        psqlPath,
+        dbName,
+        `SELECT (status = 'finalized')::text FROM public.physical_inventory_snapshots
+         WHERE id = ${sqlLiteral(snapshotId)}::uuid`,
+      );
+      expect(snapshotUntouched).toBe("true");
+
+      console.info("cancel_physical_inventory_close fail-closed on finalized session: PASS");
     },
     { timeout: 60_000 },
   );

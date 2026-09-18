@@ -14,6 +14,7 @@ export const CATEGORY_LABEL_TH: Record<DataQualityCategory, string> = {
   financial_reconciliation_mismatch: "ยอดโอน/สลิปไม่ตรงกัน",
   financial_evidence_incomplete:     "หลักฐานการเงินไม่ครบ",
   financial_settlement_mismatch:     "ปิดยอดการเงินไม่ตรงกัน",
+  house_stock_unsend_close_after_finalize: "ยกเลิกส่งคำสั่งจบสต๊อกหลังปิดรายการแล้ว",
 };
 
 export const STATUS_LABEL_TH: Record<"OPEN" | "RESOLVED" | "IGNORED", string> = {

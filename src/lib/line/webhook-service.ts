@@ -6,6 +6,7 @@ import type {
   LineMessage,
   LinePostbackEvent,
   LineTextMessage,
+  LineUnsendEvent,
 } from "@/lib/line/types";
 import type { Database, LineMessageType } from "@/types/database";
 import { getSourceId, getUserId, getPendingSessionKey } from "@/lib/line/verify";
@@ -94,7 +95,9 @@ import {
   type ManualWhiteSheetNoteSessionRow,
 } from "@/lib/line/white-sheet-note-session-service";
 import type { WeighSession } from "@/lib/parsers/weigh-session/types";
-import { bangkokBusinessDateNow } from "@/lib/business-date";
+import { bangkokBusinessDateNow, bangkokBusinessDateFromTimestamp } from "@/lib/business-date";
+import { upsertDataQualityIssuesAtomically } from "@/lib/data-quality/inbox";
+import type { DataQualityIssueCandidate } from "@/lib/data-quality/types";
 import { parseManualSlipAmounts } from "@/lib/parsers/manual-slip-amount";
 import { ManualSlipSessionService } from "@/lib/line/manual-slip-session-service";
 import { SlipEvidenceService } from "@/lib/slips/evidence-service";
@@ -212,8 +215,12 @@ type PhysicalInventoryFinalizer = (params: {
 }) => Promise<unknown>;
 type PhysicalInventorySessionGateway = Pick<
   PhysicalInventorySessionService,
-  "findOpenSession" | "openSession" | "registerIngest"
-> & Partial<Pick<PhysicalInventorySessionService, "closeOpenEvent" | "listIngestTexts">>;
+  "findOpenSession" | "openSession" | "registerIngest" | "getSession"
+> & Partial<Pick<
+  PhysicalInventorySessionService,
+  "closeOpenEvent" | "listIngestTexts" | "findCloseIngestByLineMessageId" | "cancelClose"
+>>;
+type RecordDataQualityIssue = (candidate: DataQualityIssueCandidate) => Promise<unknown>;
 
 const BATCH_FIRST_IMAGE_REPLY = [
   "รับรูปหลักฐานแล้วครับ",
@@ -500,6 +507,7 @@ interface WebhookServiceDependencies {
   physicalInventoryFinalizer?: PhysicalInventoryFinalizer;
   physicalInventoryService?: PhysicalInventorySessionGateway;
   dataEntrySessionOwnershipResolver?: DataEntrySessionOwnershipResolver;
+  recordDataQualityIssue?: RecordDataQualityIssue;
 }
 
 export interface WebhookProcessResult {
@@ -627,6 +635,29 @@ export function isProduceOrderingEvent(event: LineEvent): boolean {
     || findDraftItemCommand(text) !== null;
 }
 
+/**
+ * House Stock state transitions must share the same durable per-source queue.
+ * In particular, LINE can deliver unsend(close) adjacent to a new item/close;
+ * processing the item ahead of the unsend would incorrectly reject it against
+ * the old close boundary.
+ */
+export function isPhysicalInventoryOrderingEvent(event: LineEvent): boolean {
+  const sourceId = getSourceId(event.source);
+  if (!isPhysicalInventoryLineGroupAllowed(sourceId)) return false;
+
+  if (event.type === "unsend") return true;
+  if (event.type !== "message" || event.message.type !== "text") return false;
+
+  const text = event.message.text.trim();
+  if (!text) return false;
+
+  return classifyPhysicalInventoryStandaloneIntent(text) === "header"
+    || matchesPhysicalInventoryCloseLine(text)
+    || isExplicitEmptyHouseStockDeclaration(text)
+    || isRecognizedPhysicalInventoryItemBlock(text, { requireUnitPrice: true })
+    || isRecognizedPhysicalInventoryItemBlock(text);
+}
+
 // ── Service ───────────────────────────────────────────────────────────────────
 
 export class WebhookService {
@@ -645,6 +676,7 @@ export class WebhookService {
   private readonly physicalInventoryFinalizer: PhysicalInventoryFinalizer;
   private readonly physicalInventoryService: PhysicalInventorySessionGateway;
   private readonly dataEntrySessionOwnershipResolver: DataEntrySessionOwnershipResolver;
+  private readonly recordDataQualityIssue: RecordDataQualityIssue;
   private orderedQueueAvailable: boolean | null = null;
 
   constructor(
@@ -691,6 +723,9 @@ export class WebhookService {
     this.physicalInventoryFinalizer =
       dependencies.physicalInventoryFinalizer
       ?? ((params) => finalizePhysicalInventoryAfterClose(this.supabase, params));
+    this.recordDataQualityIssue =
+      dependencies.recordDataQualityIssue
+      ?? ((candidate) => upsertDataQualityIssuesAtomically(this.supabase, [candidate]));
   }
 
   async processEvents(events: LineEvent[], destination: string): Promise<WebhookProcessResult[]> {
@@ -816,6 +851,13 @@ export class WebhookService {
         eventId,
         log,
       );
+    }
+
+    // ── 2a. LINE unsend — only House Stock close cancellation is handled.
+    // Never enters Produce recovery; every other unsend is a no-op after the
+    // raw event persist above (source of truth for "what was said" either way).
+    if (event.type === "unsend") {
+      return this.processUnsendEvent(event as LineUnsendEvent, eventId, log);
     }
 
     // ── 3. Only process text messages ─────────────────────────────────────────
@@ -4101,6 +4143,95 @@ export class WebhookService {
     }
   }
 
+  /**
+   * LINE unsend of a House Stock close ("จบ") before finalize reopens the
+   * session. Only House Stock is scoped here — a matching close ingest row
+   * must exist for the unsent messageId. Every other unsend (no matching
+   * close, or a close that already finalized) leaves the raw evidence saved
+   * above and does nothing further; it must never enter Produce recovery.
+   */
+  private async processUnsendEvent(
+    event: LineUnsendEvent,
+    eventId: string,
+    log: ChildLogger,
+  ): Promise<WebhookProcessResult> {
+    const messageId = event.unsend?.messageId;
+    if (!messageId) {
+      log.debug("unsend event without messageId — ignored");
+      return { eventId, eventType: event.type, status: "saved" };
+    }
+
+    const service = this.physicalInventoryService;
+    if (!service.findCloseIngestByLineMessageId || !service.cancelClose) {
+      log.debug("physical inventory cancel-close gateway unavailable — ignored");
+      return { eventId, eventType: event.type, status: "saved" };
+    }
+
+    const closeIngest = await service.findCloseIngestByLineMessageId(messageId);
+    if (!closeIngest) {
+      log.debug("unsend — no matching House Stock close", { messageId });
+      return { eventId, eventType: event.type, status: "saved" };
+    }
+
+    const session = await service.getSession(closeIngest.sessionId);
+    if (!session) {
+      log.warn("unsend matched close ingest with no session", { sessionId: closeIngest.sessionId });
+      return { eventId, eventType: event.type, status: "saved" };
+    }
+
+    if (event.source.type !== "group") {
+      log.debug("House Stock unsend ignored outside group source");
+      return { eventId, eventType: event.type, status: "saved" };
+    }
+
+    const sourceId = getSourceId(event.source);
+    if (!isPhysicalInventoryLineGroupAllowed(sourceId)) {
+      log.debug("House Stock unsend ignored by routing allowlist", { sourceId });
+      return { eventId, eventType: event.type, status: "saved" };
+    }
+
+    const senderLineUserId = getUserId(event.source);
+    if (session.source_id !== sourceId || session.sender_line_user_id !== senderLineUserId) {
+      log.debug("unsend close scope mismatch — ignored", { sessionId: session.id });
+      return { eventId, eventType: event.type, status: "saved" };
+    }
+
+    const result = await service.cancelClose({
+      sessionId: session.id,
+      expectedGeneration: session.session_generation,
+      closeLineEventId: closeIngest.lineEventId,
+    });
+
+    if (result.canceled) {
+      log.info("House Stock close cancelled by unsend", { sessionId: session.id });
+      return { eventId, eventType: event.type, status: "saved" };
+    }
+
+    if (result.reason === "already_terminal" && result.session.status === "finalized") {
+      log.warn("House Stock unsend close after finalize — correction required", {
+        sessionId: session.id,
+      });
+      await this.recordDataQualityIssue({
+        category: "house_stock_unsend_close_after_finalize",
+        businessDate:
+          session.business_date
+          ?? bangkokBusinessDateFromTimestamp(event.timestamp)
+          ?? bangkokBusinessDateNow(),
+        entityRefs: [session.id, messageId],
+        summaryTh: "มีการยกเลิกข้อความปิดสต๊อกหลังบันทึกสำเร็จแล้ว กรุณาตรวจสอบยอดคงเหลือ",
+        technicalContext: {
+          sessionId: session.id,
+          messageId,
+          snapshotId: session.snapshot_id,
+        },
+      });
+      return { eventId, eventType: event.type, status: "saved" };
+    }
+
+    log.debug("unsend close no-op", { sessionId: session.id, reason: result.reason });
+    return { eventId, eventType: event.type, status: "saved" };
+  }
+
   private async processGuidedMenuPostback(
     event: LinePostbackEvent,
     eventId: string,
@@ -4352,7 +4483,11 @@ export class WebhookService {
     const source  = event.source  ?? {};
     const message = event.message as LineMessage | undefined;
 
-    if ((this.isWhiteSheetOrderingEvent(event) || isProduceOrderingEvent(event)) && this.orderedQueueAvailable !== false) {
+    if ((
+      this.isWhiteSheetOrderingEvent(event)
+      || isProduceOrderingEvent(event)
+      || isPhysicalInventoryOrderingEvent(event)
+    ) && this.orderedQueueAvailable !== false) {
       let data: unknown;
       let error: { code?: string; message: string } | null = null;
       try {

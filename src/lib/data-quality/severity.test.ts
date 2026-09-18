@@ -57,6 +57,7 @@ describe("severityForCategory", () => {
       financial_reconciliation_mismatch:  "CRITICAL",
       financial_evidence_incomplete:      "ACTION_REQUIRED",
       financial_settlement_mismatch:      "CRITICAL",
+      house_stock_unsend_close_after_finalize: "ACTION_REQUIRED",
     });
   });
 });
