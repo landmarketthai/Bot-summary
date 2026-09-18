@@ -1,0 +1,81 @@
+{
+  "name": "house-stock-unsend-close-20260917",
+  "description": "Production incident replay: operator accidentally closes House Stock, unsends the close, then sends item 5 and closes again.",
+  "source": {
+    "groupId": "C1d96954d298d99f65912a5f1e96edffc",
+    "userId": "U-replay-house-stock"
+  },
+  "steps": [
+    {
+      "type": "text",
+      "eventId": "replay-header",
+      "messageId": "replay-message-header",
+      "timestamp": 1000,
+      "text": "ผลไม้คงเหลือในบ้าน\n17/9/2569"
+    },
+    {
+      "type": "text",
+      "eventId": "replay-item-1",
+      "messageId": "replay-message-item-1",
+      "timestamp": 1100,
+      "text": "1แตงโม35บาท\n120ลูก"
+    },
+    {
+      "type": "text",
+      "eventId": "replay-item-2",
+      "messageId": "replay-message-item-2",
+      "timestamp": 1200,
+      "text": "2ลองกอง35บาท\n108โล"
+    },
+    {
+      "type": "text",
+      "eventId": "replay-item-3",
+      "messageId": "replay-message-item-3",
+      "timestamp": 1300,
+      "text": "3แก้วมังกร40บาท\n60โล"
+    },
+    {
+      "type": "text",
+      "eventId": "replay-item-4",
+      "messageId": "replay-message-item-4",
+      "timestamp": 1400,
+      "text": "4แตงไทย16บาท\n44ลูก"
+    },
+    {
+      "type": "text",
+      "eventId": "replay-close-1",
+      "messageId": "replay-message-close-1",
+      "timestamp": 2000,
+      "text": "จบ"
+    },
+    {
+      "type": "unsend",
+      "eventId": "replay-unsend-close-1",
+      "timestamp": 2050,
+      "targetMessageId": "replay-message-close-1"
+    },
+    {
+      "type": "text",
+      "eventId": "replay-item-5",
+      "messageId": "replay-message-item-5",
+      "timestamp": 2100,
+      "text": "5ไซมัส33บาท\n15โล"
+    },
+    {
+      "type": "text",
+      "eventId": "replay-close-2",
+      "messageId": "replay-message-close-2",
+      "timestamp": 2200,
+      "text": "จบ"
+    }
+  ],
+  "expect": {
+    "sessionStatus": "closing",
+    "itemCount": 5,
+    "closeCount": 2,
+    "firstCloseEventId": "replay-close-1",
+    "finalCloseEventId": "replay-close-2",
+    "canceledCloseMessageId": "replay-message-close-1",
+    "sameSessionGeneration": true
+  }
+}

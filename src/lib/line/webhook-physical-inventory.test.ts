@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { LineEvent, LineMessageEvent } from "./types";
 import { WebhookService } from "./webhook-service";
+import houseStockUnsendCloseIncident from "./fixtures/incidents/house-stock-unsend-close-20260917.json";
+import { replayLineIncident, type LineIncidentReplay } from "./incident-replay";
 import {
   PhysicalInventoryAfterCloseBoundaryError,
   PhysicalInventoryAfterCloseError,
@@ -168,6 +170,9 @@ function makePhysicalInventoryGateway() {
     timestamp: number;
     kind: "header" | "item" | "close";
     rawText: string;
+    lineMessageId: string | null;
+    rawMessageId: string | null;
+    canceled: boolean;
   }> = [];
   let sequence = 0;
 
@@ -187,6 +192,7 @@ function makePhysicalInventoryGateway() {
       openedLineEventId: string;
       lineTimestampMs: number;
       rawText: string;
+      lineMessageId?: string | null;
       rawMessageId?: string | null;
       businessDate?: string | null;
       parserVersion?: string;
@@ -254,6 +260,9 @@ function makePhysicalInventoryGateway() {
         timestamp: params.lineTimestampMs,
         kind: "header",
         rawText: params.rawText,
+        lineMessageId: params.lineMessageId ?? null,
+        rawMessageId: params.rawMessageId ?? null,
+        canceled: false,
       });
       return { opened: true, idempotent: false, reason: "opened", session };
     },
@@ -264,6 +273,7 @@ function makePhysicalInventoryGateway() {
       lineTimestampMs: number;
       kind: "header" | "item" | "close" | "other";
       rawText: string;
+      lineMessageId?: string | null;
       rawMessageId?: string | null;
     }) {
       const session = sessions.find((row) => row.id === params.sessionId)!;
@@ -300,6 +310,9 @@ function makePhysicalInventoryGateway() {
         timestamp: params.lineTimestampMs,
         kind: params.kind as "item" | "close",
         rawText: params.rawText,
+        lineMessageId: params.lineMessageId ?? null,
+        rawMessageId: params.rawMessageId ?? null,
+        canceled: false,
       });
       session.ingest_revision += 1;
       if (params.kind === "close") {
@@ -335,6 +348,55 @@ function makePhysicalInventoryGateway() {
         session.close_raw_message_id = session.header_raw_message_id;
       }
       return session;
+    },
+    async getSession(sessionId: string) {
+      return sessions.find((row) => row.id === sessionId) ?? null;
+    },
+    async findCloseIngestByLineMessageId(lineMessageId: string) {
+      const ingest = ingests.find((row) =>
+        row.kind === "close" && row.lineMessageId === lineMessageId
+      );
+      return ingest
+        ? { sessionId: ingest.sessionId, lineEventId: ingest.eventId }
+        : null;
+    },
+    async cancelClose(params: {
+      sessionId: string;
+      expectedGeneration: string;
+      closeLineEventId: string;
+    }) {
+      const session = sessions.find((row) => row.id === params.sessionId);
+      if (!session) throw new Error("physical inventory session not found");
+      if (session.session_generation !== params.expectedGeneration) {
+        throw new PhysicalInventoryGenerationConflictError();
+      }
+      if (["finalized", "failed_closed", "voided"].includes(session.status)) {
+        return {
+          ok: true,
+          canceled: false,
+          reason: "already_terminal",
+          session,
+        };
+      }
+      if (session.status !== "closing") {
+        return { ok: true, canceled: false, reason: "not_closing", session };
+      }
+      if (session.close_line_event_id !== params.closeLineEventId) {
+        return { ok: true, canceled: false, reason: "close_event_mismatch", session };
+      }
+
+      const closeIngest = ingests.find((row) =>
+        row.sessionId === session.id && row.eventId === params.closeLineEventId
+      );
+      if (closeIngest) closeIngest.canceled = true;
+      session.status = "open";
+      session.close_requested_at = null;
+      session.close_event_timestamp_ms = null;
+      session.close_quiet_until = null;
+      session.close_deadline_at = null;
+      session.close_line_event_id = null;
+      session.close_raw_message_id = null;
+      return { ok: true, canceled: true, reason: "unsend_before_finalize", session };
     },
     async listIngestTexts(sessionId: string) {
       return ingests
@@ -387,6 +449,7 @@ function withPhysicalInventoryRpc(
           openedLineEventId: String(args.p_opened_line_event_id),
           lineTimestampMs: Number(args.p_line_timestamp_ms),
           rawText: String(args.p_raw_text),
+          lineMessageId: args.p_line_message_id as string | null,
           rawMessageId: args.p_raw_message_id as string | null,
           businessDate: args.p_business_date as string | null,
           parserVersion: args.p_parser_version as string | undefined,
@@ -410,6 +473,7 @@ function withPhysicalInventoryRpc(
             lineTimestampMs: Number(args.p_line_timestamp_ms),
             kind: args.p_kind as "item" | "close",
             rawText: String(args.p_raw_text),
+            lineMessageId: args.p_line_message_id as string | null,
             rawMessageId: args.p_raw_message_id as string | null,
           });
           return {
@@ -473,6 +537,31 @@ function textEvent(
   };
 }
 
+function unsendEvent(
+  messageId: string,
+  options: {
+    groupId?: string;
+    senderId?: string;
+    timestamp?: number;
+    eventId?: string;
+  } = {},
+): LineEvent {
+  const number = ++eventSequence;
+  return {
+    type: "unsend",
+    webhookEventId: options.eventId ?? `unsend-event-${number}`,
+    deliveryContext: { isRedelivery: false },
+    timestamp: options.timestamp ?? 1_000 + number,
+    source: {
+      type: "group",
+      groupId: options.groupId ?? AUTHORIZED_GROUP,
+      userId: options.senderId ?? "U-sender-1",
+    },
+    mode: "active",
+    unsend: { messageId },
+  };
+}
+
 function seedLegacyProduceSession(
   db: ReturnType<typeof makeSupabaseDouble>,
   header: string,
@@ -529,6 +618,10 @@ function service() {
   const replies: string[] = [];
   const scheduled: Array<() => Promise<void>> = [];
   const finalized: string[] = [];
+  const dataQualityIssues: Array<{
+    category: string;
+    technicalContext?: Record<string, unknown>;
+  }> = [];
   const webhook = new WebhookService(db as never, {
     physicalInventoryService: gateway,
     replyMessage: async (_token, text) => {
@@ -541,8 +634,11 @@ function service() {
     physicalInventoryFinalizer: async ({ sessionId }) => {
       if (!finalized.includes(sessionId)) finalized.push(sessionId);
     },
+    recordDataQualityIssue: async (candidate) => {
+      dataQualityIssues.push(candidate);
+    },
   });
-  return { db, gateway, replies, scheduled, finalized, webhook };
+  return { db, gateway, replies, scheduled, finalized, dataQualityIssues, webhook };
 }
 
 describe("P2A Slice C webhook routing", () => {
@@ -897,6 +993,165 @@ describe("P2A Slice C webhook routing", () => {
     await ctx.webhook.processEvents([sticker, unsend], "destination");
     expect(ctx.gateway._sessions).toHaveLength(0);
     expect(ctx.db._rows("raw_messages")).toHaveLength(2);
+  });
+
+  test("replay: house-stock-unsend-close-20260917 preserves item 5 after unsent close", async () => {
+    const ctx = service();
+    const fixture = houseStockUnsendCloseIncident as LineIncidentReplay;
+    const expected = fixture.expect as {
+      sessionStatus: PhysicalInventorySessionRow["status"];
+      itemCount: number;
+      closeCount: number;
+      firstCloseEventId: string;
+      finalCloseEventId: string;
+      canceledCloseMessageId: string;
+      sameSessionGeneration: boolean;
+    };
+
+    const replayState: {
+      openedGeneration?: string;
+      statusAfterUnsend?: PhysicalInventorySessionRow["status"];
+    } = {};
+    await replayLineIncident(fixture, async (event, index) => {
+      await ctx.webhook.processEvents([event], "destination");
+      const session = ctx.gateway._sessions[0];
+      if (index === 0) replayState.openedGeneration = session?.session_generation;
+      if (event.type === "unsend") replayState.statusAfterUnsend = session?.status;
+    });
+
+    const session = ctx.gateway._sessions[0]!;
+    const items = ctx.gateway._ingests.filter((row) => row.kind === "item");
+    const closes = ctx.gateway._ingests.filter((row) => row.kind === "close");
+    expect(replayState.statusAfterUnsend).toBe("open");
+    expect(session.status).toBe(expected.sessionStatus);
+    if (expected.sameSessionGeneration) {
+      expect(replayState.openedGeneration).toBeDefined();
+      expect(session.session_generation).toBe(replayState.openedGeneration!);
+    }
+    expect(items).toHaveLength(expected.itemCount);
+    expect(closes).toHaveLength(expected.closeCount);
+    expect(closes.find((row) => row.eventId === expected.firstCloseEventId)).toMatchObject({
+      lineMessageId: expected.canceledCloseMessageId,
+      canceled: true,
+    });
+    expect(session.close_line_event_id).toBe(expected.finalCloseEventId);
+  });
+
+  test("unsend of pending House Stock close reopens the same generation and item 5 is admitted", async () => {
+    const ctx = service();
+    const senderId = "U-house-unsend";
+    const header = textEvent("ผลไม้คงเหลือในบ้าน\n18/9/69", {
+      senderId,
+      timestamp: 1_000,
+    });
+    const firstFour = [
+      textEvent("1ทับทิม20บาท\n38ลูก", { senderId, timestamp: 1_100 }),
+      textEvent("2แอปเปิ้ล10บาท\n17ลูก", { senderId, timestamp: 1_200 }),
+      textEvent("3มะพร้าว12บาท\n11ลูก", { senderId, timestamp: 1_300 }),
+      textEvent("4แตงไทย16บาท\n7ลูก", { senderId, timestamp: 1_400 }),
+    ];
+
+    await ctx.webhook.processEvents([header, ...firstFour], "destination");
+    const firstClose = textEvent("จบ", { senderId, timestamp: 2_000 });
+    await ctx.webhook.processEvents([firstClose], "destination");
+
+    const session = ctx.gateway._sessions[0]!;
+    const generation = session.session_generation;
+    expect(session.status).toBe("closing");
+    expect(session.close_line_event_id).toBe(firstClose.webhookEventId);
+
+    await ctx.webhook.processEvents([
+      unsendEvent(firstClose.message.id, { senderId, timestamp: 2_050 }),
+    ], "destination");
+
+    expect(session.status).toBe("open");
+    expect(session.session_generation).toBe(generation);
+    expect(session.close_event_timestamp_ms).toBeNull();
+    expect(session.close_line_event_id).toBeNull();
+    expect(session.close_raw_message_id).toBeNull();
+
+    await ctx.webhook.processEvents([
+      textEvent("5ไซมัส33บาท\n15โล", { senderId, timestamp: 2_100 }),
+    ], "destination");
+    const secondClose = textEvent("จบ", { senderId, timestamp: 2_200 });
+    await ctx.webhook.processEvents([secondClose], "destination");
+
+    expect(ctx.gateway._sessions).toHaveLength(1);
+    expect(session.session_generation).toBe(generation);
+    expect(session.status).toBe("closing");
+    expect(session.close_line_event_id).toBe(secondClose.webhookEventId);
+    expect(ctx.gateway._ingests.filter((row) => row.kind === "item")).toHaveLength(5);
+
+    const closes = ctx.gateway._ingests.filter((row) => row.kind === "close");
+    expect(closes).toHaveLength(2);
+    expect(closes[0]).toMatchObject({
+      eventId: firstClose.webhookEventId,
+      lineMessageId: firstClose.message.id,
+      canceled: true,
+    });
+    expect(closes[1]).toMatchObject({
+      eventId: secondClose.webhookEventId,
+      lineMessageId: secondClose.message.id,
+      canceled: false,
+    });
+  });
+
+  test("disabling House Stock routing also disables unsend close mutation", async () => {
+    const ctx = service();
+    const senderId = "U-house-disabled";
+    await ctx.webhook.processEvents([
+      textEvent("ผลไม้คงเหลือในบ้าน\n18/9/69", { senderId, timestamp: 1_000 }),
+      textEvent("1ทับทิม20บาท\n38ลูก", { senderId, timestamp: 1_100 }),
+    ], "destination");
+    const close = textEvent("จบ", { senderId, timestamp: 2_000 });
+    await ctx.webhook.processEvents([close], "destination");
+
+    const session = ctx.gateway._sessions[0]!;
+    const original = process.env.PHYSICAL_INVENTORY_LINE_GROUP_IDS;
+    process.env.PHYSICAL_INVENTORY_LINE_GROUP_IDS = "";
+    try {
+      await ctx.webhook.processEvents([
+        unsendEvent(close.message.id, { senderId, timestamp: 2_050 }),
+      ], "destination");
+    } finally {
+      if (original === undefined) delete process.env.PHYSICAL_INVENTORY_LINE_GROUP_IDS;
+      else process.env.PHYSICAL_INVENTORY_LINE_GROUP_IDS = original;
+    }
+
+    expect(session.status).toBe("closing");
+    expect(session.close_line_event_id).toBe(close.webhookEventId);
+    expect(ctx.gateway._ingests.find((row) => row.eventId === close.webhookEventId)?.canceled)
+      .toBe(false);
+  });
+
+  test("unsend of a finalized House Stock close never reopens the snapshot and raises review", async () => {
+    const ctx = service();
+    const senderId = "U-house-finalized";
+    await ctx.webhook.processEvents([
+      textEvent("ผลไม้คงเหลือในบ้าน\n18/9/69", { senderId, timestamp: 1_000 }),
+      textEvent("1ทับทิม20บาท\n38ลูก", { senderId, timestamp: 1_100 }),
+    ], "destination");
+    const close = textEvent("จบ", { senderId, timestamp: 2_000 });
+    await ctx.webhook.processEvents([close], "destination");
+
+    const session = ctx.gateway._sessions[0]!;
+    const closeEventId = session.close_line_event_id;
+    const closeRawMessageId = session.close_raw_message_id;
+    session.status = "finalized";
+    session.snapshot_id = "50000000-0000-4000-8000-000000000001";
+    session.closed_at = new Date().toISOString();
+
+    await ctx.webhook.processEvents([
+      unsendEvent(close.message.id, { senderId, timestamp: 2_100 }),
+    ], "destination");
+
+    expect(session.status).toBe("finalized");
+    expect(session.snapshot_id).toBe("50000000-0000-4000-8000-000000000001");
+    expect(session.close_line_event_id).toBe(closeEventId);
+    expect(session.close_raw_message_id).toBe(closeRawMessageId);
+    expect(ctx.dataQualityIssues).toHaveLength(1);
+    expect(ctx.dataQualityIssues[0]?.category)
+      .toBe("house_stock_unsend_close_after_finalize");
   });
 
   describe("house-stock priced session: compact no-space pricing (multi-message and combined)", () => {

@@ -589,6 +589,8 @@ jobs:
           src/lib/line/pending-session-finalizer.test.ts
           src/lib/line/pending-session-runtime-environment.test.ts
           src/lib/line/webhook-cancel-active-draft.test.ts
+      - name: Production LINE incident replay regressions
+        run: bun run test:replay
       - name: Typecheck
         run: npm run type-check
       - name: git diff --check against the PR base

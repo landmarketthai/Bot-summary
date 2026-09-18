@@ -1550,7 +1550,7 @@ export interface Database {
           id:          string;
           session_id:  string;
           snapshot_id: string | null;
-          event:       "finalized" | "failed_closed" | "voided" | "superseded";
+          event:       "finalized" | "failed_closed" | "voided" | "superseded" | "close_canceled";
           actor:       string | null;
           detail:      Json;
           created_at:  string;
@@ -1559,7 +1559,7 @@ export interface Database {
           id?:          string;
           session_id:   string;
           snapshot_id?: string | null;
-          event:        "finalized" | "failed_closed" | "voided" | "superseded";
+          event:        "finalized" | "failed_closed" | "voided" | "superseded" | "close_canceled";
           actor?:       string | null;
           detail?:      Json;
           created_at?:  string;
@@ -1568,7 +1568,7 @@ export interface Database {
           id?:          string;
           session_id?:  string;
           snapshot_id?: string | null;
-          event?:       "finalized" | "failed_closed" | "voided" | "superseded";
+          event?:       "finalized" | "failed_closed" | "voided" | "superseded" | "close_canceled";
           actor?:       string | null;
           detail?:      Json;
           created_at?:  string;
@@ -2408,6 +2408,14 @@ export interface Database {
           p_session_id:          string;
           p_expected_generation: string;
           p_opened_line_event_id: string;
+        };
+        Returns: Json;
+      };
+      cancel_physical_inventory_close: {
+        Args: {
+          p_session_id:          string;
+          p_expected_generation: string;
+          p_close_line_event_id: string;
         };
         Returns: Json;
       };
