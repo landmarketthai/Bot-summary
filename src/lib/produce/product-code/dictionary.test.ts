@@ -39,6 +39,10 @@ const UNCLASSIFIED_FRUIT_MIGRATION = join(
   HERE, "..", "..", "..", "..",
   "supabase", "migrations", "20260908090000_produce_product_dictionary_add_unclassified_fruit.sql",
 );
+const SEP18_FRUIT_MIGRATION = join(
+  HERE, "..", "..", "..", "..",
+  "supabase", "migrations", "20260918150000_produce_product_dictionary_add_sep18_fruit.sql",
+);
 const MARKET_VEGETABLE_SKUS_MIGRATION = join(
   HERE, "..", "..", "..", "..",
   "supabase", "migrations", "20260909030000_produce_product_dictionary_add_market_vegetable_skus.sql",
@@ -135,6 +139,10 @@ const APPLIED_MIGRATIONS: AppliedMigration[] = [
   },
   { file: MARKET_VEGETABLE_SKUS_MIGRATION, insertAfterCode: "ผ118" },
   { file: MARKET_FISH_SKU_MIGRATION, insertAfterCode: "ป36" },
+  {
+    file: SEP18_FRUIT_MIGRATION,
+    insertAfterCode: "ม80",
+  },
 ];
 
 /**
@@ -176,11 +184,11 @@ const moduleRows = (): Row[] =>
   }));
 
 describe("the approved dictionary is the source of truth", () => {
-  it("carries exactly the 283 approved codes", () => {
-    expect(PRODUCT_CODE_COUNT).toBe(283);
-    expect(PRODUCT_CODE_ENABLED_COUNT).toBe(283);
-    expect(PRODUCT_CODE_ENTRIES).toHaveLength(283);
-    expect(csvRows()).toHaveLength(283);
+  it("carries exactly the 294 approved codes", () => {
+    expect(PRODUCT_CODE_COUNT).toBe(294);
+    expect(PRODUCT_CODE_ENABLED_COUNT).toBe(294);
+    expect(PRODUCT_CODE_ENTRIES).toHaveLength(294);
+    expect(csvRows()).toHaveLength(294);
   });
 
   it("matches the CSV row for row, in the approved order and numbering", () => {
@@ -203,7 +211,7 @@ describe("the approved dictionary is the source of truth", () => {
       counts.set(entry.categoryCode, (counts.get(entry.categoryCode) ?? 0) + 1);
     }
     expect(Object.fromEntries(counts)).toEqual({
-      ม: 80, ผ: 129, ป: 37, ท: 26, ห: 4, พ: 7,
+      ม: 91, ผ: 129, ป: 37, ท: 26, ห: 4, พ: 7,
     });
   });
 
@@ -255,9 +263,9 @@ describe("real mappings from the approved CSV resolve", () => {
 });
 
 describe("unregistered codes do not resolve", () => {
-  // ม63-ม80 exist as of this extension, so ม81 — the code right past the new
-  // boundary — is the genuinely unissued example, not ม74 or ม80.
-  for (const code of ["ม99", "ม999", "ผ999", "ป99", "ท99", "ห99", "พ99", "ผ130", "ม81"]) {
+  // ม63-ม91 exist now, so ม92 — the code right past the new
+  // boundary — is the genuinely unissued example, not ม80 or ม91.
+  for (const code of ["ม99", "ม999", "ผ999", "ป99", "ท99", "ห99", "พ99", "ผ130", "ม92"]) {
     it(`${code} is unknown`, () => {
       expect(resolveProductCode(code)).toBeNull();
       expect(resolveItemLineProductCode(`${code} 50 บาท`)).toEqual({ kind: "unknown", code });
@@ -637,8 +645,8 @@ describe("dictionary extension 20260908090000 — ม75–ม80 (six distinct �
       .filter((e) => e.categoryCode === "ม")
       .map((e) => Number(e.code.slice(1)))
       .sort((a, b) => a - b);
-    expect(mCodes).toHaveLength(80);
-    expect(mCodes).toEqual(Array.from({ length: 80 }, (_, i) => i + 1));
+    expect(mCodes).toHaveLength(91);
+    expect(mCodes).toEqual(Array.from({ length: 91 }, (_, i) => i + 1));
   });
 
   it("no pre-existing code changed by this extension", () => {
@@ -650,5 +658,32 @@ describe("dictionary extension 20260908090000 — ม75–ม80 (six distinct �
 
   it("the composed migration-parity check still holds with the new INSERT block", () => {
     expect(migrationRows()).toEqual(csvRows());
+  });
+});
+
+
+describe("dictionary extension 20260918150000 — ม81-ม91 confirmed fruit identities", () => {
+  const NEW_CODES: Array<[string, string]> = [
+    ["ม81", "องุ่นไร้แดง"], ["ม82", "แอปเปิ้ลเขียว"], ["ม83", "สาลี่หิมะ"],
+    ["ม84", "ไซมัสเก่า"], ["ม85", "แก้วมังกรเก่า"], ["ม86", "เขียวมรกตเก่า"],
+    ["ม87", "มังคุดเก่า"], ["ม88", "มะม่วงฟ้าลั่นเก่า"], ["ม89", "เงาะเก่า"],
+    ["ม90", "ลองกองเก่า"], ["ม91", "ทับทิมเก่า"],
+  ];
+
+  for (const [code, name] of NEW_CODES) {
+    it(`${code} resolves to ${name}`, () => {
+      expect(resolveProductCode(code)).toBe(name);
+    });
+  }
+
+  it("keeps discounted old stock separate from normal product identities", () => {
+    for (const [oldCode, normalCode] of [["ม84","ม54"],["ม85","ม05"],["ม86","ม31"],["ม87","ม38"],["ม88","ม73"],["ม89","ม10"],["ม90","ม39"],["ม91","ม15"]] as const) {
+      expect(resolveProductCode(oldCode)).not.toBe(resolveProductCode(normalCode));
+    }
+  });
+
+  it("keeps the ม namespace contiguous through ม91", () => {
+    const codes = PRODUCT_CODE_ENTRIES.filter((e) => e.categoryCode === "ม").map((e) => Number(e.code.slice(1))).sort((a,b) => a-b);
+    expect(codes).toEqual(Array.from({ length: 91 }, (_, i) => i + 1));
   });
 });

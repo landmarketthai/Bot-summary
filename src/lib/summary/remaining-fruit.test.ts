@@ -664,3 +664,13 @@ describe("PRODUCT_ALIASES — องุ่นคินสัน typo of อง�
     }
   });
 });
+
+
+describe("PRODUCT_ALIASES — Sep 18 confirmed typos", () => {
+  test("old-stock Siamus typos fold only into the old-stock identity", () => {
+    expect(normalizeProductName("ไชมัสเก่า")).toBe("ไซมัสเก่า");
+    expect(normalizeProductName("ไซทัสเก่า")).toBe("ไซมัสเก่า");
+    expect(normalizeProductName("ไซมัสเก่า")).not.toBe("ไซมัส");
+  });
+
+});
