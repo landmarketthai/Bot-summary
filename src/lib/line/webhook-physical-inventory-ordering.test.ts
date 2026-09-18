@@ -146,7 +146,7 @@ describe("House Stock durable ordering", () => {
     expect(isPhysicalInventoryOrderingEvent(outside)).toBe(false);
   });
 
-  test("drains unsend then item 5 then replacement close in receive order", async () => {
+  test("replay: durable queue drains unsend then item 5 then replacement close in receive order", async () => {
     const db = makeQueueDb();
     const service = new WebhookService(db as never, {
       replyMessage: async () => {},

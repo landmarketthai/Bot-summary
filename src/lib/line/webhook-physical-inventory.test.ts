@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { LineEvent, LineMessageEvent } from "./types";
 import { WebhookService } from "./webhook-service";
+import houseStockUnsendCloseIncident from "./fixtures/incidents/house-stock-unsend-close-20260917.json";
+import { replayLineIncident, type LineIncidentReplay } from "./incident-replay";
 import {
   PhysicalInventoryAfterCloseBoundaryError,
   PhysicalInventoryAfterCloseError,
@@ -991,6 +993,48 @@ describe("P2A Slice C webhook routing", () => {
     await ctx.webhook.processEvents([sticker, unsend], "destination");
     expect(ctx.gateway._sessions).toHaveLength(0);
     expect(ctx.db._rows("raw_messages")).toHaveLength(2);
+  });
+
+  test("replay: house-stock-unsend-close-20260917 preserves item 5 after unsent close", async () => {
+    const ctx = service();
+    const fixture = houseStockUnsendCloseIncident as LineIncidentReplay;
+    const expected = fixture.expect as {
+      sessionStatus: PhysicalInventorySessionRow["status"];
+      itemCount: number;
+      closeCount: number;
+      firstCloseEventId: string;
+      finalCloseEventId: string;
+      canceledCloseMessageId: string;
+      sameSessionGeneration: boolean;
+    };
+
+    const replayState: {
+      openedGeneration?: string;
+      statusAfterUnsend?: PhysicalInventorySessionRow["status"];
+    } = {};
+    await replayLineIncident(fixture, async (event, index) => {
+      await ctx.webhook.processEvents([event], "destination");
+      const session = ctx.gateway._sessions[0];
+      if (index === 0) replayState.openedGeneration = session?.session_generation;
+      if (event.type === "unsend") replayState.statusAfterUnsend = session?.status;
+    });
+
+    const session = ctx.gateway._sessions[0]!;
+    const items = ctx.gateway._ingests.filter((row) => row.kind === "item");
+    const closes = ctx.gateway._ingests.filter((row) => row.kind === "close");
+    expect(replayState.statusAfterUnsend).toBe("open");
+    expect(session.status).toBe(expected.sessionStatus);
+    if (expected.sameSessionGeneration) {
+      expect(replayState.openedGeneration).toBeDefined();
+      expect(session.session_generation).toBe(replayState.openedGeneration!);
+    }
+    expect(items).toHaveLength(expected.itemCount);
+    expect(closes).toHaveLength(expected.closeCount);
+    expect(closes.find((row) => row.eventId === expected.firstCloseEventId)).toMatchObject({
+      lineMessageId: expected.canceledCloseMessageId,
+      canceled: true,
+    });
+    expect(session.close_line_event_id).toBe(expected.finalCloseEventId);
   });
 
   test("unsend of pending House Stock close reopens the same generation and item 5 is admitted", async () => {
