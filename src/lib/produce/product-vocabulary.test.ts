@@ -686,3 +686,29 @@ describe("dictionary extension 20260908090000 — ม75–ม80 vocabulary ident
     expect(PRODUCT_CODE_ENTRIES.filter((e) => e.canonicalName === "องุ่นคินสัน")).toHaveLength(0);
   });
 });
+
+
+describe("dictionary extension 20260918150000 — ม81–ม91 vocabulary identities", () => {
+  const NEW: Array<[string, string]> = [
+    ["องุ่นไร้แดง", "ม81"], ["แอปเปิ้ลเขียว", "ม82"], ["สาลี่หิมะ", "ม83"],
+    ["ไซมัสเก่า", "ม84"], ["แก้วมังกรเก่า", "ม85"], ["เขียวมรกตเก่า", "ม86"],
+    ["มังคุดเก่า", "ม87"], ["มะม่วงฟ้าลั่นเก่า", "ม88"], ["เงาะเก่า", "ม89"],
+    ["ลองกองเก่า", "ม90"], ["ทับทิมเก่า", "ม91"],
+  ];
+
+  it.each(NEW)("%s is approved as its own code %s without review", (name, code) => {
+    expect(isApprovedProductName(name)).toBe(true);
+    expect(approvedProductCode(name)).toBe(code);
+    expect(resolveApprovedProductName(name)).toEqual({ productCode: code, canonicalName: name });
+    expect(withdraw(name).status).toBe("clean");
+  });
+
+  it("old-stock Siamus typos resolve to ม84, never normal ม54", () => {
+    for (const typo of ["ไชมัสเก่า", "ไซทัสเก่า"]) {
+      expect(resolveApprovedProductName(typo)).toEqual({ productCode: "ม84", canonicalName: "ไซมัสเก่า" });
+      expect(approvedProductCode(typo)).toBe("ม84");
+      expect(withdraw(typo).status).toBe("clean");
+    }
+    expect(approvedProductCode("ไซมัส")).toBe("ม54");
+  });
+});

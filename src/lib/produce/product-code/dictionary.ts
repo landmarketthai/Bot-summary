@@ -104,6 +104,17 @@ const RAW: ReadonlyArray<readonly [string, string, string, string, boolean]> = [
   ["ม78","ม","ผลไม้","เมล่อนกล่อง",true],
   ["ม79","ม","ผลไม้","องุ่นลิ้นจี่",true],
   ["ม80","ม","ผลไม้","องุ่นจักรพรรดิ์",true],
+  ["ม81","ม","ผลไม้","องุ่นไร้แดง",true],
+  ["ม82","ม","ผลไม้","แอปเปิ้ลเขียว",true],
+  ["ม83","ม","ผลไม้","สาลี่หิมะ",true],
+  ["ม84","ม","ผลไม้","ไซมัสเก่า",true],
+  ["ม85","ม","ผลไม้","แก้วมังกรเก่า",true],
+  ["ม86","ม","ผลไม้","เขียวมรกตเก่า",true],
+  ["ม87","ม","ผลไม้","มังคุดเก่า",true],
+  ["ม88","ม","ผลไม้","มะม่วงฟ้าลั่นเก่า",true],
+  ["ม89","ม","ผลไม้","เงาะเก่า",true],
+  ["ม90","ม","ผลไม้","ลองกองเก่า",true],
+  ["ม91","ม","ผลไม้","ทับทิมเก่า",true],
   ["ผ01","ผ","ผัก / สมุนไพร / เครื่องประกอบอาหาร","ฝักกระเจี๊ยบ",true],
   ["ผ02","ผ","ผัก / สมุนไพร / เครื่องประกอบอาหาร","กระชาย",true],
   ["ผ03","ผ","ผัก / สมุนไพร / เครื่องประกอบอาหาร","กระชายซอย",true],
@@ -315,7 +326,7 @@ export const PRODUCT_CODE_ENTRIES: ReadonlyArray<ProductCodeEntry> = RAW.map(
 );
 
 /** Every row in the approved dictionary, retired ones included. */
-export const PRODUCT_CODE_COUNT = 283;
+export const PRODUCT_CODE_COUNT = 294;
 
 /** Rows that currently resolve. Equal to PRODUCT_CODE_COUNT until one retires. */
-export const PRODUCT_CODE_ENABLED_COUNT = 283;
+export const PRODUCT_CODE_ENABLED_COUNT = 294;
