@@ -118,6 +118,44 @@ describe("the gap range", () => {
   });
 });
 
+// ── 2026-09-19 incident — forwarded session, false-missing on arrival order ────
+//
+// PRODUCTION INCIDENT: a forwarded session's accumulated_text carried item
+// numbers 1-25 in full, but LINE delivered them out of order — 1..15 in
+// order, then 24,16,25,17,20,18,19,21,23,22. The close gate replied "missing
+// 16-23" and refused with entry_gate_refusal. The gap check reads the
+// operator's printed numbers into a Set (never a sequence keyed to arrival
+// position), so completeness must not depend on the order the lines were
+// typed, forwarded, or replayed in — only on which numbers the final,
+// assembled document actually carries.
+
+describe("arrival order never fabricates a gap in a complete document", () => {
+  it("clears for the exact production sequence (1..15, then 24,16,25,17,20,18,19,21,23,22)", () => {
+    const parsed = numbered(
+      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 24, 16, 25, 17, 20, 18, 19, 21, 23, 22],
+    );
+    expect(parsed.items.map((entry) => entry.item_number).sort((a, b) => a - b))
+      .toEqual(Array.from({ length: 25 }, (_, i) => i + 1));
+    expect(gapOf(parsed)).toBeNull();
+    expect(validate(parsed).status).not.toBe("blocked");
+  });
+
+  it("clears for another arbitrary out-of-order complete set", () => {
+    const parsed = numbered([5, 1, 4, 2, 3, 9, 6, 8, 7, 10]);
+    expect(gapOf(parsed)).toBeNull();
+    expect(validate(parsed).status).not.toBe("blocked");
+  });
+
+  it("still catches a genuine hole no matter how the surrounding numbers arrive", () => {
+    // Same shape as the production sequence, but 20 is truly never sent.
+    const parsed = numbered(
+      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 24, 16, 25, 17, 18, 19, 21, 23, 22],
+    );
+    expect(gapOf(parsed)).toEqual([20]);
+    expect(validate(parsed).status).toBe("blocked");
+  });
+});
+
 // ── 9. UNNUMBERED / SYNTHETIC NUMBERING ───────────────────────────────────────
 
 describe("numbering the operator never wrote", () => {

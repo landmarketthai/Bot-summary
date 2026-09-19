@@ -162,6 +162,7 @@ import {
   isProduceReviewApproved,
   runProduceCloseGate,
 } from "@/lib/produce/entry-validation-gate";
+import { validateProduceEntry } from "@/lib/produce/entry-validation";
 import {
   buildBlockingValidationReply,
   buildPlainTextReviewPresentationPages,
@@ -2508,11 +2509,17 @@ export class WebhookService {
   /**
    * A bounded, single re-read barrier: did a same-generation append advance
    * ingest_revision while the entry gate was validating the snapshot it was
-   * handed? A true answer means the document grew under the gate, so any
-   * item-number gap it computed may be a straggler artefact rather than a lost
-   * line. No polling and no sleep — one lookup. A read failure, a rotated
-   * generation, or a missing row all return false, so the gate falls through to
-   * its ordinary verdict and never swallows a genuine block.
+   * handed? A true answer is only a CANDIDATE for a straggler artefact — the
+   * revision counter says the document changed, not that it now completes the
+   * numbering. Completeness itself is judged by re-parsing the CURRENT
+   * accumulated_text and checking whether the item-number gap the gate
+   * computed is still there: a live document with every number the operator
+   * ever printed clears it regardless of the arrival order that assembled it;
+   * a document that still has a real hole does not. No polling and no sleep —
+   * one lookup. A read failure, a rotated generation, a missing row, or a
+   * fresh snapshot that STILL has finalization errors or the gap all return
+   * false, so the gate falls through to its ordinary verdict and never
+   * swallows a genuine block.
    */
   private async closeSnapshotMovedUnderGate(
     pending: PendingSession,
@@ -2522,7 +2529,16 @@ export class WebhookService {
       const current = await new PendingSessionService(this.supabase).lookup(pending.session_key);
       const row = current.session;
       if (!row || row.session_generation !== pending.session_generation) return false;
-      return (row.ingest_revision ?? 0) > (pending.ingest_revision ?? 0);
+      if (!((row.ingest_revision ?? 0) > (pending.ingest_revision ?? 0))) return false;
+
+      const freshParsed = parseWeighSession(row.accumulated_text, bangkokToday());
+      if (getWeighSessionFinalizationErrors(freshParsed).length > 0) return false;
+      const freshResult = validateProduceEntry({
+        parsed: freshParsed,
+        roundRows: [],
+        roundBound: false,
+      });
+      return !freshResult.blocking.some((exception) => exception.kind === "item_number_gap");
     } catch (error) {
       log.warn("close-gate snapshot recheck failed", {
         sessionKey: pending.session_key,

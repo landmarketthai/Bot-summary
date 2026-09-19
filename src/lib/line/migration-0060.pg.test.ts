@@ -66,13 +66,13 @@ if (!pgAvailable && process.env.WSN_0060_REQUIRE === "1") {
   throw new Error("WSN_0060_REQUIRE=1 but PostgreSQL 17 harness unavailable");
 }
 
-async function receive(eventId: string, source = "S-ordered"): Promise<string> {
+async function receive(eventId: string, source = "S-ordered", timestamp = Date.now()): Promise<string> {
   const result = await scalar(`
     SELECT public.receive_line_webhook_event(
       '${eventId}', 'dest', 'message', 'user', '${source}', '${source}',
       '${eventId}', 'text', 'test',
       jsonb_build_object('type','message','webhookEventId','${eventId}',
-        'timestamp', ${Date.now()}, 'source', jsonb_build_object('type','user','userId','${source}'),
+        'timestamp', ${timestamp}, 'source', jsonb_build_object('type','user','userId','${source}'),
         'message', jsonb_build_object('type','text','id','${eventId}','text','test'))
     )`);
   return JSON.parse(result).raw_message_id;
@@ -91,6 +91,7 @@ describe.skipIf(!pgAvailable)("0060 separated webhook ordering on PostgreSQL 17"
       "20260801092255_manual_white_sheet_note_sessions.sql",
       "20260801140442_manual_white_sheet_event_ordering.sql",
       "20260915170100_line_webhook_queue_retryable_completion.sql",
+      "20260919134000_line_webhook_semantic_timestamp_order.sql",
     ]) await apply(join(ROOT, "supabase", "migrations", name));
   }, 60_000);
 
@@ -112,6 +113,35 @@ describe.skipIf(!pgAvailable)("0060 separated webhook ordering on PostgreSQL 17"
     expect(second).toBe(first);
     expect(await scalar("SELECT count(*) FROM public.raw_messages WHERE line_event_id='evt-duplicate'")).toBe("1");
     expect(await scalar("SELECT count(*) FROM public.line_webhook_event_queue WHERE line_event_id='evt-duplicate'")).toBe("1");
+  });
+
+  test("LINE timestamp outranks network receive order around a forwarded close", async () => {
+    const source = "S-semantic-order";
+    const closeRaw = await receive("evt-semantic-close", source, 2000);
+    const itemRaw = await receive("evt-semantic-item", source, 1900);
+    const first = JSON.parse(await scalar("SELECT public.claim_line_webhook_event('S-semantic-order')"));
+    expect(first).toMatchObject({ raw_message_id: itemRaw });
+    await scalar(`SELECT public.complete_line_webhook_event('${itemRaw}', '${first.claim_token}', 'processed')`);
+    const second = JSON.parse(await scalar("SELECT public.claim_line_webhook_event('S-semantic-order')"));
+    expect(second).toMatchObject({ raw_message_id: closeRaw });
+  });
+
+  test("a claimed close does not barrier a late-arriving timestamp-earlier item", async () => {
+    const source = "S-late-semantic-repair";
+    const closeRaw = await receive("evt-late-close", source, 3000);
+    const close = JSON.parse(await scalar("SELECT public.claim_line_webhook_event('S-late-semantic-repair')"));
+    expect(close).toMatchObject({ raw_message_id: closeRaw });
+    const itemRaw = await receive("evt-late-item", source, 2900);
+    const repair = JSON.parse(await scalar("SELECT public.claim_line_webhook_event('S-late-semantic-repair')"));
+    expect(repair).toMatchObject({ raw_message_id: itemRaw });
+  });
+
+  test("equal LINE timestamps keep durable receive order as tie-breaker", async () => {
+    const source = "S-semantic-tie";
+    const firstRaw = await receive("evt-tie-1", source, 4000);
+    await receive("evt-tie-2", source, 4000);
+    const claim = JSON.parse(await scalar("SELECT public.claim_line_webhook_event('S-semantic-tie')"));
+    expect(claim).toMatchObject({ raw_message_id: firstRaw });
   });
 
   test("a close cannot claim while an earlier field is processing, then proceeds after explicit success", async () => {

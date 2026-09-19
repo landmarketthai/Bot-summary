@@ -17,6 +17,8 @@ const GENERATION = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const ROUND = "11111111-1111-4111-8111-111111111111";
 const PRODUCE_CLOSE_PENDING_REPLY =
   "รับจบรายการแล้ว กำลังตรวจสอบรายการที่ยังส่งมาไม่ถึง กรุณารอสักครู่";
+const CLOSE_RACED_LATE_ITEM_REPLY =
+  "มีรายการส่งเข้ามาเพิ่มพอดีตอนปิดรอบ ระบบยังไม่ได้ปิดรอบ รายการทั้งหมดยังอยู่ครบ กรุณาพิมพ์ปิดรอบอีกครั้ง";
 
 interface Review {
   digest: string;
@@ -516,6 +518,121 @@ describe("P4A on the plain-text close", () => {
     expect(db.reviews[0]?.confirmed_at).toBeNull();
     expect(db.reviews[1]?.confirmed_at).toBeNull();
     expect(db.pending.close_event_timestamp_ms).toBeNull();
+  });
+});
+
+/**
+ * 2026-09-19 — false-missing on a forwarded session (items 1-25 all present,
+ * arrival order after 15 was 24,16,25,17,20,18,19,21,23,22).
+ *
+ * The entry gate's item-number-gap check itself is order-independent (it
+ * reads the operator's printed numbers into a Set, not a sequence — see
+ * item-number-gap.test.ts). What can still fabricate a gap is the SAME
+ * straggler race #108/#118 already guard: the gate evaluates a snapshot
+ * captured before its own async round-binding work, and a same-generation
+ * append can land while that work is in flight. The existing guard only
+ * checked whether ingest_revision moved; it never confirmed the move
+ * actually cleared the gap, so an unrelated append (or a partial one) could
+ * either wrongly excuse a real gap or — the case this file did not cover —
+ * wrongly leave a NOW-COMPLETE document blocked. This section pins the fix:
+ * completeness is recomputed from the live snapshot, not inferred from the
+ * revision counter.
+ */
+describe("close gate completeness — recomputed from the live snapshot, not arrival order", () => {
+  /** A ชั่งเบิก withdrawal whose lines carry exactly the given printed numbers. */
+  function withdrawalText(numbers: number[]): string {
+    const lines = ["ดำ-ราชพฤกษ์ เบิก 11/8/2569"];
+    for (const n of numbers) lines.push(`${n}.มังคุด${90 + n}บาท`, "1โล");
+    return lines.join("\n");
+  }
+
+  /** Mutates the canonical pending row (a NEW object, not an in-place edit,
+   * so a `pending` reference already captured by the running request keeps
+   * seeing the old document) the first time the given RPC fires — the same
+   * point in the flow where Production's straggler landed: after the gate
+   * captured its document, during the round-binding work that follows. */
+  function raceRpcResult(db: PlainTextGateDatabase, onFirstRpc: string, mutate: () => void) {
+    const original = db.rpc;
+    let fired = false;
+    db.rpc = async (name, args) => {
+      if (!fired && name === onFirstRpc) {
+        fired = true;
+        mutate();
+      }
+      return original(name, args);
+    };
+  }
+
+  it("clears a fabricated gap once the live snapshot actually completes it", async () => {
+    // Sent 1..14 and 16 — a genuine hole at 15. It lands mid-flight, closing
+    // the gap the gate saw against the stale snapshot.
+    const db = new PlainTextGateDatabase(pendingRow(withdrawalText(
+      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16],
+    )), []);
+    raceRpcResult(db, "bind_plain_text_accountability_round", () => {
+      const old = db.pending;
+      db.tables.pending_sessions[0] = {
+        ...old,
+        accumulated_text: `${old.accumulated_text}\n15.มังคุด105บาท\n1โล`,
+        ingest_revision: (old.ingest_revision as number) + 1,
+      };
+    });
+    const replies: string[] = [];
+
+    await build(db, replies).processEvents([textEvent("จบรายการเบิก", "close-race-clears")], "dest");
+
+    expect(replies).toEqual([CLOSE_RACED_LATE_ITEM_REPLY]);
+    expect(db.pending.close_event_timestamp_ms).toBeNull();
+  });
+
+  it("still blocks a genuinely missing item even when something else moves the revision", async () => {
+    // Sent 1..14 and 16 — a genuine hole at 15 that never arrives. A
+    // DIFFERENT item lands mid-flight (17) — the revision moves, but the
+    // hole at 15 is still real.
+    const db = new PlainTextGateDatabase(pendingRow(withdrawalText(
+      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16],
+    )), []);
+    raceRpcResult(db, "bind_plain_text_accountability_round", () => {
+      const old = db.pending;
+      db.tables.pending_sessions[0] = {
+        ...old,
+        accumulated_text: `${old.accumulated_text}\n17.มังคุด107บาท\n1โล`,
+        ingest_revision: (old.ingest_revision as number) + 1,
+      };
+    });
+    const replies: string[] = [];
+
+    await build(db, replies).processEvents([textEvent("จบรายการเบิก", "close-race-persists")], "dest");
+
+    expect(replies[0]).not.toBe(CLOSE_RACED_LATE_ITEM_REPLY);
+    expect(replies[0]).toContain("⛔");
+    expect(replies[0]).toContain("ขาดข้อ 15");
+    expect(db.pending.close_event_timestamp_ms).toBeNull();
+  });
+
+  it("reports no gap for the exact production arrival order (1..15, then 24,16,25,17,20,18,19,21,23,22)", async () => {
+    const db = new PlainTextGateDatabase(pendingRow(withdrawalText(
+      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 24, 16, 25, 17, 20, 18, 19, 21, 23, 22],
+    )), []);
+    const replies: string[] = [];
+
+    await build(db, replies).processEvents([textEvent("จบรายการเบิก", "close-arrival-order")], "dest");
+
+    expect(replies).toEqual([PRODUCE_CLOSE_PENDING_REPLY]);
+    expect(db.pending.close_line_event_id).toBe("close-arrival-order");
+    expect(db.closeRefusals).toEqual([]);
+  });
+
+  it("reports no gap for another arbitrary out-of-order complete set", async () => {
+    const db = new PlainTextGateDatabase(pendingRow(withdrawalText(
+      [3, 1, 2, 7, 5, 4, 6, 10, 9, 8],
+    )), []);
+    const replies: string[] = [];
+
+    await build(db, replies).processEvents([textEvent("จบรายการเบิก", "close-scrambled-set")], "dest");
+
+    expect(replies).toEqual([PRODUCE_CLOSE_PENDING_REPLY]);
+    expect(db.closeRefusals).toEqual([]);
   });
 });
 
