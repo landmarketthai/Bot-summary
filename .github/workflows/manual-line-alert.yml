@@ -1,0 +1,31 @@
+name: manual-line-alert
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Single LINE target ID"
+        required: true
+        type: string
+      text:
+        description: "Alert/update message"
+        required: true
+        type: string
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send protected LINE alert
+        env:
+          TARGET: ${{ inputs.target }}
+          TEXT: ${{ inputs.text }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          BODY=$(jq -n --arg target "$TARGET" --arg text "$TEXT" '{target:$target,text:$text}')
+          curl -fsS --max-time 30 \
+            -X POST \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            -H "Content-Type: application/json" \
+            --data "$BODY" \
+            "https://bot-summary.vercel.app/api/cron/admin-line-alert"
