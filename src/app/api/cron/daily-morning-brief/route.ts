@@ -9,6 +9,7 @@ import {
 } from "@/lib/summary/daily-stock-cron";
 import { buildMorningBriefMessages } from "@/lib/summary/morning-brief-message";
 import { loadMorningBriefReport } from "@/lib/summary/morning-brief-service";
+import { createMorningBriefPdfArtifact, morningBriefPdfLineMessage } from "@/lib/summary/morning-brief-pdf";
 import { createServiceClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -88,8 +89,9 @@ export async function GET(req: NextRequest) {
   });
 
   let messages: string[];
+  let report: Awaited<ReturnType<typeof loadMorningBriefReport>>;
   try {
-    const report = await loadMorningBriefReport(supabase, businessDate);
+    report = await loadMorningBriefReport(supabase, businessDate);
     messages = buildMorningBriefMessages(report);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -133,12 +135,26 @@ export async function GET(req: NextRequest) {
     });
   }
 
+  let pdfUrl: string | null = null;
+  let pdfError: string | null = null;
+  try {
+    const artifact = await createMorningBriefPdfArtifact(supabase, report);
+    pdfUrl = artifact.signedUrl;
+  } catch (error) {
+    pdfError = error instanceof Error ? error.message : String(error);
+    logger.error("morning brief PDF generation failed", { businessDate, error: pdfError });
+  }
+
   let sentCount = 0;
   const failedTargets: string[] = [];
   for (const target of targets) {
     try {
       for (const [index, message] of messages.entries()) {
         await pushLineMessage(target, message, morningBriefRetryKey(businessDate, target, index));
+      }
+      if (pdfUrl) {
+        const pdfMessage = morningBriefPdfLineMessage(pdfUrl);
+        await pushLineMessage(target, pdfMessage, morningBriefRetryKey(businessDate, target, messages.length));
       }
       sentCount += 1;
     } catch (error) {
@@ -151,11 +167,12 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  if (failedTargets.length > 0) {
+  if (failedTargets.length > 0 || pdfError) {
     logger.error("morning brief cron completed with failures", {
       businessDate,
       sentCount,
       failedCount: failedTargets.length,
+      pdfFailed: Boolean(pdfError),
     });
     // pg_net/the manual caller does not automatically retry this failure.
     // Keep it observable; a manual same-date rerun is safe via retry keys.
@@ -166,6 +183,7 @@ export async function GET(req: NextRequest) {
         sent: sentCount > 0,
         sentCount,
         failedCount: failedTargets.length,
+        pdfFailed: Boolean(pdfError),
         messageCount: messages.length,
         targetCount: targets.length,
       },
@@ -181,5 +199,6 @@ export async function GET(req: NextRequest) {
     sentCount,
     messageCount: messages.length,
     targetCount: targets.length,
+    pdfDelivered: Boolean(pdfUrl),
   });
 }
