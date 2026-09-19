@@ -81,4 +81,20 @@ describe("loadMorningBriefReport", () => {
     expect(report.purchasePlanning.unknown.count).toBe(0);
     expect(report.sales.confirmedSalesSatang).toBe(0);
   });
+
+  test("loads reconciliation totals for the Morning Brief PDF", async () => {
+    const db = new FakeDatabase()
+      .seed("transfer_reconciliations", [{
+        source_id: "group-a", business_date: BUSINESS_DATE, ai_verified_total: 900, manual_slip_total: 50,
+        checked_slip_total: 950, submitted_transfer_total: 1000, difference: 50, matched: false,
+      }])
+      .seed("settlement_entries", [{ source_id: "group-a", settlement_date: BUSINESS_DATE, market_name: "Market A" }]);
+
+    const report = await loadMorningBriefReport(client(db), BUSINESS_DATE);
+
+    expect(report.reconciliation).toEqual({
+      status: "available", submittedTransferBaht: 1000, checkedSlipBaht: 950, differenceBaht: 50, needsReviewCount: 1,
+      rows: [{ market: "Market A", submittedTransferBaht: 1000, checkedSlipBaht: 950, differenceBaht: 50, status: "transfer_over" }],
+    });
+  });
 });
