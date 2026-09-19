@@ -153,6 +153,20 @@ describe("daily morning brief cron", () => {
     expect(pushCalls[0]!.retryKey).toBe(briefKey);
   });
 
+  test("manual target override isolates a UAT send from configured production targets", async () => {
+    const response = await GET(request("?date=2026-09-17&target=C12345678901"));
+    expect(response.status).toBe(200);
+    expect(pushCalls.length).toBeGreaterThan(0);
+    expect(pushCalls.every((call) => call.to === "C12345678901")).toBe(true);
+  });
+
+  test("rejects malformed manual target override before report loading", async () => {
+    const response = await GET(request("?date=2026-09-17&target=bad-target"));
+    expect(response.status).toBe(400);
+    expect(loadCalls).toHaveLength(0);
+    expect(pushCalls).toHaveLength(0);
+  });
+
   test("debug returns exact messages without sending LINE", async () => {
     formatterMessages = ["part 1", "part 2"];
     const response = await GET(request("?date=2026-08-22&debug=1"));

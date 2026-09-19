@@ -17,6 +17,10 @@ on:
         description: "Optional business date override (YYYY-MM-DD). Leave blank for the previous business date."
         required: false
         type: string
+      target:
+        description: "Optional single LINE target override for UAT/manual runs."
+        required: false
+        type: string
       debug:
         description: "Preview the messages without sending any LINE push."
         required: false
@@ -33,6 +37,9 @@ jobs:
           QUERY=""
           if [ -n "${{ inputs.date }}" ]; then
             QUERY="?date=${{ inputs.date }}"
+          fi
+          if [ -n "${{ inputs.target }}" ]; then
+            if [ -n "$QUERY" ]; then QUERY="$QUERY&target=${{ inputs.target }}"; else QUERY="?target=${{ inputs.target }}"; fi
           fi
           if [ "${{ inputs.debug }}" = "true" ]; then
             if [ -n "$QUERY" ]; then QUERY="$QUERY&debug=1"; else QUERY="?debug=1"; fi

@@ -77,14 +77,21 @@ export async function GET(req: NextRequest) {
   }
 
   const debugMode = req.nextUrl.searchParams.get("debug") === "1";
+  const targetOverride = req.nextUrl.searchParams.get("target")?.trim() ?? "";
+  if (targetOverride && !/^[CUR][0-9A-Za-z]{10,}$/.test(targetOverride)) {
+    return NextResponse.json({ error: "invalid LINE target override" }, { status: 400 });
+  }
   const businessDate = resolveStockSummaryDate(dateParam);
-  const targets = parseStockSummaryTargets(process.env[MORNING_BRIEF_TARGETS_ENV]);
+  const targets = targetOverride
+    ? [targetOverride]
+    : parseStockSummaryTargets(process.env[MORNING_BRIEF_TARGETS_ENV]);
   const supabase = createServiceClient();
 
   logger.info("morning brief cron started", {
     businessDate,
     hasDateParam: Boolean(dateParam),
     debugMode,
+    targetOverride: Boolean(targetOverride),
     targetCount: targets.length,
   });
 
