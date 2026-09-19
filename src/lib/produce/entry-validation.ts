@@ -488,7 +488,8 @@ export function validateProduceEntry(input: ProduceValidationInput): ProduceVali
 
 function subunitExceptions(parsed: WeighSession): ProduceValidationReview[] {
   return [...parsed.items]
-    .filter((item) => item.entered_quantity !== undefined
+    .filter((item) => item.pricing_mode === "basis"
+      && item.entered_quantity !== undefined
       && (item.entered_unit === "ขีด" || item.entered_unit === "กรัม")
       && item.quantity !== null && item.unit !== null)
     .sort((a, b) => a.item_number - b.item_number)
