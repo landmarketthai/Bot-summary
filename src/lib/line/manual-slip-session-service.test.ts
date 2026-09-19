@@ -94,7 +94,36 @@ function makeDb(initial: Row[] = []) {
     };
   }
 
-  return { from: stubFor, _sessions: sessions, _entries: entries };
+  async function rpc(name: string, args: Record<string, unknown>) {
+    if (name === "append_manual_slip_entries_atomic") {
+      const session = sessions.find((row) => row.id === args.p_session_id);
+      if (!session) return { data: null, error: { message: "session not found" } };
+      if (session.status !== "open") return { data: null, error: { message: "session not open" } };
+      const messageId = String(args.p_line_message_id);
+      if (entries.some((row) => row.session_id === args.p_session_id && row.line_message_id === messageId)) {
+        return { data: { inserted: 0, duplicate: true }, error: null };
+      }
+      const payload = args.p_entries as Array<{ raw_line: string; amount: number }>;
+      const start = entries.filter((row) => row.session_id === args.p_session_id).length;
+      payload.forEach((entry, index) => entries.push({
+        session_id: args.p_session_id, sequence_no: start + index, raw_line: entry.raw_line,
+        amount: entry.amount, line_message_id: messageId, line_user_id: args.p_line_user_id,
+      }));
+      return { data: { inserted: payload.length, duplicate: false }, error: null };
+    }
+    if (name === "close_manual_slip_session_atomic") {
+      const session = sessions.find((row) => row.id === args.p_session_id);
+      if (!session) return { data: null, error: { message: "session not found" } };
+      const total = entries.filter((row) => row.session_id === args.p_session_id)
+        .reduce((sum, row) => sum + Number(row.amount), 0);
+      const already = session.status === "closed";
+      if (!already) Object.assign(session, { status: "closed", closed_at: new Date().toISOString() });
+      return { data: { total, already_closed: already }, error: null };
+    }
+    return { data: null, error: { message: `unknown rpc: ${name}` } };
+  }
+
+  return { from: stubFor, rpc, _sessions: sessions, _entries: entries };
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -179,7 +208,7 @@ describe("ManualSlipSessionService", () => {
   });
 
   it("appends entries with auto sequence_no", async () => {
-    const db  = makeDb();
+    const db  = makeDb([{ id: "s1", source_id: "grp1", business_date: "2026-06-17", market_key: "default", status: "open" }]);
     const svc = new ManualSlipSessionService(db as never);
 
     await svc.appendEntries({
@@ -195,7 +224,7 @@ describe("ManualSlipSessionService", () => {
   });
 
   it("is idempotent on re-delivered message (same line_message_id)", async () => {
-    const db  = makeDb();
+    const db  = makeDb([{ id: "s1", source_id: "grp1", business_date: "2026-06-17", market_key: "default", status: "open" }]);
     const svc = new ManualSlipSessionService(db as never);
 
     const entries = [{ rawLine: "100 บาท", amount: 100 }];

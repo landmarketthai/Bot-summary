@@ -6,6 +6,7 @@ function row(overrides: Partial<ReconciliationReportRow>): ReconciliationReportR
   return {
     source_id: "source-1",
     business_date: "2026-08-25",
+    accountability_round_id:   null,
     market: "ตลาดเช้า",
     submitted_transfer_total: 1000,
     ai_verified_total: 900,

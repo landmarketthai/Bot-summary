@@ -142,13 +142,22 @@ async function loadVerifiedTransferChecksForSourceDate(
   let evidenceQuery = supabase
     .from("slip_evidences")
     .select("id, market_label")
-    .eq("source_id", sourceId)
-    .gte("received_at", startUtc)
-    .lt("received_at", endUtc);
-  if (accountabilityRoundId !== undefined) {
-    evidenceQuery = accountabilityRoundId === null
-      ? evidenceQuery.is("accountability_round_id", null)
-      : evidenceQuery.eq("accountability_round_id", accountabilityRoundId);
+    .eq("source_id", sourceId);
+
+  if (accountabilityRoundId !== undefined && accountabilityRoundId !== null) {
+    // A persisted round binding is authoritative business identity. Do not
+    // discard a valid round-bound slip merely because its image arrived after
+    // that round's 04:00 receipt-time window.
+    evidenceQuery = evidenceQuery.eq("accountability_round_id", accountabilityRoundId);
+  } else {
+    // Legacy/unbound evidence has no stronger identity, so receipt-time remains
+    // the only safe business-date attribution boundary.
+    evidenceQuery = evidenceQuery
+      .gte("received_at", startUtc)
+      .lt("received_at", endUtc);
+    if (accountabilityRoundId === null) {
+      evidenceQuery = evidenceQuery.is("accountability_round_id", null);
+    }
   }
   const { data: evidences, error: evidenceError } = await evidenceQuery;
   if (evidenceError) {
@@ -289,15 +298,21 @@ async function computeManualSlipTotal(
       ? sessionQuery.is("accountability_round_id", null)
       : sessionQuery.eq("accountability_round_id", accountabilityRoundId);
   }
-  const { data: sessions } = await sessionQuery;
+  const { data: sessions, error: sessionError } = await sessionQuery;
+  if (sessionError) {
+    throw new Error(`manual_slip_sessions query failed: ${sessionError.message}`);
+  }
 
   const sessionIds = (sessions ?? []).map(s => s.id);
   if (sessionIds.length === 0) return 0;
 
-  const { data: entries } = await supabase
+  const { data: entries, error: entryError } = await supabase
     .from("manual_slip_entries")
     .select("amount")
     .in("session_id", sessionIds);
+  if (entryError) {
+    throw new Error(`manual_slip_entries query failed: ${entryError.message}`);
+  }
 
   return (entries ?? []).reduce((sum, e) => sum + Number(e.amount), 0);
 }
@@ -380,7 +395,10 @@ export async function reconcile(
       ? openSessionQuery.is("accountability_round_id", null)
       : openSessionQuery.eq("accountability_round_id", accountabilityRoundId);
   }
-  const { data: openSession } = await openSessionQuery.maybeSingle();
+  const { data: openSession, error: openSessionError } = await openSessionQuery.maybeSingle();
+  if (openSessionError) {
+    throw new Error(`open manual_slip_sessions query failed: ${openSessionError.message}`);
+  }
 
   if (openSession) {
     return {
@@ -413,7 +431,10 @@ export async function reconcile(
       ? failedQuery.is("accountability_round_id", null)
       : failedQuery.eq("accountability_round_id", accountabilityRoundId);
   }
-  const { data: failedClosedSessions } = await failedQuery;
+  const { data: failedClosedSessions, error: failedClosedError } = await failedQuery;
+  if (failedClosedError) {
+    throw new Error(`failed pending_sessions query failed: ${failedClosedError.message}`);
+  }
 
   const hasFailedClosedForDate = ((failedClosedSessions ?? []) as Array<{ close_event_timestamp_ms: number }>)
     .some((row) => bangkokBusinessDateFromTimestamp(row.close_event_timestamp_ms) === businessDate);
@@ -444,15 +465,21 @@ export async function reconcile(
       ? incompleteQuery.is("accountability_round_id", null)
       : incompleteQuery.eq("accountability_round_id", accountabilityRoundId);
   }
-  const { data: incompleteSessions } = await incompleteQuery;
+  const { data: incompleteSessions, error: incompleteError } = await incompleteQuery;
+  if (incompleteError) {
+    throw new Error(`incomplete produce_sessions query failed: ${incompleteError.message}`);
+  }
 
   if (incompleteSessions && incompleteSessions.length > 0) {
     const rawMessageIds = incompleteSessions.map((s) => s.raw_message_id);
-    const { data: sourceMessages } = await supabase
+    const { data: sourceMessages, error: sourceMessageError } = await supabase
       .from("raw_messages")
       .select("id")
       .in("id", rawMessageIds)
       .eq("source_id", sourceId);
+    if (sourceMessageError) {
+      throw new Error(`raw_messages source lookup failed: ${sourceMessageError.message}`);
+    }
 
     if (sourceMessages && sourceMessages.length > 0) {
       return {

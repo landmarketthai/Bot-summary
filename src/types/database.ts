@@ -2240,6 +2240,23 @@ export interface Database {
         };
         Returns: boolean;
       };
+      append_manual_slip_entries_atomic: {
+        Args: {
+          p_session_id: string;
+          p_entries: Json;
+          p_line_message_id: string;
+          p_line_user_id: string | null;
+        };
+        Returns: Json;
+      };
+      close_manual_slip_session_atomic: {
+        Args: {
+          p_session_id: string;
+          p_line_user_id: string | null;
+          p_line_message_id: string;
+        };
+        Returns: Json;
+      };
       close_manual_white_sheet_note_session: {
         Args: {
           p_session_id:             string;
