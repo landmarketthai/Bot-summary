@@ -126,6 +126,10 @@ describe("summarizeSales", () => {
       trustedCount: 77,
       unresolvedCount: 107,
       soldOutCount: 2,
+      markets: [
+        { marketLabel: "\u0e15\u0e25\u0e32\u0e14\u0e40\u0e2d", confirmedSalesSatang: 2_174_074, valueAuthoritative: false, trustedCount: 77, unresolvedCount: 107, soldOutCount: 2 },
+        { marketLabel: "\u0e15\u0e25\u0e32\u0e14\u0e1a\u0e35", confirmedSalesSatang: 2_174_074, valueAuthoritative: false, trustedCount: 77, unresolvedCount: 107, soldOutCount: 0 },
+      ],
       priceConflictCount: 2,
       priceConflictMarketCount: 2,
       reviewItems: [

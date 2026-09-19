@@ -26,10 +26,8 @@ export interface MorningBriefPurchaseGroup {
   productNames: string[];
   items?: MorningBriefPurchaseItem[];
 }
-export type MorningBriefPurchasePlanning = Record<
-  PurchaseStatus,
-  MorningBriefPurchaseGroup
->;
+
+export type MorningBriefPurchasePlanning = Record<PurchaseStatus, MorningBriefPurchaseGroup>;
 
 export function morningBriefProductIdentity(productName: string, unit: string): {
   productName: string;
@@ -42,7 +40,7 @@ export function morningBriefProductIdentity(productName: string, unit: string): 
   };
 }
 
-/** Keep every classified item; LINE chunking decides presentation size later. */
+/** Keep every classified item; LINE/PDF presentation decides display size. */
 export function summarizePurchasePlanning(
   report: Pick<PurchasePlanningReport, "items">,
 ): MorningBriefPurchasePlanning {
@@ -76,6 +74,15 @@ export interface MorningBriefSalesReviewItem {
   reasons: string[];
 }
 
+export interface MorningBriefSalesMarket {
+  marketLabel: string;
+  confirmedSalesSatang: number;
+  valueAuthoritative: boolean;
+  trustedCount: number;
+  unresolvedCount: number;
+  soldOutCount: number;
+}
+
 export interface MorningBriefSales {
   confirmedSalesSatang: number;
   valueAuthoritative: boolean;
@@ -85,6 +92,7 @@ export interface MorningBriefSales {
   priceConflictCount: number;
   priceConflictMarketCount: number;
   reviewItems?: MorningBriefSalesReviewItem[];
+  markets?: MorningBriefSalesMarket[];
 }
 
 /** Read headline facts from SalesReport; never recalculate sales or sold-out rules. */
@@ -107,11 +115,18 @@ export function summarizeSales(report: SalesReport): MorningBriefSales {
     confirmedSalesSatang: report.allMarkets.expectedSalesSatang,
     valueAuthoritative: report.allMarkets.valueAuthoritative,
     trustedCount: report.allMarkets.trustedRowCount,
-    unresolvedCount:
-      report.allMarkets.valueBlockedRowCount + report.allMarkets.quantityBlockedRowCount,
+    unresolvedCount: report.allMarkets.valueBlockedRowCount + report.allMarkets.quantityBlockedRowCount,
     soldOutCount,
     priceConflictCount,
     priceConflictMarketCount: conflictMarkets.size,
+    markets: report.markets.map((market) => ({
+      marketLabel: market.marketLabel,
+      confirmedSalesSatang: market.total.expectedSalesSatang,
+      valueAuthoritative: market.total.valueAuthoritative,
+      trustedCount: market.total.trustedRowCount,
+      unresolvedCount: market.total.valueBlockedRowCount + market.total.quantityBlockedRowCount,
+      soldOutCount: market.rows.filter(isSoldOutByAbsentReturn).length,
+    })),
     reviewItems: report.blocked.map((row) => ({
       marketLabel: row.marketLabel,
       productName: morningBriefProductIdentity(row.productName, row.unit).productName,
@@ -136,9 +151,30 @@ export type MorningBriefHouseStock =
   | { status: "missing" }
   | { status: "unavailable" };
 
+export interface MorningBriefReconciliationRow {
+  market: string;
+  submittedTransferBaht: number | null;
+  checkedSlipBaht: number | null;
+  differenceBaht: number | null;
+  status: "matched" | "transfer_short" | "transfer_over" | "pending_review" | "missing_data";
+}
+
+export type MorningBriefReconciliation =
+  | {
+      status: "available";
+      submittedTransferBaht: number;
+      checkedSlipBaht: number;
+      differenceBaht: number;
+      needsReviewCount: number;
+      rows: MorningBriefReconciliationRow[];
+    }
+  | { status: "missing" }
+  | { status: "unavailable" };
+
 export interface MorningBriefReport {
   businessDate: string;
   purchasePlanning: MorningBriefPurchasePlanning;
   sales: MorningBriefSales;
   houseStock: MorningBriefHouseStock;
+  reconciliation?: MorningBriefReconciliation;
 }

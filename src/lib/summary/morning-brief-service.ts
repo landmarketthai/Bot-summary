@@ -7,6 +7,7 @@ import {
 } from "@/lib/physical-inventory/house-stock-report";
 import { quantityTimesSatang, toMilliQuantity } from "@/lib/sales/calculate";
 import { loadSalesReport } from "@/lib/sales/load";
+import { fetchReconciliationReport } from "@/lib/reconciliation-report-service";
 import { loadPurchasePlanningReport } from "@/lib/summary/purchase-planning-service";
 import {
   morningBriefProductIdentity,
@@ -14,6 +15,7 @@ import {
   summarizeSales,
   type MorningBriefHouseStock,
   type MorningBriefHouseStockItem,
+  type MorningBriefReconciliation,
   type MorningBriefReport,
 } from "@/lib/summary/morning-brief";
 
@@ -77,14 +79,48 @@ async function loadHouseStock(
   }
 }
 
+async function loadReconciliation(
+  supabase: Supabase,
+  businessDate: string,
+): Promise<MorningBriefReconciliation> {
+  try {
+    const report = await fetchReconciliationReport(supabase, {
+      fromDate: businessDate,
+      toDate: businessDate,
+    });
+    if (report.rows.length === 0) return { status: "missing" };
+    return {
+      status: "available",
+      submittedTransferBaht: report.summary.submitted_transfer_total,
+      checkedSlipBaht: report.summary.checked_slip_total,
+      differenceBaht: report.summary.difference_total,
+      needsReviewCount: report.summary.needs_review_count,
+      rows: report.rows.map((row) => ({
+        market: row.market,
+        submittedTransferBaht: row.submitted_transfer_total,
+        checkedSlipBaht: row.checked_slip_total,
+        differenceBaht: row.difference,
+        status: row.status,
+      })),
+    };
+  } catch (error) {
+    logger.warn("morning brief reconciliation unavailable", {
+      businessDate,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return { status: "unavailable" };
+  }
+}
+
 export async function loadMorningBriefReport(
   supabase: Supabase,
   businessDate: string,
 ): Promise<MorningBriefReport> {
-  const [purchasePlanning, sales, houseStock] = await Promise.all([
+  const [purchasePlanning, sales, houseStock, reconciliation] = await Promise.all([
     loadPurchasePlanningReport(supabase, businessDate),
     loadSalesReport(supabase, businessDate),
     loadHouseStock(supabase, businessDate),
+    loadReconciliation(supabase, businessDate),
   ]);
 
   return {
@@ -92,5 +128,6 @@ export async function loadMorningBriefReport(
     purchasePlanning: summarizePurchasePlanning(purchasePlanning),
     sales: summarizeSales(sales),
     houseStock,
+    reconciliation,
   };
 }

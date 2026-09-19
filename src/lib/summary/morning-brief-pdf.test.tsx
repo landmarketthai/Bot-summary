@@ -54,5 +54,6 @@ describe("Morning Brief A4 PDF", () => {
     );
     expect(buffer.subarray(0, 4).toString("ascii")).toBe("%PDF");
     expect(buffer.length).toBeGreaterThan(5_000);
+    expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(2);
   });
 });
