@@ -120,7 +120,7 @@ describe("unknown unit", () => {
 });
 
 describe("risky subunit confirmation", () => {
-  it("preserves raw evidence and requires one review per current item", () => {
+  it("auto-accepts deterministic quantity-line ขีด/กรัม conversions", () => {
     const parsed = parseWeighSession(
       "กี้-ตลาด เบิก 29/8/69\n1.องุ่น100บาท\n.3ขีด\n2.มะม่วง100บาท\n500กรัม",
       "2026-08-29",
@@ -128,10 +128,27 @@ describe("risky subunit confirmation", () => {
     expect(parsed.items.map((entry) => [entry.entered_quantity, entry.entered_unit,
       entry.quantity, entry.unit])).toEqual([[0.3, "ขีด", 0.03, "โล"], [500, "กรัม", 0.5, "โล"]]);
     const result = bound(parsed);
-    expect(result.status).toBe("review_required");
-    expect(result.reviews.filter((entry) => entry.kind === "subunit_confirmation")).toHaveLength(2);
-    expect(JSON.stringify(result.reviews)).toContain("0.03");
-    expect(JSON.stringify(result.reviews)).toContain("0.5");
+    expect(result.reviews.filter((entry) => entry.kind === "subunit_confirmation")).toHaveLength(0);
+  });
+
+  it("does not hold the 18/9 damaged-return incident for ordinary ขีด quantities", () => {
+    const parsed = parseWeighSession([
+      "ดำ-วัดตะกล่ำ คืนเสีย 18/9/2569",
+      "1น้อยหน่า40บาท", "4ขีด",
+      "2องุ่นไร้ออส100บาท", "5ขีด",
+      "3องุ่นไร้ออส100บาท", "5ขีด",
+      "4องุ่นแดง70บาท", "1.9โล",
+      "5แก้วมังกร40บาท", "4ขีด",
+      "6มะละกอ30บาท", "2ลูก",
+      "7ลองกอง35บาท", "1โล",
+      "8สาลี่หอม40บาท", "1.5โล",
+      "9แอปเปิ้ลเขียว5บาท", "10ลูก",
+      "10ไชมัส33บาท", "1.1โล",
+    ].join("\n"), "2026-09-18");
+    expect(parsed.items.filter((entry) => entry.entered_unit === "ขีด").map((entry) => entry.quantity))
+      .toEqual([0.4, 0.5, 0.5, 0.4]);
+    const result = bound(parsed);
+    expect(result.reviews.filter((entry) => entry.kind === "subunit_confirmation")).toHaveLength(0);
   });
 
   it("reports the risky conversion itself when it is a price-basis expression", () => {

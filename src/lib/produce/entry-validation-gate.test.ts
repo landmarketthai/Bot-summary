@@ -202,8 +202,8 @@ const withdrawal: RoundMasterRow[] = [
 describe("per-item subunit confirmations", () => {
   it("holds each item until its own confirmation is recorded", async () => {
     const parsed = session([
-      item({ product_name: "องุ่น", entered_quantity: 300, entered_unit: "กรัม", quantity: 0.3 }),
-      item({ product_name: "มะม่วง", entered_quantity: 2, entered_unit: "ขีด", quantity: 0.2 }),
+      item({ product_name: "องุ่น", pricing_mode: "basis", basis_quantity: 0.3, basis_unit: "โล", basis_price: 30, entered_quantity: 300, entered_unit: "กรัม", quantity: 0.3 }),
+      item({ product_name: "มะม่วง", pricing_mode: "basis", basis_quantity: 0.2, basis_unit: "โล", basis_price: 20, entered_quantity: 2, entered_unit: "ขีด", quantity: 0.2 }),
     ]);
     const db = new FakeDb();
     const first = await runProduceCloseGate(db.client(), REF, parsed, "E1");
