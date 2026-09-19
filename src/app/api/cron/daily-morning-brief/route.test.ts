@@ -14,6 +14,9 @@ let formatterCalls: unknown[] = [];
 let formatterMessages = ["🌅 สรุปเช้า — 22 สิงหาคม 2569"];
 let pushCalls: Array<{ to: string; text: string; retryKey?: string }> = [];
 let failingTarget: string | null = null;
+let pdfCalls: Array<{ client: unknown; report: unknown }> = [];
+let pdfError: Error | null = null;
+let pdfUrl = "https://example.test/morning-brief.pdf?token=signed";
 
 mock.module("@/lib/supabase/server", () => ({
   createServiceClient: () => serviceClient,
@@ -32,6 +35,15 @@ mock.module("@/lib/summary/morning-brief-message", () => ({
     formatterCalls.push(report);
     return formatterMessages;
   },
+}));
+
+mock.module("@/lib/summary/morning-brief-pdf", () => ({
+  createMorningBriefPdfArtifact: async (client: unknown, report: unknown) => {
+    pdfCalls.push({ client, report });
+    if (pdfError) throw pdfError;
+    return { signedUrl: pdfUrl };
+  },
+  morningBriefPdfLineMessage: (url: string) => `PDF A4\n${url}`,
 }));
 
 mock.module("@/lib/line/reply", () => ({
@@ -69,6 +81,9 @@ beforeEach(() => {
   formatterMessages = ["🌅 สรุปเช้า — 22 สิงหาคม 2569"];
   pushCalls = [];
   failingTarget = null;
+  pdfCalls = [];
+  pdfError = null;
+  pdfUrl = "https://example.test/morning-brief.pdf?token=signed";
   Date.now = realDateNow;
 });
 
@@ -116,8 +131,10 @@ describe("daily morning brief cron", () => {
       { to: "Cowner", text: "part 1" },
       { to: "Cowner", text: "part 2" },
       { to: "Cowner", text: "part 3" },
+      { to: "Cowner", text: `PDF A4\n${pdfUrl}` },
     ]);
-    expect(new Set(pushCalls.map((call) => call.retryKey)).size).toBe(3);
+    expect(new Set(pushCalls.map((call) => call.retryKey)).size).toBe(4);
+    expect(pdfCalls).toEqual([{ client: serviceClient, report: loadedReport }]);
 
     const firstKeys = pushCalls.map((call) => call.retryKey);
     pushCalls = [];
@@ -148,6 +165,7 @@ describe("daily morning brief cron", () => {
       messages: formatterMessages,
     });
     expect(pushCalls).toHaveLength(0);
+    expect(pdfCalls).toHaveLength(0);
   });
 
   test("no targets configured is a successful no-op, not a failure", async () => {
@@ -164,6 +182,16 @@ describe("daily morning brief cron", () => {
     expect(pushCalls).toHaveLength(0);
   });
 
+  test("PDF failure keeps the text brief deliverable but returns 500 for recovery", async () => {
+    pdfError = new Error("storage unavailable");
+    formatterMessages = ["part 1", "part 2"];
+
+    const response = await GET(request("?date=2026-08-22"));
+    expect(response.status).toBe(500);
+    expect(pushCalls.map((call) => call.text)).toEqual(["part 1", "part 2"]);
+    expect(await response.json()).toMatchObject({ sent: true, sentCount: 1, pdfFailed: true });
+  });
+
   test("isolates target failures and reports the partial failure", async () => {
     process.env.MORNING_BRIEF_LINE_TARGETS = "Cbroken,Cowner";
     formatterMessages = ["part 1", "part 2"];
@@ -171,7 +199,7 @@ describe("daily morning brief cron", () => {
 
     const response = await GET(request("?date=2026-08-22"));
     expect(response.status).toBe(500);
-    expect(pushCalls.map((call) => call.to)).toEqual(["Cbroken", "Cowner", "Cowner"]);
+    expect(pushCalls.map((call) => call.to)).toEqual(["Cbroken", "Cowner", "Cowner", "Cowner"]);
     expect(await response.json()).toMatchObject({ sent: true, sentCount: 1, failedCount: 1 });
   });
 });
