@@ -1,4 +1,4 @@
-﻿import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { pushLineMessage } from "@/lib/line/reply";
 import { logger } from "@/lib/logger";
 
@@ -52,4 +52,3 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: message }, { status: 502 });
   }
 }
-
