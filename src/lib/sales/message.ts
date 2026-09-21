@@ -120,6 +120,8 @@ export const SALES_MARKET_BLOCKED = "⛔ ยังปิดยอดไม่ไ
 export const SALES_MARKET_CONFIRMED_PREFIX = "ยอดที่ยืนยันแล้ว";
 export const SALES_MARKET_EXCLUDED_HEADING = "ยังไม่รวม:";
 export const SALES_MARKET_CAUSE_HEADING = "สาเหตุ:";
+export const SALES_MARKET_PENDING_PRICE_HEADING = "รอตรวจราคา:";
+export const SALES_MARKET_PENDING_RETURN_HEADING = "รอข้อมูลคืน:";
 /** Printed in every market block when a day-level blocker exists (see above). */
 export const SALES_MARKET_SCOPE_CAVEAT = "• ข้อมูลบางส่วนของวันนี้ยังไม่ครบ (ดูหัวข้อด้านบน)";
 
@@ -152,6 +154,10 @@ function mergeTotals(totals: readonly SalesTotal[]): SalesTotal {
   return totals.reduce<SalesTotal>(
     (merged, total) => ({
       expectedSalesSatang: merged.expectedSalesSatang + total.expectedSalesSatang,
+      pendingReviewSalesSatang:
+        merged.pendingReviewSalesSatang + total.pendingReviewSalesSatang,
+      totalSalesSatang: merged.totalSalesSatang + total.totalSalesSatang,
+      adjustmentSatang: merged.adjustmentSatang + total.adjustmentSatang,
       quantityAuthoritative: merged.quantityAuthoritative && total.quantityAuthoritative,
       valueAuthoritative: merged.valueAuthoritative && total.valueAuthoritative,
       trustedRowCount: merged.trustedRowCount + total.trustedRowCount,
@@ -160,6 +166,9 @@ function mergeTotals(totals: readonly SalesTotal[]): SalesTotal {
     }),
     {
       expectedSalesSatang: 0,
+      pendingReviewSalesSatang: 0,
+      totalSalesSatang: 0,
+      adjustmentSatang: 0,
       quantityAuthoritative: true,
       valueAuthoritative: true,
       trustedRowCount: 0,
@@ -239,10 +248,21 @@ function totalBlock(
     total.valueAuthoritative ? heading : (partial.heading ?? SALES_PARTIAL_HEADING),
     // Nothing is priced yet: "0.00 บาท" would read as zero revenue, which is a
     // different (and false) claim from "the value is not calculable".
-    total.trustedRowCount === 0 && !total.valueAuthoritative
+    total.trustedRowCount === 0
+      && total.pendingReviewSalesSatang === 0
+      && !total.valueAuthoritative
       ? SALES_VALUE_UNAVAILABLE
-      : `${satangToBahtText(total.expectedSalesSatang)} บาท`,
+      : `${satangToBahtText(total.totalSalesSatang)} บาท`,
   ];
+  if (total.pendingReviewSalesSatang > 0) {
+    lines.push(
+      `ยืนยันแล้ว ${satangToBahtText(total.expectedSalesSatang)} บาท`,
+      `รอตรวจ ${satangToBahtText(total.pendingReviewSalesSatang)} บาท`,
+    );
+  }
+  if (total.adjustmentSatang !== 0) {
+    lines.push(`ปรับราคา ${satangToBahtText(total.adjustmentSatang)} บาท`);
+  }
   if (!total.valueAuthoritative) {
     if (partial.notice) lines.push(partial.notice);
     const blocked = total.valueBlockedRowCount + total.quantityBlockedRowCount;
@@ -279,6 +299,16 @@ function identityLines(row: SalesIdentityRow): string[] {
 
   if (row.soldQuantity === null) {
     lines.push(`ขาย — (${row.reasons.map(salesReasonLabel).join(", ")})`);
+    if (row.valueStatus === "PENDING_REVIEW" && row.pendingReviewSalesSatang !== null) {
+      const pendingReason = row.reasons.includes("product_return_absent")
+        || row.returnEvidenceIncomplete
+        ? "รอข้อมูลคืน"
+        : "รอตรวจ";
+      lines.push(`มูลค่าชั่วคราว ${satangToBahtText(row.pendingReviewSalesSatang)} บาท (${pendingReason})`);
+      if (row.adjustmentSatang !== 0) {
+        lines.push(`ปรับจากราคาเดิม ${satangToBahtText(row.adjustmentSatang)} บาท`);
+      }
+    }
     return lines;
   }
 
@@ -287,6 +317,12 @@ function identityLines(row: SalesIdentityRow): string[] {
       ? `ขาย ${formatQuantity(row.soldQuantity)} ${unitLabel(row.unit)} (${SALES_SOLD_OUT_NO_RETURN_SUFFIX})`
       : `ขาย ${formatQuantity(row.soldQuantity)} ${unitLabel(row.unit)}`,
   );
+  if (row.valueStatus === "PENDING_REVIEW" && row.pendingReviewSalesSatang !== null) {
+    lines.push(
+      `ราคาเดิม ${satangToBahtText(row.enteredPriceSatang ?? 0)} → ${satangToBahtText(row.pendingReviewSalesSatang)} บาท (รอตรวจ)`,
+    );
+    return lines;
+  }
   if (row.centralPriceSatang === null || row.expectedSalesSatang === null) {
     lines.push(`ยอดขาย — (${row.reasons.map(salesReasonLabel).join(", ")})`);
     return lines;
@@ -294,6 +330,9 @@ function identityLines(row: SalesIdentityRow): string[] {
   lines.push(
     `ราคากลาง ${satangToBahtText(row.centralPriceSatang)} → ${satangToBahtText(row.expectedSalesSatang)} บาท`,
   );
+  if (row.adjustmentSatang !== 0) {
+    lines.push(`ปรับจากราคาเดิม ${satangToBahtText(row.adjustmentSatang)} บาท`);
+  }
   return lines;
 }
 
@@ -321,7 +360,12 @@ function compareRowsForDisplay(a: SalesIdentityRow, b: SalesIdentityRow): number
  */
 function marketStatusBlock(group: SalesMarketGroup, hasScopeBlockers: boolean): string {
   const verdict = marketVerdict(group);
-  const excluded = group.rows.filter((row) => row.status !== "TRUSTED");
+  const unresolved = group.rows.filter((row) => row.status !== "TRUSTED");
+  const pending = unresolved.filter((row) => row.valueStatus === "PENDING_REVIEW");
+  const pendingReturn = pending.filter((row) =>
+    row.reasons.includes("product_return_absent") || row.returnEvidenceIncomplete);
+  const pendingPrice = pending.filter((row) => !pendingReturn.includes(row));
+  const excluded = unresolved.filter((row) => row.valueStatus === "UNAVAILABLE");
 
   const lines = [`🏪 ${group.marketLabel}`];
   // A scope blocker is a document that could belong to ANY market, so no market
@@ -342,15 +386,30 @@ function marketStatusBlock(group: SalesMarketGroup, hasScopeBlockers: boolean): 
   }
 
   lines.push(verdict === "blocked" ? SALES_MARKET_BLOCKED : SALES_MARKET_PARTIAL);
-  lines.push(
-    `${SALES_MARKET_CONFIRMED_PREFIX} ${satangToBahtText(group.total.expectedSalesSatang)} บาท`,
-  );
-  lines.push(verdict === "blocked" ? SALES_MARKET_CAUSE_HEADING : SALES_MARKET_EXCLUDED_HEADING);
-  for (const row of excluded.sort(compareRowsForDisplay)) {
-    const identity = row.isSessionPlaceholder
-      ? row.productName
-      : `${row.productName} (${unitLabel(row.unit)})`;
-    lines.push(`• ${identity} — ${row.reasons.map(salesReasonLabel).join(", ")}`);
+  if (pending.length > 0) {
+    lines.push(
+      `${SALES_MARKET_TOTAL_HEADING} ${valueText(group.total)}`,
+      `${SALES_MARKET_CONFIRMED_PREFIX} ${satangToBahtText(group.total.expectedSalesSatang)} บาท`,
+      `ยอดรอตรวจ ${satangToBahtText(group.total.pendingReviewSalesSatang)} บาท`,
+    );
+  } else {
+    lines.push(
+      `${SALES_MARKET_CONFIRMED_PREFIX} ${satangToBahtText(group.total.expectedSalesSatang)} บาท`,
+    );
+  }
+  for (const [heading, rows] of [
+    [SALES_MARKET_PENDING_RETURN_HEADING, pendingReturn],
+    [SALES_MARKET_PENDING_PRICE_HEADING, pendingPrice],
+    [SALES_MARKET_EXCLUDED_HEADING, excluded],
+  ] as const) {
+    if (rows.length === 0) continue;
+    lines.push(heading);
+    for (const row of [...rows].sort(compareRowsForDisplay)) {
+      const identity = row.isSessionPlaceholder
+        ? row.productName
+        : `${row.productName} (${unitLabel(row.unit)})`;
+      lines.push(`• ${identity} — ${row.reasons.map(salesReasonLabel).join(", ")}`);
+    }
   }
   if (hasScopeBlockers) lines.push(SALES_MARKET_SCOPE_CAVEAT);
   return lines.join("\n");
@@ -372,9 +431,13 @@ function productLine(product: SalesProductSummary): string {
 
 /** Money for a subtotal: a figure, a partial figure, or an honest "not yet". */
 function valueText(total: SalesTotal): string {
-  if (total.trustedRowCount === 0 && !total.valueAuthoritative) return SALES_VALUE_UNAVAILABLE;
+  if (
+    total.trustedRowCount === 0
+    && total.pendingReviewSalesSatang === 0
+    && !total.valueAuthoritative
+  ) return SALES_VALUE_UNAVAILABLE;
   const suffix = total.valueAuthoritative ? "" : " (บางส่วน)";
-  return `${satangToBahtText(total.expectedSalesSatang)} บาท${suffix}`;
+  return `${satangToBahtText(total.totalSalesSatang)} บาท${suffix}`;
 }
 
 /**

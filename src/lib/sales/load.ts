@@ -11,6 +11,7 @@ import { bangkokBusinessDateFromTimestamp } from "@/lib/business-date";
 import { isStrictBusinessDate } from "./cron";
 import { isQaMarketLabel } from "./qa-scopes";
 import { resolveCentralPricesForDate } from "@/lib/white-sheet/load";
+import { resolveWithdrawalUnitPriceBaht } from "@/lib/white-sheet/calculate";
 import {
   loadRoundReturnStatuses,
   roundsWithIncompleteReturn,
@@ -1175,6 +1176,20 @@ function adaptRows(
 ): SalesSourceRow[] {
   return rows.map((row) => {
     const marketLabel = normalizedMarketLabel(row.market_name);
+    const rawUnit = row.unit?.trim() ?? "";
+    const enteredPriceBaht =
+      row.base_transaction_type?.trim() === "เบิก"
+      && rawUnit
+      && row.price_per_unit !== null
+        ? resolveWithdrawalUnitPriceBaht({
+            unit: rawUnit,
+            unitPrice: Number(row.price_per_unit),
+            basisQuantity: row.basis_quantity === null ? null : Number(row.basis_quantity),
+          })
+        : null;
+    const enteredPriceSatang = enteredPriceBaht === null
+      ? null
+      : Math.round(enteredPriceBaht * 100);
     return {
       sourceId: sourceByRawMessageId.get(row.raw_message_id) ?? null,
       accountabilityRoundId: row.accountability_round_id ?? null,
@@ -1185,6 +1200,12 @@ function adaptRows(
       unit: row.unit,
       quantity: row.quantity === null ? null : Number(row.quantity),
       transactionType: row.transaction_type,
+      enteredPriceSatang:
+        enteredPriceSatang !== null
+        && Number.isSafeInteger(enteredPriceSatang)
+        && enteredPriceSatang >= 0
+          ? enteredPriceSatang
+          : null,
       sessionIssues: sessionIssues.get(row.session_id),
     };
   });

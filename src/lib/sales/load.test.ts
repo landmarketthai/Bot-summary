@@ -376,14 +376,38 @@ describe("P1 loader", () => {
     // The withdrawal row says 120.00 while the auto-seeded price says 110.00.
     expect(report.blocked[0].status).toBe("VALUE_BLOCKED");
     expect(report.blocked[0].reasons).toContain("central_price_conflict");
+    expect(report.blocked[0]).toMatchObject({
+      enteredPriceSatang: 12_000,
+      valueStatus: "PENDING_REVIEW",
+      pendingReviewSalesSatang: 72_000,
+    });
+    expect(report.allMarkets.totalSalesSatang).toBe(72_000);
   });
 
   test("an admin-set price that a withdrawal contradicts is still authoritative", async () => {
-    const report = await loadSalesReport(fakeSupabase(baseFixture()), DATE);
-    // baseFixture: admin price 120.00 set_by admin:je, withdrawal also 120.00 —
-    // and an admin decision is never treated as a conflict regardless.
-    expect(report.markets[0].rows[0].centralPriceSatang).toBe(12_000);
-    expect(report.markets[0].rows[0].status).toBe("TRUSTED");
+    const report = await loadSalesReport(fakeSupabase(baseFixture({
+      centralPrices: [{
+        product_key: "หมอนทอง",
+        unit_key: "โล",
+        business_date: DATE,
+        price_satang: 11_000,
+        set_by: "admin:je",
+        set_reason: "approved correction",
+        created_at: "2026-07-25T01:00:00.000Z",
+        updated_at: "2026-07-25T01:00:00.000Z",
+      }],
+    })), DATE);
+    const result = report.markets[0].rows[0];
+    expect(result).toMatchObject({
+      centralPriceSatang: 11_000,
+      enteredPriceSatang: 12_000,
+      expectedSalesSatang: 66_000,
+      pendingReviewSalesSatang: null,
+      adjustmentSatang: -6_000,
+      valueStatus: "CONFIRMED",
+      status: "TRUSTED",
+    });
+    expect(report.allMarkets.totalSalesSatang).toBe(66_000);
   });
 
   test("a missing central price blocks value but keeps the quantity", async () => {
@@ -395,6 +419,12 @@ describe("P1 loader", () => {
     expect(report.blocked[0].status).toBe("VALUE_BLOCKED");
     expect(report.blocked[0].soldQuantity).toBe(6);
     expect(report.blocked[0].reasons).toContain("missing_central_price");
+    expect(report.blocked[0]).toMatchObject({
+      enteredPriceSatang: 12_000,
+      valueStatus: "PENDING_REVIEW",
+      pendingReviewSalesSatang: 72_000,
+    });
+    expect(report.allMarkets.totalSalesSatang).toBe(72_000);
   });
 
   test("a row whose LINE source cannot be resolved is blocked, not merged", async () => {

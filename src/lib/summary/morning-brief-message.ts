@@ -10,7 +10,6 @@ import type {
   MorningBriefPurchaseGroup,
   MorningBriefPurchaseItem,
   MorningBriefReport,
-  MorningBriefSalesReviewItem,
 } from "@/lib/summary/morning-brief";
 
 export const MORNING_BRIEF_TITLE = "🌅 สรุปเช้า";
@@ -112,42 +111,19 @@ function buildPurchaseBlocks(report: MorningBriefReport): string[] {
 
 function buildSalesBlock(report: MorningBriefReport): string {
   const sales = report.sales;
-  const amountLabel = sales.valueAuthoritative ? "ยอดขายรวม" : "⚠️ ยอดที่ยืนยันแล้ว";
-  const lines = [
+  const totalLabel = sales.excludedFromSalesCount > 0
+    ? "ยอดขายรวมที่คำนวณได้ (บางส่วน)"
+    : "ยอดขายรวม";
+  return [
     "💰 ยอดขาย",
-    `${amountLabel} ${satangToBahtText(sales.confirmedSalesSatang)} บาท`,
-    `✅ ยืนยันได้ ${sales.trustedCount} รายการ • ⚠️ รอตรวจ ${sales.unresolvedCount} รายการ`,
-  ];
-  if (sales.soldOutCount > 0) {
-    lines.push(`✅ ถือว่าขายหมดเพราะไม่มีรายการคืน — ${sales.soldOutCount} รายการ`);
-  }
-  return lines.join("\n");
-}
-
-function salesReviewSection(label: string, items: readonly MorningBriefSalesReviewItem[]): string {
-  const byMarket = new Map<string, string[]>();
-  for (const item of items) {
-    const names = byMarket.get(item.marketLabel) ?? [];
-    names.push(`${boundedProductName(item.productName)} (${displayUnit(item.unit)})`);
-    byMarket.set(item.marketLabel, names);
-  }
-  const lines = [`${label} — ${items.length} รายการ`];
-  for (const [market, names] of byMarket) lines.push(`• ${market}: ${wrapNames(names, 140).join("\n  ")}`);
-  return lines.join("\n");
-}
-
-function buildSalesReviewBlock(report: MorningBriefReport): string | null {
-  const items = report.sales.reviewItems ?? [];
-  if (items.length === 0) return null;
-  const price = items.filter((item) => item.reasons.includes("central_price_conflict"));
-  const missingReturn = items.filter((item) => !item.reasons.includes("central_price_conflict") && item.reasons.includes("product_return_absent"));
-  const known = new Set([...price, ...missingReturn]);
-  const other = items.filter((item) => !known.has(item));
-  const sections = [`⚠️ รายละเอียดรอตรวจ — ${items.length} รายการ`];
-  if (price.length) sections.push(salesReviewSection("ราคากลางขัดแย้ง", price));
-  if (missingReturn.length) sections.push(salesReviewSection("หลักฐานคืนของสินค้ายังยืนยันไม่ได้", missingReturn));
-  if (other.length) sections.push(salesReviewSection("ต้องตรวจข้อมูลเพิ่มเติม", other));
-  return sections.join("\n\n");
+    `${totalLabel} ${satangToBahtText(sales.totalSalesSatang)} บาท`,
+    `ยอดยืนยันแล้ว ${satangToBahtText(sales.confirmedSalesSatang)} บาท`,
+    `ยอดรอตรวจ ${satangToBahtText(sales.pendingReviewSalesSatang)} บาท`,
+    `ปรับราคา ${satangToBahtText(sales.adjustmentSatang)} บาท`,
+    `ปัญหาราคา ${sales.priceIssueCount} รายการ`,
+    `คืน/คืนเสียไม่ครบ ${sales.incompleteReturnIssueCount} รายการ`,
+    `ไม่รวมในยอด ${sales.excludedFromSalesCount} รายการ`,
+  ].join("\n");
 }
 
 function displayPrice(satang: number): string {
@@ -185,9 +161,6 @@ export function buildMorningBriefBlocks(report: MorningBriefReport): string[] {
     buildSalesBlock(report),
   ];
   blocks.push(buildHouseStockBlock(report));
-
-  const review = buildSalesReviewBlock(report);
-  if (review) blocks.push(review);
   return blocks;
 }
 

@@ -7,8 +7,8 @@ import { centralPriceMapKey } from "@/lib/white-sheet/pricing";
  * P1 Daily Sales — the pure calculator.
  *
  * It answers exactly four questions for one business date: how much product was
- * sold, what that is worth at the central selling price, per market / per
- * product / across all markets, and which of those results cannot be trusted.
+ * sold, what can be valued now, per market / per product / across all markets,
+ * and which values are confirmed, pending review, or unavailable.
  *
  * It is NOT cash, slips, transfers, reconciliation, purchase, cost or profit.
  * Nothing in this file may read daily_summaries, settlement or slip data, and
@@ -17,7 +17,9 @@ import { centralPriceMapKey } from "@/lib/white-sheet/pricing";
  * Per market / product / unit:
  *
  *   sold_quantity  = W − R − D          (withdrawal − good return − damaged return)
- *   expected_sales = sold_quantity × authoritative central selling price
+ *   confirmed_sales = sold_quantity × authoritative central selling price
+ *   pending_sales   = best-known quantity × usable final/entered price
+ *   total_sales     = confirmed_sales + pending_sales
  *
  * Absence of a return row means the corresponding return quantity is zero
  * ONLY when the round has no persisted return document at all — a genuine
@@ -28,7 +30,8 @@ import { centralPriceMapKey } from "@/lib/white-sheet/pricing";
  *   - a return with no withdrawal is not a negative sale
  *   - R + D > W is not a negative quantity
  *   - structurally invalid rows never contribute a number
- *   - trusted quantity with no resolvable central price yields no value
+ *   - trusted quantity with neither a central price nor one usable entered
+ *     price yields no value
  *
  * Precision: quantity is carried as integer milli-units (3 dp, the canonical
  * quantity precision) and money as integer satang. Each atomic market/product/
@@ -48,6 +51,9 @@ export const SESSION_PLACEHOLDER_PRODUCT = "(ทั้งชุดรายก�
 export const SESSION_PLACEHOLDER_UNIT = "-";
 
 export type SalesRowStatus = "TRUSTED" | "VALUE_BLOCKED" | "QUANTITY_BLOCKED";
+
+/** Monetary usability is separate from quantity/value verification status. */
+export type SalesValueStatus = "CONFIRMED" | "PENDING_REVIEW" | "UNAVAILABLE";
 
 /**
  * Why a row (or the whole scope) is not trusted. Ordered by how it is produced:
@@ -137,6 +143,11 @@ export interface SalesSourceRow {
   unit: string | null;
   quantity: number | null;
   transactionType: string;
+  /**
+   * Usable entered withdrawal price after unit normalization, in satang.
+   * Returns and rows without a valid entered price carry null/undefined.
+   */
+  enteredPriceSatang?: number | null;
   /** Session-level integrity findings from the loader (parser errors, item-count mismatch). */
   sessionIssues?: readonly SalesBlockReason[];
 }
@@ -156,8 +167,8 @@ export interface SalesCalculationInput {
   roundMarketLabels?: ReadonlyMap<string, string>;
   /**
    * Rounds whose ชั่งคืน is known to be unfinished: a return document is open,
-   * or one was sent and refused. Their identities keep their arithmetic — the
-   * withdrawal really was issued — but they may never be called sold out.
+   * or one was sent and refused. Known W/R/D evidence remains visible, but sold
+   * quantity is not final and its calculable money stays pending review.
    */
   incompleteReturnRounds?: ReadonlySet<string>;
   /**
@@ -182,8 +193,16 @@ export interface SalesIdentityRow {
   damagedReturnQuantity: number;
   /** null whenever the quantity itself is blocked — never a substituted zero. */
   soldQuantity: number | null;
+  /** Entered withdrawal price, or the quantity-weighted average when lines differ. */
+  enteredPriceSatang: number | null;
   centralPriceSatang: number | null;
+  /** Confirmed central-price value only. */
   expectedSalesSatang: number | null;
+  /** Best-known value awaiting price and/or return review; never also confirmed. */
+  pendingReviewSalesSatang: number | null;
+  /** Final-price value minus entered-price value for the same basis. Never added to total. */
+  adjustmentSatang: number;
+  valueStatus: SalesValueStatus;
   status: SalesRowStatus;
   reasons: SalesBlockReason[];
   /**
@@ -193,8 +212,8 @@ export interface SalesIdentityRow {
    */
   isSessionPlaceholder?: boolean;
   /**
-   * The round behind this identity has return evidence that never landed. The
-   * quantities below stand; the "no return row means sold out" reading does not.
+   * The round behind this identity has return evidence that never landed. W/R/D
+   * evidence stands, but sold quantity is null and provisional money stays pending.
    */
   returnEvidenceIncomplete?: boolean;
 }
@@ -228,11 +247,11 @@ export function isSoldOutByAbsentReturn(row: SalesIdentityRow): boolean {
  *
  * Quantity trust and value trust are INDEPENDENT. A missing or disputed central
  * price says nothing about how much product left the market, so a VALUE_BLOCKED
- * row still contributes its sold quantity — it only withholds money:
+ * row still contributes its sold quantity and may contribute pending money:
  *
- *   QUANTITY_BLOCKED  no quantity, no value
- *   VALUE_BLOCKED     quantity counts, value withheld
- *   TRUSTED           both count
+ *   QUANTITY_BLOCKED  no final quantity; return-pending rows may carry provisional value
+ *   VALUE_BLOCKED     quantity counts; value may be pending price review
+ *   TRUSTED           final quantity and confirmed value
  *
  * `expectedSalesSatang` therefore sums TRUSTED rows only. When
  * `valueAuthoritative` is false it is a confirmed-partial figure and must never
@@ -240,7 +259,14 @@ export function isSoldOutByAbsentReturn(row: SalesIdentityRow): boolean {
  * the quantity may then be reported as complete.
  */
 export interface SalesTotal {
+  /** Confirmed central-price value only. */
   expectedSalesSatang: number;
+  /** Calculable value awaiting price and/or return review. */
+  pendingReviewSalesSatang: number;
+  /** Exactly expectedSalesSatang + pendingReviewSalesSatang. */
+  totalSalesSatang: number;
+  /** Signed central-price correction versus entered-price value; informational only. */
+  adjustmentSatang: number;
   /** Every identity behind this subtotal has a trusted sold quantity. */
   quantityAuthoritative: boolean;
   /** …and a trusted value. Implies quantityAuthoritative. */
@@ -248,7 +274,7 @@ export interface SalesTotal {
   trustedRowCount: number;
   /** Quantity trusted, value withheld. Counted in quantity roll-ups. */
   valueBlockedRowCount: number;
-  /** Nothing usable. Excluded from every roll-up. */
+  /** Final quantity unavailable. May still carry provisional money. */
   quantityBlockedRowCount: number;
 }
 
@@ -359,6 +385,10 @@ interface IdentityAggregate {
   hasWithdrawal: boolean;
   hasGoodReturn: boolean;
   hasDamaged: boolean;
+  /** Sum of normalized withdrawal milli-quantity × that line's entered satang price. */
+  enteredWithdrawalValueNumerator: bigint;
+  hasUsableEnteredPrice: boolean;
+  hasUnpricedWithdrawal: boolean;
   reasons: Set<SalesBlockReason>;
 }
 
@@ -502,6 +532,9 @@ function marketIssuesFromSessions(
 function emptyTotal(): SalesTotal {
   return {
     expectedSalesSatang: 0,
+    pendingReviewSalesSatang: 0,
+    totalSalesSatang: 0,
+    adjustmentSatang: 0,
     quantityAuthoritative: true,
     valueAuthoritative: true,
     trustedRowCount: 0,
@@ -511,10 +544,17 @@ function emptyTotal(): SalesTotal {
 }
 
 /**
- * Fold one identity into a subtotal, keeping quantity trust and value trust
- * independent. A VALUE_BLOCKED row demotes only the money.
+ * Fold one identity into a subtotal, keeping confirmed and provisional money
+ * separate. Return-pending QUANTITY_BLOCKED rows may contribute provisional
+ * value, while other quantity blockers remain monetarily unavailable.
  */
 function accumulate(total: SalesTotal, row: SalesIdentityRow): void {
+  if (row.valueStatus === "PENDING_REVIEW") {
+    total.pendingReviewSalesSatang += row.pendingReviewSalesSatang ?? 0;
+  }
+  total.adjustmentSatang += row.adjustmentSatang;
+  total.totalSalesSatang = total.expectedSalesSatang + total.pendingReviewSalesSatang;
+
   if (row.status === "QUANTITY_BLOCKED") {
     total.quantityBlockedRowCount += 1;
     total.quantityAuthoritative = false;
@@ -527,6 +567,7 @@ function accumulate(total: SalesTotal, row: SalesIdentityRow): void {
     return;
   }
   total.expectedSalesSatang += row.expectedSalesSatang ?? 0;
+  total.totalSalesSatang = total.expectedSalesSatang + total.pendingReviewSalesSatang;
   total.trustedRowCount += 1;
 }
 
@@ -650,6 +691,9 @@ export function calculateSalesReport(input: SalesCalculationInput): SalesReport 
         hasWithdrawal: false,
         hasGoodReturn: false,
         hasDamaged: false,
+        enteredWithdrawalValueNumerator: BigInt(0),
+        hasUsableEnteredPrice: false,
+        hasUnpricedWithdrawal: false,
         reasons: new Set<SalesBlockReason>(),
       };
       aggregates.set(key, aggregate);
@@ -675,6 +719,17 @@ export function calculateSalesReport(input: SalesCalculationInput): SalesReport 
     if (bucket === "เบิก") {
       aggregate.withdrawn += converted;
       aggregate.hasWithdrawal = true;
+      const enteredPrice = row.enteredPriceSatang;
+      if (
+        typeof enteredPrice === "number"
+        && Number.isSafeInteger(enteredPrice)
+        && enteredPrice >= 0
+      ) {
+        aggregate.enteredWithdrawalValueNumerator += converted * BigInt(enteredPrice);
+        aggregate.hasUsableEnteredPrice = true;
+      } else {
+        aggregate.hasUnpricedWithdrawal = true;
+      }
     } else if (bucket === "คืน") {
       aggregate.goodReturn += converted;
       aggregate.hasGoodReturn = true;
@@ -711,31 +766,88 @@ export function calculateSalesReport(input: SalesCalculationInput): SalesReport 
       addReason(reasons, "product_return_absent");
     }
 
-    const quantityBlocked = reasons.size > 0;
+    const returnEvidenceIncomplete =
+      aggregate.accountabilityRoundId !== null
+      && incompleteRounds.has(aggregate.accountabilityRoundId);
+    const returnQuantityPending = reasons.has("product_return_absent") || returnEvidenceIncomplete;
+    const hardQuantityBlocked = [...reasons].some((reason) => reason !== "product_return_absent");
+    const quantityBlocked = hardQuantityBlocked || returnQuantityPending;
     const priceKey = centralPriceMapKey(aggregate.productName, aggregate.unit);
     const sold = aggregate.withdrawn - aggregate.goodReturn - aggregate.damaged;
     const priceConflicted = priceConflicts.has(priceKey);
+    const enteredPriceUsable =
+      aggregate.hasWithdrawal
+      && aggregate.hasUsableEnteredPrice
+      && !aggregate.hasUnpricedWithdrawal;
+    const enteredPriceSatang = enteredPriceUsable && aggregate.withdrawn > 0
+      ? Number(roundHalfUp(aggregate.enteredWithdrawalValueNumerator, aggregate.withdrawn))
+      : null;
 
     let centralPriceSatang: number | null = null;
     let expectedSalesSatang: number | null = null;
+    let pendingReviewSalesSatang: number | null = null;
+    let adjustmentSatang = 0;
+    let valueStatus: SalesValueStatus = "UNAVAILABLE";
     let status: SalesRowStatus = "TRUSTED";
 
-    if (quantityBlocked) {
+    const valueQuantity = reasons.has("product_return_absent") ? aggregate.withdrawn : sold;
+    const enteredValueSatang = !enteredPriceUsable
+      ? null
+      : aggregate.withdrawn === BigInt(0)
+        ? (valueQuantity === BigInt(0) ? 0 : null)
+        : Number(roundHalfUp(
+            valueQuantity * aggregate.enteredWithdrawalValueNumerator,
+            aggregate.withdrawn * QUANTITY_SCALE_PER_UNIT,
+          ));
+    const centralPrice = centralPrices.get(priceKey);
+    const centralValueSatang = centralPrice === undefined
+      ? null
+      : Number(roundHalfUp(valueQuantity * BigInt(centralPrice), QUANTITY_SCALE_PER_UNIT));
+
+    if (hardQuantityBlocked) {
       status = "QUANTITY_BLOCKED";
       if (priceConflicted) addReason(reasons, "central_price_conflict");
+    } else if (returnQuantityPending) {
+      status = "QUANTITY_BLOCKED";
+      if (priceConflicted) addReason(reasons, "central_price_conflict");
+      if (!priceConflicted && centralPrice !== undefined && centralValueSatang !== null) {
+        centralPriceSatang = centralPrice;
+        pendingReviewSalesSatang = centralValueSatang;
+        valueStatus = "PENDING_REVIEW";
+        if (enteredValueSatang !== null) {
+          adjustmentSatang = centralValueSatang - enteredValueSatang;
+        }
+      } else {
+        if (centralPrice === undefined) addReason(reasons, "missing_central_price");
+        if (enteredValueSatang !== null) {
+          pendingReviewSalesSatang = enteredValueSatang;
+          valueStatus = "PENDING_REVIEW";
+        }
+      }
     } else if (priceConflicted) {
       addReason(reasons, "central_price_conflict");
       status = "VALUE_BLOCKED";
+      if (enteredValueSatang !== null) {
+        pendingReviewSalesSatang = enteredValueSatang;
+        valueStatus = "PENDING_REVIEW";
+      }
     } else {
-      const price = centralPrices.get(priceKey);
-      if (price === undefined) {
+      if (centralPrice === undefined) {
         addReason(reasons, "missing_central_price");
         status = "VALUE_BLOCKED";
+        if (enteredValueSatang !== null) {
+          pendingReviewSalesSatang = enteredValueSatang;
+          valueStatus = "PENDING_REVIEW";
+        }
       } else {
-        centralPriceSatang = price;
+        centralPriceSatang = centralPrice;
         expectedSalesSatang = Number(
-          roundHalfUp(sold * BigInt(price), QUANTITY_SCALE_PER_UNIT),
+          roundHalfUp(valueQuantity * BigInt(centralPrice), QUANTITY_SCALE_PER_UNIT),
         );
+        valueStatus = "CONFIRMED";
+        if (enteredValueSatang !== null) {
+          adjustmentSatang = expectedSalesSatang - enteredValueSatang;
+        }
       }
     }
 
@@ -750,13 +862,15 @@ export function calculateSalesReport(input: SalesCalculationInput): SalesReport 
       goodReturnQuantity: fromMilliQuantity(aggregate.goodReturn),
       damagedReturnQuantity: fromMilliQuantity(aggregate.damaged),
       soldQuantity: quantityBlocked ? null : fromMilliQuantity(sold),
+      enteredPriceSatang,
       centralPriceSatang,
       expectedSalesSatang,
+      pendingReviewSalesSatang,
+      adjustmentSatang,
+      valueStatus,
       status,
       reasons: [...reasons],
-      returnEvidenceIncomplete:
-        aggregate.accountabilityRoundId !== null
-        && incompleteRounds.has(aggregate.accountabilityRoundId),
+      returnEvidenceIncomplete,
     };
   });
 
@@ -790,8 +904,12 @@ export function calculateSalesReport(input: SalesCalculationInput): SalesReport 
       goodReturnQuantity: 0,
       damagedReturnQuantity: 0,
       soldQuantity: null,
+      enteredPriceSatang: null,
       centralPriceSatang: null,
       expectedSalesSatang: null,
+      pendingReviewSalesSatang: null,
+      adjustmentSatang: 0,
+      valueStatus: "UNAVAILABLE",
       status: "QUANTITY_BLOCKED",
       reasons: [...audit.reasons],
       isSessionPlaceholder: true,
@@ -842,10 +960,10 @@ export function calculateSalesReport(input: SalesCalculationInput): SalesReport 
     }
     accumulate(product.total, row);
     // Quantity roll-up takes every identity whose quantity is trusted, which
-    // includes VALUE_BLOCKED ones: a missing central price must not erase a sold
-    // quantity that was already proven. The money is withheld instead — the
-    // breakdown carries a null value for that market, and the product's
-    // expectedSalesSatang stays a TRUSTED-only sum flagged as partial.
+    // includes VALUE_BLOCKED ones: a missing or disputed central price must not
+    // erase a sold quantity that was already proven. Confirmed money remains a
+    // TRUSTED-only sum; a usable entered-price value is kept separately as
+    // pending review, while a row with no usable price contributes no money.
     if (row.status !== "QUANTITY_BLOCKED") {
       product.soldQuantity += row.soldQuantity ?? 0;
       product.markets.push({
