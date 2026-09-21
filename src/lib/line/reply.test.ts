@@ -244,7 +244,7 @@ describe("buildWeighSessionSummary — category grouping (presentation only)", (
     const prefixed = { ...BORROW_ITEM, product_name: "เพิ่มหมอนทอง" };
     const solo = buildWeighSessionSummary(makeSession({ items: [prefixed] }));
     const withSibling = buildWeighSessionSummary(makeSession({
-      items: [prefixed, { ...BORROW_ITEM, product_name: "หมอนทอง" }],
+      items: [prefixed, { ...BORROW_ITEM, item_number: 2, product_name: "หมอนทอง" }],
     }));
     expect(solo).toContain("❓ ไม่จัดหมวด");
     expect(withSibling).toContain("❓ ไม่จัดหมวด");
@@ -252,8 +252,8 @@ describe("buildWeighSessionSummary — category grouping (presentation only)", (
     // And no row may be totalled under one category but printed under none:
     // both items appear, and the two subtotals add up to the section total.
     // ทุเรียน sorts first, so the sibling leads and the prefixed name follows.
-    expect(withSibling).toContain("1. หมอนทอง");
-    expect(withSibling).toContain("2. เพิ่มหมอนทอง");
+    expect(withSibling).toContain("2. หมอนทอง");
+    expect(withSibling).toContain("1. เพิ่มหมอนทอง");
     expect(withSibling).toContain("รวมทุเรียน 1,000.00 บาท");
     expect(withSibling).toContain("รวมไม่จัดหมวด 1,000.00 บาท");
     expect(withSibling).toContain("รวมเบิก: 2,000.00 บาท");
@@ -288,6 +288,16 @@ describe("buildWeighSessionSummary — category grouping (presentation only)", (
     expect(numbers).toEqual([1, 2, 3]);
     // …and the durian pair, typed second and third, is what leads the section.
     expect(result.indexOf("1. ทุเรียน")).toBeLessThan(result.indexOf("3. เห็ดนางฟ้า"));
+  });
+
+  it("preserves original item numbers when category grouping changes print order", () => {
+    const unknown16 = { ...BORROW_ITEM, item_number: 16, product_name: "ลูกพลุน" };
+    const known19 = { ...BORROW_ITEM, item_number: 19, product_name: "ลูกพลับ" };
+    const result = buildWeighSessionSummary(makeSession({ items: [unknown16, known19] }));
+    expect(result).toContain("19. ลูกพลับ");
+    expect(result).toContain("16. ลูกพลุน");
+    expect(result.indexOf("19. ลูกพลับ")).toBeLessThan(result.indexOf("16. ลูกพลุน"));
+    expect(result).not.toContain("1. ลูกพลับ");
   });
 
   it("keeps grouping for a document that still fits", () => {

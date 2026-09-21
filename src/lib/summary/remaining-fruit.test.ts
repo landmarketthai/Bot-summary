@@ -570,6 +570,12 @@ describe("QA/test-market exclusion (P0)", () => {
   });
 });
 
+describe("PRODUCT_ALIASES — กล้วยน้ำหว้า spelling", () => {
+  test("maps to canonical กล้วยน้ำว้า", () => {
+    expect(normalizeProductName("กล้วยน้ำหว้า")).toBe("กล้วยน้ำว้า");
+  });
+});
+
 describe("PRODUCT_ALIASES — อะโวคาโด spellings", () => {
   // Required by the alias map's own rule: every entry gets a regression test.
   // Added 2026-08-15 from the Production duplicate incident — แทน — ราชพฤก sent
