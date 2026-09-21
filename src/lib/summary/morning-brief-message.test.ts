@@ -77,7 +77,7 @@ describe("Morning Decision Brief", () => {
     expect(message).toContain("ผัก / สมุนไพร / เครื่องประกอบอาหาร — 11 รายการ");
     expect(message).toContain("ซื้อ11");
     expect(message).toContain("ปลา / อาหารแห้ง / ของแห้ง — 1 รายการ");
-    expect(message).toContain("แผนซื้อ: ยังประเมินไม่ได้ 2 รายการ\n• รอข้อมูลคืน/คืนเสีย 2 รายการ");
+    expect(message).toContain("• ข้อมูลแผนซื้อยังไม่ครบ 2 รายการ");
     expect(message).not.toContain("ตรวจ1");
     expect(message).not.toContain("รายการคืน/คืนเสียของรอบยังไม่สมบูรณ์");
     expect(message).not.toContain("+อีก");
@@ -175,6 +175,29 @@ describe("Morning Decision Brief", () => {
     expect(message).not.toMatch(/ 0 รายการ/);
     expect(message).not.toContain("⚠️ ข้อมูลที่ต้องตรวจ");
   });
+
+  test("review block is one flat, plain-language list with the PDF pointer last", () => {
+    const base = report();
+    const message = buildMorningBriefMessage(report({
+      purchasePlanning: {
+        ...base.purchasePlanning,
+        unknown: group(purchaseItems("ตรวจ", 1, "ผลไม้", ["return_incomplete"])),
+      },
+      sales: { ...base.sales, priceIssueCount: 4, incompleteReturnIssueCount: 3, excludedFromSalesCount: 0 },
+    }));
+    expect(message.endsWith([
+      "⚠️ ข้อมูลที่ต้องตรวจ",
+      "• รอตรวจราคา 4 รายการ",
+      "• รอข้อมูลคืน/คืนเสีย 3 รายการ",
+      "• ข้อมูลแผนซื้อยังไม่ครบ 1 รายการ",
+      "",
+      "รายละเอียดดูใน PDF",
+    ].join("\n"))).toBe(true);
+    expect(message).not.toContain("ยังประเมินไม่ได้");
+    expect(message).not.toContain("ไม่รวมในยอด");
+    expect(message).not.toMatch(/^ยอดขาย$/m);
+    expect(message.match(/รอข้อมูลคืน\/คืนเสีย/g)).toHaveLength(1);
+  });
 });
 
 /** Every string a react-pdf element tree would render, without laying out a PDF. */
@@ -225,10 +248,10 @@ describe("Morning Brief LINE layout — Production 2026-09-07 regression", () =>
 
   test("incomplete-return items are one summary line, not 14 product lines", () => {
     const joined = buildMorningBriefMessages(heavy).join("\n");
-    expect(joined).toContain("แผนซื้อ: ยังประเมินไม่ได้ 14 รายการ\n• รอข้อมูลคืน/คืนเสีย 14 รายการ");
+    expect(joined).toContain("• ข้อมูลแผนซื้อยังไม่ครบ 14 รายการ");
     expect(joined).not.toContain("รายการคืน/คืนเสียของรอบยังไม่สมบูรณ์");
     for (const name of unknownNames) expect(joined).not.toContain(name);
-    expect(joined).not.toContain("ยังประเมินไม่ได้ —");
+    expect(joined).not.toContain("ยังประเมินไม่ได้");
   });
 
   test("chunking limits still hold and actionable purchase names are not dropped", () => {

@@ -1,7 +1,6 @@
 import { formatThaiDate } from "@/lib/date";
 import { satangToBahtText } from "@/lib/sales/calculate";
 import { formatQuantity } from "@/lib/summary/remaining-fruit";
-import type { PurchaseUncertaintyReason } from "@/lib/summary/purchase-planning";
 import {
   LINE_REPLY_MAX_MESSAGES,
 } from "@/lib/summary/line-chunking";
@@ -23,20 +22,6 @@ function boundedProductName(name: string): string {
   if (codePoints.length <= PRODUCT_NAME_MAX_CODE_POINTS) return name;
   return `${codePoints.slice(0, PRODUCT_NAME_MAX_CODE_POINTS - 1).join("")}…`;
 }
-const REASON_LABELS: Record<PurchaseUncertaintyReason, string> = {
-  unattributed_round: "ยังผูกรอบเบิกไม่ได้",
-  return_incomplete: "รายการคืน/คืนเสียของรอบยังไม่สมบูรณ์",
-  return_missing: "ยังไม่มีข้อมูลคืนครบ",
-  product_return_absent: "ยังยืนยันรายการคืนของสินค้านี้ไม่ได้",
-  return_not_round_tagged: "รายการคืนยังไม่ผูกรอบ",
-  session_integrity: "ข้อมูลต้นทางหรือจำนวนรายการไม่ครบ",
-  returns_exceed_withdrawal: "ยอดคืนมากกว่ายอดเบิก",
-  no_withdrawal: "ไม่พบยอดเบิกสำหรับรายการนี้",
-  invalid_quantity: "จำนวนสินค้าไม่ถูกต้อง",
-  unknown_transaction_type: "ประเภทรายการไม่รู้จัก",
-  unattributable_withdrawal: "รายการเบิกยังระบุตัวตนไม่ครบ",
-};
-
 function groupByCategory<T extends { category: string }>(items: readonly T[]): Map<string, T[]> {
   const groups = new Map<string, T[]>();
   for (const item of items) {
@@ -83,8 +68,8 @@ function purchaseGroupBlock(icon: string, label: string, group: MorningBriefPurc
 }
 
 /**
- * Actionable purchase groups only. "ยังประเมินไม่ได้" is summarized by reason in
- * the review block; its per-product detail lives in the PDF, never in LINE.
+ * Actionable purchase groups only. Unassessable items are one count in the
+ * review block; their per-product detail lives in the PDF, never in LINE.
  */
 function buildPurchaseBlocks(report: MorningBriefReport): string[] {
   const { strong, surplus, reduce } = report.purchasePlanning;
@@ -112,47 +97,23 @@ function buildSalesBlock(report: MorningBriefReport): string {
   return lines.join("\n");
 }
 
-const RETURN_REASONS: ReadonlySet<PurchaseUncertaintyReason> = new Set([
-  "return_incomplete",
-  "return_missing",
-  "product_return_absent",
-  "return_not_round_tagged",
-]);
-const RETURN_REVIEW_LABEL = "รอข้อมูลคืน/คืนเสีย";
-
-function countLines(counts: Iterable<readonly [string, number]>): string[] {
-  return [...counts].filter(([, count]) => count > 0).map(([label, count]) => `• ${label} ${count} รายการ`);
-}
-
 /**
- * Compact review summary: counts by reason, never product or market names.
- * Each unassessable purchase item is counted once, under its first reason.
+ * One flat list of counts, one line per issue kind, never product or market
+ * names. Unassessable purchase items get a single line — their reasons (often
+ * the same return gap already counted for sales) stay in the PDF.
  */
 function buildReviewBlock(report: MorningBriefReport): string | null {
   const sales = report.sales;
-  const salesLines = countLines([
+  const lines = ([
     ["รอตรวจราคา", sales.priceIssueCount],
-    [RETURN_REVIEW_LABEL, sales.incompleteReturnIssueCount],
+    ["รอข้อมูลคืน/คืนเสีย", sales.incompleteReturnIssueCount],
     ["ไม่รวมในยอด", sales.excludedFromSalesCount],
-  ]);
-
-  const unknown = report.purchasePlanning.unknown;
-  const byReason = new Map<string, number>();
-  for (const item of unknown.items ?? []) {
-    const reason = item.uncertaintyReasons[0];
-    const label = !reason
-      ? "ยังระบุสาเหตุไม่ได้"
-      : RETURN_REASONS.has(reason) ? RETURN_REVIEW_LABEL : REASON_LABELS[reason];
-    byReason.set(label, (byReason.get(label) ?? 0) + 1);
-  }
-
-  const sections: string[] = [];
-  if (salesLines.length > 0) sections.push(["ยอดขาย", ...salesLines].join("\n"));
-  if (unknown.count > 0) {
-    sections.push([`แผนซื้อ: ยังประเมินไม่ได้ ${unknown.count} รายการ`, ...countLines(byReason)].join("\n"));
-  }
-  if (sections.length === 0) return null;
-  return ["⚠️ ข้อมูลที่ต้องตรวจ (รายละเอียดใน PDF)", ...sections].join("\n");
+    ["ข้อมูลแผนซื้อยังไม่ครบ", report.purchasePlanning.unknown.count],
+  ] as const)
+    .filter(([, count]) => count > 0)
+    .map(([label, count]) => `• ${label} ${count} รายการ`);
+  if (lines.length === 0) return null;
+  return ["⚠️ ข้อมูลที่ต้องตรวจ", ...lines, "", "รายละเอียดดูใน PDF"].join("\n");
 }
 
 function displayPrice(satang: number): string {
