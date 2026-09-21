@@ -72,58 +72,87 @@ function actionableCategorySection(items: readonly MorningBriefPurchaseItem[]): 
   return [`${items[0]?.category ?? "อื่นๆ"} — ${items.length} รายการ`, ...wrapNames(names)].join("\n");
 }
 
-function unknownCategorySection(items: readonly MorningBriefPurchaseItem[]): string {
-  const lines = [`${items[0]?.category ?? "อื่นๆ"} — ${items.length} รายการ`];
-  for (const item of items) {
-    const reasons = item.uncertaintyReasons.length > 0
-      ? item.uncertaintyReasons.map((reason) => REASON_LABELS[reason]).join(", ")
-      : "ยังระบุสาเหตุไม่ได้";
-    lines.push(`• ${boundedProductName(item.productName)} (${displayUnit(item.unit)}) — ${reasons}`);
-  }
-  return lines.join("\n");
-}
-
-function purchaseGroupBlock(
-  icon: string,
-  label: string,
-  group: MorningBriefPurchaseGroup,
-  unknown = false,
-): string {
+function purchaseGroupBlock(icon: string, label: string, group: MorningBriefPurchaseGroup): string {
   const header = `${icon} ${label} — ${group.count} รายการ`;
   const details = group.items ?? [];
   if (details.length === 0) {
     return group.productNames.length > 0 ? `${header}\n${group.productNames.map(boundedProductName).join(", ")}` : header;
   }
-  const sections = [...groupByCategory(details).values()].map((items) =>
-    unknown ? unknownCategorySection(items) : actionableCategorySection(items));
+  const sections = [...groupByCategory(details).values()].map(actionableCategorySection);
   return [header, ...sections].join("\n\n");
 }
+
+/**
+ * Actionable purchase groups only. "ยังประเมินไม่ได้" is summarized by reason in
+ * the review block; its per-product detail lives in the PDF, never in LINE.
+ */
 function buildPurchaseBlocks(report: MorningBriefReport): string[] {
-  const { strong, surplus, reduce, unknown } = report.purchasePlanning;
-  return [
-    "🛒 แผนซื้อของ",
-    purchaseGroupBlock("🟢", "ควรซื้อเพิ่ม", strong),
-    purchaseGroupBlock("🟠", "ยังไม่ควรซื้อเพิ่ม", surplus),
-    purchaseGroupBlock("🔴", "ควรลดการซื้อ", reduce),
-    purchaseGroupBlock("⚠️", "ยังประเมินไม่ได้", unknown, true),
-  ];
+  const { strong, surplus, reduce } = report.purchasePlanning;
+  const groups: string[] = [];
+  if (strong.count > 0) groups.push(purchaseGroupBlock("🟢", "ควรซื้อเพิ่ม", strong));
+  if (surplus.count > 0) groups.push(purchaseGroupBlock("🟠", "ยังไม่ควรซื้อเพิ่ม", surplus));
+  if (reduce.count > 0) groups.push(purchaseGroupBlock("🔴", "ควรลดการซื้อ", reduce));
+  return ["🛒 แผนซื้อของ", ...(groups.length > 0 ? groups : ["ยังไม่มีรายการแนะนำ"])];
 }
 
+/** Money only, and always the first body block so it lands in Part 1. Zero lines are omitted. */
 function buildSalesBlock(report: MorningBriefReport): string {
   const sales = report.sales;
   const totalLabel = sales.excludedFromSalesCount > 0
     ? "ยอดขายรวมที่คำนวณได้ (บางส่วน)"
     : "ยอดขายรวม";
-  return [
-    "💰 ยอดขาย",
-    `${totalLabel} ${satangToBahtText(sales.totalSalesSatang)} บาท`,
-    `ยอดยืนยันแล้ว ${satangToBahtText(sales.confirmedSalesSatang)} บาท`,
-    `ยอดรอตรวจ ${satangToBahtText(sales.pendingReviewSalesSatang)} บาท`,
-    `ปรับราคา ${satangToBahtText(sales.adjustmentSatang)} บาท`,
-    `ปัญหาราคา ${sales.priceIssueCount} รายการ`,
-    `คืน/คืนเสียไม่ครบ ${sales.incompleteReturnIssueCount} รายการ`,
-    `ไม่รวมในยอด ${sales.excludedFromSalesCount} รายการ`,
-  ].join("\n");
+  const lines = ["💰 ภาพรวมเงิน", `${totalLabel} ${satangToBahtText(sales.totalSalesSatang)} บาท`];
+  if (sales.pendingReviewSalesSatang !== 0) {
+    lines.push(
+      `ยอดยืนยันแล้ว ${satangToBahtText(sales.confirmedSalesSatang)} บาท`,
+      `ยอดรอตรวจ ${satangToBahtText(sales.pendingReviewSalesSatang)} บาท`,
+    );
+  }
+  if (sales.adjustmentSatang !== 0) lines.push(`ปรับราคา ${satangToBahtText(sales.adjustmentSatang)} บาท`);
+  return lines.join("\n");
+}
+
+const RETURN_REASONS: ReadonlySet<PurchaseUncertaintyReason> = new Set([
+  "return_incomplete",
+  "return_missing",
+  "product_return_absent",
+  "return_not_round_tagged",
+]);
+const RETURN_REVIEW_LABEL = "รอข้อมูลคืน/คืนเสีย";
+
+function countLines(counts: Iterable<readonly [string, number]>): string[] {
+  return [...counts].filter(([, count]) => count > 0).map(([label, count]) => `• ${label} ${count} รายการ`);
+}
+
+/**
+ * Compact review summary: counts by reason, never product or market names.
+ * Each unassessable purchase item is counted once, under its first reason.
+ */
+function buildReviewBlock(report: MorningBriefReport): string | null {
+  const sales = report.sales;
+  const salesLines = countLines([
+    ["รอตรวจราคา", sales.priceIssueCount],
+    [RETURN_REVIEW_LABEL, sales.incompleteReturnIssueCount],
+    ["ไม่รวมในยอด", sales.excludedFromSalesCount],
+  ]);
+
+  const unknown = report.purchasePlanning.unknown;
+  const byReason = new Map<string, number>();
+  for (const item of unknown.items ?? []) {
+    const reason = item.uncertaintyReasons[0];
+    const label = !reason
+      ? "ยังระบุสาเหตุไม่ได้"
+      : RETURN_REASONS.has(reason) ? RETURN_REVIEW_LABEL : REASON_LABELS[reason];
+    byReason.set(label, (byReason.get(label) ?? 0) + 1);
+  }
+
+  const sections: string[] = [];
+  if (salesLines.length > 0) sections.push(["ยอดขาย", ...salesLines].join("\n"));
+  if (unknown.count > 0) {
+    sections.push([`แผนซื้อ: ยังประเมินไม่ได้ ${unknown.count} รายการ`, ...countLines(byReason)].join("\n"));
+  }
+  if (sections.length === 0) return null;
+  return ["⚠️ ข้อมูลที่ต้องตรวจ (รายละเอียดใน PDF)", ...sections].join("\n");
 }
 
 function displayPrice(satang: number): string {
@@ -157,10 +186,12 @@ function buildHouseStockBlock(report: MorningBriefReport): string {
 export function buildMorningBriefBlocks(report: MorningBriefReport): string[] {
   const blocks = [
     `${MORNING_BRIEF_TITLE} — ${formatThaiDate(report.businessDate)}`,
-    ...buildPurchaseBlocks(report),
     buildSalesBlock(report),
+    ...buildPurchaseBlocks(report),
+    buildHouseStockBlock(report),
   ];
-  blocks.push(buildHouseStockBlock(report));
+  const review = buildReviewBlock(report);
+  if (review) blocks.push(review);
   return blocks;
 }
 

@@ -5,6 +5,7 @@ import type {
   MorningBriefReport,
 } from "./morning-brief";
 import { countCodePoints } from "./line-chunking";
+import { MorningBriefA4Doc } from "@/lib/pdf/MorningBriefA4Doc";
 import { buildMorningBriefMessage, buildMorningBriefMessages } from "./morning-brief-message";
 
 const BUSINESS_DATE = "2026-08-27";
@@ -70,14 +71,15 @@ function report(overrides: Partial<MorningBriefReport> = {}): MorningBriefReport
   };
 }
 describe("Morning Decision Brief", () => {
-  test("shows every categorized purchase item and unknown reason", () => {
+  test("shows every actionable purchase item and summarizes unknown items by reason", () => {
     const message = buildMorningBriefMessage(report());
     expect(message).toContain("🟢 ควรซื้อเพิ่ม — 12 รายการ");
     expect(message).toContain("ผัก / สมุนไพร / เครื่องประกอบอาหาร — 11 รายการ");
     expect(message).toContain("ซื้อ11");
     expect(message).toContain("ปลา / อาหารแห้ง / ของแห้ง — 1 รายการ");
-    expect(message).toContain("⚠️ ยังประเมินไม่ได้ — 2 รายการ");
-    expect(message).toContain("ตรวจ1 (แพค) — รายการคืน/คืนเสียของรอบยังไม่สมบูรณ์");
+    expect(message).toContain("แผนซื้อ: ยังประเมินไม่ได้ 2 รายการ\n• รอข้อมูลคืน/คืนเสีย 2 รายการ");
+    expect(message).not.toContain("ตรวจ1");
+    expect(message).not.toContain("รายการคืน/คืนเสียของรอบยังไม่สมบูรณ์");
     expect(message).not.toContain("+อีก");
   });
 
@@ -87,9 +89,9 @@ describe("Morning Decision Brief", () => {
     expect(message).toContain("ยอดยืนยันแล้ว 21,740.74 บาท");
     expect(message).toContain("ยอดรอตรวจ 720.00 บาท");
     expect(message).toContain("ปรับราคา -10.00 บาท");
-    expect(message).toContain("ปัญหาราคา 2 รายการ");
-    expect(message).toContain("คืน/คืนเสียไม่ครบ 1 รายการ");
-    expect(message).toContain("ไม่รวมในยอด 1 รายการ");
+    expect(message).toContain("• รอตรวจราคา 2 รายการ");
+    expect(message).toContain("• รอข้อมูลคืน/คืนเสีย 1 รายการ");
+    expect(message).toContain("• ไม่รวมในยอด 1 รายการ");
   });
 
   test("does not dump sales review products, markets, or reason codes into LINE", () => {
@@ -115,7 +117,7 @@ describe("Morning Decision Brief", () => {
     }));
 
     expect(messages).toHaveLength(1);
-    expect(messages[0]).toContain("ปัญหาราคา 2 รายการ");
+    expect(messages[0]).toContain("• รอตรวจราคา 2 รายการ");
     expect(messages[0]).not.toContain("สินค้าที่มีชื่อยาวมาก");
     expect(messages[0]).not.toContain("Part ");
   });
@@ -150,5 +152,96 @@ describe("Morning Decision Brief", () => {
     const joined = messages.join("\n");
     expect(joined).toContain("สินค้า150");
     expect(joined).not.toContain("+อีก");
+  });
+
+  test("zero counters and zero money lines are not shown", () => {
+    const base = report();
+    const empty = group([]);
+    const message = buildMorningBriefMessage(report({
+      purchasePlanning: { ...base.purchasePlanning, unknown: empty },
+      sales: {
+        ...base.sales,
+        totalSalesSatang: 2_174_074,
+        pendingReviewSalesSatang: 0,
+        adjustmentSatang: 0,
+        priceIssueCount: 0,
+        incompleteReturnIssueCount: 0,
+        excludedFromSalesCount: 0,
+      },
+    }));
+    expect(message).toContain("💰 ภาพรวมเงิน\nยอดขายรวม 21,740.74 บาท");
+    expect(message).not.toContain("ยอดรอตรวจ");
+    expect(message).not.toContain("ปรับราคา");
+    expect(message).not.toMatch(/ 0 รายการ/);
+    expect(message).not.toContain("⚠️ ข้อมูลที่ต้องตรวจ");
+  });
+});
+
+/** Every string a react-pdf element tree would render, without laying out a PDF. */
+function pdfText(node: unknown): string {
+  if (node === null || node === undefined || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(pdfText).join("\n");
+  const element = node as { type?: unknown; props?: Record<string, unknown> };
+  if (typeof element.type === "function") return pdfText((element.type as (props: unknown) => unknown)(element.props));
+  return pdfText(element.props?.children);
+}
+
+describe("Morning Brief LINE layout — Production 2026-09-07 regression", () => {
+  // Real failure: 98 actionable purchase items plus 14 dried-fish items whose
+  // round return was incomplete pushed ยอดขาย to Part 5/5, behind 14 lines of
+  // "รายการคืน/คืนเสียของรอบยังไม่สมบูรณ์".
+  const unknownNames = Array.from({ length: 14 }, (_, index) => `ปลาแห้งรอคืน${index + 1}`);
+  const heavy = report({
+    purchasePlanning: {
+      strong: group([
+        ...purchaseItems("ผักซื้อเพิ่มชื่อยาว", 74),
+        ...purchaseItems("ผลไม้ซื้อเพิ่ม", 6, "ผลไม้"),
+      ]),
+      surplus: group(purchaseItems("ผลไม้ยังไม่ซื้อ", 5, "ผลไม้")),
+      reduce: group(purchaseItems("ผลไม้ลดซื้อ", 13, "ผลไม้")),
+      unknown: group(unknownNames.map((productName) => ({
+        productName,
+        originalProductName: null,
+        category: "ปลา / อาหารแห้ง / ของแห้ง",
+        unit: "ถุง",
+        uncertaintyReasons: ["return_incomplete" as const],
+      }))),
+    },
+  });
+
+  test("financial overview is in Part 1 even when the message splits", () => {
+    const messages = buildMorningBriefMessages(heavy);
+    expect(messages.length).toBeGreaterThan(1);
+    expect(messages[0]).toContain("Part 1/");
+    expect(messages[0]).toContain("💰 ภาพรวมเงิน");
+    expect(messages[0]).toContain("ยอดขายรวมที่คำนวณได้ (บางส่วน) 22,460.74 บาท");
+    expect(messages[0]).toContain("ยอดยืนยันแล้ว 21,740.74 บาท");
+    expect(messages[0]).toContain("ยอดรอตรวจ 720.00 บาท");
+    const joined = messages.join("\n");
+    expect(joined.indexOf("💰 ภาพรวมเงิน")).toBeLessThan(joined.indexOf("🛒 แผนซื้อของ"));
+    expect(joined.indexOf("🏠 ของในบ้าน")).toBeLessThan(joined.indexOf("⚠️ ข้อมูลที่ต้องตรวจ"));
+  });
+
+  test("incomplete-return items are one summary line, not 14 product lines", () => {
+    const joined = buildMorningBriefMessages(heavy).join("\n");
+    expect(joined).toContain("แผนซื้อ: ยังประเมินไม่ได้ 14 รายการ\n• รอข้อมูลคืน/คืนเสีย 14 รายการ");
+    expect(joined).not.toContain("รายการคืน/คืนเสียของรอบยังไม่สมบูรณ์");
+    for (const name of unknownNames) expect(joined).not.toContain(name);
+    expect(joined).not.toContain("ยังประเมินไม่ได้ —");
+  });
+
+  test("chunking limits still hold and actionable purchase names are not dropped", () => {
+    const messages = buildMorningBriefMessages(heavy);
+    for (const message of messages) expect(countCodePoints(message)).toBeLessThanOrEqual(800);
+    expect(messages.join("\n")).toContain("ผักซื้อเพิ่มชื่อยาว74");
+    expect(messages.join("\n")).not.toContain("รายละเอียดมากเกินขีดจำกัด LINE");
+  });
+
+  test("the PDF still carries the per-product detail LINE no longer shows", () => {
+    const text = pdfText(MorningBriefA4Doc({ report: heavy, generatedAt: new Date("2026-09-08T01:00:00Z") }));
+    for (const name of unknownNames) expect(text).toContain(name);
+    expect(text).toContain("สาลี่");
+    expect(text).toContain("ยังไม่พบหลักฐานการคืนของสินค้านี้");
   });
 });
