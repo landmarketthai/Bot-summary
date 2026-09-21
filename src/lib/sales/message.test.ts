@@ -194,6 +194,45 @@ describe("P1 automatic message — executive summary", () => {
     expect(text).not.toContain(`ตลาดน้อย — ${SALES_VALUE_UNAVAILABLE}`);
   });
 
+  test("P4: pending-review money is labelled by review state, never under ยังไม่รวม", () => {
+    const built = calculateSalesReport({
+      businessDate: DATE,
+      rows: [
+        row({ quantity: 10, enteredPriceSatang: 12_000 }),
+        row({ productName: "มังคุด", quantity: 2, enteredPriceSatang: 5_000 }),
+      ],
+      centralPrices: PRICES,
+    });
+    const text = buildSalesAutoMessages(built).join("\n");
+
+    expect(text).toContain("ยอดขายรวม 1,300.00 บาท");
+    expect(text).toContain("รอตรวจราคา:\n• มังคุด");
+    const excludedSection = text.split(SALES_MARKET_EXCLUDED_HEADING)[1] ?? "";
+    expect(excludedSection).not.toContain("มังคุด");
+  });
+
+  test("return-pending money is shown under รอข้อมูลคืน, not ยังไม่รวม", () => {
+    const roundId = "round-return-pending";
+    const built = calculateSalesReport({
+      businessDate: DATE,
+      rows: [
+        row({ accountabilityRoundId: roundId, quantity: 10, enteredPriceSatang: 12_000 }),
+        row({ accountabilityRoundId: roundId, productName: "มังคุด", quantity: 5, enteredPriceSatang: 5_000 }),
+        row({ accountabilityRoundId: roundId, productName: "มังคุด", quantity: 1, transactionType: "คืน", sessionId: "s-return" }),
+      ],
+      centralPrices: new Map([
+        [centralPriceMapKey("หมอนทอง", "โล"), 12_000],
+        [centralPriceMapKey("มังคุด", "โล"), 5_000],
+      ]),
+      persistedReturnRounds: new Set([roundId]),
+    });
+    const text = buildSalesAutoMessages(built).join("\n");
+
+    expect(text).toContain("รอข้อมูลคืน:\n• หมอนทอง");
+    const excludedSection = text.split(SALES_MARKET_EXCLUDED_HEADING)[1] ?? "";
+    expect(excludedSection).not.toContain("หมอนทอง");
+  });
+
   test("a day-level blocker adds only a day-level caveat, not a product omission heading", () => {
     const text = buildSalesAutoBlocks(
       report(TRUSTED_ROWS, { scopeBlockers: [{ kind: "unresolved_pending_session", count: 1 }] }),

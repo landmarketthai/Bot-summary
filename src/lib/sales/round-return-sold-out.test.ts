@@ -101,7 +101,7 @@ describe("sold-out inference", () => {
     expect(isSoldOutByAbsentReturn(report.markets[0]!.rows[0]!)).toBe(true);
   });
 
-  test("Test 4 — a blocked return is NOT sold out, and keeps its quantities", () => {
+  test("Test 4 — a blocked return is NOT sold out and keeps provisional money", () => {
     const report = calculateSalesReport({
       businessDate: "2026-08-10",
       centralPrices: prices,
@@ -111,9 +111,16 @@ describe("sold-out inference", () => {
     const identity = report.markets[0]!.rows[0]!;
 
     expect(isSoldOutByAbsentReturn(identity)).toBe(false);
-    // The withdrawal really was issued: nothing about the arithmetic changes,
-    // and the row is not retroactively blocked.
-    expect(identity).toMatchObject({ withdrawnQuantity: 33, soldQuantity: 33, status: "TRUSTED" });
+    // The withdrawal value stays visible, but return uncertainty means neither
+    // sold quantity nor money is confirmed yet.
+    expect(identity).toMatchObject({
+      withdrawnQuantity: 33,
+      soldQuantity: null,
+      status: "QUANTITY_BLOCKED",
+      valueStatus: "PENDING_REVIEW",
+      expectedSalesSatang: null,
+      pendingReviewSalesSatang: 330_000,
+    });
   });
 
   test("Test 5 — a pending return is NOT sold out either", () => {

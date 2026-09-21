@@ -41,17 +41,23 @@ function report(overrides: Partial<MorningBriefReport> = {}): MorningBriefReport
       unknown: group(purchaseItems("ตรวจ", 2, "ผลไม้", ["return_incomplete"])),
     },
     sales: {
+      totalSalesSatang: 2_246_074,
       confirmedSalesSatang: 2_174_074,
+      pendingReviewSalesSatang: 72_000,
+      adjustmentSatang: -1_000,
       valueAuthoritative: false,
       trustedCount: 77,
       unresolvedCount: 3,
       soldOutCount: 50,
       priceConflictCount: 2,
       priceConflictMarketCount: 2,
+      priceIssueCount: 2,
+      incompleteReturnIssueCount: 1,
+      excludedFromSalesCount: 1,
       reviewItems: [
-        { marketLabel: "ตลาดเอ", productName: "มะละกอ", unit: "ลูก", status: "VALUE_BLOCKED", reasons: ["central_price_conflict"] },
-        { marketLabel: "ตลาดบี", productName: "มังคุด", unit: "โล", status: "VALUE_BLOCKED", reasons: ["central_price_conflict"] },
-        { marketLabel: "ตลาดเอ", productName: "สาลี่", unit: "ลูก", status: "QUANTITY_BLOCKED", reasons: ["product_return_absent"] },
+        { marketLabel: "ตลาดเอ", productName: "มะละกอ", unit: "ลูก", status: "VALUE_BLOCKED", valueStatus: "PENDING_REVIEW", reasons: ["central_price_conflict"], soldQuantity: 2, enteredPriceSatang: 3500, centralPriceSatang: null, confirmedSalesSatang: null, pendingReviewSalesSatang: 7000, adjustmentSatang: 0, returnEvidenceIncomplete: false },
+        { marketLabel: "ตลาดบี", productName: "มังคุด", unit: "โล", status: "VALUE_BLOCKED", valueStatus: "PENDING_REVIEW", reasons: ["central_price_conflict"], soldQuantity: 1, enteredPriceSatang: 6500, centralPriceSatang: null, confirmedSalesSatang: null, pendingReviewSalesSatang: 6500, adjustmentSatang: 0, returnEvidenceIncomplete: false },
+        { marketLabel: "ตลาดเอ", productName: "สาลี่", unit: "ลูก", status: "QUANTITY_BLOCKED", valueStatus: "UNAVAILABLE", reasons: ["product_return_absent"], soldQuantity: null, enteredPriceSatang: 1000, centralPriceSatang: null, confirmedSalesSatang: null, pendingReviewSalesSatang: null, adjustmentSatang: 0, returnEvidenceIncomplete: true },
       ],
     },
     houseStock: {
@@ -75,24 +81,43 @@ describe("Morning Decision Brief", () => {
     expect(message).not.toContain("+อีก");
   });
 
-  test("keeps sales labels unchanged", () => {
-    const partial = buildMorningBriefMessage(report());
-    expect(partial).toContain("⚠️ ยอดที่ยืนยันแล้ว 21,740.74 บาท");
-    expect(partial).not.toContain("ยอดขายรวม 21,740.74 บาท");
-    const authoritative = buildMorningBriefMessage(report({
-      sales: { ...report().sales, valueAuthoritative: true },
-    }));
-    expect(authoritative).toContain("ยอดขายรวม 21,740.74 บาท");
+  test("shows total, confirmed, pending, adjustment, and issue counts", () => {
+    const message = buildMorningBriefMessage(report());
+    expect(message).toContain("ยอดขายรวมที่คำนวณได้ (บางส่วน) 22,460.74 บาท");
+    expect(message).toContain("ยอดยืนยันแล้ว 21,740.74 บาท");
+    expect(message).toContain("ยอดรอตรวจ 720.00 บาท");
+    expect(message).toContain("ปรับราคา -10.00 บาท");
+    expect(message).toContain("ปัญหาราคา 2 รายการ");
+    expect(message).toContain("คืน/คืนเสียไม่ครบ 1 รายการ");
+    expect(message).toContain("ไม่รวมในยอด 1 รายการ");
   });
 
-  test("shows pending-review details by reason and market", () => {
+  test("does not dump sales review products, markets, or reason codes into LINE", () => {
     const message = buildMorningBriefMessage(report());
-    expect(message).toContain("⚠️ รายละเอียดรอตรวจ — 3 รายการ");
-    expect(message).toContain("ราคากลางขัดแย้ง — 2 รายการ");
-    expect(message).toContain("• ตลาดเอ: มะละกอ (ลูก)");
-    expect(message).toContain("หลักฐานคืนของสินค้ายังยืนยันไม่ได้ — 1 รายการ");
-    expect(message).toContain("สาลี่ (ลูก)");
+    expect(message).not.toContain("รายละเอียดรอตรวจ");
+    expect(message).not.toContain("ตลาดเอ: มะละกอ");
+    expect(message).not.toContain("สาลี่ (ลูก)");
     expect(message).not.toContain("central_price_conflict");
+  });
+
+  test("large sales error details stay compact and do not split the Morning Brief", () => {
+    const base = report();
+    const reviewItems = Array.from({ length: 300 }, (_, index) => ({
+      ...base.sales.reviewItems![0]!,
+      marketLabel: `ตลาดที่มีชื่อยาวมาก-${index}`,
+      productName: `สินค้าที่มีชื่อยาวมาก-${index}`,
+    }));
+    const empty = group([]);
+    const messages = buildMorningBriefMessages(report({
+      purchasePlanning: { strong: empty, surplus: empty, reduce: empty, unknown: empty },
+      sales: { ...base.sales, reviewItems },
+      houseStock: { status: "missing" },
+    }));
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toContain("ปัญหาราคา 2 รายการ");
+    expect(messages[0]).not.toContain("สินค้าที่มีชื่อยาวมาก");
+    expect(messages[0]).not.toContain("Part ");
   });
   test("shows House Stock product, quantity, price and value by category", () => {
     const message = buildMorningBriefMessage(report());

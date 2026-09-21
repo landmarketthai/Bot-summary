@@ -21,6 +21,7 @@ function qty(value: number): string {
 function reasonLabel(reason: string): string {
   const labels: Record<string, string> = {
     central_price_conflict: "ราคากลางขัดแย้ง - พบมากกว่า 1 ราคา",
+    missing_central_price: "ยังไม่มีราคากลาง",
     product_return_absent: "ยังไม่พบหลักฐานการคืนของสินค้านี้",
     return_incomplete: "หลักฐานคืนยังไม่ครบ",
     withdrawal_absent: "ไม่พบข้อมูลเบิก",
@@ -92,9 +93,10 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
   const stockItems = house.status === "available" ? (house.items ?? []) : [];
   const recon = report.reconciliation;
   const generatedText = new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Bangkok" }).format(generatedAt);
-  const salesMeta = sales.valueAuthoritative ? `ยืนยันแล้ว ${sales.trustedCount} รายการ` : `ยอดยืนยันบางส่วน • รอตรวจ ${sales.unresolvedCount} รายการ`;
+  const salesMeta = `ยืนยันแล้ว ${bahtFromSatang(sales.confirmedSalesSatang)} • รอตรวจ ${bahtFromSatang(sales.pendingReviewSalesSatang)} • ปรับราคา ${bahtFromSatang(sales.adjustmentSatang)} • ไม่รวม ${sales.excludedFromSalesCount} รายการ`;
   const reconMeta = recon?.status === "available" ? `ตรวจแล้ว ${recon.checkedSlipBaht.toLocaleString("en-US", { minimumFractionDigits: 2 })} บาท` : "ยังไม่มีข้อมูลครบ";
-  const alertCount = sales.unresolvedCount + (recon?.status === "available" ? recon.needsReviewCount : recon?.status === "missing" || recon?.status === "unavailable" ? 1 : 0);
+  const salesReviewCount = sales.reviewItems?.length ?? sales.unresolvedCount;
+  const alertCount = salesReviewCount + (recon?.status === "available" ? recon.needsReviewCount : recon?.status === "missing" || recon?.status === "unavailable" ? 1 : 0);
 
   return <Document title={`Morning Brief ${report.businessDate}`}>
     <Page size="A4" style={S.page} wrap>
@@ -104,7 +106,7 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
       </View>
 
       <View style={S.kpiGrid}>
-        <View style={S.kpi}><View style={S.kpiBox}><Text style={S.kpiLabel}>ยอดขายยืนยันได้เมื่อวาน</Text><Text style={S.kpiValue}>{bahtFromSatang(sales.confirmedSalesSatang)} บาท</Text><Text style={S.kpiMeta}>{salesMeta}</Text></View></View>
+        <View style={S.kpi}><View style={S.kpiBox}><Text style={S.kpiLabel}>{sales.excludedFromSalesCount > 0 ? "ยอดขายที่คำนวณได้ (บางส่วน)" : "ยอดขายรวมเมื่อวาน"}</Text><Text style={S.kpiValue}>{bahtFromSatang(sales.totalSalesSatang)} บาท</Text><Text style={S.kpiMeta}>{salesMeta}</Text></View></View>
         <View style={S.kpi}><View style={S.kpiBox}><Text style={S.kpiLabel}>มูลค่าคลังคงเหลือ</Text><Text style={S.kpiValue}>{house.status === "available" ? `${bahtFromSatang(house.totalValueSatang)} บาท` : "ยังไม่มีข้อมูล"}</Text><Text style={S.kpiMeta}>{house.status === "available" ? `${house.groupCount} SKU` : house.status === "missing" ? "ยังไม่ได้บันทึก House Stock" : "ข้อมูล House Stock ไม่พร้อม"}</Text></View></View>
         <View style={S.kpi}><View style={S.kpiBox}><Text style={S.kpiLabel}>ยอดส่งจริง</Text><Text style={S.kpiValue}>{recon?.status === "available" ? `${baht(recon.submittedTransferBaht)} บาท` : "ยังไม่มีข้อมูล"}</Text><Text style={S.kpiMeta}>{reconMeta}</Text></View></View>
         <View style={S.kpi}><View style={S.kpiBox}><Text style={S.kpiLabel}>ควรซื้อเพิ่ม</Text><Text style={S.kpiValue}>{report.purchasePlanning.strong.count} รายการ</Text><Text style={S.kpiMeta}>อ้างอิงยอดขาย + สต๊อก</Text></View></View>
@@ -143,11 +145,11 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
       <View style={S.section}>
         <Text style={S.sectionTitle}>3) ยอดขายเมื่อวาน - แยกตามตลาด</Text>
         <View style={S.table}>
-          <View style={S.tr} fixed><Cell width="27%" header>ตลาด</Cell><Cell width="24%" header right>ยอดขายยืนยันได้</Cell><Cell width="16%" header right>รอตรวจ</Cell><Cell width="16%" header right>ขายหมด</Cell><Cell width="17%" header>สถานะ</Cell></View>
+          <View style={S.tr} fixed><Cell width="22%" header>ตลาด</Cell><Cell width="18%" header right>ยอดรวม</Cell><Cell width="18%" header right>ยืนยันแล้ว</Cell><Cell width="16%" header right>ยอดรอตรวจ</Cell><Cell width="14%" header right>ปรับราคา</Cell><Cell width="12%" header>สถานะ</Cell></View>
           {(sales.markets ?? []).map((market, index) => <View style={S.tr} key={`${market.marketLabel}-${index}`} wrap={false}>
-            <Cell width="27%">{market.marketLabel}</Cell><Cell width="24%" right>{bahtFromSatang(market.confirmedSalesSatang)}</Cell><Cell width="16%" right>{market.unresolvedCount}</Cell><Cell width="16%" right>{market.soldOutCount} SKU</Cell><Cell width="17%">{market.valueAuthoritative ? "ยอดครบ" : "ยอดบางส่วน"}</Cell>
+            <Cell width="22%">{market.marketLabel}</Cell><Cell width="18%" right>{bahtFromSatang(market.totalSalesSatang)}</Cell><Cell width="18%" right>{bahtFromSatang(market.confirmedSalesSatang)}</Cell><Cell width="16%" right>{bahtFromSatang(market.pendingReviewSalesSatang)}</Cell><Cell width="14%" right>{bahtFromSatang(market.adjustmentSatang)}</Cell><Cell width="12%">{market.valueAuthoritative ? "ยอดครบ" : "รอตรวจ"}</Cell>
           </View>)}
-          <View style={S.tr} wrap={false}><Cell width="27%" total>รวม</Cell><Cell width="24%" total right>{bahtFromSatang(sales.confirmedSalesSatang)}</Cell><Cell width="16%" total right>{sales.unresolvedCount}</Cell><Cell width="16%" total right>{sales.soldOutCount} SKU</Cell><Cell width="17%" total>{sales.valueAuthoritative ? "ยอดครบ" : "ยอดบางส่วน"}</Cell></View>
+          <View style={S.tr} wrap={false}><Cell width="22%" total>รวม</Cell><Cell width="18%" total right>{bahtFromSatang(sales.totalSalesSatang)}</Cell><Cell width="18%" total right>{bahtFromSatang(sales.confirmedSalesSatang)}</Cell><Cell width="16%" total right>{bahtFromSatang(sales.pendingReviewSalesSatang)}</Cell><Cell width="14%" total right>{bahtFromSatang(sales.adjustmentSatang)}</Cell><Cell width="12%" total>{sales.valueAuthoritative ? "ยอดครบ" : "รอตรวจ"}</Cell></View>
         </View>
         <Text style={S.note}>“ขายหมด” = มีเบิก แต่ไม่มีทั้งคืนและคืนเสีย และไม่มีหลักฐานคืนค้าง; ถ้าข้อมูลยังไม่ครบจะไม่นับเป็นขายหมด</Text>
       </View>
@@ -165,10 +167,15 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
 
       <View style={S.section}>
         <Text style={S.sectionTitle}>5) รายการที่ยังต้องตรวจ</Text>
-        {sales.unresolvedCount === 0 && (recon?.status !== "available" || recon.needsReviewCount === 0) ? <Text>ไม่มีรายการที่ต้องตรวจ</Text> : null}
+        {(sales.reviewItems?.length ?? 0) === 0 && (recon?.status !== "available" || recon.needsReviewCount === 0) ? <Text>ไม่มีรายการที่ต้องตรวจ</Text> : null}
         {(sales.reviewItems ?? []).map((item, index) => <View style={S.alert} key={`${item.marketLabel}-${item.productName}-${index}`} wrap={false}>
           <Text style={{ fontWeight: "bold" }}>{item.marketLabel} • {item.productName} ({item.unit})</Text>
-          <Text style={S.muted}>{item.reasons.length ? item.reasons.map(reasonLabel).join(" • ") : item.status}</Text>
+          <Text>ขาย {item.soldQuantity == null ? "-" : qty(item.soldQuantity)} • ราคาเดิม {item.enteredPriceSatang == null ? "-" : bahtFromSatang(item.enteredPriceSatang)} • ราคากลาง {item.centralPriceSatang == null ? "-" : bahtFromSatang(item.centralPriceSatang)}</Text>
+          <Text>ยืนยันแล้ว {item.confirmedSalesSatang == null ? "-" : bahtFromSatang(item.confirmedSalesSatang)} • รอตรวจ {item.pendingReviewSalesSatang == null ? "-" : bahtFromSatang(item.pendingReviewSalesSatang)} • ปรับราคา {bahtFromSatang(item.adjustmentSatang)} บาท</Text>
+          <Text style={S.muted}>{[
+            ...item.reasons.map(reasonLabel),
+            ...(item.returnEvidenceIncomplete ? ["หลักฐานคืน/คืนเสียยังไม่ครบ"] : []),
+          ].join(" • ") || item.status}</Text>
         </View>)}
         {recon?.status === "available" ? recon.rows.filter((row) => row.status !== "matched").map((row, index) => <View style={S.alert} key={`recon-${row.market}-${index}`} wrap={false}>
           <Text style={{ fontWeight: "bold" }}>{row.market} • {reconStatus(row.status)}</Text>
@@ -182,12 +189,12 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
           <View style={S.tr} fixed><Cell width="30%" header>ข้อมูล</Cell><Cell width="20%" header>สถานะ</Cell><Cell width="50%" header>หมายเหตุ</Cell></View>
           <View style={S.tr}><Cell width="30%">แผนซื้อ</Cell><Cell width="20%">พร้อม</Cell><Cell width="50%">แสดง Buy / Hold / Reduce / ยังประเมินไม่ได้</Cell></View>
           <View style={S.tr}><Cell width="30%">คลังคงเหลือ</Cell><Cell width="20%">{house.status === "available" ? "พร้อม" : "ยังไม่พร้อม"}</Cell><Cell width="50%">{house.status === "available" ? "มีจำนวน ราคา และมูลค่ารายการ" : "ไม่เดาค่าหากไม่มี snapshot ที่เชื่อถือได้"}</Cell></View>
-          <View style={S.tr}><Cell width="30%">ยอดขาย</Cell><Cell width="20%">{sales.valueAuthoritative ? "พร้อม" : "พร้อมบางส่วน"}</Cell><Cell width="50%">{sales.valueAuthoritative ? "ยอดขายมีมูลค่าครบ" : "แสดงเฉพาะยอดที่ยืนยันได้ และแยกรอตรวจ"}</Cell></View>
+          <View style={S.tr}><Cell width="30%">ยอดขาย</Cell><Cell width="20%">{sales.valueAuthoritative ? "พร้อม" : "พร้อมบางส่วน"}</Cell><Cell width="50%">ยอดรวม = ยืนยันแล้ว + รอตรวจ; ปรับราคาแสดงแยกและไม่บวกซ้ำ</Cell></View>
           <View style={S.tr}><Cell width="30%">ยอดส่ง / สลิป</Cell><Cell width="20%">{recon?.status === "available" ? "พร้อม" : "ยังไม่พร้อม"}</Cell><Cell width="50%">{recon?.status === "available" ? "ใช้ reconciliation ที่คำนวณแล้ว" : "ไม่สร้างตัวเลขแทนข้อมูลที่ยังไม่มี"}</Cell></View>
         </View>
       </View>
 
-      <Text style={S.note}>รายงานนี้ใช้ข้อมูลจริงจากระบบเท่านั้น หากข้อมูลส่วนใดยังไม่ครบจะระบุสถานะรอตรวจ/ยังไม่มีข้อมูลแทนการประมาณค่า</Text>
+      <Text style={S.note}>รายงานนี้ใช้ข้อมูลจริงจากระบบเท่านั้น มูลค่าที่คำนวณได้จากราคาที่กรอกจะแสดงเป็นรอตรวจจนกว่าจะยืนยันราคากลาง; รายการที่ไม่มีราคาหรือจำนวนที่เชื่อถือได้จะไม่รวมในยอดเงิน</Text>
       <DataFooter generatedText={generatedText} />
     </Page>
   </Document>;

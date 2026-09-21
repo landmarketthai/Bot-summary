@@ -1,4 +1,5 @@
 import { isSoldOutByAbsentReturn, type SalesReport } from "@/lib/sales/calculate";
+import type { SalesValueStatus } from "@/lib/sales/calculate";
 import { PRODUCT_CODE_ENTRIES } from "@/lib/produce/product-code/dictionary";
 import { canonicalProduceProductIdentity } from "@/lib/produce/product-vocabulary";
 import type {
@@ -71,26 +72,46 @@ export interface MorningBriefSalesReviewItem {
   productName: string;
   unit: string;
   status: string;
+  valueStatus: SalesValueStatus;
   reasons: string[];
+  soldQuantity: number | null;
+  enteredPriceSatang: number | null;
+  centralPriceSatang: number | null;
+  confirmedSalesSatang: number | null;
+  pendingReviewSalesSatang: number | null;
+  adjustmentSatang: number;
+  returnEvidenceIncomplete: boolean;
 }
 
 export interface MorningBriefSalesMarket {
   marketLabel: string;
+  totalSalesSatang: number;
   confirmedSalesSatang: number;
+  pendingReviewSalesSatang: number;
+  adjustmentSatang: number;
   valueAuthoritative: boolean;
   trustedCount: number;
   unresolvedCount: number;
   soldOutCount: number;
+  priceIssueCount: number;
+  incompleteReturnIssueCount: number;
+  excludedFromSalesCount: number;
 }
 
 export interface MorningBriefSales {
+  totalSalesSatang: number;
   confirmedSalesSatang: number;
+  pendingReviewSalesSatang: number;
+  adjustmentSatang: number;
   valueAuthoritative: boolean;
   trustedCount: number;
   unresolvedCount: number;
   soldOutCount: number;
   priceConflictCount: number;
   priceConflictMarketCount: number;
+  priceIssueCount: number;
+  incompleteReturnIssueCount: number;
+  excludedFromSalesCount: number;
   reviewItems?: MorningBriefSalesReviewItem[];
   markets?: MorningBriefSalesMarket[];
 }
@@ -100,6 +121,12 @@ export function summarizeSales(report: SalesReport): MorningBriefSales {
   let soldOutCount = 0;
   let priceConflictCount = 0;
   const conflictMarkets = new Set<string>();
+  const rows = report.markets.flatMap((market) => market.rows);
+
+  const hasPriceIssue = (reasons: readonly string[]) =>
+    reasons.includes("central_price_conflict") || reasons.includes("missing_central_price");
+  const hasReturnIssue = (row: (typeof rows)[number]) =>
+    row.reasons.includes("product_return_absent") || Boolean(row.returnEvidenceIncomplete);
 
   for (const market of report.markets) {
     for (const row of market.rows) {
@@ -112,27 +139,47 @@ export function summarizeSales(report: SalesReport): MorningBriefSales {
   }
 
   return {
+    totalSalesSatang: report.allMarkets.totalSalesSatang,
     confirmedSalesSatang: report.allMarkets.expectedSalesSatang,
+    pendingReviewSalesSatang: report.allMarkets.pendingReviewSalesSatang,
+    adjustmentSatang: report.allMarkets.adjustmentSatang,
     valueAuthoritative: report.allMarkets.valueAuthoritative,
     trustedCount: report.allMarkets.trustedRowCount,
     unresolvedCount: report.allMarkets.valueBlockedRowCount + report.allMarkets.quantityBlockedRowCount,
     soldOutCount,
     priceConflictCount,
     priceConflictMarketCount: conflictMarkets.size,
+    priceIssueCount: rows.filter((row) => hasPriceIssue(row.reasons)).length,
+    incompleteReturnIssueCount: rows.filter(hasReturnIssue).length,
+    excludedFromSalesCount: rows.filter((row) => row.valueStatus === "UNAVAILABLE").length,
     markets: report.markets.map((market) => ({
       marketLabel: market.marketLabel,
+      totalSalesSatang: market.total.totalSalesSatang,
       confirmedSalesSatang: market.total.expectedSalesSatang,
+      pendingReviewSalesSatang: market.total.pendingReviewSalesSatang,
+      adjustmentSatang: market.total.adjustmentSatang,
       valueAuthoritative: market.total.valueAuthoritative,
       trustedCount: market.total.trustedRowCount,
       unresolvedCount: market.total.valueBlockedRowCount + market.total.quantityBlockedRowCount,
       soldOutCount: market.rows.filter(isSoldOutByAbsentReturn).length,
+      priceIssueCount: market.rows.filter((row) => hasPriceIssue(row.reasons)).length,
+      incompleteReturnIssueCount: market.rows.filter(hasReturnIssue).length,
+      excludedFromSalesCount: market.rows.filter((row) => row.valueStatus === "UNAVAILABLE").length,
     })),
-    reviewItems: report.blocked.map((row) => ({
+    reviewItems: rows.filter((row) => row.status !== "TRUSTED" || row.returnEvidenceIncomplete).map((row) => ({
       marketLabel: row.marketLabel,
       productName: morningBriefProductIdentity(row.productName, row.unit).productName,
       unit: row.unit,
       status: row.status,
+      valueStatus: row.valueStatus,
       reasons: [...row.reasons],
+      soldQuantity: row.soldQuantity,
+      enteredPriceSatang: row.enteredPriceSatang,
+      centralPriceSatang: row.centralPriceSatang,
+      confirmedSalesSatang: row.expectedSalesSatang,
+      pendingReviewSalesSatang: row.pendingReviewSalesSatang,
+      adjustmentSatang: row.adjustmentSatang,
+      returnEvidenceIncomplete: Boolean(row.returnEvidenceIncomplete),
     })),
   };
 }
