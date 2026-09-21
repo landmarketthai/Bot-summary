@@ -121,6 +121,9 @@ export const PRODUCT_ALIASES: Record<string, string> = {
   // identity; only misspellings of that old-stock identity fold into it.
   "ไชมัสเก่า": "ไซมัสเก่า",
   "ไซทัสเก่า": "ไซมัสเก่า",
+
+  // 2026-09-21: confirmed spelling variant of dictionary product ม02.
+  "กล้วยน้ำหว้า": "กล้วยน้ำว้า",
 };
 
 const KNOWN_PREFIX = "\u0E40\u0E1E\u0E34\u0E48\u0E21";

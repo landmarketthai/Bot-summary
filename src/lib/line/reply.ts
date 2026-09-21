@@ -279,7 +279,7 @@ export function buildWeighSessionSummary(session: WeighSession): string {
   const returnTotal    = sumItems(returnItems);
   const badReturnTotal = sumItems(badReturnItems);
 
-  const itemLine = (item: Item, i: number): string => {
+  const itemLine = (item: Item): string => {
     const qty   = item.quantity ?? 0;
     const unit  = item.unit ? ` ${item.unit}` : "";
     const total = lineTotal(item);
@@ -289,11 +289,11 @@ export function buildWeighSessionSummary(session: WeighSession): string {
     //   32 หัว × 20 บาท / 3 หัว = 213.33
     if (item.basis_quantity && item.basis_price != null) {
       const basisUnit = item.basis_unit ? ` ${item.basis_unit}` : "";
-      return `${i + 1}. ${item.product_name} ${fmt(qty)}${unit} × ${fmt(item.basis_price)} บาท / ${fmt(item.basis_quantity)}${basisUnit} = ${fmt(total)}`;
+      return `${item.item_number}. ${item.product_name} ${fmt(qty)}${unit} × ${fmt(item.basis_price)} บาท / ${fmt(item.basis_quantity)}${basisUnit} = ${fmt(total)}`;
     }
 
     const price = item.price_per_unit ?? 0;
-    return `${i + 1}. ${item.product_name} ${fmt(qty)}${unit} × ${fmt(price)} = ${fmt(total)}`;
+    return `${item.item_number}. ${item.product_name} ${fmt(qty)}${unit} × ${fmt(price)} = ${fmt(total)}`;
   };
 
   // Category is presentation only, derived at output time from the approved
@@ -339,12 +339,9 @@ export function buildWeighSessionSummary(session: WeighSession): string {
     })));
 
     const body: string[] = [];
-    // Numbering follows PRINT order, so the receipt always reads 1, 2, 3 top to
-    // bottom. Numbering by the item's original position instead would print
-    // "2." above "1." whenever a section spans categories, and "แก้ item 2"
-    // would point at a line above item 1. Within one category the items keep
-    // their typed order, so the sequence still tracks what the operator sent.
-    let printed = 0;
+    // Preserve the operator's original item_number across category grouping.
+    // The same number is used by validation/correction commands, so
+    // renumbering by print order makes the final receipt contradict the draft.
     for (const entry of breakdown[bucket].categories) {
       body.push(entry.heading);
       for (const item of items) {
@@ -352,8 +349,7 @@ export function buildWeighSessionSummary(session: WeighSession): string {
         // note on produceCategoryTotals. Diverging here once made an item
         // count toward a subtotal while printing under no category at all.
         if (resolveProduceCategory(item.product_name) !== entry.id) continue;
-        body.push(itemLine(item, printed));
-        printed += 1;
+        body.push(itemLine(item));
       }
       body.push(`รวม${entry.label} ${fmt(entry.totalSatang / 100)} บาท`);
     }
