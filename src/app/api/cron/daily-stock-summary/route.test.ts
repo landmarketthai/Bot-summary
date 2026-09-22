@@ -212,19 +212,20 @@ describe("daily stock summary cron — delivery", () => {
     expect(body.anomalyMarketCount).toBe(1);
     expect(body.hasAnomalies).toBe(true);
 
-    // One product message + one market-anomaly-detail message per target.
+    // Scheduled 08:00 output carries the business report + House Stock only;
+    // internal anomaly/remediation diagnostics stay out of LINE.
     expect(pushCalls.map((c) => c.to)).toEqual([
-      "Cgroup1", "Cgroup1", "Cgroup1",
-      "Cgroup2", "Cgroup2", "Cgroup2",
+      "Cgroup1", "Cgroup1",
+      "Cgroup2", "Cgroup2",
     ]);
     const text = pushCalls.filter((c) => c.to === "Cgroup1").map((c) => c.text).join("\n\n");
     expect(text).toContain("📦 สรุปของดีชั่งคืนประจำวัน");
     expect(text).toContain("🥭 ทุเรียน");
     expect(text).toContain("1. หมอนทอง — 281.1 กก.");
-    expect(text).toContain("⚠️ รอตรวจทั้งหมดจาก 1 ตลาด");
-    expect(text).toContain("⚠️ รายละเอียดข้อมูลผิดปกติ");
-    expect(text).toContain("ตลาดกี้ — หมอนทอง — กก.");
-    expect(text).toContain("ปัญหา: ไม่พบรายการเบิกที่ตรงกัน");
+    expect(text).not.toContain("⚠️ รอตรวจทั้งหมดจาก 1 ตลาด");
+    expect(text).not.toContain("⚠️ รายละเอียดข้อมูลผิดปกติ");
+    expect(text).not.toContain("ตลาดกี้ — หมอนทอง — กก.");
+    expect(text).not.toContain("ปัญหา: ไม่พบรายการเบิกที่ตรงกัน");
     expect(text).not.toContain("เฉลิม72 ผลไม้: แก้วมังกร");
   });
 
@@ -400,8 +401,8 @@ describe("daily stock summary cron — scheduled report date", () => {
     expect(text).toContain("📦 สรุปของดีชั่งคืนประจำวัน");
     expect(text).toContain("🥭 ทุเรียน");
     expect(text).toContain("หมอนทอง — 281.1 กก.");
-    expect(text).toContain("⚠️ รายละเอียดข้อมูลผิดปกติ");
-    expect(text).toContain("ปัญหา: ไม่พบรายการเบิกที่ตรงกัน");
+    expect(text).not.toContain("⚠️ รายละเอียดข้อมูลผิดปกติ");
+    expect(text).not.toContain("ปัญหา: ไม่พบรายการเบิกที่ตรงกัน");
     // … and no per-market detail block is appended.
     expect(text).not.toContain("เฉลิม72 ผลไม้: แก้วมังกร");
     expect(text).not.toContain("เหลือขายต่อ:");
@@ -479,7 +480,8 @@ describe("daily stock summary cron — debug mode", () => {
     expect(body.anomalyMarketCount).toBe(1);
     expect(body.hasAnomalies).toBe(true);
     expect(body.messages[0]).toContain("📦 สรุปของดีชั่งคืนประจำวัน");
-    expect(body.messages.join("\n\n")).toContain("⚠️ รายละเอียดข้อมูลผิดปกติ");
+    expect(body.messages.join("\n\n")).not.toContain("⚠️ รายละเอียดข้อมูลผิดปกติ");
+    expect(body.messages.join("\n\n")).not.toContain("ปัญหา:");
     expect(pushCalls).toHaveLength(0);
     expect(body.goodReturnMessages).toEqual(body.messages);
     expect(body.houseStockMessages[0]).toContain("สต๊อกคงเหลือในบ้าน");
@@ -653,7 +655,7 @@ describe("daily stock summary cron — accountability round identity", () => {
     expect(messages).not.toContain("วัดทุ่งลานนา");
   });
 
-  test("a refused return is named as incomplete, not left silent", async () => {
+  test("a refused return stays internal and does not dump diagnostics into the 08:00 message", async () => {
     pendingResult = {
       data: [{
         accountability_round_id: SAP_PHUN,
@@ -667,18 +669,17 @@ describe("daily stock summary cron — accountability round identity", () => {
     const body = await (await GET(request("?debug=1&date=2026-08-10"))).json();
     const messages = body.messages.join("\n");
 
-    expect(messages).toContain("⚠️ ตลาดที่มีเบิกแต่ยังไม่มีรายการคืนที่บันทึกสำเร็จ");
-    expect(messages).toContain("ทรัพย์พัน2 — มิ้น");
-    expect(messages).toContain("พบการส่งชั่งคืน แต่ยังบันทึกไม่สำเร็จ เนื่องจากรายการต้องแก้ไข");
-    // The reconciled round is NOT listed: its return landed.
+    expect(messages).not.toContain("⚠️ ตลาดที่มีเบิกแต่ยังไม่มีรายการคืนที่บันทึกสำเร็จ");
+    expect(messages).not.toContain("ทรัพย์พัน2 — มิ้น");
+    expect(messages).not.toContain("พบการส่งชั่งคืน แต่ยังบันทึกไม่สำเร็จ เนื่องจากรายการต้องแก้ไข");
     expect(messages).not.toContain("ทุ่งลานนา — ดำ");
   });
 
-  test("with no return evidence the round is reported as simply not returned", async () => {
+  test("with no return evidence the round diagnostics stay out of the scheduled LINE message", async () => {
     const body = await (await GET(request("?debug=1&date=2026-08-10"))).json();
     const messages = body.messages.join("\n");
 
-    expect(messages).toContain("ทรัพย์พัน2 — มิ้น");
-    expect(messages).toContain("เบิก 1 รายการ แต่ยังไม่พบรายการชั่งคืนที่บันทึกสำเร็จ");
+    expect(messages).not.toContain("ทรัพย์พัน2 — มิ้น");
+    expect(messages).not.toContain("เบิก 1 รายการ แต่ยังไม่พบรายการชั่งคืนที่บันทึกสำเร็จ");
   });
 });

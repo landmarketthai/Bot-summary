@@ -206,14 +206,15 @@ export function buildDailyGoodReturnValueReport(businessDate: string, rows: read
   return { businessDate, products: [...products.values()].sort(productOrder), anomalies: anomalies.sort(anomalyOrder), hasActivity: cells.size > 0 };
 }
 
-function productBlock(row: GoodReturnValueProduct, index: number): string {
+function productBlock(row: GoodReturnValueProduct, index: number, includeDiagnostics = true): string {
   const unit = displayUnit(row.unit); const base = `${index}. ${row.productName} — ${formatQuantity(row.quantity)} ${unit}`;
-  if (!row.valuedQuantity) return `${base}\n   ⚠️ รอตรวจทั้งหมดจาก ${row.anomalyMarketCount} ตลาด`;
-  if (row.unvaluedQuantity) return `${base} • ${satangToBahtText(row.valueSatang)} บาท\n   ⚠️ รอตรวจ ${formatQuantity(row.unvaluedQuantity)} ${unit} จาก ${row.anomalyMarketCount} ตลาด`;
+  if (!row.valuedQuantity) return includeDiagnostics ? `${base}\n   ⚠️ รอตรวจทั้งหมดจาก ${row.anomalyMarketCount} ตลาด` : base;
+  if (row.unvaluedQuantity) return includeDiagnostics ? `${base} • ${satangToBahtText(row.valueSatang)} บาท\n   ⚠️ รอตรวจ ${formatQuantity(row.unvaluedQuantity)} ${unit} จาก ${row.anomalyMarketCount} ตลาด` : `${base} • ${satangToBahtText(row.valueSatang)} บาท`;
   // Every quantity this product carries valued cleanly, but at least one OTHER
   // market for the same product+unit is invalid-only (contributed zero
-  // quantity, not a trustworthy zero) — still flagged, amount stays unknown.
-  if (row.anomalyMarketCount) return `${base} • ${satangToBahtText(row.valueSatang)} บาท\n   ⚠️ มีข้อมูลผิดปกติจาก ${row.anomalyMarketCount} ตลาด (จำนวนไม่ทราบ)`;
+  // quantity, not a trustworthy zero) — still flagged internally, but the
+  // scheduled business-only view can suppress that diagnostic text.
+  if (row.anomalyMarketCount && includeDiagnostics) return `${base} • ${satangToBahtText(row.valueSatang)} บาท\n   ⚠️ มีข้อมูลผิดปกติจาก ${row.anomalyMarketCount} ตลาด (จำนวนไม่ทราบ)`;
   return `${base} • ${satangToBahtText(row.valueSatang)} บาท`;
 }
 const ANOMALY_HEADING = "⚠️ รายละเอียดข้อมูลผิดปกติ";
@@ -232,11 +233,11 @@ const NAME_LIST_CAP = 15;
 /** Oversized LINE-fallback names must never be copied into the summary. */
 const NAME_LIST_MAX_CODE_POINTS = 60;
 
-function formatCategoryTotal(row: GoodReturnCategoryTotal): string {
+function formatCategoryTotal(row: GoodReturnCategoryTotal, includeDiagnostics = true): string {
   const heading = reportCategoryHeading(row.id);
   const money = satangToBahtText(row.confirmedSatang);
   const items = `${row.itemCount} รายการ`;
-  if (row.unresolvedItemCount > 0) {
+  if (row.unresolvedItemCount > 0 && includeDiagnostics) {
     return `${heading} — ยืนยันได้ ${money} บาท • ${items}\n   ⚠️ มีข้อมูลรอตรวจ ${row.unresolvedItemCount} รายการ`;
   }
   return `${heading} — ${money} บาท • ${items}`;
@@ -253,38 +254,40 @@ function cappedNameList(names: readonly string[], indent: string): string[] {
   return lines;
 }
 
-function categorySummaryBlock(report: GoodReturnValueReport): string | null {
+function categorySummaryBlock(report: GoodReturnValueReport, includeDiagnostics = true): string | null {
   const totals = goodReturnCategoryTotals(report.products);
   if (!totals.length) return null;
   const lines = ["💰 สรุปมูลค่าของดีชั่งคืนแยกตามหมวด"];
   for (const row of totals) {
-    lines.push(formatCategoryTotal(row));
+    lines.push(formatCategoryTotal(row, includeDiagnostics));
     if (row.id === UNCATEGORIZED_CATEGORY_ID) {
       const names = report.products.filter((product) => dictionaryCategoryFor(product.productName) === UNCATEGORIZED_CATEGORY_ID).map((product) => product.productName);
       lines.push(...cappedNameList(names, "   "));
     }
   }
-  const unresolved = report.products.filter(categoryRowNeedsReview);
-  if (unresolved.length) {
-    lines.push(`⚠️ มีข้อมูลรอตรวจ ${unresolved.length} รายการ`);
-    lines.push(...cappedNameList(unresolved.map((row) => row.productName), ""));
+  if (includeDiagnostics) {
+    const unresolved = report.products.filter(categoryRowNeedsReview);
+    if (unresolved.length) {
+      lines.push(`⚠️ มีข้อมูลรอตรวจ ${unresolved.length} รายการ`);
+      lines.push(...cappedNameList(unresolved.map((row) => row.productName), ""));
+    }
   }
   return lines.join("\n");
 }
 
-function summaryBlock(report: GoodReturnValueReport, omittedProductCount: number, omittedAnomalyCount: number): string {
+function summaryBlock(report: GoodReturnValueReport, omittedProductCount: number, omittedAnomalyCount: number, includeDiagnostics = true): string {
   // A product is only "fully calculated" when nothing about it is flagged —
   // anomalyMarketCount > 0 means some market's evidence is still untrustworthy,
   // even when that market contributed zero to unvaluedQuantity (unknown, not zero).
   const complete = report.products.filter((row) => !row.unvaluedQuantity && !row.anomalyMarketCount).length;
   const anomalyMarketCount = new Set(report.anomalies.map((row) => row.marketName)).size;
   return [
-    omittedProductCount ? `⚠️ ไม่ได้แสดงสินค้าบางส่วน ${omittedProductCount} รายการ เนื่องจากขีดจำกัด LINE` : null,
-    omittedAnomalyCount ? `⚠️ ไม่ได้แสดงรายละเอียดผิดปกติ ${omittedAnomalyCount} รายการ เนื่องจากขีดจำกัด LINE` : null,
-    categorySummaryBlock(report),
+    includeDiagnostics && omittedProductCount ? `⚠️ ไม่ได้แสดงสินค้าบางส่วน ${omittedProductCount} รายการ เนื่องจากขีดจำกัด LINE` : null,
+    includeDiagnostics && omittedAnomalyCount ? `⚠️ ไม่ได้แสดงรายละเอียดผิดปกติ ${omittedAnomalyCount} รายการ เนื่องจากขีดจำกัด LINE` : null,
+    categorySummaryBlock(report, includeDiagnostics),
     `รวมมูลค่าของดีที่ยืนยันได้ ${satangToBahtText(confirmedGoodReturnTotalSatang(report.products))} บาท`,
     `✅ สินค้าที่คำนวณมูลค่าได้ครบ ${complete} รายการ`,
-    report.anomalies.length ? `⚠️ พบข้อมูลผิดปกติ ${report.anomalies.length} รายการ จาก ${anomalyMarketCount} ตลาด` : null,
+    includeDiagnostics && report.anomalies.length ? `⚠️ พบข้อมูลผิดปกติ ${report.anomalies.length} รายการ จาก ${anomalyMarketCount} ตลาด` : null,
   ].filter((line): line is string => Boolean(line)).join("\n\n");
 }
 function lines(entries: readonly Entry[]): string {
@@ -340,8 +343,9 @@ function rebalanceParts<T>(initialParts: readonly (readonly T[])[], renderPart: 
  */
 export function buildDailyGoodReturnValueMessages(
   report: GoodReturnValueReport,
-  options: { latest?: LatestDataLookup; hasIncompleteReturnEvidence?: boolean } = {},
+  options: { latest?: LatestDataLookup; hasIncompleteReturnEvidence?: boolean; includeDiagnostics?: boolean } = {},
 ): string[] {
+  const includeDiagnostics = options.includeDiagnostics ?? true;
   // An anomaly-only report (zero product rows, but invalid-only good-return
   // evidence still flagged) is neither a sold-out day nor a genuinely empty
   // one — it falls through to the normal render path below, which already
@@ -353,7 +357,9 @@ export function buildDailyGoodReturnValueMessages(
         return [[
           "📦 สรุปของดีชั่งคืนประจำวัน",
           `ข้อมูลวันที่ ${date}`,
-          "วันนี้ยังไม่มีของดีชั่งคืนจากตลาด\nมีรายการชั่งคืนที่ยังบันทึกไม่สำเร็จ จึงยังสรุปว่าขายหมดไม่ได้",
+          includeDiagnostics
+            ? "วันนี้ยังไม่มีของดีชั่งคืนจากตลาด\nมีรายการชั่งคืนที่ยังบันทึกไม่สำเร็จ จึงยังสรุปว่าขายหมดไม่ได้"
+            : "วันนี้ยังไม่มีของดีชั่งคืนจากตลาด",
         ].join("\n\n")];
       }
       // Withdrawals happened but nothing was weighed back — that is sold out, not missing data.
@@ -380,19 +386,21 @@ export function buildDailyGoodReturnValueMessages(
   // depends on the final part count, which packing itself determines).
   const initialProductParts: Entry[][] = []; let currentProduct: Entry[] = [];
   for (const [index, row] of report.products.entries()) {
-    const entry: Entry = { category: dictionaryCategoryFor(row.productName), block: productBlock(row, index + 1), shortened: false };
+    const entry: Entry = { category: dictionaryCategoryFor(row.productName), block: productBlock(row, index + 1, includeDiagnostics), shortened: false };
     if (currentProduct.length && countCodePoints(lines([...currentProduct, entry])) > GOOD_RETURN_READABLE_MAX_CODE_POINTS) { initialProductParts.push(currentProduct); currentProduct = []; }
     currentProduct.push(entry);
   }
   if (currentProduct.length) initialProductParts.push(currentProduct);
 
   const initialAnomalyParts: RowEntry[][] = []; let currentAnomaly: RowEntry[] = [];
-  for (const [index, row] of report.anomalies.entries()) {
-    const entry: RowEntry = { block: marketAnomalyBlock(row, index + 1), shortened: false };
-    if (currentAnomaly.length && countCodePoints([...currentAnomaly, entry].map((e) => e.block).join("\n\n")) > GOOD_RETURN_READABLE_MAX_CODE_POINTS) { initialAnomalyParts.push(currentAnomaly); currentAnomaly = []; }
-    currentAnomaly.push(entry);
+  if (includeDiagnostics) {
+    for (const [index, row] of report.anomalies.entries()) {
+      const entry: RowEntry = { block: marketAnomalyBlock(row, index + 1), shortened: false };
+      if (currentAnomaly.length && countCodePoints([...currentAnomaly, entry].map((e) => e.block).join("\n\n")) > GOOD_RETURN_READABLE_MAX_CODE_POINTS) { initialAnomalyParts.push(currentAnomaly); currentAnomaly = []; }
+      currentAnomaly.push(entry);
+    }
+    if (currentAnomaly.length) initialAnomalyParts.push(currentAnomaly);
   }
-  if (currentAnomaly.length) initialAnomalyParts.push(currentAnomaly);
 
   // Rebalance against the ACTUAL rendered text (real heading, real total
   // part count) so every multi-entry message is at or below the readability
@@ -435,12 +443,17 @@ export function buildDailyGoodReturnValueMessages(
   ];
 
   const messages = groups.map((g) => g.text);
-  const final = summaryBlock(report, omittedProductCount, omittedAnomalyCount); const last = messages[messages.length - 1]!;
-  // The summary only rides along on the final message when that stays within
-  // the readability target; otherwise it ships as its own short message
-  // (never dropped — this flow has no five-message cap).
-  if (countCodePoints(`${last}\n\n${final}`) <= GOOD_RETURN_READABLE_MAX_CODE_POINTS) messages[messages.length - 1] = `${last}\n\n${final}`;
-  else messages.push(final);
+  const final = summaryBlock(report, omittedProductCount, omittedAnomalyCount, includeDiagnostics);
+  if (messages.length === 0) {
+    messages.push(final);
+  } else {
+    const last = messages[messages.length - 1]!;
+    // The summary only rides along on the final message when that stays within
+    // the readability target; otherwise it ships as its own short message
+    // (never dropped — this flow has no five-message cap).
+    if (countCodePoints(`${last}\n\n${final}`) <= GOOD_RETURN_READABLE_MAX_CODE_POINTS) messages[messages.length - 1] = `${last}\n\n${final}`;
+    else messages.push(final);
+  }
   if (messages.some((message) => countCodePoints(message) > LINE_MESSAGE_MAX_CODE_POINTS)) throw new Error("daily good-return value message exceeds LINE limit");
   return messages;
 }

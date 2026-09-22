@@ -14,10 +14,6 @@ import {
 import { countUnresolvedPendingSessions } from "@/lib/sales/load";
 import { runDailyClosePreflight } from "@/lib/produce/preflight-service";
 import {
-  buildMissingReturnNotices,
-  buildPendingValidationNotice,
-} from "@/lib/summary/pending-validation-notice";
-import {
   loadRoundReturnStatuses,
   type RoundReturnStatus,
 } from "@/lib/produce/round-return-status";
@@ -197,16 +193,13 @@ export async function GET(req: NextRequest) {
       });
     }
   }
-  const pendingValidationNotice = buildPendingValidationNotice(unresolvedPendingCount);
-  // Per-round detail first, then the day-wide count. The count still covers
-  // documents no round can claim (a session that never opened, a parse that
-  // died before the market was known); the detail covers the ones it can.
-  const missingReturnNotices = buildMissingReturnNotices(roundStatuses);
-  const goodReturnMessages = [
-    ...buildDailyGoodReturnValueMessages(report, { latest, hasIncompleteReturnEvidence }),
-    ...missingReturnNotices,
-    ...(pendingValidationNotice ? [pendingValidationNotice] : []),
-  ];
+  // Keep readiness / return-integrity diagnostics in logs and debug metadata,
+  // but never push those internal remediation details to the 08:00 LINE audience.
+  const goodReturnMessages = buildDailyGoodReturnValueMessages(report, {
+    latest,
+    hasIncompleteReturnEvidence,
+    includeDiagnostics: false,
+  });
   const houseStockMessages = houseStockReport?.messages ?? buildNoHouseStockMessage(businessDate);
   const productCount = report.products.length;
   const incompleteMarketCount = new Set(stockSummary.incomplete.map((row) => row.marketName)).size;
