@@ -866,7 +866,7 @@ describe("processWhiteSheetCloseCommand HARD STOP", () => {
     expect(text).not.toContain("เงินเกิน");
   });
 
-  it("persists closing inputs but refuses trusted status for conflicting central price", async () => {
+  it("uses the entered round price when the legacy central price differs", async () => {
     const { supabase, cashEntries } = makeCloseDatabase({
       conflictingWatermelonPrice: 25,
     });
@@ -877,13 +877,12 @@ describe("processWhiteSheetCloseCommand HARD STOP", () => {
     });
 
     expect(outcome.persisted).toBe(true);
-    expect(outcome.trusted).toBe(false);
+    expect(outcome.trusted).toBe(true);
     expect(cashEntries.size).toBe(1);
     const text = outcome.replyMessages.join("\n");
-    expect(text).toContain("บันทึกข้อมูลปิดยอดแล้ว ✅");
-    expect(text).toContain(CENTRAL_PRICE_CONFLICT_WARNING_PREFIX);
-    expect(text).not.toContain("✅ ยอดตรง");
-    expect(text).not.toContain("เงินขาด");
-    expect(text).not.toContain("เงินเกิน");
+    expect(text).toContain("ยอดขายที่ควรได้ 332.50 บาท");
+    expect(text).toContain("เงินขาด 46.50 บาท");
+    expect(text).not.toContain(CENTRAL_PRICE_CONFLICT_WARNING_PREFIX);
+    expect(text).not.toContain("ยังไม่สามารถสรุปยอดตรง/ขาด/เกินได้");
   });
 });
