@@ -194,6 +194,22 @@ describe("daily stock summary cron — delivery", () => {
     expect(pushCalls).toHaveLength(0);
   });
 
+  test("manual target override isolates UAT from configured production targets", async () => {
+    produceResult = { data: produceRows(), error: null };
+    process.env.STOCK_SUMMARY_LINE_TARGETS = "Cproduction00001";
+
+    const res = await GET(request("?date=2026-07-25&target=CUatTarget00001"));
+    expect(res.status).toBe(200);
+    expect(pushCalls.length).toBeGreaterThan(0);
+    expect(pushCalls.every((call) => call.to === "CUatTarget00001")).toBe(true);
+  });
+
+  test("rejects malformed target override before loading or sending", async () => {
+    const res = await GET(request("?date=2026-07-25&target=bad-target"));
+    expect(res.status).toBe(400);
+    expect(pushCalls).toHaveLength(0);
+  });
+
   test("pushes the shared StockSummary snapshot to each configured target", async () => {
     produceResult = { data: produceRows(), error: null };
     process.env.STOCK_SUMMARY_LINE_TARGETS = "Cgroup1,Cgroup2";

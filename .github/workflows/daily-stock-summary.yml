@@ -20,6 +20,15 @@ on:
         description: "Optional business date override (YYYY-MM-DD). Leave blank for the previous business date."
         required: false
         type: string
+      target:
+        description: "Optional single LINE target override for UAT/manual runs."
+        required: false
+        type: string
+      debug:
+        description: "Preview messages without sending any LINE push."
+        required: false
+        type: boolean
+        default: true
 
 jobs:
   send:
@@ -28,10 +37,17 @@ jobs:
       - name: Call daily-stock-summary cron
         run: |
           URL="https://bot-summary.vercel.app/api/cron/daily-stock-summary"
+          QUERY=""
           if [ -n "${{ inputs.date }}" ]; then
-            URL="$URL?date=${{ inputs.date }}"
+            QUERY="?date=${{ inputs.date }}"
+          fi
+          if [ -n "${{ inputs.target }}" ]; then
+            if [ -n "$QUERY" ]; then QUERY="$QUERY&target=${{ inputs.target }}"; else QUERY="?target=${{ inputs.target }}"; fi
+          fi
+          if [ "${{ inputs.debug }}" = "true" ]; then
+            if [ -n "$QUERY" ]; then QUERY="$QUERY&debug=1"; else QUERY="?debug=1"; fi
           fi
           curl -sf --max-time 60 \
             -X GET \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "$URL"
+            "$URL$QUERY"
