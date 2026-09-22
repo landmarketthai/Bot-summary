@@ -3,7 +3,7 @@ import { normalizeProductName } from "@/lib/summary/remaining-fruit";
 import { baseTransactionType } from "@/lib/summary/transactions";
 import { classifyProduct } from "./category";
 import { centralPriceMapKey } from "./pricing";
-import { centralPriceConflictWarning, missingCentralPriceWarning } from "./warnings";
+import { centralPriceConflictWarning } from "./warnings";
 import type {
   DigitalWhiteSheetCalculation,
   DigitalWhiteSheetInput,
@@ -20,15 +20,20 @@ const MILLIQUANTITY_PER_UNIT = BigInt(1_000);
 
 interface ItemAggregate {
   marketKey: string;
+  accountabilityRoundId: string | null;
+  marketName: string | null;
   businessDate: string;
   normalizedProduct: string;
   normalizedUnit: string;
   withdrawn: bigint;
   goodReturn: bigint;
   damagedReturn: bigint;
-  /** Historical withdrawal unit prices seen on rows — informational only
-   * (BR-01: central daily price, not withdrawal-lot price, prices expected sales). */
+  /** Entered withdrawal prices are the round's sale-price evidence. */
   withdrawalUnitPrices: bigint[];
+  /** Sum of withdrawal milli-quantity × its own entered satang price. */
+  withdrawalValueNumerator: bigint;
+  /** At least one legacy withdrawal row has no usable entered price. */
+  hasUnpricedWithdrawal: boolean;
 }
 
 interface ItemCalculationParts {
@@ -107,11 +112,12 @@ function requireIdentity(value: string, field: string, rowIndex?: number): strin
 
 function groupKeyOf(
   marketKey: string,
+  accountabilityRoundId: string | null,
   businessDate: string,
   product: string,
   unit: string,
 ): string {
-  return JSON.stringify([marketKey, businessDate, product, unit]);
+  return JSON.stringify([marketKey, accountabilityRoundId, businessDate, product, unit]);
 }
 
 function groupLabel(group: ItemAggregate): string {
@@ -196,9 +202,18 @@ function buildItemCalculationParts(
       "invalid_quantity",
       rowIndex,
     );
-    const key = groupKeyOf(marketKey, businessDate, normalizedProduct, normalizedUnit);
+    const accountabilityRoundId = row.accountabilityRoundId?.trim() || null;
+    const key = groupKeyOf(
+      marketKey,
+      accountabilityRoundId,
+      businessDate,
+      normalizedProduct,
+      normalizedUnit,
+    );
     const group = groups.get(key) ?? {
       marketKey,
+      accountabilityRoundId,
+      marketName: row.marketName ?? null,
       businessDate,
       normalizedProduct,
       normalizedUnit,
@@ -206,15 +221,16 @@ function buildItemCalculationParts(
       goodReturn: BigInt(0),
       damagedReturn: BigInt(0),
       withdrawalUnitPrices: [],
+      withdrawalValueNumerator: BigInt(0),
+      hasUnpricedWithdrawal: false,
     };
 
     if (transactionType === "เบิก") {
       if (row.unitPrice === null) {
-        fail(
-          "missing_withdrawal_price",
-          `withdrawal price is required at row ${rowIndex}`,
-          { rowIndex, groupKey: key },
-        );
+        group.withdrawn += quantity;
+        group.hasUnpricedWithdrawal = true;
+        groups.set(key, group);
+        return;
       }
       const hasBasisQuantity = row.basisQuantity !== null && row.basisQuantity !== undefined;
       const hasBasisPrice = row.basisPrice !== null && row.basisPrice !== undefined;
@@ -245,7 +261,7 @@ function buildItemCalculationParts(
       );
       // basisQuantity/basisPrice are still structurally validated (a
       // persisted basis row must be internally consistent) even though
-      // central pricing no longer reads them for expected sales.
+      // expected-sales pricing remains tied to the persisted round evidence.
       const basisQuantity = hasBasisQuantity
         ? toScaledInteger(
             // basisQuantity is denominated in the same raw unit as the row
@@ -275,6 +291,7 @@ function buildItemCalculationParts(
         );
       }
       group.withdrawn += quantity;
+      group.withdrawalValueNumerator += quantity * unitPrice;
       group.withdrawalUnitPrices.push(unitPrice);
     } else if (transactionType === "คืน") {
       group.goodReturn += quantity;
@@ -287,7 +304,7 @@ function buildItemCalculationParts(
 
   const items: WhiteSheetItemCalculation[] = [];
   const warnings: string[] = [];
-  let expectedMilliSatang = BigInt(0);
+  let expectedSalesSatang = BigInt(0);
 
   for (const [key, group] of groups) {
     const sold = group.withdrawn - group.goodReturn - group.damagedReturn;
@@ -302,27 +319,32 @@ function buildItemCalculationParts(
     const category = classifyProduct(group.normalizedProduct);
     const distinctUnitPrices = distinctPrices(group.withdrawalUnitPrices);
 
-    // BR-01: central daily price is the sole trusted source for expected
-    // sales — never withdrawal-lot/FIFO price. Missing price fails closed:
-    // the group contributes 0 (never guessed) and a HARD-STOP warning names
-    // exactly which product/unit/date needs a central price. A price
-    // conflict (BR-01 seed rule: a withdrawal disagreed with the
-    // system-auto-seeded price and no admin has confirmed one yet) also
-    // fails closed, even if this market's own rows happen to match the
-    // disputed price — the identity is disputed for every market until an
-    // admin resolves it.
-    const priceKey = centralPriceMapKey(group.normalizedProduct, group.normalizedUnit);
-    const priceSatang = centralPrices.get(priceKey);
-    let expectedSales = BigInt(0);
-    if (priceConflicts.has(priceKey)) {
-      warnings.push(centralPriceConflictWarning(group.normalizedProduct, group.normalizedUnit, group.businessDate));
-    } else if (priceSatang === undefined) {
-      warnings.push(missingCentralPriceWarning(group.normalizedProduct, group.normalizedUnit, group.businessDate));
+    // Value the sold quantity from this round's persisted entered-price
+    // evidence. When withdrawal lines vary, retain every line by using their
+    // quantity-weighted value numerator; no latest/majority/min/max price is
+    // invented. Returns are not lot-attributed, so they reduce that round's
+    // entered withdrawal value proportionally.
+    let expectedSales: bigint;
+    if (group.withdrawn === BigInt(0)) {
+      expectedSales = BigInt(0);
+    } else if (!group.hasUnpricedWithdrawal) {
+      expectedSales = roundDivide(
+        sold * group.withdrawalValueNumerator,
+        group.withdrawn * MILLIQUANTITY_PER_UNIT,
+      );
     } else {
-      const groupMilliSatang = sold * BigInt(priceSatang);
-      expectedMilliSatang += groupMilliSatang;
-      expectedSales = roundDivide(groupMilliSatang, MILLIQUANTITY_PER_UNIT);
+      const priceKey = centralPriceMapKey(group.normalizedProduct, group.normalizedUnit);
+      const fallbackPriceSatang = centralPrices.get(priceKey);
+      if (fallbackPriceSatang === undefined || priceConflicts.has(priceKey)) {
+        fail(
+          "missing_withdrawal_price",
+          `legacy withdrawal price is missing and no safe central fallback exists for ${groupLabel(group)}`,
+          { groupKey: key },
+        );
+      }
+      expectedSales = roundDivide(sold * BigInt(fallbackPriceSatang), MILLIQUANTITY_PER_UNIT);
     }
+    expectedSalesSatang += expectedSales;
 
     if (category === "uncategorized") {
       warnings.push(
@@ -331,8 +353,11 @@ function buildItemCalculationParts(
     }
     if (distinctUnitPrices.length > 1) {
       warnings.push(
-        `Withdrawal lot prices varied for ${group.normalizedProduct} (${group.normalizedUnit}): `
-          + `${distinctUnitPrices.map(moneyLabel).join(", ")} — central price used for expected sales instead.`,
+        centralPriceConflictWarning(
+          group.normalizedProduct,
+          group.normalizedUnit,
+          group.businessDate,
+        ) + `: ${distinctUnitPrices.map(moneyLabel).join(", ")}`,
       );
     }
 
@@ -355,7 +380,7 @@ function buildItemCalculationParts(
 
   return {
     items,
-    expectedSales: roundDivide(expectedMilliSatang, MILLIQUANTITY_PER_UNIT),
+    expectedSales: expectedSalesSatang,
     warnings,
   };
 }

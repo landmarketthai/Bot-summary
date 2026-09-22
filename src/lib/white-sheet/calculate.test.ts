@@ -76,7 +76,7 @@ function input(
 }
 
 describe("calculateWhiteSheetItems", () => {
-  test("subtracts good and damaged returns from withdrawals, priced at the central daily price (not the withdrawal price)", () => {
+  test("subtracts returns and values the round from its entered withdrawal price", () => {
     const items = calculateWhiteSheetItems(
       [
         transaction({ quantity: 10, unitPrice: 999 }),
@@ -92,7 +92,7 @@ describe("calculateWhiteSheetItems", () => {
         goodReturnQuantity: 2,
         damagedReturnQuantity: 1,
         soldQuantity: 7,
-        expectedSales: 175,
+        expectedSales: 6993,
       }),
     ]);
   });
@@ -113,7 +113,7 @@ describe("calculateWhiteSheetItems", () => {
       goodReturnQuantity: 0,
       damagedReturnQuantity: 0,
       soldQuantity: 4,
-      expectedSales: 50,
+      expectedSales: 100,
     });
     expect(explicitZero).toEqual(missing);
   });
@@ -155,7 +155,7 @@ describe("calculateWhiteSheetItems", () => {
     });
   });
 
-  test("central price is used even when a persisted basis price exists on the row (BR-01)", () => {
+  test("persisted round basis price remains authoritative over a legacy day price", () => {
     const items = calculateWhiteSheetItems(
       [
         transaction({
@@ -177,10 +177,10 @@ describe("calculateWhiteSheetItems", () => {
       priceMap([{ product: "ข้าวโพด", unit: "หัว", priceBaht: 40 }]),
     );
 
-    // Basis price implies ~33.33/หัว; central price (40) wins instead.
+    // The persisted round price (~33.33/หัว) is the sale-price evidence; the legacy day price is ignored.
     expect(items[0]).toMatchObject({
       soldQuantity: 6,
-      expectedSales: 240,
+      expectedSales: 199.98,
     });
   });
 
@@ -253,11 +253,10 @@ describe("calculateWhiteSheetItems", () => {
     });
   });
 
-  test("rescales the informational legacy unitPrice by the same factor as the converted quantity (display only — central price still prices the sale)", () => {
+  test("rescales entered unit price with converted quantity and uses it for the round sale value", () => {
     // 2 ขีด withdrawn at 10 baht/ขีด converts to 0.2 โล; the display price
     // rescales to 100 baht/โล (10 / 0.1) so unitPrice × quantity stays
-    // unchanged after conversion — but the central price (50/โล) is what
-    // actually prices expectedSales.
+    // unchanged after conversion; that entered round price also prices expectedSales.
     const items = calculateWhiteSheetItems(
       [transaction({ quantity: 2, unit: "ขีด", unitPrice: 10 })],
       priceMap([{ product: "ผักกาดขาว", unit: "โล", priceBaht: 50 }]),
@@ -269,11 +268,11 @@ describe("calculateWhiteSheetItems", () => {
       withdrawnQuantity: 0.2,
       soldQuantity: 0.2,
       withdrawalUnitPrices: [100],
-      expectedSales: 10,
+      expectedSales: 20,
     });
   });
 
-  test("rescales a persisted basis price under a converted unit for display only — central price still prices the sale", () => {
+  test("rescales a persisted basis price under a converted unit and keeps it authoritative", () => {
     const items = calculateWhiteSheetItems(
       [
         transaction({
@@ -294,7 +293,7 @@ describe("calculateWhiteSheetItems", () => {
       withdrawnQuantity: 0.6,
       goodReturnQuantity: 0.2,
       soldQuantity: 0.4,
-      expectedSales: 20,
+      expectedSales: 12,
     });
   });
 
@@ -334,7 +333,7 @@ describe("calculateWhiteSheetItems", () => {
     }
   });
 
-  test("BR-01: conflicting withdrawal-lot prices no longer affect expected sales — the central price is the sole deterministic source", () => {
+  test("same-round entered price variation is quantity-weighted and advisory", () => {
     const result = calculateDigitalWhiteSheet(input({
       transactions: [
         transaction({ quantity: 2, unitPrice: 10 }),
@@ -348,30 +347,54 @@ describe("calculateWhiteSheetItems", () => {
     expect(result.items[0]).toMatchObject({
       soldQuantity: 4,
       withdrawalUnitPrices: [10, 20],
-      expectedSales: 60,
+      expectedSales: 64,
     });
-    expect(result.expectedSales).toBe(60);
-    expect(result.warnings).toContain(
-      "Withdrawal lot prices varied for ผักกาดขาว (โล): 10.00, 20.00 — central price used for expected sales instead.",
-    );
+    expect(result.expectedSales).toBe(64);
+    expect(result.warnings.some((warning) => warning.includes("ภายในรอบเดียวกัน") && warning.includes("10.00, 20.00"))).toBe(true);
   });
 
-  test("BR-01: missing central price fails closed with a precise product/unit/date warning, never a guessed price", () => {
+  test("entered round price works without a legacy central price", () => {
     const items = calculateWhiteSheetItems([transaction({ quantity: 10 })], new Map());
 
-    expect(items[0]?.expectedSales).toBe(0);
+    expect(items[0]?.expectedSales).toBe(250);
+  });
+
+  test("legacy withdrawal with no entered price uses the central fallback", () => {
+    const items = calculateWhiteSheetItems(
+      [transaction({ quantity: 10, unitPrice: null })],
+      priceMap([{ product: "ผักกาดขาว", unit: "โล", priceBaht: 25 }]),
+    );
+
+    expect(items[0]).toMatchObject({
+      soldQuantity: 10,
+      withdrawalUnitPrices: [],
+      expectedSales: 250,
+    });
+  });
+
+  test("legacy withdrawal without entered price fails closed when the central fallback is conflicted", () => {
+    const conflictKey = centralPriceMapKey(
+      normalizeProductName("ผักกาดขาว"),
+      resolveUnitQuantity(1, "โล").unit,
+    );
+
+    expect(() => calculateWhiteSheetItems(
+      [transaction({ quantity: 10, unitPrice: null })],
+      priceMap([{ product: "ผักกาดขาว", unit: "โล", priceBaht: 25 }]),
+      new Set([conflictKey]),
+    )).toThrow(WhiteSheetValidationError);
   });
 });
 
 describe("calculateDigitalWhiteSheet", () => {
-  test("missing central price produces a precise HARD-STOP-classified warning at the summary level", () => {
+  test("entered round price keeps the summary usable when the legacy central price is missing", () => {
     const result = calculateDigitalWhiteSheet(input({ centralPrices: new Map() }));
 
-    expect(result.expectedSales).toBe(0);
-    expect(result.warnings).toContain("ไม่พบราคากลางสำหรับ ผักกาดขาว (โล) วันที่ 2026-07-23");
+    expect(result.expectedSales).toBe(250);
+    expect(result.warnings.some((warning) => warning.startsWith("ไม่พบราคากลางสำหรับ"))).toBe(false);
   });
 
-  test("BR-01 seed rule: a price conflict fails closed even though a central price is present", () => {
+  test("legacy central conflict is ignored when the round has usable entered price evidence", () => {
     const conflictKey = centralPriceMapKey(
       normalizeProductName("ผักกาดขาว"),
       resolveUnitQuantity(1, "โล").unit,
@@ -381,10 +404,8 @@ describe("calculateDigitalWhiteSheet", () => {
       priceConflicts: new Set([conflictKey]),
     }));
 
-    expect(result.expectedSales).toBe(0);
-    expect(result.warnings).toContain(
-      "ราคากลางขัดแย้งกันสำหรับ ผักกาดขาว (โล) วันที่ 2026-07-23 ต้องรอผู้ดูแลระบบยืนยันราคาก่อนใช้ยอดสรุป",
-    );
+    expect(result.expectedSales).toBe(250);
+    expect(result.warnings.some((warning) => warning.includes("ต้องรอผู้ดูแลระบบยืนยันราคาก่อนใช้ยอดสรุป"))).toBe(false);
   });
 
   test("warns about uncategorized products without excluding them", () => {

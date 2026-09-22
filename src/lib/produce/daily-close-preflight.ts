@@ -14,7 +14,6 @@
  *
  *   loadRoundReturnStatuses          which rounds got their ชั่งคืน
  *   loadProduceFailureEvidence       what landed, and which rounds were retired
- *   loadCentralPriceDetailsForDate   what price is actually approved
  *
  * It writes nothing, repairs nothing and never chooses a price, a round or a
  * replacement on the operator's behalf.
@@ -27,7 +26,6 @@ import { canonicalMarketLabel, normalizedMarketLabel } from "@/lib/market";
 import {
   centralPriceKey,
   centralPriceMapKey,
-  loadCentralPriceDetailsForDate,
 } from "@/lib/white-sheet/pricing";
 import {
   loadRoundReturnStatuses,
@@ -62,7 +60,7 @@ export type PreflightIssueCode =
   | "active_failed_produce_session"
   /** A return document that was opened and never closed. */
   | "pending_produce_session"
-  /** Several withdrawal prices, no administrator decision. */
+  /** Several entered prices inside one accountability round. */
   | "unresolved_central_price"
   /** More than one open round for the same seller/market/date. */
   | "duplicate_open_accountability_round"
@@ -180,10 +178,8 @@ export interface DailyClosePreflightInput {
   /** Read-only duplicate evidence for the date. Nothing here mutates anything. */
   duplicateAnomalies?: readonly DuplicateAnomaly[];
   /**
-   * The central-price identities (`centralPriceMapKey`) each round actually
-   * sells. A disputed price is a DAY-wide fact — the identity is deliberately
-   * global across markets — but only the rounds holding that product have a
-   * value they cannot compute, so only those are called partial.
+   * Retained for caller compatibility. Price variation no longer controls
+   * round completeness.
    */
   roundPriceKeys?: ReadonlyMap<string, ReadonlySet<string>>;
 }
@@ -202,8 +198,7 @@ function issue(
  *
  * `blocked`  a ชั่งคืน was sent and refused, or one is still open. The round's
  *            produce cannot be closed until a human fixes the source data.
- * `partial`  the round is internally sound but part of its value cannot be
- *            computed — today that means a disputed central price.
+ * `partial`  retained for API compatibility; price variation never produces it.
  * `ready`    nothing outstanding. A round with NO return at all is ready: that
  *            is the legitimate sold-out day, and it carries a warning so a
  *            human can still sanity-check it.
@@ -288,11 +283,7 @@ function classifyRound(
     );
   }
 
-  const status: PreflightRoundStatus = blockers.length > 0
-    ? "blocked"
-    : warnings.some((row) => row.code === "unresolved_central_price")
-      ? "partial"
-      : "ready";
+  const status: PreflightRoundStatus = blockers.length > 0 ? "blocked" : "ready";
 
   return { ...identity, status, blockers, warnings };
 }
@@ -504,20 +495,14 @@ export function buildDailyClosePreflight(
   }
 
   const pricingConflicts = input.priceReview.filter((item) => item.status === "unresolved");
-  const conflictKeys = new Set(
-    pricingConflicts.map((item) => centralPriceMapKey(item.productKey, item.unitKey)),
-  );
-
   const rounds = input.roundStatuses
     .filter((round) => !isQaMarketLabel(round.marketLabel))
     .map((round) => {
-      const held = input.roundPriceKeys?.get(round.accountabilityRoundId);
-      // With no per-round product map (a caller that did not supply one), fall
-      // back to the day-wide set: fail closed toward "partial", never toward a
-      // confident "ready" that hides a price nobody has confirmed.
-      const disputed = held
-        ? new Set([...held].filter((key) => conflictKeys.has(key)))
-        : conflictKeys;
+      const disputed = new Set(
+        pricingConflicts
+          .filter((item) => item.accountabilityRoundId === round.accountabilityRoundId)
+          .map((item) => centralPriceMapKey(item.productKey, item.unitKey)),
+      );
       return classifyRound(round, attemptsByRound, activeAttemptIds, ambiguousAttemptIds, disputed);
     })
     .sort(
@@ -560,11 +545,14 @@ export function buildDailyClosePreflight(
     integrityIssues.push(
       issue(
         "unresolved_central_price",
-        "blocker",
+        "warning",
         `${conflict.productDisplayName} — พบราคา ${conflict.candidates
           .map((candidate) => `${candidate.priceSatang / 100}`)
           .join(" / ")} บาท`,
-        { evidenceIds: [`${conflict.productKey} ${conflict.unitKey}`] },
+        {
+          accountabilityRoundId: conflict.accountabilityRoundId,
+          evidenceIds: [`${conflict.productKey} ${conflict.unitKey}`],
+        },
       ),
     );
   }
@@ -767,14 +755,13 @@ export async function loadDailyClosePreflight(
       ? { outcomes: options.outcomes, cancelledRoundIds: options.cancelledRoundIds }
       : await loadProduceFailureEvidence(supabase, businessDate);
 
-  const [roundStatuses, produceRows, storedPrices] = await Promise.all([
+  const [roundStatuses, produceRows] = await Promise.all([
     options.roundStatuses
       ? Promise.resolve(options.roundStatuses)
       : loadRoundReturnStatuses(supabase, businessDate),
     options.produceRows
       ? Promise.resolve(options.produceRows)
       : fetchDateProduceRows(supabase, businessDate),
-    loadCentralPriceDetailsForDate(supabase, businessDate),
   ]);
   const openRounds = await loadOpenRoundRecords(supabase, businessDate, produceRows);
 
@@ -789,7 +776,7 @@ export async function loadDailyClosePreflight(
     roundStatuses,
     failureAttempts: options.failureAttempts,
     failureClassifications,
-    priceReview: buildCentralPriceReview(options.withdrawalRows, businessDate, storedPrices),
+    priceReview: buildCentralPriceReview(options.withdrawalRows, businessDate, new Map()),
     openRounds,
     unboundProduce: groupUnboundProduce(produceRows),
     roundPriceKeys: roundPriceKeysFromRows(produceRows, businessDate),

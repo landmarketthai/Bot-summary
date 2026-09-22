@@ -17,8 +17,8 @@ import { centralPriceMapKey } from "@/lib/white-sheet/pricing";
  * Per market / product / unit:
  *
  *   sold_quantity  = W − R − D          (withdrawal − good return − damaged return)
- *   confirmed_sales = sold_quantity × authoritative central selling price
- *   pending_sales   = best-known quantity × usable final/entered price
+ *   confirmed_sales = sold_quantity × this round's entered-price evidence
+ *   pending_sales   = best-known quantity × entered-price evidence
  *   total_sales     = confirmed_sales + pending_sales
  *
  * Absence of a return row means the corresponding return quantity is zero
@@ -196,7 +196,7 @@ export interface SalesIdentityRow {
   /** Entered withdrawal price, or the quantity-weighted average when lines differ. */
   enteredPriceSatang: number | null;
   centralPriceSatang: number | null;
-  /** Confirmed central-price value only. */
+  /** Confirmed value from persisted entered round prices. */
   expectedSalesSatang: number | null;
   /** Best-known value awaiting price and/or return review; never also confirmed. */
   pendingReviewSalesSatang: number | null;
@@ -216,6 +216,8 @@ export interface SalesIdentityRow {
    * evidence stands, but sold quantity is null and provisional money stays pending.
    */
   returnEvidenceIncomplete?: boolean;
+  /** Advisory only: entered withdrawal prices vary inside this round. */
+  priceVariationAdvisory?: boolean;
 }
 
 /**
@@ -259,7 +261,7 @@ export function isSoldOutByAbsentReturn(row: SalesIdentityRow): boolean {
  * the quantity may then be reported as complete.
  */
 export interface SalesTotal {
-  /** Confirmed central-price value only. */
+  /** Confirmed entered-price value only. */
   expectedSalesSatang: number;
   /** Calculable value awaiting price and/or return review. */
   pendingReviewSalesSatang: number;
@@ -389,6 +391,7 @@ interface IdentityAggregate {
   enteredWithdrawalValueNumerator: bigint;
   hasUsableEnteredPrice: boolean;
   hasUnpricedWithdrawal: boolean;
+  enteredPrices: Set<number>;
   reasons: Set<SalesBlockReason>;
 }
 
@@ -620,6 +623,8 @@ function rowMarketKey(row: MarketIdentitySource): string {
 
 export function calculateSalesReport(input: SalesCalculationInput): SalesReport {
   const businessDate = input.businessDate;
+  // Persisted entered round prices are authoritative when present. Central
+  // prices remain a legacy fallback only for rows that carry no usable entered price.
   const centralPrices = input.centralPrices ?? new Map<string, number>();
   const priceConflicts = input.priceConflicts ?? new Set<string>();
   const scopeBlockers = [...(input.scopeBlockers ?? [])];
@@ -694,6 +699,7 @@ export function calculateSalesReport(input: SalesCalculationInput): SalesReport 
         enteredWithdrawalValueNumerator: BigInt(0),
         hasUsableEnteredPrice: false,
         hasUnpricedWithdrawal: false,
+        enteredPrices: new Set<number>(),
         reasons: new Set<SalesBlockReason>(),
       };
       aggregates.set(key, aggregate);
@@ -727,6 +733,7 @@ export function calculateSalesReport(input: SalesCalculationInput): SalesReport 
       ) {
         aggregate.enteredWithdrawalValueNumerator += converted * BigInt(enteredPrice);
         aggregate.hasUsableEnteredPrice = true;
+        aggregate.enteredPrices.add(enteredPrice);
       } else {
         aggregate.hasUnpricedWithdrawal = true;
       }
@@ -774,7 +781,7 @@ export function calculateSalesReport(input: SalesCalculationInput): SalesReport 
     const quantityBlocked = hardQuantityBlocked || returnQuantityPending;
     const priceKey = centralPriceMapKey(aggregate.productName, aggregate.unit);
     const sold = aggregate.withdrawn - aggregate.goodReturn - aggregate.damaged;
-    const priceConflicted = priceConflicts.has(priceKey);
+    const priceVariationAdvisory = aggregate.enteredPrices.size > 1;
     const enteredPriceUsable =
       aggregate.hasWithdrawal
       && aggregate.hasUsableEnteredPrice
@@ -786,7 +793,7 @@ export function calculateSalesReport(input: SalesCalculationInput): SalesReport 
     let centralPriceSatang: number | null = null;
     let expectedSalesSatang: number | null = null;
     let pendingReviewSalesSatang: number | null = null;
-    let adjustmentSatang = 0;
+    const adjustmentSatang = 0;
     let valueStatus: SalesValueStatus = "UNAVAILABLE";
     let status: SalesRowStatus = "TRUSTED";
 
@@ -803,52 +810,37 @@ export function calculateSalesReport(input: SalesCalculationInput): SalesReport 
     const centralValueSatang = centralPrice === undefined
       ? null
       : Number(roundHalfUp(valueQuantity * BigInt(centralPrice), QUANTITY_SCALE_PER_UNIT));
+    const legacyPriceConflicted = !enteredPriceUsable && priceConflicts.has(priceKey);
 
     if (hardQuantityBlocked) {
       status = "QUANTITY_BLOCKED";
-      if (priceConflicted) addReason(reasons, "central_price_conflict");
     } else if (returnQuantityPending) {
       status = "QUANTITY_BLOCKED";
-      if (priceConflicted) addReason(reasons, "central_price_conflict");
-      if (!priceConflicted && centralPrice !== undefined && centralValueSatang !== null) {
-        centralPriceSatang = centralPrice;
-        pendingReviewSalesSatang = centralValueSatang;
-        valueStatus = "PENDING_REVIEW";
-        if (enteredValueSatang !== null) {
-          adjustmentSatang = centralValueSatang - enteredValueSatang;
-        }
-      } else {
-        if (centralPrice === undefined) addReason(reasons, "missing_central_price");
-        if (enteredValueSatang !== null) {
-          pendingReviewSalesSatang = enteredValueSatang;
-          valueStatus = "PENDING_REVIEW";
-        }
-      }
-    } else if (priceConflicted) {
-      addReason(reasons, "central_price_conflict");
-      status = "VALUE_BLOCKED";
       if (enteredValueSatang !== null) {
         pendingReviewSalesSatang = enteredValueSatang;
         valueStatus = "PENDING_REVIEW";
-      }
-    } else {
-      if (centralPrice === undefined) {
-        addReason(reasons, "missing_central_price");
-        status = "VALUE_BLOCKED";
-        if (enteredValueSatang !== null) {
-          pendingReviewSalesSatang = enteredValueSatang;
-          valueStatus = "PENDING_REVIEW";
-        }
+      } else if (!legacyPriceConflicted && centralValueSatang !== null) {
+        centralPriceSatang = centralPrice ?? null;
+        pendingReviewSalesSatang = centralValueSatang;
+        valueStatus = "PENDING_REVIEW";
+      } else if (legacyPriceConflicted) {
+        addReason(reasons, "central_price_conflict");
       } else {
-        centralPriceSatang = centralPrice;
-        expectedSalesSatang = Number(
-          roundHalfUp(valueQuantity * BigInt(centralPrice), QUANTITY_SCALE_PER_UNIT),
-        );
-        valueStatus = "CONFIRMED";
-        if (enteredValueSatang !== null) {
-          adjustmentSatang = expectedSalesSatang - enteredValueSatang;
-        }
+        addReason(reasons, "missing_central_price");
       }
+    } else if (enteredValueSatang !== null) {
+      expectedSalesSatang = enteredValueSatang;
+      valueStatus = "CONFIRMED";
+    } else if (legacyPriceConflicted) {
+      addReason(reasons, "central_price_conflict");
+      status = "VALUE_BLOCKED";
+    } else if (centralValueSatang !== null) {
+      centralPriceSatang = centralPrice ?? null;
+      expectedSalesSatang = centralValueSatang;
+      valueStatus = "CONFIRMED";
+    } else {
+      addReason(reasons, "missing_central_price");
+      status = "VALUE_BLOCKED";
     }
 
     return {
@@ -871,6 +863,7 @@ export function calculateSalesReport(input: SalesCalculationInput): SalesReport 
       status,
       reasons: [...reasons],
       returnEvidenceIncomplete,
+      priceVariationAdvisory,
     };
   });
 

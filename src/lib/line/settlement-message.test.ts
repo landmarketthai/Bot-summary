@@ -93,6 +93,31 @@ describe("buildSettlementLineMessage", () => {
     expectMoneySideUnchanged(result);
   });
 
+  it("2026-09-21 กี้ regression: complete Produce totals render without an unconfirmed warning", () => {
+    const result = buildSettlementLineMessage({
+      date: "2026-09-21",
+      staffName: "กี้",
+      marketName: "วัดทุ่งลานนา",
+      transactions: {
+        เบิก: 8917,
+        คืน: 6359.33,
+        คืนเสีย: 999,
+        ยอดส่ง: 1558.67,
+      },
+      produceValueStatus: "complete",
+      producePresence: ALL_PRESENT,
+      settlement: MONEY,
+    });
+
+    expect(result).toContain("กี้ — วัดทุ่งลานนา — 21 กันยายน 2569");
+    expect(result).toContain("ยอดเบิก: 8,917.00 บาท");
+    expect(result).toContain("ยอดชั่งคืน: 6,359.33 บาท");
+    expect(result).toContain("ยอดคืนเสีย: 999.00 บาท");
+    expect(result).toContain("ยอดขายสุทธิที่คำนวณได้: 1,558.67 บาท");
+    expect(result).not.toContain("ยังไม่ยืนยัน");
+    expect(result).not.toContain("ยังยืนยันไม่ได้");
+  });
+
   it("PARTIAL with all numeric components: show numbers as unconfirmed, including net", () => {
     const result = message({
       transactions: { เบิก: 13929.7, คืน: 10522.2, คืนเสีย: 213, ยอดส่ง: 3194.5 },

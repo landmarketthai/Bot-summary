@@ -11,6 +11,7 @@
 const COMPACT_INDEXED_RE = /^(\d{1,2})\.(\d+(?:\.\d+)?)\s*(?:บาท)?\s*$/;
 const PREFIXED_RE = /^\d+[.)]\s*([\d,]+(?:\.\d+)?)\s*(?:บาท)?\s*$/;
 const SUFFIXED_RE = /^([\d,]+(?:\.\d+)?)\s*บาท\s*$/;
+const LABELED_RE = /^\u0e22\u0e2d\u0e14\s*([\d,]+(?:\.\d+)?)\s*(?:บาท)?\s*$/u;
 
 export function parseManualSlipAmounts(text: string): Array<{ rawLine: string; amount: number }> {
   return text.split("\n").flatMap(raw => {
@@ -21,7 +22,7 @@ export function parseManualSlipAmounts(text: string): Array<{ rawLine: string; a
       const amount = parseFloat(compact[2]);
       return amount > 0 ? [{ rawLine: line, amount }] : [];
     }
-    const m = SUFFIXED_RE.exec(line) ?? PREFIXED_RE.exec(line);
+    const m = SUFFIXED_RE.exec(line) ?? PREFIXED_RE.exec(line) ?? LABELED_RE.exec(line);
     if (!m) return [];
     const amount = parseFloat(m[1].replace(/,/g, ""));
     return amount > 0 ? [{ rawLine: line, amount }] : [];

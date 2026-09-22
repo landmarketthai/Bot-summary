@@ -52,7 +52,7 @@ import {
  *   produce_transactions   the persisted, void-filtered transaction evidence
  *   raw_messages           source_id — the stable half of the market identity
  *   produce_sessions       parser errors and the persisted item-count claim
- *   central_selling_prices the ONLY trusted price (via the White Sheet resolver)
+ *   entered withdrawal prices, scoped by accountability round
  *   pending_sessions       produce data that never finalized
  *   parse_errors           messages whose parse crashed — data that never landed
  */
@@ -1251,9 +1251,7 @@ export async function loadSalesReport(
     mapRawMessageSources(supabase, rawMessageIds),
     loadSessionIssues(supabase, rows),
     loadScopeBlockers(supabase, businessDate, failures),
-    // Central price resolution — including the BR-01 conflict scan — is reused
-    // verbatim from the White Sheet loader so P1 can never price a sale through
-    // a second, divergent pricing algorithm.
+    // Legacy fallback only. Entered round prices stay authoritative when present.
     resolveCentralPricesForDate(supabase, businessDate, rows),
   ]);
 

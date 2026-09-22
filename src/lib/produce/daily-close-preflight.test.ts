@@ -42,7 +42,7 @@ test("preloaded round statuses and produce rows skip duplicate paged reads", asy
   });
 
   expect(result.status).toBe("ready");
-  expect(queried).toEqual(["central_selling_prices", "accountability_rounds"]);
+  expect(queried).toEqual(["accountability_rounds"]);
 });
 
 function round(overrides: Partial<RoundReturnStatus> = {}): RoundReturnStatus {
@@ -226,10 +226,11 @@ describe("daily close preflight", () => {
     expect(result.rounds[0].blockers.map((row) => row.code)).toContain("round_identity_ambiguity");
   });
 
-  test("8. an unresolved central price blocks the date and names the candidates", () => {
+  test("8. same-round price variation warns without blocking the date", () => {
     const priceReview = buildCentralPriceReview(
       [
         {
+          accountabilityRoundId: "round-1",
           productName: "อะโวคาโด",
           unit: "โล",
           marketName: "ตลาด72",
@@ -238,6 +239,7 @@ describe("daily close preflight", () => {
           baseTransactionType: "เบิก",
         },
         {
+          accountabilityRoundId: "round-1",
           productName: "อะโวคาโด",
           unit: "โล",
           marketName: "ตลาด72",
@@ -252,19 +254,20 @@ describe("daily close preflight", () => {
 
     const result = buildDailyClosePreflight(input({ priceReview }));
 
-    expect(result.status).toBe("blocked");
+    expect(result.status).toBe("ready_with_warnings");
     expect(result.summary.unresolvedPriceProducts).toBe(1);
     expect(result.pricingConflicts[0].candidates.map((row) => row.priceSatang)).toEqual([
       5_000, 7_000,
     ]);
-    // The round itself is sound; only its value is incomplete.
-    expect(result.rounds[0].status).toBe("partial");
+    expect(result.rounds[0].status).toBe("ready");
+    expect(result.rounds[0].warnings.map((row) => row.code)).toContain("unresolved_central_price");
   });
 
-  test("8b. only the rounds holding the disputed product go partial", () => {
+  test("8b. the advisory stays attached to its own round", () => {
     const priceReview = buildCentralPriceReview(
       [
         {
+          accountabilityRoundId: "r-72",
           productName: "อะโวคาโด",
           unit: "โล",
           marketName: "ตลาด72",
@@ -273,6 +276,7 @@ describe("daily close preflight", () => {
           baseTransactionType: "เบิก",
         },
         {
+          accountabilityRoundId: "r-72",
           productName: "อะโวคาโด",
           unit: "โล",
           marketName: "ตลาด72",
@@ -314,16 +318,17 @@ describe("daily close preflight", () => {
       }),
     );
 
-    expect(result.rounds.find((row) => row.marketName === "ตลาด72")?.status).toBe("partial");
+    expect(result.rounds.find((row) => row.marketName === "ตลาด72")?.status).toBe("ready");
     expect(result.rounds.find((row) => row.marketName === "เลียบด่วน")?.status).toBe("ready");
-    expect(result.summary).toMatchObject({ readyRounds: 1, partialRounds: 1, blockedRounds: 0 });
-    expect(result.status).toBe("blocked"); // the price itself still has to be decided
+    expect(result.summary).toMatchObject({ readyRounds: 2, partialRounds: 0, blockedRounds: 0 });
+    expect(result.status).toBe("ready_with_warnings");
   });
 
-  test("9. an approved central price removes the conflict", () => {
+  test("9. cross-round 50 vs 70 is valid and produces no conflict", () => {
     const priceReview = buildCentralPriceReview(
       [
         {
+          accountabilityRoundId: "round-1",
           productName: "อะโวคาโด",
           unit: "โล",
           marketName: "ตลาด72",
@@ -332,16 +337,17 @@ describe("daily close preflight", () => {
           baseTransactionType: "เบิก",
         },
         {
+          accountabilityRoundId: "round-2",
           productName: "อะโวคาโด",
           unit: "โล",
-          marketName: "ตลาด72",
+          marketName: "เลียบด่วน",
           pricePerUnit: 70,
           basisQuantity: null,
           baseTransactionType: "เบิก",
         },
       ],
       DATE,
-      new Map([["อะโวคาโด โล", { priceSatang: 5_000, setBy: "admin-uuid" }]]),
+      new Map(),
     );
 
     const result = buildDailyClosePreflight(input({ priceReview }));

@@ -14,6 +14,12 @@ describe("parseManualSlipAmounts", () => {
     expect(parseManualSlipAmounts("100 บาท")).toEqual([{ rawLine: "100 บาท", amount: 100 }]);
   });
 
+  it("parses the quoted-slip label grammar", () => {
+    expect(parseManualSlipAmounts("\u0e22\u0e2d\u0e14 268")).toEqual([
+      { rawLine: "\u0e22\u0e2d\u0e14 268", amount: 268 },
+    ]);
+  });
+
   it("parses comma-formatted amount with บาท", () => {
     expect(parseManualSlipAmounts("1,200 บาท")).toEqual([{ rawLine: "1,200 บาท", amount: 1200 }]);
   });

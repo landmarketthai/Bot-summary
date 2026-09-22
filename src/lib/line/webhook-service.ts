@@ -107,7 +107,14 @@ import {
   type SlipCheckProcessor,
 } from "@/lib/slips/check-service";
 import { SlipBatchService, type SlipBatchIngestor } from "@/lib/slips/batch-service";
+import {
+  QuotedSlipAmountCorrectionService,
+  parseQuotedSlipAmount,
+  type QuotedSlipAmountCorrectionInput,
+} from "@/lib/slips/quoted-amount-correction";
 import { tryFinalizeSettlement } from "@/lib/settlement-finalizer";
+import { SettlementSheetImageHandler } from "@/lib/settlement-ocr/draft-service";
+import { isAwaitingSettlementSubmission } from "@/lib/settlement-ocr/gate";
 import { parseRemainingFruitCommandFromMessage } from "@/lib/summary/remaining-fruit-command";
 import { fetchRemainingFruitRows } from "@/lib/summary/remaining-fruit-data";
 import { buildRemainingFruitMessagesFromRows } from "@/lib/summary/remaining-fruit-message";
@@ -497,6 +504,11 @@ interface WebhookServiceDependencies {
   checkProcessor?: SlipCheckProcessor;
   batchService?: SlipBatchIngestor;
   slipSessionService?: SlipSessionIngestor;
+  settlementSheetImageHandler?: SettlementSheetImageHandler;
+  quotedSlipAmountCorrectionService?: Pick<
+    QuotedSlipAmountCorrectionService,
+    "handle"
+  >;
   replyMessage?: ReplyLineMessage;
   replyMessages?: ReplyLineMessages;
   replyApiMessages?: ReplyLineApiMessages;
@@ -666,6 +678,11 @@ export class WebhookService {
   private readonly checkProcessor: SlipCheckProcessor;
   private readonly batchService: SlipBatchIngestor;
   private readonly slipSessionService: SlipSessionIngestor;
+  private readonly settlementSheetImageHandler: SettlementSheetImageHandler;
+  private readonly quotedSlipAmountCorrectionService: Pick<
+    QuotedSlipAmountCorrectionService,
+    "handle"
+  >;
   private replyMessage: ReplyLineMessage;
   private replyMessages: ReplyLineMessages;
   private replyApiMessages: ReplyLineApiMessages;
@@ -692,6 +709,10 @@ export class WebhookService {
       dependencies.batchService ?? new SlipBatchService(supabase);
     this.slipSessionService =
       dependencies.slipSessionService ?? new SlipSessionService(supabase);
+    this.settlementSheetImageHandler =
+      dependencies.settlementSheetImageHandler ?? new SettlementSheetImageHandler(supabase);
+    this.quotedSlipAmountCorrectionService =
+      dependencies.quotedSlipAmountCorrectionService ?? new QuotedSlipAmountCorrectionService(supabase);
     this.replyMessage = dependencies.replyMessage ?? replyLineMessage;
     this.replyMessages = dependencies.replyMessages ?? replyLineMessages;
     this.replyApiMessages = dependencies.replyApiMessages ?? replyLineApiMessages;
@@ -898,6 +919,15 @@ export class WebhookService {
     const sourceId       = getSourceId(msgEvent.source);
     const lineUserId     = getUserId(msgEvent.source);
     const draftItemCommand = findDraftItemCommand(text);
+
+    const quotedSlipResult = await this.tryProcessQuotedSlipAmountCorrection(
+      msgEvent,
+      text,
+      rawMessageId,
+      eventId,
+      log,
+    );
+    if (quotedSlipResult !== null) return quotedSlipResult;
 
     if (text.trim().toLowerCase() === "test") {
       if (replyToken) await replyLineMessage(replyToken, "Bot รับข้อความได้แล้ว ✅");
@@ -3428,6 +3458,73 @@ export class WebhookService {
   // Image evidence is processed independently from the text-session parser.
   // Multiple images from the same source within SLIP_BATCH_QUIET_SECONDS are
   // grouped into a batch; only the first image triggers a reply.
+  private async tryProcessQuotedSlipAmountCorrection(
+    event: LineMessageEvent,
+    text: string,
+    rawMessageId: string,
+    eventId: string,
+    log: ChildLogger,
+  ): Promise<WebhookProcessResult | null> {
+    const quotedMessageId = event.message.quotedMessageId;
+    if (!quotedMessageId) return null;
+
+    if (parseQuotedSlipAmount(text) === null) return null;
+
+    const input: QuotedSlipAmountCorrectionInput = {
+      rawMessageId,
+      lineMessageId: event.message.id,
+      quotedMessageId,
+      sourceId: getSourceId(event.source),
+      sourceType: event.source.type,
+      lineUserId: getUserId(event.source),
+      text,
+    };
+
+    let result: Awaited<ReturnType<QuotedSlipAmountCorrectionService["handle"]>>;
+    try {
+      result = await this.quotedSlipAmountCorrectionService.handle(input);
+    } catch (error) {
+      log.error("quoted slip amount correction failed", {
+        quotedMessageId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return {
+        eventId,
+        eventType: event.type,
+        status: "error",
+        error: "quoted slip amount correction failed",
+        retryable: true,
+      };
+    }
+
+    if (!result.handled) return null;
+    if (result.kind === "failed") {
+      log.error("quoted slip amount correction is retryable", {
+        quotedMessageId,
+        reason: result.reason,
+      });
+      return {
+        eventId,
+        eventType: event.type,
+        status: "error",
+        error: result.reason ?? "quoted slip amount correction failed",
+        retryable: true,
+      };
+    }
+    await this.markRawMessageProcessed(rawMessageId, log);
+    log.info("quoted slip amount correction handled", {
+      quotedMessageId,
+      kind: result.kind,
+      reason: result.reason,
+    });
+    return {
+      eventId,
+      eventType: event.type,
+      status: "saved",
+      parsed: result.kind === "applied" || result.kind === "already_applied",
+    };
+  }
+
   private async processImageMessage(
     event: LineMessageEvent,
     message: LineImageMessage,
@@ -3455,6 +3552,39 @@ export class WebhookService {
     }
 
     if (!activeSession) {
+      // No open bank-slip batch — never hijacked from that existing flow.
+      // The ONLY other thing an image may trigger is the settlement-sheet
+      // OCR draft, and only inside the narrow, already-existing window where
+      // a typed "ส่งยอด" command would already be accepted (white sheet
+      // submitted, slips stage or later — see gate.ts). Any image outside
+      // that window is ignored exactly as before this feature existed.
+      const identity = buildGuidedMenuIdentity({
+        lineUserId: senderId,
+        sourceType: event.source.type,
+        sourceId,
+        sessionKey: getPendingSessionKey(event.source),
+      });
+      if (identity) {
+        try {
+          const journeyState = await this.guidedJourney.resolve(identity);
+          if (isAwaitingSettlementSubmission(journeyState)) {
+            await this.settlementSheetImageHandler.handleImage({
+              rawMessageId,
+              lineMessageId: message.id,
+              sourceId,
+              sourceType: event.source.type,
+              lineUserId: identity.lineUserId,
+              context: journeyState.context,
+            });
+          }
+        } catch (error) {
+          log.error("settlement sheet image handling failed", {
+            sourceId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
       log.info("image ignored: no active slip session", { sourceId });
       return {
         eventId,

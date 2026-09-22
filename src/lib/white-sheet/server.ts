@@ -121,6 +121,7 @@ export async function loadServerCentralPriceReview(
       pricePerUnit: row.price_per_unit === null ? null : Number(row.price_per_unit),
       basisQuantity: row.basis_quantity === null ? null : Number(row.basis_quantity),
       baseTransactionType: row.base_transaction_type,
+      accountabilityRoundId: row.accountability_round_id,
     })),
     businessDate,
     stored,
