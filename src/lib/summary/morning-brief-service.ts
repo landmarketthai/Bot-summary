@@ -1,15 +1,13 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 import { logger } from "@/lib/logger";
-import {
-  buildHouseStockReport,
-  fetchAuthoritativeHouseStockItems,
-} from "@/lib/physical-inventory/house-stock-report";
+import { fetchAuthoritativeHouseStockItems } from "@/lib/physical-inventory/house-stock-report";
 import { quantityTimesSatang, toMilliQuantity } from "@/lib/sales/calculate";
 import { loadSalesReport } from "@/lib/sales/load";
 import { fetchReconciliationReport } from "@/lib/reconciliation-report-service";
 import { loadPurchasePlanningReport } from "@/lib/summary/purchase-planning-service";
 import {
+  isMorningBriefFruitCategory,
   morningBriefProductIdentity,
   summarizePurchasePlanning,
   summarizeSales,
@@ -63,12 +61,13 @@ async function loadHouseStock(
   try {
     const snapshot = await fetchAuthoritativeHouseStockItems(supabase, businessDate);
     if (!snapshot) return { status: "missing" };
-    const report = buildHouseStockReport(snapshot.businessDate, snapshot.items);
+    const items = summarizeHouseStockRows(snapshot.items)
+      .filter((item) => isMorningBriefFruitCategory(item.category));
     return {
       status: "available",
-      groupCount: report.groupCount,
-      totalValueSatang: report.totalValueSatang,
-      items: summarizeHouseStockRows(snapshot.items),
+      groupCount: items.length,
+      totalValueSatang: items.reduce((sum, item) => sum + item.valueSatang, 0),
+      items,
     };
   } catch (error) {
     logger.warn("morning brief house stock unavailable", {
@@ -123,10 +122,32 @@ export async function loadMorningBriefReport(
     loadReconciliation(supabase, businessDate),
   ]);
 
+  const summarizedSales = summarizeSales(sales);
+  const returnGapKeys = new Set(
+    (summarizedSales.reviewItems ?? [])
+      .filter((item) => item.returnEvidenceIncomplete || item.reasons.includes("product_return_absent"))
+      .map((item) => JSON.stringify([item.productName, item.unit])),
+  );
+  const purchasePlanningForBrief = {
+    ...purchasePlanning,
+    items: purchasePlanning.items.map((item) => {
+      const identity = morningBriefProductIdentity(item.productName, item.unit);
+      const hasReturnGap = returnGapKeys.has(JSON.stringify([identity.productName, item.unit]));
+      if (!hasReturnGap) return item;
+      return {
+        ...item,
+        status: "unknown" as const,
+        uncertaintyReasons: item.uncertaintyReasons.includes("product_return_absent")
+          ? item.uncertaintyReasons
+          : [...item.uncertaintyReasons, "product_return_absent" as const],
+      };
+    }),
+  };
+
   return {
     businessDate,
-    purchasePlanning: summarizePurchasePlanning(purchasePlanning),
-    sales: summarizeSales(sales),
+    purchasePlanning: summarizePurchasePlanning(purchasePlanningForBrief),
+    sales: summarizedSales,
     houseStock,
     reconciliation,
   };

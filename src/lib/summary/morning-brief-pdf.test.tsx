@@ -13,7 +13,14 @@ import {
 const report: MorningBriefReport = {
   businessDate: "2026-09-19",
   purchasePlanning: {
-    strong: { count: 2, productNames: ["พุทราจีน", "แอปเปิ้ล"] },
+    strong: {
+      count: 2,
+      productNames: ["องุ่นแดง", "องุ่นแดง"],
+      items: [
+        { productName: "องุ่นแดง", originalProductName: null, category: "ผลไม้", unit: "ลูก", uncertaintyReasons: [], withdrawnQuantity: 13, goodReturnQuantity: 0, damagedQuantity: 13, houseStockQuantity: 0, nextDayGoodStockQuantity: 0 },
+        { productName: "องุ่นแดง", originalProductName: null, category: "ผลไม้", unit: "โล", uncertaintyReasons: [], withdrawnQuantity: 44.1, goodReturnQuantity: 33.1, damagedQuantity: 0.8, houseStockQuantity: 0, nextDayGoodStockQuantity: 33.1 },
+      ],
+    },
     surplus: { count: 1, productNames: ["แก้วมังกร"] },
     reduce: { count: 1, productNames: ["สาลี่หิมะ"] },
     unknown: { count: 0, productNames: [] },

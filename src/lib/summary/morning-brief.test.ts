@@ -87,8 +87,8 @@ function salesReport(markets: SalesMarketSummary[]): SalesReport {
 }
 
 describe("summarizePurchasePlanning", () => {
-  test("keeps every classified item, including unknown details", () => {
-    const strong = Array.from({ length: 14 }, (_, index) => purchaseItem("strong", `ซื้อ-${index + 1}`));
+  test("keeps mapped fruit classifications and forces unmapped identities to review", () => {
+    const strong = Array.from({ length: 14 }, () => purchaseItem("strong", "\u0e21\u0e30\u0e25\u0e30\u0e01\u0e2d"));
     const unknown = Array.from({ length: 88 }, (_, index) => purchaseItem("unknown", `ไม่รู้-${index + 1}`));
     unknown[0]!.uncertaintyReasons = ["return_incomplete"];
     const summary = summarizePurchasePlanning({ items: [...strong, ...unknown] });

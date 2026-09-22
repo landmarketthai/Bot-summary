@@ -13,7 +13,7 @@ import type {
 
 export const MORNING_BRIEF_TITLE = "🌅 สรุปเช้า";
 export const MORNING_BRIEF_OVERFLOW_NOTICE =
-  "\n\n⚠️ รายละเอียดมากเกินขีดจำกัด LINE จึงแสดงได้ไม่ครบ";
+  "\n\nรายละเอียดมากเกินขีดจำกัด LINE จึงแสดงได้ไม่ครบ";
 
 const PRODUCT_NAME_MAX_CODE_POINTS = 80;
 
@@ -52,7 +52,7 @@ function actionableCategorySection(items: readonly MorningBriefPurchaseItem[]): 
   for (const item of items) duplicateCounts.set(item.productName, (duplicateCounts.get(item.productName) ?? 0) + 1);
   const names = items.map((item) => {
     const name = boundedProductName(item.productName);
-    return (duplicateCounts.get(item.productName) ?? 0) > 1 ? `${name} (${displayUnit(item.unit)})` : name;
+    return (duplicateCounts.get(item.productName) ?? 0) > 1 ? `${name} (${item.unit})` : name;
   });
   return [`${items[0]?.category ?? "อื่นๆ"} — ${items.length} รายการ`, ...wrapNames(names)].join("\n");
 }
@@ -77,43 +77,19 @@ function buildPurchaseBlocks(report: MorningBriefReport): string[] {
   if (strong.count > 0) groups.push(purchaseGroupBlock("🟢", "ควรซื้อเพิ่ม", strong));
   if (surplus.count > 0) groups.push(purchaseGroupBlock("🟠", "ยังไม่ควรซื้อเพิ่ม", surplus));
   if (reduce.count > 0) groups.push(purchaseGroupBlock("🔴", "ควรลดการซื้อ", reduce));
-  return ["🛒 แผนซื้อของ", ...(groups.length > 0 ? groups : ["ยังไม่มีรายการแนะนำ"])];
+  return [
+    "🛒 แผนซื้อผลไม้",
+    "เกณฑ์ของเหลือพร้อมขาย = ชั่งคืนดี + Stock บ้าน",
+    ...(groups.length > 0 ? groups : ["ยังไม่มีรายการแนะนำ"]),
+  ];
 }
 
 /** Money only, and always the first body block so it lands in Part 1. Zero lines are omitted. */
 function buildSalesBlock(report: MorningBriefReport): string {
-  const sales = report.sales;
-  const totalLabel = sales.excludedFromSalesCount > 0
-    ? "ยอดขายรวมที่คำนวณได้ (บางส่วน)"
-    : "ยอดขายรวม";
-  const lines = ["💰 ภาพรวมเงิน", `${totalLabel} ${satangToBahtText(sales.totalSalesSatang)} บาท`];
-  if (sales.pendingReviewSalesSatang !== 0) {
-    lines.push(
-      `ยอดยืนยันแล้ว ${satangToBahtText(sales.confirmedSalesSatang)} บาท`,
-      `ยอดรอตรวจ ${satangToBahtText(sales.pendingReviewSalesSatang)} บาท`,
-    );
-  }
-  if (sales.adjustmentSatang !== 0) lines.push(`ปรับราคา ${satangToBahtText(sales.adjustmentSatang)} บาท`);
-  return lines.join("\n");
-}
-
-/**
- * One flat list of counts, one line per issue kind, never product or market
- * names. Unassessable purchase items get a single line — their reasons (often
- * the same return gap already counted for sales) stay in the PDF.
- */
-function buildReviewBlock(report: MorningBriefReport): string | null {
-  const sales = report.sales;
-  const lines = ([
-    ["รอตรวจราคา", sales.priceIssueCount],
-    ["รอข้อมูลคืน/คืนเสีย", sales.incompleteReturnIssueCount],
-    ["ไม่รวมในยอด", sales.excludedFromSalesCount],
-    ["ข้อมูลแผนซื้อยังไม่ครบ", report.purchasePlanning.unknown.count],
-  ] as const)
-    .filter(([, count]) => count > 0)
-    .map(([label, count]) => `• ${label} ${count} รายการ`);
-  if (lines.length === 0) return null;
-  return ["⚠️ ข้อมูลที่ต้องตรวจ", ...lines, "", "รายละเอียดดูใน PDF"].join("\n");
+  return [
+    "💰 ภาพรวมเงิน",
+    `ยอดขายรวม ${satangToBahtText(report.sales.totalSalesSatang)} บาท`,
+  ].join("\n");
 }
 
 function displayPrice(satang: number): string {
@@ -133,7 +109,7 @@ function houseCategorySection(items: readonly MorningBriefHouseStockItem[]): str
 function buildHouseStockBlock(report: MorningBriefReport): string {
   const stock = report.houseStock;
   if (stock.status === "missing") return "🏠 ของในบ้าน\nยังไม่มีข้อมูลสต๊อกบ้าน";
-  if (stock.status === "unavailable") return "🏠 ของในบ้าน\n⚠️ ยังตรวจสต๊อกบ้านไม่ได้";
+  if (stock.status === "unavailable") return "🏠 ของในบ้าน\nยังตรวจสต๊อกบ้านไม่ได้";
 
   const header = [
     `🏠 ของในบ้าน — ${stock.groupCount} รายการ`,
@@ -145,15 +121,12 @@ function buildHouseStockBlock(report: MorningBriefReport): string {
 }
 
 export function buildMorningBriefBlocks(report: MorningBriefReport): string[] {
-  const blocks = [
+  return [
     `${MORNING_BRIEF_TITLE} — ${formatThaiDate(report.businessDate)}`,
     buildSalesBlock(report),
     ...buildPurchaseBlocks(report),
     buildHouseStockBlock(report),
   ];
-  const review = buildReviewBlock(report);
-  if (review) blocks.push(review);
-  return blocks;
 }
 
 export function buildMorningBriefMessage(report: MorningBriefReport): string {

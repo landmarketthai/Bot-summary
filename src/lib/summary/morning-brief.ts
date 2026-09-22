@@ -20,6 +20,24 @@ export interface MorningBriefPurchaseItem {
   category: string;
   unit: string;
   uncertaintyReasons: PurchaseUncertaintyReason[];
+  withdrawnQuantity?: number;
+  goodReturnQuantity?: number;
+  damagedQuantity?: number;
+  houseStockQuantity?: number | null;
+  nextDayGoodStockQuantity?: number | null;
+  identityUnverified?: boolean;
+}
+
+/**
+ * Morning Brief is currently a fruit purchasing report. Keep known non-fruit
+ * categories out, but retain special/unmapped rows so a fruit whose dictionary
+ * entry is not fixed yet does not silently disappear from tomorrow's order list.
+ */
+export function isMorningBriefFruitCategory(category: string): boolean {
+  return category === "ผลไม้"
+    || category === "รายการพิเศษ"
+    || category === "อื่นๆ / ยังไม่เข้าหมวด"
+    || category === "อื่นๆ";
 }
 
 export interface MorningBriefPurchaseGroup {
@@ -51,8 +69,11 @@ export function summarizePurchasePlanning(
   };
 
   for (const item of report.items) {
-    const group = summary[item.status];
     const identity = morningBriefProductIdentity(item.productName, item.unit);
+    if (!isMorningBriefFruitCategory(identity.category)) continue;
+    const identityUnverified = !CATEGORY_BY_PRODUCT.has(identity.productName);
+    const status = identityUnverified ? "unknown" : item.status;
+    const group = summary[status];
     group.count += 1;
     group.productNames.push(identity.productName);
     group.items!.push({
@@ -61,6 +82,12 @@ export function summarizePurchasePlanning(
       category: identity.category,
       unit: item.unit,
       uncertaintyReasons: [...item.uncertaintyReasons],
+      withdrawnQuantity: item.withdrawnQuantity,
+      goodReturnQuantity: item.goodReturnQuantity,
+      damagedQuantity: item.damagedQuantity,
+      houseStockQuantity: item.houseStockQuantity,
+      nextDayGoodStockQuantity: item.nextDayGoodStockQuantity,
+      identityUnverified,
     });
   }
 
