@@ -71,27 +71,29 @@ function report(overrides: Partial<MorningBriefReport> = {}): MorningBriefReport
   };
 }
 describe("Morning Decision Brief", () => {
-  test("shows every actionable purchase item and summarizes unknown items by reason", () => {
+  test("shows every actionable purchase item without unknown diagnostic details", () => {
     const message = buildMorningBriefMessage(report());
     expect(message).toContain("🟢 ควรซื้อเพิ่ม — 12 รายการ");
     expect(message).toContain("ผัก / สมุนไพร / เครื่องประกอบอาหาร — 11 รายการ");
     expect(message).toContain("ซื้อ11");
     expect(message).toContain("ปลา / อาหารแห้ง / ของแห้ง — 1 รายการ");
-    expect(message).toContain("แผนซื้อ: ยังประเมินไม่ได้ 2 รายการ\n• รอข้อมูลคืน/คืนเสีย 2 รายการ");
+    expect(message).not.toContain("แผนซื้อ: ยังประเมินไม่ได้");
+    expect(message).not.toContain("รอข้อมูลคืน/คืนเสีย");
     expect(message).not.toContain("ตรวจ1");
     expect(message).not.toContain("รายการคืน/คืนเสียของรอบยังไม่สมบูรณ์");
     expect(message).not.toContain("+อีก");
   });
 
-  test("shows total, confirmed, pending, adjustment, and issue counts", () => {
+  test("shows business money totals without diagnostic issue counters", () => {
     const message = buildMorningBriefMessage(report());
     expect(message).toContain("ยอดขายรวมที่คำนวณได้ (บางส่วน) 22,460.74 บาท");
     expect(message).toContain("ยอดยืนยันแล้ว 21,740.74 บาท");
     expect(message).toContain("ยอดรอตรวจ 720.00 บาท");
     expect(message).toContain("ปรับราคา -10.00 บาท");
-    expect(message).toContain("• รอตรวจราคา 2 รายการ");
-    expect(message).toContain("• รอข้อมูลคืน/คืนเสีย 1 รายการ");
-    expect(message).toContain("• ไม่รวมในยอด 1 รายการ");
+    expect(message).not.toContain("รอตรวจราคา 2 รายการ");
+    expect(message).not.toContain("รอข้อมูลคืน/คืนเสีย");
+    expect(message).not.toContain("ไม่รวมในยอด 1 รายการ");
+    expect(message).not.toContain("⚠️ ข้อมูลที่ต้องตรวจ");
   });
 
   test("does not dump sales review products, markets, or reason codes into LINE", () => {
@@ -102,7 +104,7 @@ describe("Morning Decision Brief", () => {
     expect(message).not.toContain("central_price_conflict");
   });
 
-  test("large sales error details stay compact and do not split the Morning Brief", () => {
+  test("large internal review details never enter the Morning Brief", () => {
     const base = report();
     const reviewItems = Array.from({ length: 300 }, (_, index) => ({
       ...base.sales.reviewItems![0]!,
@@ -117,8 +119,9 @@ describe("Morning Decision Brief", () => {
     }));
 
     expect(messages).toHaveLength(1);
-    expect(messages[0]).toContain("• รอตรวจราคา 2 รายการ");
+    expect(messages[0]).not.toContain("รอตรวจราคา 2 รายการ");
     expect(messages[0]).not.toContain("สินค้าที่มีชื่อยาวมาก");
+    expect(messages[0]).not.toContain("⚠️ ข้อมูลที่ต้องตรวจ");
     expect(messages[0]).not.toContain("Part ");
   });
   test("shows House Stock product, quantity, price and value by category", () => {
@@ -132,7 +135,8 @@ describe("Morning Decision Brief", () => {
     const missing = buildMorningBriefMessage(report({ houseStock: { status: "missing" } }));
     const unavailable = buildMorningBriefMessage(report({ houseStock: { status: "unavailable" } }));
     expect(missing).toContain("ยังไม่มีข้อมูลสต๊อกบ้าน");
-    expect(unavailable).toContain("⚠️ ยังตรวจสต๊อกบ้านไม่ได้");
+    expect(unavailable).toContain("ยังไม่มีข้อมูลสต๊อกบ้านสำหรับสรุปนี้");
+    expect(unavailable).not.toContain("⚠️");
   });
   test("large categorized lists chunk instead of truncating names", () => {
     const many = purchaseItems("สินค้า", 150);
@@ -220,12 +224,15 @@ describe("Morning Brief LINE layout — Production 2026-09-07 regression", () =>
     expect(messages[0]).toContain("ยอดรอตรวจ 720.00 บาท");
     const joined = messages.join("\n");
     expect(joined.indexOf("💰 ภาพรวมเงิน")).toBeLessThan(joined.indexOf("🛒 แผนซื้อของ"));
-    expect(joined.indexOf("🏠 ของในบ้าน")).toBeLessThan(joined.indexOf("⚠️ ข้อมูลที่ต้องตรวจ"));
+    expect(joined).toContain("🏠 ของในบ้าน");
+    expect(joined).not.toContain("⚠️ ข้อมูลที่ต้องตรวจ");
+    expect(joined).not.toContain("รอข้อมูลคืน/คืนเสีย");
   });
 
-  test("incomplete-return items are one summary line, not 14 product lines", () => {
+  test("incomplete-return diagnostics are omitted from LINE entirely", () => {
     const joined = buildMorningBriefMessages(heavy).join("\n");
-    expect(joined).toContain("แผนซื้อ: ยังประเมินไม่ได้ 14 รายการ\n• รอข้อมูลคืน/คืนเสีย 14 รายการ");
+    expect(joined).not.toContain("แผนซื้อ: ยังประเมินไม่ได้");
+    expect(joined).not.toContain("รอข้อมูลคืน/คืนเสีย");
     expect(joined).not.toContain("รายการคืน/คืนเสียของรอบยังไม่สมบูรณ์");
     for (const name of unknownNames) expect(joined).not.toContain(name);
     expect(joined).not.toContain("ยังประเมินไม่ได้ —");
@@ -238,10 +245,23 @@ describe("Morning Brief LINE layout — Production 2026-09-07 regression", () =>
     expect(messages.join("\n")).not.toContain("รายละเอียดมากเกินขีดจำกัด LINE");
   });
 
-  test("the PDF still carries the per-product detail LINE no longer shows", () => {
+  test("the PDF keeps purchase status but omits internal review dumps", () => {
     const text = pdfText(MorningBriefA4Doc({ report: heavy, generatedAt: new Date("2026-09-08T01:00:00Z") }));
     for (const name of unknownNames) expect(text).toContain(name);
-    expect(text).toContain("สาลี่");
-    expect(text).toContain("ยังไม่พบหลักฐานการคืนของสินค้านี้");
+    expect(text).not.toContain("สาลี่");
+    for (const forbidden of [
+      "⚠️ ข้อมูลที่ต้องตรวจ",
+      "รอข้อมูลคืน/คืนเสีย",
+      "รอตรวจราคา",
+      "ไม่รวมในยอด",
+      "รายการที่ยังต้องตรวจ",
+      "ความครบถ้วนของข้อมูลก่อนตัดสินใจ",
+      "ราคากลางขัดแย้ง",
+      "หลักฐานคืน/คืนเสียยังไม่ครบ",
+      "central_price_conflict",
+      "VALUE_BLOCKED",
+      "QUANTITY_BLOCKED",
+      "PENDING_REVIEW",
+    ]) expect(text).not.toContain(forbidden);
   });
 });
