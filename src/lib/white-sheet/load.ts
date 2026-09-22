@@ -6,12 +6,7 @@ import {
 } from "@/lib/reconciliation";
 import type { Database } from "@/types/database";
 import { calculateDigitalWhiteSheet, resolveWithdrawalUnitPriceBaht } from "./calculate";
-import {
-  centralPriceKey,
-  centralPriceMapKey,
-  loadCentralPriceDetailsForDate,
-  SYSTEM_WITHDRAWAL_SEED_ACTOR,
-} from "./pricing";
+import { loadCentralPriceDetailsForDate } from "./pricing";
 import type {
   DigitalWhiteSheetCalculation,
   DigitalWhiteSheetSummary,
@@ -228,6 +223,8 @@ function adaptTransactionRow(
 
   return {
     marketKey: scope.marketKey,
+    accountabilityRoundId: row.accountability_round_id,
+    marketName: row.market_name,
     businessDate: scope.businessDate,
     productName: row.product_name,
     unit: row.unit,
@@ -294,12 +291,9 @@ function unresolvedMarketWarnings(
  * seedCentralPricesFromPersistedWithdrawals) — this path never creates,
  * seeds, corrects, or mutates central_selling_prices.
  *
- * dateRows spans every market/source for the date (fetched before any
- * market/source filter) so conflict detection is global: a later withdrawal
- * whose own price disagrees with a system-auto-seeded central price marks
- * the identity disputed and calculate.ts fails closed for every market
- * touching it. Once an admin has set/corrected the price, a mismatching
- * withdrawal is informational only — the admin decision is final.
+ * Central rows remain available for backward-compatible admin display.
+ * Calculation authority comes from each round's persisted entered prices;
+ * variation is detected inside the calculator after rows are round-scoped.
  *
  * Exported (behavior unchanged) so the P1 Daily Sales loader prices sales
  * through this exact resolver rather than a second, divergent implementation.
@@ -307,33 +301,10 @@ function unresolvedMarketWarnings(
 export async function resolveCentralPricesForDate(
   supabase: Supabase,
   businessDate: string,
-  dateRows: readonly ProduceTransactionRow[],
+  _dateRows: readonly ProduceTransactionRow[],
 ): Promise<{ prices: Map<string, number>; conflicts: Set<string> }> {
   const details = await loadCentralPriceDetailsForDate(supabase, businessDate);
   const conflicts = new Set<string>();
-
-  for (const row of dateRows) {
-    if (row.base_transaction_type?.trim() !== "เบิก") continue;
-    const productName = row.product_name?.trim();
-    const rawUnit = row.unit?.trim();
-    if (!productName || !rawUnit || row.price_per_unit === null) continue;
-
-    const key = centralPriceKey({ productName, unit: rawUnit, businessDate });
-    const mapKey = centralPriceMapKey(key.productKey, key.unitKey);
-    const existing = details.get(mapKey);
-    if (!existing) continue;
-
-    const priceBaht = resolveWithdrawalUnitPriceBaht({
-      unit: rawUnit,
-      unitPrice: Number(row.price_per_unit),
-      basisQuantity: row.basis_quantity === null ? null : Number(row.basis_quantity),
-    });
-    const priceSatang = Math.round(priceBaht * 100);
-
-    if (existing.setBy === SYSTEM_WITHDRAWAL_SEED_ACTOR && existing.priceSatang !== priceSatang) {
-      conflicts.add(mapKey);
-    }
-  }
 
   const prices = new Map<string, number>();
   for (const [mapKey, entry] of details) {
@@ -400,11 +371,6 @@ export async function loadDigitalWhiteSheetCalculation(
     (row) => normalizedMarketLabel(row.market_name) === targetMarket,
   );
   const transactions = rows.map((row) => adaptTransactionRow(row, scope));
-  const { prices: centralPrices, conflicts: priceConflicts } = await resolveCentralPricesForDate(
-    supabase,
-    scope.businessDate,
-    dateRows,
-  );
   const verifiedTransferResult = await loadMarketScopedAiVerifiedTransfers(
     supabase,
     scope.sourceId,
@@ -442,13 +408,14 @@ export async function loadDigitalWhiteSheetCalculation(
         ]
       : []),
   ];
+  const pricing = await resolveCentralPricesForDate(supabase, scope.businessDate, rows);
   const calculation = calculateDigitalWhiteSheet({
     marketKey: scope.marketKey,
     marketLabel: targetMarket,
     businessDate: scope.businessDate,
     transactions,
-    centralPrices,
-    priceConflicts,
+    centralPrices: pricing.prices,
+    priceConflicts: pricing.conflicts,
     verifiedTransfers,
     expenses: cashInput.expenses,
     actualCashSubmitted: cashInput.actualCashSubmitted,

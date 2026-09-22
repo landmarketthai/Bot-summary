@@ -352,7 +352,7 @@ describe("P1 loader", () => {
     expect(report.scopeBlockers).toEqual([{ kind: "message_parser_error", count: 1 }]);
   });
 
-  test("a system-seeded price contradicted by a withdrawal blocks the value", async () => {
+  test("a system-seeded day price never overrides the round withdrawal price", async () => {
     const report = await loadSalesReport(
       fakeSupabase(
         baseFixture({
@@ -373,18 +373,14 @@ describe("P1 loader", () => {
       DATE,
     );
 
-    // The withdrawal row says 120.00 while the auto-seeded price says 110.00.
-    expect(report.blocked[0].status).toBe("VALUE_BLOCKED");
-    expect(report.blocked[0].reasons).toContain("central_price_conflict");
-    expect(report.blocked[0]).toMatchObject({
-      enteredPriceSatang: 12_000,
-      valueStatus: "PENDING_REVIEW",
-      pendingReviewSalesSatang: 72_000,
-    });
+    const result = report.markets[0].rows[0];
+    expect(result).toMatchObject({ enteredPriceSatang: 12_000, centralPriceSatang: null, expectedSalesSatang: 72_000, valueStatus: "CONFIRMED", status: "TRUSTED" });
+    expect(result.reasons).not.toContain("central_price_conflict");
+    expect(report.blocked).toHaveLength(0);
     expect(report.allMarkets.totalSalesSatang).toBe(72_000);
   });
 
-  test("an admin-set price that a withdrawal contradicts is still authoritative", async () => {
+  test("a legacy admin day price does not override a usable round withdrawal price", async () => {
     const report = await loadSalesReport(fakeSupabase(baseFixture({
       centralPrices: [{
         product_key: "หมอนทอง",
@@ -399,32 +395,60 @@ describe("P1 loader", () => {
     })), DATE);
     const result = report.markets[0].rows[0];
     expect(result).toMatchObject({
-      centralPriceSatang: 11_000,
+      centralPriceSatang: null,
       enteredPriceSatang: 12_000,
-      expectedSalesSatang: 66_000,
+      expectedSalesSatang: 72_000,
       pendingReviewSalesSatang: null,
-      adjustmentSatang: -6_000,
+      adjustmentSatang: 0,
       valueStatus: "CONFIRMED",
       status: "TRUSTED",
     });
-    expect(report.allMarkets.totalSalesSatang).toBe(66_000);
+    expect(report.allMarkets.totalSalesSatang).toBe(72_000);
   });
 
-  test("a missing central price blocks value but keeps the quantity", async () => {
+  test("a usable round withdrawal price needs no day-wide central price", async () => {
     const report = await loadSalesReport(
       fakeSupabase(baseFixture({ centralPrices: [] })),
       DATE,
     );
 
-    expect(report.blocked[0].status).toBe("VALUE_BLOCKED");
-    expect(report.blocked[0].soldQuantity).toBe(6);
-    expect(report.blocked[0].reasons).toContain("missing_central_price");
-    expect(report.blocked[0]).toMatchObject({
-      enteredPriceSatang: 12_000,
-      valueStatus: "PENDING_REVIEW",
-      pendingReviewSalesSatang: 72_000,
-    });
+    const result = report.markets[0].rows[0];
+    expect(result).toMatchObject({ soldQuantity: 6, enteredPriceSatang: 12_000, centralPriceSatang: null, expectedSalesSatang: 72_000, valueStatus: "CONFIRMED", status: "TRUSTED" });
+    expect(report.blocked).toHaveLength(0);
     expect(report.allMarkets.totalSalesSatang).toBe(72_000);
+  });
+
+  test("legacy rows without an entered withdrawal price may use the central fallback", async () => {
+    const report = await loadSalesReport(
+      fakeSupabase(baseFixture({
+        produce: [
+          produceRow({ id: "i1", quantity: 10, transaction_type: "เบิก", price_per_unit: null }),
+          produceRow({ id: "i2", quantity: 4, transaction_type: "คืน", price_per_unit: null }),
+        ],
+        centralPrices: [{
+          product_key: "หมอนทอง",
+          unit_key: "โล",
+          business_date: DATE,
+          price_satang: 11_000,
+          set_by: "admin:je",
+          set_reason: "legacy fallback",
+          created_at: "2026-07-25T01:00:00.000Z",
+          updated_at: "2026-07-25T01:00:00.000Z",
+        }],
+      })),
+      DATE,
+    );
+
+    const result = report.markets[0].rows[0];
+    expect(result).toMatchObject({
+      soldQuantity: 6,
+      enteredPriceSatang: null,
+      centralPriceSatang: 11_000,
+      expectedSalesSatang: 66_000,
+      valueStatus: "CONFIRMED",
+      status: "TRUSTED",
+    });
+    expect(report.blocked).toHaveLength(0);
   });
 
   test("a row whose LINE source cannot be resolved is blocked, not merged", async () => {
@@ -2016,8 +2040,8 @@ describe("P1 excludes QA market scopes from production reporting", () => {
     expect(report.markets.map((market) => market.marketLabel).sort()).toEqual(
       ["ตลาดกี้", "ทดสอบไวท์ชีท"].sort(),
     );
-    // 6 real + 60 QA, both priced at 120.00.
-    expect(report.allMarkets.expectedSalesSatang).toBe(72_000 + 720_000);
-    expect(report.blocked).toHaveLength(1);
+    // Audit mode keeps 6 real + 60 QA + the extra 7-unit QA row, all at their entered 120.00 round price.
+    expect(report.allMarkets.expectedSalesSatang).toBe(72_000 + 720_000 + 84_000);
+    expect(report.blocked).toHaveLength(0);
   });
 });

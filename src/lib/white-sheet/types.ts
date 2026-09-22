@@ -18,6 +18,10 @@ export interface WhiteSheetExpenses {
  */
 export interface WhiteSheetTransactionRow {
   marketKey: string;
+  /** Primary scope for entered-price consistency; null on pre-round rows. */
+  accountabilityRoundId?: string | null;
+  /** Canonical market fallback for pre-round rows. */
+  marketName?: string | null;
   businessDate: string;
   productName: string;
   unit: string;
@@ -79,20 +83,10 @@ export interface DigitalWhiteSheetInput {
   marketLabel: string;
   businessDate: string;
   transactions: readonly WhiteSheetTransactionRow[];
-  /**
-   * Central selling price in satang, keyed by centralPriceMapKey(productKey,
-   * unitKey) — see src/lib/white-sheet/pricing.ts. BR-01: the sole trusted
-   * price source; a missing key fails closed with a warning rather than
-   * falling back to any withdrawal-lot price.
-   */
+  /** Backward-compatible/admin display data. Entered round prices value sales. */
   centralPrices?: ReadonlyMap<string, number>;
   /**
-   * BR-01 seed rule: set of centralPriceMapKey(productKey, unitKey) values
-   * whose price is disputed — a withdrawal disagreed with a system-auto-
-   * seeded price and no admin has confirmed one yet. Fails closed even if
-   * this market's own rows match the disputed price (see
-   * resolveCentralPricesForDate in ./load.ts, which derives this across all
-   * markets for the business date).
+   * Round-scoped identities whose entered withdrawal prices vary. Advisory only.
    */
   priceConflicts?: ReadonlySet<string>;
   verifiedTransfers: number;

@@ -396,14 +396,14 @@ describe("product-level return coverage", () => {
     expect(omitted.soldQuantity).toBeNull();
     expect(omitted.expectedSalesSatang).toBeNull();
     expect(omitted.valueStatus).toBe("PENDING_REVIEW");
-    expect(omitted.pendingReviewSalesSatang).toBe(40_000);
-    expect(omitted.adjustmentSatang).toBe(5_000);
+    expect(omitted.pendingReviewSalesSatang).toBe(35_000);
+    expect(omitted.adjustmentSatang).toBe(0);
     expect(isSoldOutByAbsentReturn(omitted)).toBe(false);
 
     expect(report.allMarkets.expectedSalesSatang).toBe(96_000);
-    expect(report.allMarkets.pendingReviewSalesSatang).toBe(40_000);
-    expect(report.allMarkets.totalSalesSatang).toBe(136_000);
-    expect(report.allMarkets.adjustmentSatang).toBe(5_000);
+    expect(report.allMarkets.pendingReviewSalesSatang).toBe(35_000);
+    expect(report.allMarkets.totalSalesSatang).toBe(131_000);
+    expect(report.allMarkets.adjustmentSatang).toBe(0);
     expect(report.allMarkets.trustedRowCount).toBe(1);
     expect(report.allMarkets.quantityBlockedRowCount).toBe(1);
     expect(report.blocked.map((item) => item.productName)).toEqual(["มะม่วง"]);
@@ -1229,10 +1229,30 @@ describe("P1 market identity", () => {
   });
 });
 
+test("2026-09-21 regression: กี้ 50 and ดำ 70 are both trusted in separate rounds", () => {
+  const report = build([
+    row({ sourceId: SOURCE_A, marketName: "วัดทุ่งลานนา", accountabilityRoundId: "round-kii", sessionId: "kii-w", productName: "องุ่นแดง", quantity: 10, transactionType: TX_WITHDRAW, enteredPriceSatang: 5_000 }),
+    row({ sourceId: SOURCE_A, marketName: "วัดทุ่งลานนา", accountabilityRoundId: "round-kii", sessionId: "kii-r", productName: "องุ่นแดง", quantity: 2, transactionType: TX_RETURN }),
+    row({ sourceId: SOURCE_B, marketName: "วัดตะกล่ำ", accountabilityRoundId: "round-dum", sessionId: "dum-w", productName: "องุ่นแดง", quantity: 10, transactionType: TX_WITHDRAW, enteredPriceSatang: 7_000 }),
+    row({ sourceId: SOURCE_B, marketName: "วัดตะกล่ำ", accountabilityRoundId: "round-dum", sessionId: "dum-r", productName: "องุ่นแดง", quantity: 2, transactionType: TX_RETURN }),
+  ], {
+    centralPrices: prices([["องุ่นแดง", "โล", 7_000]]),
+    priceConflicts: new Set([centralPriceMapKey("องุ่นแดง", "โล")]),
+  });
+  const rows = report.markets.flatMap((market) => market.rows);
+  const kii = rows.find((r) => r.marketLabel === "วัดทุ่งลานนา")!;
+  const dum = rows.find((r) => r.marketLabel === "วัดตะกล่ำ")!;
+  expect(kii).toMatchObject({ status: "TRUSTED", valueStatus: "CONFIRMED", enteredPriceSatang: 5_000, expectedSalesSatang: 40_000 });
+  expect(dum).toMatchObject({ status: "TRUSTED", valueStatus: "CONFIRMED", enteredPriceSatang: 7_000, expectedSalesSatang: 56_000 });
+  expect(kii.reasons).not.toContain("central_price_conflict");
+  expect(dum.reasons).not.toContain("central_price_conflict");
+  expect(report.allMarkets).toMatchObject({ totalSalesSatang: 96_000, valueAuthoritative: true });
+});
+
 // ── Central price ───────────────────────────────────────────────────────────
 
 describe("P1 expected sales value", () => {
-  test("expected sales is sold quantity × central price", () => {
+  test("entered round price is authoritative when present", () => {
     const report = build(
       [
         row({ quantity: 10, transactionType: TX_WITHDRAW, enteredPriceSatang: 12_050 }),
@@ -1243,7 +1263,7 @@ describe("P1 expected sales value", () => {
 
     const result = onlyRow(report);
     expect(result.soldQuantity).toBe(7.5);
-    expect(result.centralPriceSatang).toBe(12_050);
+    expect(result.centralPriceSatang).toBeNull();
     expect(result.expectedSalesSatang).toBe(90_375);
     expect(result.pendingReviewSalesSatang).toBeNull();
     expect(result.valueStatus).toBe("CONFIRMED");
@@ -1272,7 +1292,7 @@ describe("P1 expected sales value", () => {
     expect(report.allMarkets.totalSalesSatang).toBe(0);
   });
 
-  test("a missing central price uses one usable entered price as pending-review money", () => {
+  test("one usable entered round price confirms value without a central row", () => {
     const report = build([
       row({ quantity: 10, transactionType: TX_WITHDRAW, enteredPriceSatang: 12_000 }),
       row({ quantity: 4, transactionType: TX_RETURN }),
@@ -1280,24 +1300,24 @@ describe("P1 expected sales value", () => {
 
     const result = onlyRow(report);
     expect(result).toMatchObject({
-      status: "VALUE_BLOCKED",
-      valueStatus: "PENDING_REVIEW",
+      status: "TRUSTED",
+      valueStatus: "CONFIRMED",
       soldQuantity: 6,
       enteredPriceSatang: 12_000,
       centralPriceSatang: null,
-      expectedSalesSatang: null,
-      pendingReviewSalesSatang: 72_000,
+      expectedSalesSatang: 72_000,
+      pendingReviewSalesSatang: null,
       adjustmentSatang: 0,
     });
     expect(report.allMarkets).toMatchObject({
-      expectedSalesSatang: 0,
-      pendingReviewSalesSatang: 72_000,
+      expectedSalesSatang: 72_000,
+      pendingReviewSalesSatang: 0,
       totalSalesSatang: 72_000,
       adjustmentSatang: 0,
     });
   });
 
-  test("P2: multiple entered withdrawal prices aggregate into pending money", () => {
+  test("multiple entered prices stay confirmed and surface an advisory", () => {
     const report = build([
       row({ quantity: 6, transactionType: TX_WITHDRAW, enteredPriceSatang: 12_000 }),
       row({
@@ -1311,13 +1331,15 @@ describe("P1 expected sales value", () => {
 
     expect(onlyRow(report)).toMatchObject({
       enteredPriceSatang: 11_600,
-      valueStatus: "PENDING_REVIEW",
-      pendingReviewSalesSatang: 116_000,
+      valueStatus: "CONFIRMED",
+      expectedSalesSatang: 116_000,
+      pendingReviewSalesSatang: null,
+      priceVariationAdvisory: true,
     });
     expect(report.allMarkets.totalSalesSatang).toBe(116_000);
   });
 
-  test("multiple entered prices retain an exact approved-price adjustment without double count", () => {
+  test("legacy central price does not override multiple entered round prices", () => {
     const report = build(
       [
         row({ quantity: 6, transactionType: TX_WITHDRAW, enteredPriceSatang: 12_000 }),
@@ -1336,16 +1358,17 @@ describe("P1 expected sales value", () => {
     expect(onlyRow(report)).toMatchObject({
       soldQuantity: 8,
       enteredPriceSatang: 11_600,
-      expectedSalesSatang: 104_000,
+      expectedSalesSatang: 92_800,
       pendingReviewSalesSatang: null,
-      adjustmentSatang: 11_200,
+      adjustmentSatang: 0,
+      priceVariationAdvisory: true,
       valueStatus: "CONFIRMED",
     });
     expect(report.allMarkets).toMatchObject({
-      expectedSalesSatang: 104_000,
+      expectedSalesSatang: 92_800,
       pendingReviewSalesSatang: 0,
-      totalSalesSatang: 104_000,
-      adjustmentSatang: 11_200,
+      totalSalesSatang: 92_800,
+      adjustmentSatang: 0,
     });
   });
 
@@ -1368,7 +1391,7 @@ describe("P1 expected sales value", () => {
     expect(result.valueStatus).toBe("UNAVAILABLE");
   });
 
-  test("a central-price conflict uses the entered price but keeps the money pending review", () => {
+  test("a legacy central conflict cannot block a usable entered round price", () => {
     const report = build(
       [
         row({ quantity: 10, transactionType: TX_WITHDRAW, enteredPriceSatang: 12_000 }),
@@ -1381,19 +1404,17 @@ describe("P1 expected sales value", () => {
     );
 
     expect(onlyRow(report)).toMatchObject({
-      status: "VALUE_BLOCKED",
-      valueStatus: "PENDING_REVIEW",
+      status: "TRUSTED",
+      valueStatus: "CONFIRMED",
       centralPriceSatang: null,
-      expectedSalesSatang: null,
-      pendingReviewSalesSatang: 72_000,
+      expectedSalesSatang: 72_000,
+      pendingReviewSalesSatang: null,
       adjustmentSatang: 0,
     });
     expect(report.allMarkets.totalSalesSatang).toBe(72_000);
   });
 
-  test("an admin-corrected central price is used verbatim", () => {
-    // BR-04: once an admin sets the price it is authoritative, and the
-    // withdrawal-row price is never substituted for it.
+  test("a legacy central row does not override a usable entered round price", () => {
     const report = build(
       [
         row({ quantity: 10, transactionType: TX_WITHDRAW, enteredPriceSatang: 12_000 }),
@@ -1403,13 +1424,13 @@ describe("P1 expected sales value", () => {
     );
 
     const result = onlyRow(report);
-    expect(result.centralPriceSatang).toBe(9_900);
-    expect(result.expectedSalesSatang).toBe(99_000);
+    expect(result.centralPriceSatang).toBeNull();
+    expect(result.expectedSalesSatang).toBe(120_000);
     expect(result.valueStatus).toBe("CONFIRMED");
     expect(result.pendingReviewSalesSatang).toBeNull();
-    expect(result.adjustmentSatang).toBe(-21_000);
-    expect(report.allMarkets.totalSalesSatang).toBe(99_000);
-    expect(report.allMarkets.adjustmentSatang).toBe(-21_000);
+    expect(result.adjustmentSatang).toBe(0);
+    expect(report.allMarkets.totalSalesSatang).toBe(120_000);
+    expect(report.allMarkets.adjustmentSatang).toBe(0);
   });
 
   test("incomplete return evidence keeps calculable sales in the total", () => {
@@ -1504,9 +1525,9 @@ describe("P1 expected sales value", () => {
 
     expect(report.allMarkets).toMatchObject({
       expectedSalesSatang: 120_000,
-      pendingReviewSalesSatang: 20_000,
-      totalSalesSatang: 140_000,
-      adjustmentSatang: 20_000,
+      pendingReviewSalesSatang: 0,
+      totalSalesSatang: 120_000,
+      adjustmentSatang: 0,
     });
     expect(report.allMarkets.totalSalesSatang).toBe(
       report.allMarkets.expectedSalesSatang + report.allMarkets.pendingReviewSalesSatang,
