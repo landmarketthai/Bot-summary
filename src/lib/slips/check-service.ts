@@ -6,11 +6,11 @@ import {
   extractionToJson,
 } from "@/lib/slips/extraction-schema";
 import {
-  OpenAiSlipExtractor,
   ExtractionHttpError,
   type SlipExtractor,
 } from "@/lib/slips/extractor";
 import { buildSlipLineSummary } from "@/lib/slips/line-summary";
+import { CascadingSlipExtractor } from "@/lib/slips/cascade-extractor";
 import { findSlipTransactionDuplicate } from "@/lib/slips/transaction-dedupe";
 import { buildSlipTransactionDuplicateWarning } from "@/lib/slips/transaction-duplicate-warning";
 import type { Database } from "@/types/database";
@@ -29,7 +29,7 @@ export interface SlipCheckProcessor {
 export class SlipCheckService implements SlipCheckProcessor {
   constructor(
     private readonly supabase: Supabase,
-    private readonly extractor: SlipExtractor = new OpenAiSlipExtractor(),
+    private readonly extractor: SlipExtractor = new CascadingSlipExtractor(),
     private readonly pushMessage: PushMessage = defaultPushMessage,
   ) {}
 

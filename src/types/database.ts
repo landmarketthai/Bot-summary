@@ -32,6 +32,9 @@ export type ManualSlipSessionStatus      = "open" | "closed";
 export type ManualWhiteSheetNoteSessionStatus = "open" | "closed" | "cancelled";
 export type SettlementFinalizationStatus = "pending" | "sending" | "sent" | "failed" | "ambiguous";
 export type ProduceNotificationStatus = "pending" | "sending" | "sent" | "failed";
+export type SettlementSheetDraftStatus =
+  | "PROCESSING" | "READY" | "NEEDS_REVIEW"
+  | "NOT_SETTLEMENT_SHEET" | "DUPLICATE_IMAGE" | "FAILED";
 
 // ─── Database schema ──────────────────────────────────────────────────
 export interface Database {
@@ -1151,6 +1154,124 @@ export interface Database {
         Relationships: [];
       };
 
+      settlement_sheet_drafts: {
+        Row: {
+          id:                       string;
+          raw_message_id:           string;
+          line_message_id:          string;
+          source_id:                string;
+          source_type:              string;
+          line_user_id:             string;
+          storage_bucket:           string;
+          storage_path:             string;
+          mime_type:                string | null;
+          byte_size:                number | null;
+          sha256:                   string;
+          status:                   SettlementSheetDraftStatus;
+          duplicate_of_draft_id:    string | null;
+          accountability_round_id:  string | null;
+          market_label:             string | null;
+          market_label_normalized:  string | null;
+          business_date:            string | null;
+          staff_label:              string | null;
+          transfer_amount:          number | null;
+          cash_submitted:           number | null;
+          expenses_total:           number | null;
+          labor_total:              number | null;
+          sales_total:              number | null;
+          cash_remaining:           number | null;
+          arithmetic_expected_sales: number | null;
+          arithmetic_difference:    number | null;
+          arithmetic_ok:            boolean | null;
+          confidence:               number | null;
+          extracted_json:           Json;
+          template_text:            string | null;
+          failure_reason:           string | null;
+          extraction_provider:      string | null;
+          extraction_model:         string | null;
+          extraction_pass:          "primary" | "fallback" | null;
+          created_at:               string;
+          updated_at:               string;
+        };
+        Insert: {
+          id?:                      string;
+          raw_message_id:           string;
+          line_message_id:          string;
+          source_id:                string;
+          source_type:              string;
+          line_user_id:             string;
+          storage_bucket?:          string;
+          storage_path:             string;
+          mime_type?:               string | null;
+          byte_size?:               number | null;
+          sha256:                   string;
+          status?:                  SettlementSheetDraftStatus;
+          duplicate_of_draft_id?:   string | null;
+          accountability_round_id?: string | null;
+          market_label?:            string | null;
+          market_label_normalized?: string | null;
+          business_date?:           string | null;
+          staff_label?:             string | null;
+          transfer_amount?:         number | null;
+          cash_submitted?:          number | null;
+          expenses_total?:          number | null;
+          labor_total?:             number | null;
+          sales_total?:             number | null;
+          cash_remaining?:          number | null;
+          arithmetic_expected_sales?: number | null;
+          arithmetic_difference?:   number | null;
+          arithmetic_ok?:           boolean | null;
+          confidence?:              number | null;
+          extracted_json?:          Json;
+          template_text?:           string | null;
+          failure_reason?:          string | null;
+          extraction_provider?:     string | null;
+          extraction_model?:        string | null;
+          extraction_pass?:         "primary" | "fallback" | null;
+          created_at?:              string;
+          updated_at?:              string;
+        };
+        Update: {
+          id?:                      string;
+          raw_message_id?:          string;
+          line_message_id?:         string;
+          source_id?:               string;
+          source_type?:             string;
+          line_user_id?:            string;
+          storage_bucket?:          string;
+          storage_path?:            string;
+          mime_type?:               string | null;
+          byte_size?:               number | null;
+          sha256?:                  string;
+          status?:                  SettlementSheetDraftStatus;
+          duplicate_of_draft_id?:   string | null;
+          accountability_round_id?: string | null;
+          market_label?:            string | null;
+          market_label_normalized?: string | null;
+          business_date?:           string | null;
+          staff_label?:             string | null;
+          transfer_amount?:         number | null;
+          cash_submitted?:          number | null;
+          expenses_total?:          number | null;
+          labor_total?:             number | null;
+          sales_total?:             number | null;
+          cash_remaining?:          number | null;
+          arithmetic_expected_sales?: number | null;
+          arithmetic_difference?:   number | null;
+          arithmetic_ok?:           boolean | null;
+          confidence?:              number | null;
+          extracted_json?:          Json;
+          template_text?:           string | null;
+          failure_reason?:          string | null;
+          extraction_provider?:     string | null;
+          extraction_model?:        string | null;
+          extraction_pass?:         "primary" | "fallback" | null;
+          created_at?:              string;
+          updated_at?:              string;
+        };
+        Relationships: [];
+      };
+
       settlement_finalizations: {
         Row: {
           id:              string;
@@ -1254,6 +1375,58 @@ export interface Database {
           failure_reason?:         string | null;
           created_at?:             string;
           updated_at?:             string;
+        };
+        Relationships: [];
+      };
+
+      slip_check_amount_corrections: {
+        Row: {
+          id:                       string;
+          check_id:                 string;
+          evidence_id:              string;
+          correction_raw_message_id: string;
+          target_raw_message_id:    string;
+          line_message_id:          string;
+          quoted_message_id:        string;
+          source_id:                string;
+          source_type:              string;
+          line_user_id:             string;
+          corrected_field:          "transfer_amount" | "paid_amount";
+          original_amount:          number | null;
+          corrected_amount:         number;
+          created_at:               string;
+        };
+        Insert: {
+          id?:                       string;
+          check_id:                 string;
+          evidence_id:              string;
+          correction_raw_message_id: string;
+          target_raw_message_id:    string;
+          line_message_id:          string;
+          quoted_message_id:        string;
+          source_id:                string;
+          source_type:              string;
+          line_user_id:             string;
+          corrected_field:          "transfer_amount" | "paid_amount";
+          original_amount?:         number | null;
+          corrected_amount:         number;
+          created_at?:              string;
+        };
+        Update: {
+          id?:                       string;
+          check_id?:                 string;
+          evidence_id?:              string;
+          correction_raw_message_id?: string;
+          target_raw_message_id?:    string;
+          line_message_id?:          string;
+          quoted_message_id?:        string;
+          source_id?:                string;
+          source_type?:              string;
+          line_user_id?:             string;
+          corrected_field?:          "transfer_amount" | "paid_amount";
+          original_amount?:          number | null;
+          corrected_amount?:         number;
+          created_at?:               string;
         };
         Relationships: [];
       };
@@ -2256,6 +2429,18 @@ export interface Database {
       attach_evidence_to_slip_batch: {
         Args: { p_batch_id: string; p_evidence_id: string };
         Returns: number;
+      };
+      apply_slip_amount_correction: {
+        Args: {
+          p_raw_message_id:     string;
+          p_line_message_id:    string;
+          p_quoted_message_id:  string;
+          p_source_id:          string;
+          p_source_type:        string;
+          p_line_user_id:       string;
+          p_amount:             number;
+        };
+        Returns: Json;
       };
       claim_closing_slip_batch: {
         Args: {

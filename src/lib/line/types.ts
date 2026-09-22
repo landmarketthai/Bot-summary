@@ -106,6 +106,7 @@ interface LineMessageBase {
   id: string;
   type: string;
   quoteToken: string;
+  quotedMessageId?: string;
 }
 
 export interface LineTextMessage extends LineMessageBase {
