@@ -112,6 +112,55 @@ async function loadReconciliation(
   }
 }
 
+function summarizeFruitFinancial(
+  salesReport: Awaited<ReturnType<typeof loadSalesReport>>,
+  houseStock: MorningBriefHouseStock,
+) {
+  const markets = salesReport.markets.flatMap((market) => {
+    const fruitRows = market.rows.filter(
+      (row) => morningBriefProductIdentity(row.productName, row.unit).category === "ผลไม้",
+    );
+    if (fruitRows.length === 0) return [];
+
+    let withdrawalValueSatang = 0;
+    let salesValueSatang = 0;
+    let goodReturnValueSatang = 0;
+    for (const row of fruitRows) {
+      const priceSatang = row.enteredPriceSatang ?? row.centralPriceSatang;
+      if (priceSatang != null) {
+        withdrawalValueSatang += quantityTimesSatang(row.withdrawnQuantity, priceSatang) ?? 0;
+        goodReturnValueSatang += quantityTimesSatang(row.goodReturnQuantity, priceSatang) ?? 0;
+      }
+      salesValueSatang += (row.expectedSalesSatang ?? 0) + (row.pendingReviewSalesSatang ?? 0);
+    }
+
+    return [{
+      marketLabel: market.marketLabel,
+      withdrawalValueSatang,
+      salesValueSatang,
+      goodReturnValueSatang,
+    }];
+  });
+
+  const withdrawalValueSatang = markets.reduce((sum, market) => sum + market.withdrawalValueSatang, 0);
+  const salesValueSatang = markets.reduce((sum, market) => sum + market.salesValueSatang, 0);
+  const goodReturnValueSatang = markets.reduce((sum, market) => sum + market.goodReturnValueSatang, 0);
+  const houseStockValueSatang = houseStock.status === "available"
+    ? (houseStock.items ?? [])
+      .filter((item) => item.category === "ผลไม้")
+      .reduce((sum, item) => sum + item.valueSatang, 0)
+    : null;
+
+  return {
+    withdrawalValueSatang,
+    salesValueSatang,
+    goodReturnValueSatang,
+    houseStockValueSatang,
+    readyValueSatang: houseStockValueSatang == null ? null : goodReturnValueSatang + houseStockValueSatang,
+    markets,
+  };
+}
+
 export async function loadMorningBriefReport(
   supabase: Supabase,
   businessDate: string,
@@ -127,6 +176,7 @@ export async function loadMorningBriefReport(
     businessDate,
     purchasePlanning: summarizePurchasePlanning(purchasePlanning),
     sales: summarizeSales(sales),
+    fruitFinancial: summarizeFruitFinancial(sales, houseStock),
     houseStock,
     reconciliation,
   };

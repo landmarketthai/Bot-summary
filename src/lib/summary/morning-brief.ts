@@ -227,10 +227,27 @@ export type MorningBriefReconciliation =
   | { status: "missing" }
   | { status: "unavailable" };
 
+export interface MorningBriefFruitMarketSummary {
+  marketLabel: string;
+  withdrawalValueSatang: number;
+  salesValueSatang: number;
+  goodReturnValueSatang: number;
+}
+
+export interface MorningBriefFruitFinancialSummary {
+  withdrawalValueSatang: number;
+  salesValueSatang: number;
+  goodReturnValueSatang: number;
+  houseStockValueSatang: number | null;
+  readyValueSatang: number | null;
+  markets: MorningBriefFruitMarketSummary[];
+}
+
 export interface MorningBriefReport {
   businessDate: string;
   purchasePlanning: MorningBriefPurchasePlanning;
   sales: MorningBriefSales;
   houseStock: MorningBriefHouseStock;
+  fruitFinancial?: MorningBriefFruitFinancialSummary;
   reconciliation?: MorningBriefReconciliation;
 }

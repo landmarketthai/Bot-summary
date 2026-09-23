@@ -45,6 +45,17 @@ const report: MorningBriefReport = {
     groupCount: 5,
     totalValueSatang: 580400,
   },
+  fruitFinancial: {
+    withdrawalValueSatang: 8_680_866,
+    salesValueSatang: 2_251_158,
+    goodReturnValueSatang: 6_075_583,
+    houseStockValueSatang: 1_003_320,
+    readyValueSatang: 7_078_903,
+    markets: [
+      { marketLabel: "ทรัพย์พันธ์2", withdrawalValueSatang: 1_215_216, salesValueSatang: 294_229, goodReturnValueSatang: 887_550 },
+      { marketLabel: "พาซิโอ้ผลไม้", withdrawalValueSatang: 1_722_917, salesValueSatang: 302_505, goodReturnValueSatang: 1_360_300 },
+    ],
+  },
 };
 
 describe("Morning Brief A4 PDF", () => {
@@ -60,13 +71,13 @@ describe("Morning Brief A4 PDF", () => {
     expect(text).toContain("7 วัน");
   });
 
-  test("renders the stock matrix as the only PDF report table", async () => {
+  test("renders the fruit summary page followed by the stock matrix page", async () => {
     registerFonts();
     const buffer = await renderToBuffer(
       <MorningBriefA4Doc report={report} generatedAt={new Date("2026-09-19T08:00:00+07:00")} />,
     );
     expect(buffer.subarray(0, 4).toString("ascii")).toBe("%PDF");
     expect(buffer.length).toBeGreaterThan(5_000);
-    expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(1);
+    expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(2);
   });
 });
