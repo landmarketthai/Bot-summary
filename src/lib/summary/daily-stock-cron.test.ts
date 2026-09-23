@@ -5,6 +5,7 @@ import {
   previousBangkokBusinessDate,
   purchasePlanningRetryKey,
   resolveStockSummaryDate,
+  stockSummaryPdfRetryKey,
   stockSummaryRetryKey,
 } from "./daily-stock-cron";
 
@@ -97,6 +98,13 @@ describe("stockSummaryRetryKey", () => {
     expect(stockSummaryRetryKey("2026-07-25", "Cabc", 0)).not.toBe(
       dailySummaryRetryKey("2026-07-25", "Cabc"),
     );
+  });
+
+  test("the scheduled PDF has its own deterministic retry namespace", () => {
+    const pdf = stockSummaryPdfRetryKey("2026-07-25", "Cabc");
+    expect(pdf).toBe(stockSummaryPdfRetryKey("2026-07-25", "Cabc"));
+    expect(pdf).not.toBe(stockSummaryRetryKey("2026-07-25", "Cabc", 0));
+    expect(pdf).not.toBe(stockSummaryPdfRetryKey("2026-07-26", "Cabc"));
   });
 });
 

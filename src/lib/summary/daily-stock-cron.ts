@@ -82,6 +82,13 @@ export function houseStockSummaryRetryKey(
   return retryKey("daily-house-stock", businessDate, targetId, partIndex);
 }
 
+export function stockSummaryPdfRetryKey(
+  businessDate: string,
+  targetId: string,
+): string {
+  return retryKey("daily-stock-summary-pdf", businessDate, targetId);
+}
+
 export function purchasePlanningRetryKey(
   businessDate: string,
   targetId: string,

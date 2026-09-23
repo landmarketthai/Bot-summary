@@ -100,6 +100,18 @@ mock.module("@/lib/line/reply", () => ({
   },
 }));
 
+let morningBriefPdfBuilds = 0;
+mock.module("@/lib/summary/morning-brief-service", () => ({
+  loadMorningBriefReport: async (_client: unknown, businessDate: string) => ({ businessDate }),
+}));
+mock.module("@/lib/summary/morning-brief-pdf", () => ({
+  createMorningBriefPdfArtifact: async (_client: unknown, report: { businessDate: string }) => {
+    morningBriefPdfBuilds += 1;
+    return { signedUrl: `https://example.test/${report.businessDate}/morning-brief.pdf` };
+  },
+  morningBriefPdfLineMessage: (url: string) => `📄 PDF สำหรับพิมพ์ A4 พร้อมแล้ว\nดาวน์โหลด: ${url}`,
+}));
+
 const { GET } = await import("./route");
 
 const TX_RETURN = "คืน";
@@ -115,6 +127,7 @@ function restore(name: string, value: string | undefined) {
 
 beforeEach(() => {
   pushCalls = [];
+  morningBriefPdfBuilds = 0;
   pushBehavior = () => ({ status: "delivered" });
   produceResult = { data: [], error: null };
   sessionResult = { data: [], error: null };
@@ -228,12 +241,14 @@ describe("daily stock summary cron — delivery", () => {
     expect(body.anomalyMarketCount).toBe(1);
     expect(body.hasAnomalies).toBe(true);
 
-    // Scheduled 08:00 output carries the business report + House Stock only;
+    // Scheduled 08:00 output carries the business report + House Stock + printable PDF;
     // internal anomaly/remediation diagnostics stay out of LINE.
     expect(pushCalls.map((c) => c.to)).toEqual([
-      "Cgroup1", "Cgroup1",
-      "Cgroup2", "Cgroup2",
+      "Cgroup1", "Cgroup1", "Cgroup1",
+      "Cgroup2", "Cgroup2", "Cgroup2",
     ]);
+    expect(morningBriefPdfBuilds).toBe(1);
+    expect(pushCalls.filter((c) => c.text.includes("PDF สำหรับพิมพ์ A4"))).toHaveLength(2);
     const text = pushCalls.filter((c) => c.to === "Cgroup1").map((c) => c.text).join("\n\n");
     expect(text).toContain("📦 สรุปของดีชั่งคืนประจำวัน");
     expect(text).toContain("🥭 ทุเรียน");
@@ -566,7 +581,7 @@ describe("daily stock summary cron — empty business date", () => {
 
     // The empty state is still delivered in full …
     expect(res.status).toBe(200);
-    expect(pushCalls).toHaveLength(2);
+    expect(pushCalls).toHaveLength(3);
     expect(text).toContain("ยังไม่พบข้อมูลชั่งคืนประจำวันที่ 27 กรกฎาคม 2569");
     expect(text).toContain(LATEST_DATA_UNAVAILABLE_NOTICE);
     // … without telling the business its records are empty on the strength of
