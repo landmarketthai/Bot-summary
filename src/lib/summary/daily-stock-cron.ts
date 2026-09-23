@@ -106,8 +106,11 @@ export function morningBriefRetryKey(
   businessDate: string,
   targetId: string,
   partIndex: number,
+  retryNonce?: string,
 ): string {
-  return retryKey("daily-morning-brief", businessDate, targetId, partIndex);
+  return retryNonce
+    ? retryKey("daily-morning-brief", businessDate, targetId, partIndex, retryNonce)
+    : retryKey("daily-morning-brief", businessDate, targetId, partIndex);
 }
 
 /**

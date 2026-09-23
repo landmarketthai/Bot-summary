@@ -160,6 +160,20 @@ describe("daily morning brief cron", () => {
     expect(pushCalls.every((call) => call.to === "C12345678901")).toBe(true);
   });
 
+  test("manual retry nonce changes retry keys without changing scheduled keys", async () => {
+    await GET(request("?date=2026-09-17&target=C12345678901"));
+    const normalKeys = pushCalls.map((call) => call.retryKey);
+    pushCalls = [];
+    await GET(request("?date=2026-09-17&target=C12345678901&retry_nonce=uat2"));
+    expect(pushCalls.map((call) => call.retryKey)).not.toEqual(normalKeys);
+  });
+
+  test("retry nonce is rejected without a manual target", async () => {
+    const response = await GET(request("?date=2026-09-17&retry_nonce=uat2"));
+    expect(response.status).toBe(400);
+    expect(pushCalls).toHaveLength(0);
+  });
+
   test("rejects malformed manual target override before report loading", async () => {
     const response = await GET(request("?date=2026-09-17&target=bad-target"));
     expect(response.status).toBe(400);

@@ -78,8 +78,12 @@ export async function GET(req: NextRequest) {
 
   const debugMode = req.nextUrl.searchParams.get("debug") === "1";
   const targetOverride = req.nextUrl.searchParams.get("target")?.trim() ?? "";
+  const retryNonce = req.nextUrl.searchParams.get("retry_nonce")?.trim() ?? "";
   if (targetOverride && !/^[CUR][0-9A-Za-z]{10,}$/.test(targetOverride)) {
     return NextResponse.json({ error: "invalid LINE target override" }, { status: 400 });
+  }
+  if (retryNonce && (!targetOverride || !/^[A-Za-z0-9_-]{1,64}$/.test(retryNonce))) {
+    return NextResponse.json({ error: "retry_nonce requires a manual target and must be 1-64 safe characters" }, { status: 400 });
   }
   const businessDate = resolveStockSummaryDate(dateParam);
   const targets = targetOverride
@@ -157,11 +161,11 @@ export async function GET(req: NextRequest) {
   for (const target of targets) {
     try {
       for (const [index, message] of messages.entries()) {
-        await pushLineMessage(target, message, morningBriefRetryKey(businessDate, target, index));
+        await pushLineMessage(target, message, morningBriefRetryKey(businessDate, target, index, retryNonce || undefined));
       }
       if (pdfUrl) {
         const pdfMessage = morningBriefPdfLineMessage(pdfUrl);
-        await pushLineMessage(target, pdfMessage, morningBriefRetryKey(businessDate, target, messages.length));
+        await pushLineMessage(target, pdfMessage, morningBriefRetryKey(businessDate, target, messages.length, retryNonce || undefined));
       }
       sentCount += 1;
     } catch (error) {
