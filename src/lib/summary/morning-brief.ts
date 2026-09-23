@@ -20,6 +20,12 @@ export interface MorningBriefPurchaseItem {
   category: string;
   unit: string;
   uncertaintyReasons: PurchaseUncertaintyReason[];
+  /** ของดีชั่งคืนที่ยังอยู่ฝั่งตลาดและพร้อมขายต่อวันถัดไป */
+  marketStockQuantity?: number;
+  /** ของที่ยังอยู่บ้าน/คลังหลังเบิก; null เมื่อไม่มี snapshot ที่เชื่อถือได้ */
+  houseStockQuantity?: number | null;
+  /** marketStockQuantity + houseStockQuantity; null เมื่อฝั่งบ้านยังไม่ทราบ */
+  totalRemainingQuantity?: number | null;
 }
 
 export interface MorningBriefPurchaseGroup {
@@ -61,6 +67,9 @@ export function summarizePurchasePlanning(
       category: identity.category,
       unit: item.unit,
       uncertaintyReasons: [...item.uncertaintyReasons],
+      marketStockQuantity: item.goodReturnQuantity,
+      houseStockQuantity: item.houseStockQuantity,
+      totalRemainingQuantity: item.nextDayGoodStockQuantity,
     });
   }
 

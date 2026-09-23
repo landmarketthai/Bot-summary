@@ -42,7 +42,15 @@ const S = StyleSheet.create({
   kpiMeta: { fontSize: 7.2, color: "#6B7280", marginTop: 2 },
   section: { marginTop: 5, marginBottom: 5 },
   sectionTitle: { fontSize: 10.5, fontWeight: "bold", borderBottomWidth: 0.7, borderBottomColor: "#6B7280", paddingBottom: 2.5, marginBottom: 4 },
+  contentColumns: { flexDirection: "row", alignItems: "flex-start", marginTop: 2 },
+  leftColumn: { width: "57%", paddingRight: 5 },
+  rightColumn: { width: "43%", paddingLeft: 5 },
   table: { borderLeftWidth: 0.5, borderTopWidth: 0.5, borderColor: "#B6BAC0" },
+  matrixName: { backgroundColor: "#FFFFFF" },
+  matrixTotal: { backgroundColor: "#DCEBD5" },
+  matrixMarket: { backgroundColor: "#D9E7EC" },
+  matrixHouse: { backgroundColor: "#FFF0C9" },
+  matrixMarketText: { color: "#D92D20" },
   tr: { flexDirection: "row" },
   th: { backgroundColor: "#ECEDEF", fontWeight: "bold" },
   cell: { borderRightWidth: 0.5, borderBottomWidth: 0.5, borderColor: "#B6BAC0", paddingVertical: 3, paddingHorizontal: 3 },
@@ -64,9 +72,56 @@ function purchaseNames(group: MorningBriefPurchaseGroup): string {
 }
 
 function PurchaseSummaryRow({ label, group }: { label: string; group: MorningBriefPurchaseGroup }) {
-  return <View style={[S.tr, { minHeight: 26, borderLeftWidth: 0.5, borderTopWidth: 0.5, borderColor: "#B6BAC0" }]} wrap={false}>
-    <Cell width="25%"><Text style={{ fontWeight: "bold" }}>{label} - {group.count}</Text></Cell>
-    <Cell width="75%">{purchaseNames(group)}</Cell>
+  return <View style={[S.tr, { minHeight: 24, borderLeftWidth: 0.5, borderTopWidth: 0.5, borderColor: "#B6BAC0" }]} wrap={false}>
+    <Cell width="36%"><Text style={{ fontWeight: "bold" }}>{label} - {group.count}</Text></Cell>
+    <Cell width="64%">{purchaseNames(group)}</Cell>
+  </View>;
+}
+
+function MatrixCell({ width, children, header = false, tone = "name", right = false }: {
+  width: string;
+  children?: React.ReactNode;
+  header?: boolean;
+  tone?: "name" | "total" | "market" | "house";
+  right?: boolean;
+}) {
+  const toneStyle = tone === "total" ? S.matrixTotal : tone === "market" ? S.matrixMarket : tone === "house" ? S.matrixHouse : S.matrixName;
+  return <View style={[S.cell, toneStyle, { width, paddingVertical: 2.1 }]}>
+    <Text style={[header ? S.th : {}, right ? S.right : {}, tone === "market" && !header ? S.matrixMarketText : {}]}>{children}</Text>
+  </View>;
+}
+
+function stockMatrixItems(report: MorningBriefReport) {
+  return (["strong", "surplus", "reduce", "unknown"] as const)
+    .flatMap((status) => report.purchasePlanning[status].items ?? []);
+}
+
+function stockQuantity(value: number | null | undefined, blankZero = false): string {
+  if (value == null) return "-";
+  if (blankZero && value === 0) return "";
+  return qty(value);
+}
+
+function StockMatrix({ report }: { report: MorningBriefReport }) {
+  const items = stockMatrixItems(report);
+  const duplicateNames = new Map<string, number>();
+  for (const item of items) duplicateNames.set(item.productName, (duplicateNames.get(item.productName) ?? 0) + 1);
+  return <View style={S.table}>
+    <View style={S.tr} fixed>
+      <MatrixCell width="42%" header>รายการ</MatrixCell>
+      <MatrixCell width="22%" header tone="total" right>รวมคงเหลือ</MatrixCell>
+      <MatrixCell width="19%" header tone="market" right>ในตลาด</MatrixCell>
+      <MatrixCell width="17%" header tone="house" right>บ้านเจ๊</MatrixCell>
+    </View>
+    {items.length === 0 ? <View style={S.tr}><MatrixCell width="100%">ยังไม่มีข้อมูลสินค้า</MatrixCell></View> : items.map((item, index) => {
+      const name = (duplicateNames.get(item.productName) ?? 0) > 1 ? `${item.productName} (${item.unit === "โล" ? "กก." : item.unit})` : item.productName;
+      return <View style={S.tr} key={`${item.productName}-${item.unit}-${index}`} wrap={false}>
+        <MatrixCell width="42%">{name}</MatrixCell>
+        <MatrixCell width="22%" tone="total" right>{stockQuantity(item.totalRemainingQuantity)}</MatrixCell>
+        <MatrixCell width="19%" tone="market" right>{stockQuantity(item.marketStockQuantity, true)}</MatrixCell>
+        <MatrixCell width="17%" tone="house" right>{stockQuantity(item.houseStockQuantity, true)}</MatrixCell>
+      </View>;
+    })}
   </View>;
 }
 
@@ -99,24 +154,35 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
         <View style={S.kpi}><View style={S.kpiBox}><Text style={S.kpiLabel}>ยอดยืนยันแล้ว</Text><Text style={S.kpiValue}>{bahtFromSatang(sales.confirmedSalesSatang)} บาท</Text><Text style={S.kpiMeta}>จากยอดขายที่คำนวณได้</Text></View></View>
       </View>
 
-      <View style={S.section}>
-        <Text style={S.sectionTitle}>1) แผนซื้อวันนี้ + สต๊อกคงเหลือในบ้าน</Text>
-        <PurchaseSummaryRow label="ควรซื้อเพิ่ม" group={report.purchasePlanning.strong} />
-        <PurchaseSummaryRow label="ยังไม่ควรซื้อเพิ่ม" group={report.purchasePlanning.surplus} />
-        <PurchaseSummaryRow label="ควรลดการซื้อ" group={report.purchasePlanning.reduce} />
-        <PurchaseSummaryRow label="ยังประเมินไม่ได้" group={report.purchasePlanning.unknown} />
-      </View>
+      <View style={S.contentColumns}>
+        <View style={S.leftColumn}>
+          <View style={S.section}>
+            <Text style={S.sectionTitle}>1) คงเหลือรวมสำหรับสั่งซื้อ</Text>
+            <StockMatrix report={report} />
+            <Text style={S.note}>รวมคงเหลือ = ในตลาด (ของดีชั่งคืน) + บ้านเจ๊ • ถ้าฝั่งบ้านยังไม่ทราบจะแสดง “-” และไม่เดายอดรวม</Text>
+          </View>
+        </View>
 
-      <View style={S.section}>
-        <Text style={S.sectionTitle}>2) ของในบ้าน / คลังคงเหลือ</Text>
-        {house.status === "available" ? <View style={S.table}>
-          <View style={S.tr} fixed><Cell width="7%" header center>#</Cell><Cell width="29%" header>สินค้า</Cell><Cell width="15%" header right>จำนวน</Cell><Cell width="11%" header center>หน่วย</Cell><Cell width="18%" header right>ราคา/หน่วย</Cell><Cell width="20%" header right>มูลค่า</Cell></View>
-          {stockItems.map((item, index) => <View style={S.tr} key={`${item.productName}-${item.unit}-${item.unitPriceSatang}-${index}`} wrap={false}>
-            <Cell width="7%" center>{index + 1}</Cell><Cell width="29%">{item.productName}</Cell><Cell width="15%" right>{qty(item.quantity)}</Cell><Cell width="11%" center>{item.unit}</Cell><Cell width="18%" right>{bahtFromSatang(item.unitPriceSatang)}</Cell><Cell width="20%" right>{bahtFromSatang(item.valueSatang)}</Cell>
-          </View>)}
-          <View style={S.tr} wrap={false}><Cell width="7%" total></Cell><Cell width="29%" total>รวมคลังคงเหลือ</Cell><Cell width="15%" total>{house.groupCount} SKU</Cell><Cell width="11%" total></Cell><Cell width="18%" total></Cell><Cell width="20%" total right>{bahtFromSatang(house.totalValueSatang)} บาท</Cell></View>
-        </View> : <Text>{house.status === "missing" ? "ยังไม่มีการบันทึกคลังคงเหลือสำหรับวันนี้" : "ยังไม่มีข้อมูลคลังคงเหลือสำหรับสรุปนี้"}</Text>}
-        <Text style={S.note}>House Stock คือของที่ยังอยู่ในบ้าน/คลัง แยกจากสินค้าที่เบิกออกไปขายที่ตลาด</Text>
+        <View style={S.rightColumn}>
+          <View style={S.section}>
+            <Text style={S.sectionTitle}>2) แผนซื้อวันนี้</Text>
+            <PurchaseSummaryRow label="ควรซื้อเพิ่ม" group={report.purchasePlanning.strong} />
+            <PurchaseSummaryRow label="ยังไม่ควรซื้อเพิ่ม" group={report.purchasePlanning.surplus} />
+            <PurchaseSummaryRow label="ควรลดการซื้อ" group={report.purchasePlanning.reduce} />
+            <PurchaseSummaryRow label="ยังประเมินไม่ได้" group={report.purchasePlanning.unknown} />
+          </View>
+
+          <View style={S.section}>
+            <Text style={S.sectionTitle}>3) ของในบ้าน / คลังคงเหลือ</Text>
+            {house.status === "available" ? <View style={S.table}>
+              <View style={S.tr} fixed><Cell width="42%" header>สินค้า</Cell><Cell width="18%" header right>จำนวน</Cell><Cell width="14%" header center>หน่วย</Cell><Cell width="26%" header right>มูลค่า</Cell></View>
+              {stockItems.map((item, index) => <View style={S.tr} key={`${item.productName}-${item.unit}-${item.unitPriceSatang}-${index}`} wrap={false}>
+                <Cell width="42%">{item.productName}</Cell><Cell width="18%" right>{qty(item.quantity)}</Cell><Cell width="14%" center>{item.unit}</Cell><Cell width="26%" right>{bahtFromSatang(item.valueSatang)}</Cell>
+              </View>)}
+              <View style={S.tr} wrap={false}><Cell width="42%" total>รวมคลัง</Cell><Cell width="18%" total>{house.groupCount} SKU</Cell><Cell width="14%" total></Cell><Cell width="26%" total right>{bahtFromSatang(house.totalValueSatang)} บาท</Cell></View>
+            </View> : <Text>{house.status === "missing" ? "ยังไม่มีการบันทึกคลังคงเหลือสำหรับวันนี้" : "ยังไม่มีข้อมูลคลังคงเหลือสำหรับสรุปนี้"}</Text>}
+          </View>
+        </View>
       </View>
       <DataFooter generatedText={generatedText} />
     </Page>
@@ -128,7 +194,7 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
       </View>
 
       <View style={S.section}>
-        <Text style={S.sectionTitle}>3) ยอดขายเมื่อวาน - แยกตามตลาด</Text>
+        <Text style={S.sectionTitle}>4) ยอดขายเมื่อวาน - แยกตามตลาด</Text>
         <View style={S.table}>
           <View style={S.tr} fixed><Cell width="22%" header>ตลาด</Cell><Cell width="18%" header right>ยอดรวม</Cell><Cell width="18%" header right>ยืนยันแล้ว</Cell><Cell width="16%" header right>ยอดรอตรวจ</Cell><Cell width="14%" header right>ปรับราคา</Cell><Cell width="12%" header>สถานะ</Cell></View>
           {(sales.markets ?? []).map((market, index) => <View style={S.tr} key={`${market.marketLabel}-${index}`} wrap={false}>
@@ -140,7 +206,7 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
       </View>
 
       <View style={S.section}>
-        <Text style={S.sectionTitle}>4) ตรวจเงิน / สลิป / ยอดส่ง</Text>
+        <Text style={S.sectionTitle}>5) ตรวจเงิน / สลิป / ยอดส่ง</Text>
         {recon?.status === "available" ? <View style={S.table}>
           <View style={S.tr} fixed><Cell width="28%" header>ตลาด</Cell><Cell width="22%" header right>ยอดส่งจริง</Cell><Cell width="22%" header right>สลิปตรวจแล้ว</Cell><Cell width="14%" header right>ส่วนต่าง</Cell><Cell width="14%" header>สถานะ</Cell></View>
           {recon.rows.map((row, index) => <View style={S.tr} key={`${row.market}-${index}`} wrap={false}>
