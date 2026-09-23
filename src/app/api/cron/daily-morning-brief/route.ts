@@ -1,61 +1,46 @@
 import { NextRequest, NextResponse } from "next/server";
-import { logger } from "@/lib/logger";
+import { createServiceClient } from "@/lib/supabase/server";
 import { pushLineMessage } from "@/lib/line/reply";
-import { isStrictBusinessDate } from "@/lib/sales/cron";
+import { logger } from "@/lib/logger";
 import {
   morningBriefRetryKey,
   parseStockSummaryTargets,
   resolveStockSummaryDate,
 } from "@/lib/summary/daily-stock-cron";
-import { buildMorningBriefMessages } from "@/lib/summary/morning-brief-message";
 import { loadMorningBriefReport } from "@/lib/summary/morning-brief-service";
-import { createMorningBriefPdfArtifact, morningBriefPdfLineMessage } from "@/lib/summary/morning-brief-pdf";
-import { createServiceClient } from "@/lib/supabase/server";
+import { buildMorningBriefMessages } from "@/lib/summary/morning-brief-message";
+import {
+  createMorningBriefPdfArtifact,
+  morningBriefPdfLineMessage,
+} from "@/lib/summary/morning-brief-pdf";
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
+const MORNING_BRIEF_TARGETS_ENV = "MORNING_BRIEF_LINE_TARGETS";
 
-/** Env var holding the comma-separated LINE target IDs for the Morning Brief push. */
-export const MORNING_BRIEF_TARGETS_ENV = "MORNING_BRIEF_LINE_TARGETS";
+function isStrictBusinessDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return parsed.getUTCFullYear() === year && parsed.getUTCMonth() === month - 1 && parsed.getUTCDate() === day;
+}
 
-/**
- * Scheduled Executive Morning Brief (Task 5) — ONE concise message meant to
- * eventually replace the separate morning pushes (Purchase Planning, Sales,
- * Stock) for whichever targets are migrated onto it. See
- * docs/morning-brief-activation-plan.md for the exact cutover steps; nothing
- * in this route performs any part of that cutover by itself.
- *
- * NOT ACTIVATED:
- *   - No GitHub Actions schedule and no vercel.json cron call this route.
- *   - No Supabase Cron entry exists for it either (that scheduling layer is
- *     configured outside this repo, the same way it is for the existing
- *     daily-purchase-planning / daily-sales-summary / daily-stock-summary
- *     routes — see their own route.ts headers).
- *   - Delivery is additionally inert until MORNING_BRIEF_LINE_TARGETS is
- *     configured, the same double-gate every other report in this codebase
- *     uses before Production activation.
- * This route can only ever be reached today via a manual authenticated call
- * (e.g. the paired workflow_dispatch-only GitHub Actions workflow) or a
- * direct curl with the CRON_SECRET, both for debug/manual use only.
- *
- * Contract (identical in shape to the existing report cron routes):
- *   - Auth: Bearer CRON_SECRET, same convention as every other cron route.
- *   - Report date: with no ?date=, the PREVIOUS Bangkok business date (see
- *     resolveStockSummaryDate — reused verbatim, no second date rule).
- *     An explicit ?date=YYYY-MM-DD is used verbatim and never shifted; a
- *     malformed one is a 400.
- *   - Idempotent: a deterministic X-Line-Retry-Key per (date, target, part)
- *     in its own "daily-morning-brief" namespace (morningBriefRetryKey) —
- *     this can never collide with any existing report's retry keys, even for
- *     the identical date and target.
- *   - Per-target isolation: one failing push never blocks the remaining
- *     targets.
- *   - Any failure returns 500 for monitoring/manual recovery. A same-date
- *     rerun is safe and idempotent via the deterministic retry keys.
- *   - ?debug=1 previews the exact messages without sending anything.
- *   - Every underlying number is loaded from the existing Purchase Planning,
- *     Sales, and authoritative House Stock contracts, never recomputed here.
- */
+async function resolveMarkerTarget(
+  supabase: ReturnType<typeof createServiceClient>,
+  marker: string,
+): Promise<{ target: string | null; error: string | null }> {
+  const { data, error } = await supabase
+    .from("raw_messages")
+    .select("source_id")
+    .eq("raw_text", marker)
+    .eq("source_type", "group")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) return { target: null, error: error.message };
+  const target = typeof data?.source_id === "string" ? data.source_id.trim() : "";
+  return { target: target || null, error: null };
+}
+
 export async function GET(req: NextRequest) {
   const secret = process.env.CRON_SECRET;
   if (!secret) {
@@ -78,24 +63,48 @@ export async function GET(req: NextRequest) {
 
   const debugMode = req.nextUrl.searchParams.get("debug") === "1";
   const targetOverride = req.nextUrl.searchParams.get("target")?.trim() ?? "";
+  const targetMarker = req.nextUrl.searchParams.get("target_marker")?.trim() ?? "";
   const retryNonce = req.nextUrl.searchParams.get("retry_nonce")?.trim() ?? "";
   if (targetOverride && !/^[CUR][0-9A-Za-z]{10,}$/.test(targetOverride)) {
     return NextResponse.json({ error: "invalid LINE target override" }, { status: 400 });
   }
-  if (retryNonce && (!targetOverride || !/^[A-Za-z0-9_-]{1,64}$/.test(retryNonce))) {
+  if (targetOverride && targetMarker) {
+    return NextResponse.json({ error: "target and target_marker are mutually exclusive" }, { status: 400 });
+  }
+  if (targetMarker && [...targetMarker].length > 200) {
+    return NextResponse.json({ error: "target_marker exceeds 200 characters" }, { status: 400 });
+  }
+  const hasManualTarget = Boolean(targetOverride || targetMarker);
+  if (retryNonce && (!hasManualTarget || !/^[A-Za-z0-9_-]{1,64}$/.test(retryNonce))) {
     return NextResponse.json({ error: "retry_nonce requires a manual target and must be 1-64 safe characters" }, { status: 400 });
   }
+
   const businessDate = resolveStockSummaryDate(dateParam);
-  const targets = targetOverride
-    ? [targetOverride]
-    : parseStockSummaryTargets(process.env[MORNING_BRIEF_TARGETS_ENV]);
   const supabase = createServiceClient();
+
+  let targets: string[];
+  if (targetOverride) {
+    targets = [targetOverride];
+  } else if (targetMarker) {
+    const resolved = await resolveMarkerTarget(supabase, targetMarker);
+    if (resolved.error) {
+      logger.error("morning brief marker target lookup failed", { businessDate, error: resolved.error });
+      return NextResponse.json({ error: "marker target lookup failed" }, { status: 500 });
+    }
+    if (!resolved.target) {
+      return NextResponse.json({ error: "marker target not found" }, { status: 404 });
+    }
+    targets = [resolved.target];
+  } else {
+    targets = parseStockSummaryTargets(process.env[MORNING_BRIEF_TARGETS_ENV]);
+  }
 
   logger.info("morning brief cron started", {
     businessDate,
     hasDateParam: Boolean(dateParam),
     debugMode,
     targetOverride: Boolean(targetOverride),
+    targetMarker: Boolean(targetMarker),
     targetCount: targets.length,
   });
 
@@ -106,10 +115,7 @@ export async function GET(req: NextRequest) {
     messages = buildMorningBriefMessages(report);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    logger.error("morning brief cron failed - report build error", {
-      businessDate,
-      error: message,
-    });
+    logger.error("morning brief cron failed - report build error", { businessDate, error: message });
     return NextResponse.json({ error: message }, { status: 500 });
   }
 
@@ -185,8 +191,6 @@ export async function GET(req: NextRequest) {
       failedCount: failedTargets.length,
       pdfFailed: Boolean(pdfError),
     });
-    // pg_net/the manual caller does not automatically retry this failure.
-    // Keep it observable; a manual same-date rerun is safe via retry keys.
     return NextResponse.json(
       {
         ok: false,
@@ -211,5 +215,6 @@ export async function GET(req: NextRequest) {
     messageCount: messages.length,
     targetCount: targets.length,
     pdfDelivered: Boolean(pdfUrl),
+    targetMode: targetMarker ? "marker" : targetOverride ? "override" : "configured",
   });
 }

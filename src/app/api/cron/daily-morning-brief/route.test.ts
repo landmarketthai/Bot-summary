@@ -6,7 +6,23 @@ import {
   stockSummaryRetryKey,
 } from "@/lib/summary/daily-stock-cron";
 
-const serviceClient = { name: "service-client" };
+let markerSourceId: string | null = "Cmarker12345678901";
+let markerLookupError: Error | null = null;
+let markerOps: Array<[string, ...unknown[]]> = [];
+const markerQuery = {
+  select: (columns: string) => (markerOps.push(["select", columns]), markerQuery),
+  eq: (column: string, value: unknown) => (markerOps.push(["eq", column, value]), markerQuery),
+  order: (column: string, options: unknown) => (markerOps.push(["order", column, options]), markerQuery),
+  limit: (value: number) => (markerOps.push(["limit", value]), markerQuery),
+  maybeSingle: async () => ({
+    data: markerSourceId ? { source_id: markerSourceId } : null,
+    error: markerLookupError ? { message: markerLookupError.message } : null,
+  }),
+};
+const serviceClient = {
+  name: "service-client",
+  from: (table: string) => (markerOps.push(["from", table]), markerQuery),
+};
 let loadedReport: unknown = { businessDate: "2026-08-22", financial: [] };
 let loadError: Error | null = null;
 let loadCalls: Array<{ client: unknown; businessDate: string }> = [];
@@ -74,6 +90,9 @@ function request(query = "", authorization: string | null = "Bearer brief-secret
 beforeEach(() => {
   process.env.CRON_SECRET = "brief-secret";
   process.env.MORNING_BRIEF_LINE_TARGETS = "Cowner";
+  markerSourceId = "Cmarker12345678901";
+  markerLookupError = null;
+  markerOps = [];
   loadedReport = { businessDate: "2026-08-22", financial: [] };
   loadError = null;
   loadCalls = [];
@@ -158,6 +177,34 @@ describe("daily morning brief cron", () => {
     expect(response.status).toBe(200);
     expect(pushCalls.length).toBeGreaterThan(0);
     expect(pushCalls.every((call) => call.to === "C12345678901")).toBe(true);
+  });
+
+  test("exact marker resolves the newest matching LINE group source for UAT", async () => {
+    const response = await GET(request("?date=2026-09-17&target_marker=Make%20down&retry_nonce=uat3"));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ targetMode: "marker", targetCount: 1, sentCount: 1 });
+    expect(pushCalls.every((call) => call.to === "Cmarker12345678901")).toBe(true);
+    expect(markerOps).toEqual([
+      ["from", "raw_messages"],
+      ["select", "source_id"],
+      ["eq", "raw_text", "Make down"],
+      ["eq", "source_type", "group"],
+      ["order", "created_at", { ascending: false }],
+      ["limit", 1],
+    ]);
+  });
+
+  test("marker targeting fails closed on ambiguity or a missing marker match", async () => {
+    const ambiguous = await GET(request("?date=2026-09-17&target=C12345678901&target_marker=Make%20down"));
+    expect(ambiguous.status).toBe(400);
+    expect(loadCalls).toHaveLength(0);
+    expect(pushCalls).toHaveLength(0);
+
+    markerSourceId = null;
+    const missing = await GET(request("?date=2026-09-17&target_marker=Make%20down"));
+    expect(missing.status).toBe(404);
+    expect(loadCalls).toHaveLength(0);
+    expect(pushCalls).toHaveLength(0);
   });
 
   test("manual retry nonce changes retry keys without changing scheduled keys", async () => {
