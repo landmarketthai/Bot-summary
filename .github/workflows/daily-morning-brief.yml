@@ -1,15 +1,5 @@
 name: daily-morning-brief
 
-# Executive Morning Brief (Task 5) — NOT SCHEDULED. This workflow is
-# workflow_dispatch-only, for manual/debug runs while the report is being
-# proven out. No pg_cron / Supabase Cron entry exists for this route yet —
-# see docs/morning-brief-activation-plan.md for what a human must do, in
-# order, before this can replace any of the existing morning pushes.
-#
-# Delivery stays inert while MORNING_BRIEF_LINE_TARGETS is unset, the same
-# double-gate every other report in this codebase uses before Production
-# activation.
-
 on:
   workflow_dispatch:
     inputs:
@@ -21,8 +11,12 @@ on:
         description: "Optional single LINE target override for UAT/manual runs."
         required: false
         type: string
+      target_marker:
+        description: "Optional exact LINE group marker text. Resolves the newest matching inbound group message."
+        required: false
+        type: string
       retry_nonce:
-        description: "Optional unique token for a manual same-date resend. Requires target."
+        description: "Optional unique token for a manual same-date resend. Requires target or target_marker."
         required: false
         type: string
       debug:
@@ -44,6 +38,10 @@ jobs:
           fi
           if [ -n "${{ inputs.target }}" ]; then
             if [ -n "$QUERY" ]; then QUERY="$QUERY&target=${{ inputs.target }}"; else QUERY="?target=${{ inputs.target }}"; fi
+          fi
+          if [ -n "${{ inputs.target_marker }}" ]; then
+            MARKER_ENCODED="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "${{ inputs.target_marker }}")"
+            if [ -n "$QUERY" ]; then QUERY="$QUERY&target_marker=$MARKER_ENCODED"; else QUERY="?target_marker=$MARKER_ENCODED"; fi
           fi
           if [ -n "${{ inputs.retry_nonce }}" ]; then
             if [ -n "$QUERY" ]; then QUERY="$QUERY&retry_nonce=${{ inputs.retry_nonce }}"; else QUERY="?retry_nonce=${{ inputs.retry_nonce }}"; fi
