@@ -272,10 +272,28 @@ export async function GET(req: NextRequest) {
     });
   }
 
+  // Always materialize the Morning Brief artifact before deciding whether LINE
+  // has a destination. The artifact writer also upserts the date-scoped ref JSON,
+  // so the scheduled 08:00 run keeps one reference snapshot per business date
+  // even if LINE targets are temporarily missing.
+  let morningBriefPdfUrl: string;
+  try {
+    const morningBriefReport = await loadMorningBriefReport(supabase, businessDate);
+    const artifact = await createMorningBriefPdfArtifact(supabase, morningBriefReport);
+    morningBriefPdfUrl = artifact.signedUrl;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error("daily stock summary cron failed - morning brief PDF generation error", {
+      businessDate,
+      error: message,
+    });
+    return NextResponse.json({ error: message, businessDate, pdfDelivered: false }, { status: 500 });
+  }
+
   if (targets.length === 0) {
-    // Expected until Production activation — log loudly enough to notice, but
-    // this is a successful no-op, not a failure the scheduler should retry.
-    logger.warn("daily stock summary cron skipped - no LINE targets configured", {
+    // LINE delivery is a successful no-op, but the 08:00 PDF + reference snapshot
+    // above is still persisted for the resolved business date.
+    logger.warn("daily stock summary cron skipped LINE - no targets configured", {
       businessDate,
       envVar: STOCK_SUMMARY_TARGETS_ENV,
     });
@@ -292,25 +310,13 @@ export async function GET(req: NextRequest) {
       anomalyMarketCount,
       hasAnomalies,
       targetCount: 0,
+      pdfDelivered: false,
+      morningBriefReferencePersisted: true,
       houseStockFound: Boolean(houseStockReport),
       houseStockItemCount: houseStockReport?.itemCount ?? 0,
       houseStockGroupCount: houseStockReport?.groupCount ?? 0,
       houseStockTotalValueSatang: houseStockReport?.totalValueSatang ?? 0,
     });
-  }
-
-  let morningBriefPdfUrl: string;
-  try {
-    const morningBriefReport = await loadMorningBriefReport(supabase, businessDate);
-    const artifact = await createMorningBriefPdfArtifact(supabase, morningBriefReport);
-    morningBriefPdfUrl = artifact.signedUrl;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    logger.error("daily stock summary cron failed - morning brief PDF generation error", {
-      businessDate,
-      error: message,
-    });
-    return NextResponse.json({ error: message, businessDate, pdfDelivered: false }, { status: 500 });
   }
 
   let sentCount = 0;

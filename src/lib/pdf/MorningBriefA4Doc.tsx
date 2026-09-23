@@ -233,15 +233,15 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
           <Text style={S.kpiUnit}>บาท</Text>
         </View></View>
         <View style={S.kpi}><View style={S.kpiBox}>
-          <Text style={S.kpiLabel}>คงเหลือพร้อมขาย (ชั่งคืนดี + บ้าน)</Text>
+          <Text style={S.kpiLabel}>คงเหลือพร้อมขาย</Text>
           <Text style={S.kpiValue}>{fruit?.readyValueSatang == null ? "-" : bahtFromSatang(fruit.readyValueSatang)}</Text>
-          <Text style={S.kpiUnit}>ของชั่งคืนดีจากตลาด + Stock บ้าน</Text>
+          <Text style={S.kpiUnit}>ชั่งคืนดีจากตลาด + Stock บ้าน</Text>
         </View></View>
       </View>
 
       <View style={S.explanation}>
-        <Text style={S.explanationTitle}>คำอธิบายตัวเลขสำคัญ</Text>
-        <Text style={S.explanationText}><Text style={{ fontWeight: "bold" }}>เบิกออกไปขาย</Text> คือของที่นำออกตลาดก่อนเริ่มขาย ส่วน <Text style={{ fontWeight: "bold" }}>คงเหลือพร้อมขาย (ชั่งคืนดี + บ้าน)</Text> คือของดีที่ชั่งคืนจากตลาดหลังขายจบ แล้วบวกกับของที่ยังอยู่บ้าน จึงเป็นเรื่องปกติที่บางรายการจะเหลือน้อยกว่ายอดที่เบิกไปขาย.</Text>
+        <Text style={S.explanationTitle}>คำอธิบายตัวเลข</Text>
+        <Text style={S.explanationText}><Text style={{ fontWeight: "bold" }}>เบิกออกไปขาย</Text> คือมูลค่าสินค้าที่นำออกตลาดก่อนเริ่มขาย ส่วน <Text style={{ fontWeight: "bold" }}>คงเหลือพร้อมขาย</Text> คือของดีที่ชั่งคืนจากตลาดหลังขาย บวกกับของที่ยังอยู่บ้าน จึงอาจมีบางรายการที่คงเหลือน้อยกว่ายอดที่เบิกไปขาย</Text>
       </View>
 
       <Text style={S.sectionTitle}>สรุปผลไม้ตามตลาด</Text>

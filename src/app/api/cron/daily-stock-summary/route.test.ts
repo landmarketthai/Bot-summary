@@ -204,6 +204,8 @@ describe("daily stock summary cron — delivery", () => {
     expect(body.ok).toBe(true);
     expect(body.sent).toBe(false);
     expect(body.reason).toBe("no_targets_configured");
+    expect(body.morningBriefReferencePersisted).toBe(true);
+    expect(morningBriefPdfBuilds).toBe(1);
     expect(pushCalls).toHaveLength(0);
   });
 

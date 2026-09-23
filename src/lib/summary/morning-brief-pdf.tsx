@@ -8,13 +8,27 @@ import type { MorningBriefReport } from "@/lib/summary/morning-brief";
 
 export const MORNING_BRIEF_PDF_BUCKET = "morning-brief-pdfs";
 export const MORNING_BRIEF_PDF_EXPIRES_SECONDS = 7 * 24 * 60 * 60;
+export const MORNING_BRIEF_REFERENCE_SCHEMA_VERSION = 1 as const;
 
 type Supabase = SupabaseClient<Database>;
+
+export interface MorningBriefReferenceData {
+  schemaVersion: typeof MORNING_BRIEF_REFERENCE_SCHEMA_VERSION;
+  businessDate: string;
+  generatedAt: string;
+  pdf: {
+    bucket: string;
+    path: string;
+    filename: string;
+  };
+  report: MorningBriefReport;
+}
 
 export interface MorningBriefPdfArtifact {
   bucket: string;
   path: string;
   filename: string;
+  referencePath: string;
   signedUrl: string;
   expiresInSeconds: number;
 }
@@ -26,6 +40,25 @@ export function morningBriefPdfFilename(businessDate: string): string {
 export function morningBriefPdfPath(businessDate: string): string {
   return `${businessDate}/${morningBriefPdfFilename(businessDate)}`;
 }
+
+export function morningBriefReferencePath(businessDate: string): string {
+  return `${businessDate}/morning-brief-${businessDate}.ref.json`;
+}
+
+export function buildMorningBriefReferenceData(
+  report: MorningBriefReport,
+  generatedAt: Date,
+  pdf: Pick<MorningBriefPdfArtifact, "bucket" | "path" | "filename">,
+): MorningBriefReferenceData {
+  return {
+    schemaVersion: MORNING_BRIEF_REFERENCE_SCHEMA_VERSION,
+    businessDate: report.businessDate,
+    generatedAt: generatedAt.toISOString(),
+    pdf,
+    report,
+  };
+}
+
 export async function createMorningBriefPdfArtifact(
   supabase: Supabase,
   report: MorningBriefReport,
@@ -37,6 +70,7 @@ export async function createMorningBriefPdfArtifact(
   );
   const path = morningBriefPdfPath(report.businessDate);
   const filename = morningBriefPdfFilename(report.businessDate);
+  const referencePath = morningBriefReferencePath(report.businessDate);
   const bucket = supabase.storage.from(MORNING_BRIEF_PDF_BUCKET);
 
   const { error: uploadError } = await bucket.upload(path, new Uint8Array(buffer), {
@@ -45,6 +79,21 @@ export async function createMorningBriefPdfArtifact(
     upsert: true,
   });
   if (uploadError) throw new Error(`morning brief PDF upload failed: ${uploadError.message}`);
+
+  const referenceData = buildMorningBriefReferenceData(report, generatedAt, {
+    bucket: MORNING_BRIEF_PDF_BUCKET,
+    path,
+    filename,
+  });
+  const referenceBytes = new TextEncoder().encode(JSON.stringify(referenceData));
+  const { error: referenceUploadError } = await bucket.upload(referencePath, referenceBytes, {
+    contentType: "application/json; charset=utf-8",
+    cacheControl: "300",
+    upsert: true,
+  });
+  if (referenceUploadError) {
+    throw new Error(`morning brief reference upload failed: ${referenceUploadError.message}`);
+  }
 
   const { data, error: signedUrlError } = await bucket.createSignedUrl(
     path,
@@ -59,6 +108,7 @@ export async function createMorningBriefPdfArtifact(
     bucket: MORNING_BRIEF_PDF_BUCKET,
     path,
     filename,
+    referencePath,
     signedUrl: data.signedUrl,
     expiresInSeconds: MORNING_BRIEF_PDF_EXPIRES_SECONDS,
   };

@@ -5,9 +5,13 @@ import { registerFonts } from "@/lib/pdf/fonts";
 import { MorningBriefA4Doc } from "@/lib/pdf/MorningBriefA4Doc";
 import type { MorningBriefReport } from "@/lib/summary/morning-brief";
 import {
+  buildMorningBriefReferenceData,
+  createMorningBriefPdfArtifact,
+  MORNING_BRIEF_REFERENCE_SCHEMA_VERSION,
   morningBriefPdfFilename,
   morningBriefPdfLineMessage,
   morningBriefPdfPath,
+  morningBriefReferencePath,
 } from "@/lib/summary/morning-brief-pdf";
 
 const report: MorningBriefReport = {
@@ -73,9 +77,25 @@ function collectText(node: React.ReactNode): string {
 }
 
 describe("Morning Brief A4 PDF", () => {
-  test("uses a deterministic date-based filename and path", () => {
+  test("uses deterministic date-based PDF and reference paths", () => {
     expect(morningBriefPdfFilename("2026-09-19")).toBe("morning-brief-2026-09-19.pdf");
     expect(morningBriefPdfPath("2026-09-19")).toBe("2026-09-19/morning-brief-2026-09-19.pdf");
+    expect(morningBriefReferencePath("2026-09-19")).toBe("2026-09-19/morning-brief-2026-09-19.ref.json");
+  });
+
+  test("builds stable daily reference data from the same Morning Brief report", () => {
+    const generatedAt = new Date("2026-09-20T08:00:00+07:00");
+    const ref = buildMorningBriefReferenceData(report, generatedAt, {
+      bucket: "morning-brief-pdfs",
+      path: morningBriefPdfPath(report.businessDate),
+      filename: morningBriefPdfFilename(report.businessDate),
+    });
+
+    expect(ref.schemaVersion).toBe(MORNING_BRIEF_REFERENCE_SCHEMA_VERSION);
+    expect(ref.businessDate).toBe("2026-09-19");
+    expect(ref.generatedAt).toBe(generatedAt.toISOString());
+    expect(ref.pdf.path).toBe("2026-09-19/morning-brief-2026-09-19.pdf");
+    expect(ref.report).toBe(report);
   });
 
   test("LINE download message contains the signed URL and expiry hint", () => {
@@ -89,6 +109,16 @@ describe("Morning Brief A4 PDF", () => {
     const text = collectText(MorningBriefA4Doc({ report, generatedAt: new Date("2026-09-19T08:00:00+07:00") }));
     expect(text).toContain("ยอดขายรวมเมื่อวาน");
     expect(text).toContain("22,511.58");
+  });
+
+  test("keeps the right KPI compact and uses the exact explanation heading", () => {
+    const text = collectText(MorningBriefA4Doc({ report, generatedAt: new Date("2026-09-19T08:00:00+07:00") }));
+    expect(text).toContain("คงเหลือพร้อมขาย");
+    expect(text).toContain("ชั่งคืนดีจากตลาด + Stock บ้าน");
+    expect(text).not.toContain("คงเหลือพร้อมขาย (ชั่งคืนดี + บ้าน)");
+    expect(text).toContain("คำอธิบายตัวเลข");
+    expect(text).not.toContain("คำอธิบายตัวเลขสำคัญ");
+    expect(text).toContain("มูลค่าสินค้าที่นำออกตลาดก่อนเริ่มขาย");
   });
 
   test("uses the requested stock columns and remaps house, market, then total", () => {
@@ -108,6 +138,46 @@ describe("Morning Brief A4 PDF", () => {
     expect(market).toBeGreaterThan(house);
     expect(total).toBeGreaterThan(market);
     expect(text).not.toContain("บ้านเจ๊");
+  });
+
+  test("persists one upserted reference sidecar for the business date", async () => {
+    const uploads: Array<{
+      path: string;
+      body: Uint8Array;
+      options: { contentType?: string; cacheControl?: string; upsert?: boolean };
+    }> = [];
+    const bucket = {
+      upload: async (
+        path: string,
+        body: Uint8Array,
+        options: { contentType?: string; cacheControl?: string; upsert?: boolean },
+      ) => {
+        uploads.push({ path, body, options });
+        return { error: null };
+      },
+      createSignedUrl: async () => ({
+        data: { signedUrl: "https://example.test/morning-brief.pdf?token=signed" },
+        error: null,
+      }),
+    };
+    const fakeSupabase = {
+      storage: { from: () => bucket },
+    } as unknown as Parameters<typeof createMorningBriefPdfArtifact>[0];
+    const generatedAt = new Date("2026-09-20T08:00:00+07:00");
+
+    const artifact = await createMorningBriefPdfArtifact(fakeSupabase, report, generatedAt);
+
+    expect(uploads.map((upload) => upload.path)).toEqual([
+      "2026-09-19/morning-brief-2026-09-19.pdf",
+      "2026-09-19/morning-brief-2026-09-19.ref.json",
+    ]);
+    expect(uploads[1]?.options.upsert).toBe(true);
+    expect(uploads[1]?.options.contentType).toBe("application/json; charset=utf-8");
+    const saved = JSON.parse(new TextDecoder().decode(uploads[1]?.body));
+    expect(saved.businessDate).toBe("2026-09-19");
+    expect(saved.generatedAt).toBe(generatedAt.toISOString());
+    expect(saved.report.fruitFinancial.readyValueSatang).toBe(7_078_903);
+    expect(artifact.referencePath).toBe("2026-09-19/morning-brief-2026-09-19.ref.json");
   });
 
   test("renders the fruit summary page followed by the stock matrix page", async () => {
