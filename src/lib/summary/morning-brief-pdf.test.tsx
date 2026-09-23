@@ -60,13 +60,13 @@ describe("Morning Brief A4 PDF", () => {
     expect(text).toContain("7 วัน");
   });
 
-  test("renders a real PDF buffer with Thai content", async () => {
+  test("renders the stock matrix as the only PDF report table", async () => {
     registerFonts();
     const buffer = await renderToBuffer(
       <MorningBriefA4Doc report={report} generatedAt={new Date("2026-09-19T08:00:00+07:00")} />,
     );
     expect(buffer.subarray(0, 4).toString("ascii")).toBe("%PDF");
     expect(buffer.length).toBeGreaterThan(5_000);
-    expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(2);
+    expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(1);
   });
 });
