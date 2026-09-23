@@ -21,6 +21,10 @@ on:
         description: "Optional single LINE target override for UAT/manual runs."
         required: false
         type: string
+      retry_nonce:
+        description: "Optional unique token for a manual same-date resend. Requires target."
+        required: false
+        type: string
       debug:
         description: "Preview the messages without sending any LINE push."
         required: false
@@ -40,6 +44,9 @@ jobs:
           fi
           if [ -n "${{ inputs.target }}" ]; then
             if [ -n "$QUERY" ]; then QUERY="$QUERY&target=${{ inputs.target }}"; else QUERY="?target=${{ inputs.target }}"; fi
+          fi
+          if [ -n "${{ inputs.retry_nonce }}" ]; then
+            if [ -n "$QUERY" ]; then QUERY="$QUERY&retry_nonce=${{ inputs.retry_nonce }}"; else QUERY="?retry_nonce=${{ inputs.retry_nonce }}"; fi
           fi
           if [ "${{ inputs.debug }}" = "true" ]; then
             if [ -n "$QUERY" ]; then QUERY="$QUERY&debug=1"; else QUERY="?debug=1"; fi
