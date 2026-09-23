@@ -13,8 +13,15 @@ import {
 const report: MorningBriefReport = {
   businessDate: "2026-09-19",
   purchasePlanning: {
-    strong: { count: 2, productNames: ["พุทราจีน", "แอปเปิ้ล"] },
-    surplus: { count: 1, productNames: ["แก้วมังกร"] },
+    strong: {
+      count: 2,
+      productNames: ["พุทราจีน", "แอปเปิ้ล"],
+      items: [
+        { productName: "พุทราจีน", originalProductName: null, category: "ผลไม้", unit: "โล", uncertaintyReasons: [], marketStockQuantity: 10.1, houseStockQuantity: 0, totalRemainingQuantity: 10.1 },
+        { productName: "แอปเปิ้ล", originalProductName: null, category: "ผลไม้", unit: "ลูก", uncertaintyReasons: [], marketStockQuantity: 372, houseStockQuantity: 40, totalRemainingQuantity: 412 },
+      ],
+    },
+    surplus: { count: 1, productNames: ["แก้วมังกร"], items: [{ productName: "แก้วมังกร", originalProductName: null, category: "ผลไม้", unit: "โล", uncertaintyReasons: [], marketStockQuantity: 170, houseStockQuantity: 0, totalRemainingQuantity: 170 }] },
     reduce: { count: 1, productNames: ["สาลี่หิมะ"] },
     unknown: { count: 0, productNames: [] },
   },

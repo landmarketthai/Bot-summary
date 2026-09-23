@@ -98,6 +98,11 @@ describe("summarizePurchasePlanning", () => {
     expect(summary.unknown.count).toBe(88);
     expect(summary.unknown.productNames).toEqual(unknown.map((item) => item.productName));
     expect(summary.unknown.items?.[0]?.uncertaintyReasons).toEqual(["return_incomplete"]);
+    expect(summary.strong.items?.[0]).toMatchObject({
+      marketStockQuantity: 0,
+      houseStockQuantity: null,
+      totalRemainingQuantity: null,
+    });
   });
 });
 
