@@ -58,6 +58,16 @@ const report: MorningBriefReport = {
   },
 };
 
+function collectText(node: React.ReactNode): string {
+  if (node == null || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(collectText).join(" ");
+  if (React.isValidElement(node)) {
+    return collectText((node.props as { children?: React.ReactNode }).children);
+  }
+  return "";
+}
+
 describe("Morning Brief A4 PDF", () => {
   test("uses a deterministic date-based filename and path", () => {
     expect(morningBriefPdfFilename("2026-09-19")).toBe("morning-brief-2026-09-19.pdf");
@@ -69,6 +79,12 @@ describe("Morning Brief A4 PDF", () => {
     expect(text).toContain("PDF สำหรับพิมพ์ A4");
     expect(text).toContain("https://example.test/signed.pdf");
     expect(text).toContain("7 วัน");
+  });
+
+  test("shows yesterday sales total in the top KPI row", () => {
+    const text = collectText(MorningBriefA4Doc({ report, generatedAt: new Date("2026-09-19T08:00:00+07:00") }));
+    expect(text).toContain("ยอดขายรวมเมื่อวาน");
+    expect(text).toContain("22,511.58");
   });
 
   test("renders the fruit summary page followed by the stock matrix page", async () => {

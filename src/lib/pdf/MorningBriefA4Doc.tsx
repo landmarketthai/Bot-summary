@@ -32,7 +32,7 @@ const S = StyleSheet.create({
   title: { fontSize: 18, fontWeight: "bold" },
   subtitle: { fontSize: 8.2, color: "#6B7280", marginTop: 2 },
   kpiGrid: { flexDirection: "row", marginHorizontal: -2.5, marginBottom: 9 },
-  kpi: { width: "25%", paddingHorizontal: 2.5 },
+  kpi: { width: "20%", paddingHorizontal: 2.5 },
   kpiBox: { borderWidth: 0.6, borderColor: "#C7C9CE", padding: 7, minHeight: 58 },
   kpiLabel: { fontSize: 7.2, color: "#6B7280" },
   kpiValue: { fontSize: 16, fontWeight: "bold", textAlign: "right", marginTop: 4 },
@@ -212,6 +212,11 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
       </View>
 
       <View style={S.kpiGrid}>
+        <View style={S.kpi}><View style={S.kpiBox}>
+          <Text style={S.kpiLabel}>ยอดขายรวมเมื่อวาน</Text>
+          <Text style={S.kpiValue}>{fruit ? bahtFromSatang(fruit.salesValueSatang) : "-"}</Text>
+          <Text style={S.kpiUnit}>บาท</Text>
+        </View></View>
         <View style={S.kpi}><View style={S.kpiBox}>
           <Text style={S.kpiLabel}>ผลไม้ที่เบิกออกไปขายเมื่อวาน</Text>
           <Text style={S.kpiValue}>{fruit ? bahtFromSatang(fruit.withdrawalValueSatang) : "-"}</Text>

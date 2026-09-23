@@ -20,10 +20,16 @@ import {
 import {
   parseStockSummaryTargets,
   houseStockSummaryRetryKey,
+  stockSummaryPdfRetryKey,
   resolveStockSummaryDate,
   stockSummaryRetryKey,
   STOCK_SUMMARY_TARGETS_ENV,
 } from "@/lib/summary/daily-stock-cron";
+import { loadMorningBriefReport } from "@/lib/summary/morning-brief-service";
+import {
+  createMorningBriefPdfArtifact,
+  morningBriefPdfLineMessage,
+} from "@/lib/summary/morning-brief-pdf";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -293,6 +299,20 @@ export async function GET(req: NextRequest) {
     });
   }
 
+  let morningBriefPdfUrl: string;
+  try {
+    const morningBriefReport = await loadMorningBriefReport(supabase, businessDate);
+    const artifact = await createMorningBriefPdfArtifact(supabase, morningBriefReport);
+    morningBriefPdfUrl = artifact.signedUrl;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error("daily stock summary cron failed - morning brief PDF generation error", {
+      businessDate,
+      error: message,
+    });
+    return NextResponse.json({ error: message, businessDate, pdfDelivered: false }, { status: 500 });
+  }
+
   let sentCount = 0;
   const failedTargets: string[] = [];
 
@@ -308,6 +328,11 @@ export async function GET(req: NextRequest) {
           houseStockSummaryRetryKey(businessDate, target, index),
         );
       }
+      await pushLineMessage(
+        target,
+        morningBriefPdfLineMessage(morningBriefPdfUrl),
+        stockSummaryPdfRetryKey(businessDate, target),
+      );
       sentCount += 1;
     } catch (error) {
       failedTargets.push(target);
@@ -331,6 +356,7 @@ export async function GET(req: NextRequest) {
         businessDate,
         sent: sentCount > 0,
         sentCount,
+        pdfDelivered: sentCount > 0,
         failedCount: failedTargets.length,
         productCount,
         incompleteCount: stockSummary.incomplete.length,
@@ -370,6 +396,7 @@ export async function GET(req: NextRequest) {
     businessDate,
     sent: true,
     sentCount,
+    pdfDelivered: true,
     productCount,
     incompleteCount: stockSummary.incomplete.length,
     incompleteMarketCount,
