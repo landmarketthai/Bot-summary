@@ -22,21 +22,21 @@ function thaiNumericDate(businessDate: string): string {
 const S = StyleSheet.create({
   page: {
     fontFamily: "SarabunPDF",
-    fontSize: 9.2,
+    fontSize: 9.8,
     paddingTop: 22,
     paddingBottom: 28,
     paddingHorizontal: 24,
     color: "#111827",
   },
   header: { marginBottom: 8 },
-  title: { fontSize: 18, fontWeight: "bold" },
-  subtitle: { fontSize: 8.2, color: "#6B7280", marginTop: 2 },
+  title: { fontSize: 20, fontWeight: "bold" },
+  subtitle: { fontSize: 9, color: "#6B7280", marginTop: 2 },
   kpiGrid: { flexDirection: "row", marginHorizontal: -2.5, marginBottom: 9 },
   kpi: { width: "20%", paddingHorizontal: 2.5 },
   kpiBox: { borderWidth: 0.6, borderColor: "#C7C9CE", padding: 7, minHeight: 58 },
-  kpiLabel: { fontSize: 7.2, color: "#6B7280" },
-  kpiValue: { fontSize: 16, fontWeight: "bold", textAlign: "right", marginTop: 4 },
-  kpiUnit: { fontSize: 7, color: "#6B7280", textAlign: "right", marginTop: 1 },
+  kpiLabel: { fontSize: 7.8, color: "#6B7280" },
+  kpiValue: { fontSize: 16.8, fontWeight: "bold", textAlign: "right", marginTop: 4 },
+  kpiUnit: { fontSize: 7.6, color: "#6B7280", textAlign: "right", marginTop: 1 },
   explanation: {
     borderLeftWidth: 2.5,
     borderLeftColor: "#777B80",
@@ -45,10 +45,10 @@ const S = StyleSheet.create({
     paddingHorizontal: 8,
     marginBottom: 9,
   },
-  explanationTitle: { fontWeight: "bold", fontSize: 9.5, marginBottom: 2 },
-  explanationText: { fontSize: 8.2, lineHeight: 1.35 },
+  explanationTitle: { fontWeight: "bold", fontSize: 10.2, marginBottom: 2 },
+  explanationText: { fontSize: 8.8, lineHeight: 1.35 },
   sectionTitle: {
-    fontSize: 11,
+    fontSize: 11.8,
     fontWeight: "bold",
     borderTopWidth: 0.7,
     borderTopColor: "#B6BAC0",
@@ -64,7 +64,7 @@ const S = StyleSheet.create({
     paddingVertical: 3.4,
     paddingHorizontal: 5,
   },
-  th: { fontWeight: "bold", backgroundColor: "#E8E8E8" },
+  th: { fontWeight: "bold", fontSize: 10.2, backgroundColor: "#E8E8E8" },
   totalRow: { backgroundColor: "#E8E8E8", fontWeight: "bold" },
   matrixName: { backgroundColor: "#FFFFFF" },
   matrixTotal: { backgroundColor: "#DCEBD5" },
@@ -74,7 +74,7 @@ const S = StyleSheet.create({
   center: { textAlign: "center" },
   right: { textAlign: "right" },
   noteBox: { borderWidth: 0.7, borderColor: "#8E9298", padding: 5, marginTop: 5 },
-  note: { fontSize: 7.5, color: "#4B5563" },
+  note: { fontSize: 8.2, color: "#4B5563" },
   stockHeader: {
     borderBottomWidth: 1.4,
     borderBottomColor: "#111827",
@@ -88,7 +88,7 @@ const S = StyleSheet.create({
     right: 24,
     flexDirection: "row",
     justifyContent: "space-between",
-    fontSize: 7,
+    fontSize: 7.6,
     color: "#6B7280",
   },
 });
@@ -168,9 +168,9 @@ function StockMatrix({ report }: { report: MorningBriefReport }) {
   return <View style={S.table}>
     <View style={S.tr} fixed>
       <MatrixCell width="40%" header>รายการ</MatrixCell>
-      <MatrixCell width="22%" header tone="total" center>รวมคงเหลือ</MatrixCell>
+      <MatrixCell width="20%" header tone="house" center>คงเหลือในบ้าน</MatrixCell>
       <MatrixCell width="20%" header tone="market" center>ในตลาด</MatrixCell>
-      <MatrixCell width="18%" header tone="house" center>บ้านเจ๊</MatrixCell>
+      <MatrixCell width="20%" header tone="total" center>รวมคงเหลือ</MatrixCell>
     </View>
     {items.length === 0
       ? <View style={S.tr}><MatrixCell width="100%">ยังไม่มีข้อมูลสินค้า</MatrixCell></View>
@@ -179,9 +179,9 @@ function StockMatrix({ report }: { report: MorningBriefReport }) {
         const name = showUnit ? `${item.productName} (${displayUnit(item.unit)})` : item.productName;
         return <View style={S.tr} key={`${item.productName}-${item.unit}-${index}`} wrap={false}>
           <MatrixCell width="40%">{name}</MatrixCell>
-          <MatrixCell width="22%" tone="total" right>{stockQuantity(item.totalRemainingQuantity)}</MatrixCell>
+          <MatrixCell width="20%" tone="house" right>{stockQuantity(item.houseStockQuantity, true)}</MatrixCell>
           <MatrixCell width="20%" tone="market" right>{stockQuantity(item.marketStockQuantity, true)}</MatrixCell>
-          <MatrixCell width="18%" tone="house" right>{stockQuantity(item.houseStockQuantity, true)}</MatrixCell>
+          <MatrixCell width="20%" tone="total" right>{stockQuantity(item.totalRemainingQuantity)}</MatrixCell>
         </View>;
       })}
   </View>;
@@ -274,10 +274,10 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
     <Page size="A4" style={S.page} wrap>
       <View style={S.stockHeader}>
         <Text style={S.title}>ตารางผลไม้คงเหลือสำหรับสั่งซื้อ - {formatThaiDate(report.businessDate)}</Text>
-        <Text style={S.subtitle}>รวมคงเหลือ = ของดีชั่งคืนจากตลาด + ของที่บ้าน</Text>
+        <Text style={S.subtitle}>รวมคงเหลือ = คงเหลือในบ้าน + ในตลาด</Text>
       </View>
       <StockMatrix report={report} />
-      <Text style={[S.note, { marginTop: 6 }]}>ในตลาด = ของดีชั่งคืนจากตลาด • บ้านเจ๊ = ของที่ยังอยู่บ้าน/คลัง • ถ้าข้อมูลฝั่งบ้านยังไม่ทราบจะแสดง “-” และระบบจะไม่เดายอดรวม</Text>
+      <Text style={[S.note, { marginTop: 6 }]}>คงเหลือในบ้าน = ของที่ยังอยู่บ้าน/คลัง • ในตลาด = ของดีชั่งคืนจากตลาด • รวมคงเหลือ = คงเหลือในบ้าน + ในตลาด • ถ้าข้อมูลฝั่งบ้านยังไม่ทราบจะแสดง “-” และระบบจะไม่เดายอดรวม</Text>
       <DataFooter generatedText={generatedText} />
     </Page>
   </Document>;

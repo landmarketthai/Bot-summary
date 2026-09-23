@@ -63,7 +63,11 @@ function collectText(node: React.ReactNode): string {
   if (typeof node === "string" || typeof node === "number") return String(node);
   if (Array.isArray(node)) return node.map(collectText).join(" ");
   if (React.isValidElement(node)) {
-    return collectText((node.props as { children?: React.ReactNode }).children);
+    const element = node as React.ReactElement<Record<string, unknown>>;
+    if (typeof element.type === "function") {
+      return collectText((element.type as (props: Record<string, unknown>) => React.ReactNode)(element.props));
+    }
+    return collectText((element.props as { children?: React.ReactNode }).children);
   }
   return "";
 }
@@ -85,6 +89,25 @@ describe("Morning Brief A4 PDF", () => {
     const text = collectText(MorningBriefA4Doc({ report, generatedAt: new Date("2026-09-19T08:00:00+07:00") }));
     expect(text).toContain("ยอดขายรวมเมื่อวาน");
     expect(text).toContain("22,511.58");
+  });
+
+  test("uses the requested stock columns and remaps house, market, then total", () => {
+    const layoutReport: MorningBriefReport = { ...report, businessDate: "2026-09-22" };
+    const text = collectText(MorningBriefA4Doc({ report: layoutReport, generatedAt: new Date("2026-09-23T08:00:00+07:00") }));
+    const normalized = text.replace(/\s+/g, " ").trim();
+    expect(normalized).toContain("ตารางผลไม้คงเหลือสำหรับสั่งซื้อ - 22 กันยายน 2569");
+
+    expect(normalized).toContain("รายการ คงเหลือในบ้าน ในตลาด รวมคงเหลือ");
+
+    const apple = text.indexOf("แอปเปิ้ล");
+    const house = text.indexOf("40", apple);
+    const market = text.indexOf("372", house);
+    const total = text.indexOf("412", market);
+    expect(apple).toBeGreaterThanOrEqual(0);
+    expect(house).toBeGreaterThan(apple);
+    expect(market).toBeGreaterThan(house);
+    expect(total).toBeGreaterThan(market);
+    expect(text).not.toContain("บ้านเจ๊");
   });
 
   test("renders the fruit summary page followed by the stock matrix page", async () => {
