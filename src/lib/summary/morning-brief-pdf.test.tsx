@@ -172,7 +172,7 @@ describe("Morning Brief A4 PDF", () => {
       "2026-09-19/morning-brief-2026-09-19.ref.json",
     ]);
     expect(uploads[1]?.options.upsert).toBe(true);
-    expect(uploads[1]?.options.contentType).toBe("application/json; charset=utf-8");
+    expect(uploads[1]?.options.contentType).toBe("application/json");
     const saved = JSON.parse(new TextDecoder().decode(uploads[1]?.body));
     expect(saved.businessDate).toBe("2026-09-19");
     expect(saved.generatedAt).toBe(generatedAt.toISOString());

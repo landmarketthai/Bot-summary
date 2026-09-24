@@ -87,7 +87,7 @@ export async function createMorningBriefPdfArtifact(
   });
   const referenceBytes = new TextEncoder().encode(JSON.stringify(referenceData));
   const { error: referenceUploadError } = await bucket.upload(referencePath, referenceBytes, {
-    contentType: "application/json; charset=utf-8",
+    contentType: "application/json",
     cacheControl: "300",
     upsert: true,
   });
