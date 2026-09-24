@@ -432,6 +432,8 @@ jobs:
         run: bunx bun test src/lib/produce/round-return-status.test.ts src/lib/summary/round-market-identity.test.ts src/lib/sales/round-return-sold-out.test.ts
       - name: Produce out-of-order admission real-PostgreSQL suite
         run: bun test src/lib/line/migration-produce-out-of-order-admission.pg.test.ts
+      - name: Produce generation-rotation carry-forward real-PostgreSQL suite
+        run: bun run test:pg:rotation-carry-forward
       - name: Typecheck
         run: npm run type-check
       - name: git diff --check against the PR base

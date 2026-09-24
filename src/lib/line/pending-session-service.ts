@@ -126,7 +126,15 @@ export interface OpenPlainTextGenerationInput {
 export interface OpenPlainTextGenerationResult {
   opened: boolean;
   reason: string;
+  /** Total events re-admitted into the new generation by LINE timestamp. */
   reconciled_count?: number;
+  /**
+   * The subset of reconciled_count that was carried forward from the RETIRED
+   * generation's ingest ledger rather than from the deferred ledger — items a
+   * still-open previous generation swallowed because their header had not been
+   * persisted yet (20260924090000). Absent on pre-migration databases.
+   */
+  carried_forward_count?: number;
   session?: PendingSession;
 }
 

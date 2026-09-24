@@ -29,6 +29,7 @@
     "test:pg:legacy-anon-surface-lockdown": "bun test src/lib/line/migration-legacy-anon-surface-lockdown.pg.test.ts",
     "test:pg:money-parity": "bun test src/lib/produce/exact-line-total.pg.test.ts",
     "test:pg:close-validation-race": "bun test src/lib/produce/migration-produce-close-validation-race.pg.test.ts",
+    "test:pg:rotation-carry-forward": "bun test src/lib/line/migration-produce-rotation-carry-forward.pg.test.ts",
     "test:replay": "bun test src/lib/line/webhook-physical-inventory.test.ts src/lib/line/webhook-physical-inventory-ordering.test.ts -t replay:"
   },
   "dependencies": {
