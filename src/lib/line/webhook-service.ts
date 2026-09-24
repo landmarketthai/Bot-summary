@@ -752,7 +752,6 @@ export class WebhookService {
   }
 
   async processEvents(events: LineEvent[], destination: string): Promise<WebhookProcessResult[]> {
-    await preloadRuntimeProductCodes(this.supabase);
     // LINE's array order is the only ordering guarantee inside one payload.
     // Persist every event before any worker starts so a later close can see
     // every earlier event in the durable queue.
@@ -791,6 +790,8 @@ export class WebhookService {
         });
       }
     }
+
+    await preloadRuntimeProductCodes(this.supabase);
 
     if (this.orderedQueueAvailable !== false) {
       const resultByEventId = new Map<string, WebhookProcessResult>();
