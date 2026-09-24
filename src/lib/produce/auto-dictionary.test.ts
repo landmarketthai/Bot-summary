@@ -31,6 +31,10 @@ describe("safe auto dictionary category inference", () => {
   it("leaves an unknown category for human review", () => {
     expect(inferAutoDictionaryCategory("สินค้าใหม่ทดลอง")).toBeNull();
   });
+
+  it("leaves unrelated names beginning with ลูก for human review", () => {
+    expect(inferAutoDictionaryCategory("ลูกค้าใหม่")).toBeNull();
+  });
 });
 
 describe("runtime similarity guard", () => {
