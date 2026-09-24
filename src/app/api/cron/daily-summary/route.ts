@@ -3,6 +3,7 @@ import { createServiceClient } from "@/lib/supabase/server";
 import { logger } from "@/lib/logger";
 import { pushLineMessage } from "@/lib/line/reply";
 import { buildDailySummaryMessage } from "@/lib/line/daily-summary-message";
+import { preloadRuntimeProductCodes } from "@/lib/produce/product-code/resolver";
 import {
   dailySummaryCategoryLedgers,
   dailySummaryRetryKey,
@@ -39,6 +40,7 @@ export async function GET(req: NextRequest) {
   });
 
   const supabase = createServiceClient();
+  await preloadRuntimeProductCodes(supabase);
   const { data: txData, error: txError } = await supabase
     .from("produce_transactions")
     .select("raw_message_id,staff_name,market_name,transaction_type,total_amount,product_name")

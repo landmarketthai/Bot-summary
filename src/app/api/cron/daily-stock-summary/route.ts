@@ -13,6 +13,7 @@ import {
 } from "@/lib/physical-inventory/house-stock-report";
 import { countUnresolvedPendingSessions } from "@/lib/sales/load";
 import { runDailyClosePreflight } from "@/lib/produce/preflight-service";
+import { preloadRuntimeProductCodes } from "@/lib/produce/product-code/resolver";
 import {
   loadRoundReturnStatuses,
   type RoundReturnStatus,
@@ -98,6 +99,7 @@ export async function GET(req: NextRequest) {
   });
 
   const supabase = createServiceClient();
+  await preloadRuntimeProductCodes(supabase);
 
   let report;
   let stockSummary;

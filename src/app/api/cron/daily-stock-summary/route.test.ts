@@ -5,6 +5,7 @@ import {
   HOUSE_STOCK_PRICED_PARSER_VERSION,
   PHYSICAL_INVENTORY_PARSER_VERSION,
 } from "@/lib/physical-inventory/types";
+import { resetRuntimeProductCodesForTests } from "@/lib/produce/product-code/resolver";
 
 // ── Stubs ──────────────────────────────────────────────────────────────────
 //
@@ -22,6 +23,7 @@ let physicalItemResult: QueryResult = { data: [], error: null };
 /** P2E round identity + the unfinalized documents attributed to those rounds. */
 let roundResult: QueryResult = { data: [], error: null };
 let pendingResult: QueryResult = { data: [], error: null };
+let productCodesResult: QueryResult = { data: [], error: null };
 
 /**
  * Answer produce_transactions per query rather than per table.
@@ -78,6 +80,7 @@ mock.module("@/lib/supabase/server", () => ({
       if (table === "physical_inventory_items") return chain(() => physicalItemResult);
       if (table === "accountability_rounds") return chain(() => roundResult);
       if (table === "pending_sessions") return chain(() => pendingResult);
+      if (table === "produce_product_codes") return chain(() => productCodesResult);
       throw new Error(`Unexpected table: ${table}`);
     },
   }),
@@ -136,12 +139,15 @@ beforeEach(() => {
   physicalItemResult = { data: [], error: null };
   roundResult = { data: [], error: null };
   pendingResult = { data: [], error: null };
+  productCodesResult = { data: [], error: null };
+  resetRuntimeProductCodesForTests();
   produceByQuery = null;
   process.env.CRON_SECRET = "stock-secret";
   delete process.env.STOCK_SUMMARY_LINE_TARGETS;
 });
 
 afterEach(() => {
+  resetRuntimeProductCodesForTests();
   restore("CRON_SECRET", originalSecret);
   restore("STOCK_SUMMARY_LINE_TARGETS", originalTargets);
 });
@@ -194,6 +200,28 @@ describe("daily stock summary cron — authentication", () => {
 });
 
 describe("daily stock summary cron — delivery", () => {
+  test("preloads runtime-only promoted products before scheduled category output", async () => {
+    const promotedName = "runtime promoted mango";
+    productCodesResult = {
+      data: [{
+        product_code: "\u0e21\u0039\u0038",
+        category_code: "\u0e21",
+        category_name: "\u0e1c\u0e25\u0e44\u0e21\u0e49",
+        canonical_name: promotedName,
+        code_enabled: true,
+      }],
+      error: null,
+    };
+    produceResult = { data: [
+      { market_name: "\u0e15\u0e25\u0e32\u0e14\u0e01\u0e35\u0e49", product_name: promotedName, quantity: 10, unit: "\u0e42\u0e25", transaction_type: TX_WITHDRAW, price_per_unit: 20 },
+      { market_name: "\u0e15\u0e25\u0e32\u0e14\u0e01\u0e35\u0e49", product_name: promotedName, quantity: 5, unit: "\u0e42\u0e25", transaction_type: TX_RETURN },
+    ], error: null };
+
+    const body = await (await GET(request("?date=2026-07-25&debug=1"))).json();
+
+    expect(body.messages.join("\n")).toContain("\ud83c\udf49 \u0e1c\u0e25\u0e44\u0e21\u0e49");
+  });
+
   test("does nothing when no LINE targets are configured", async () => {
     produceResult = { data: produceRows(), error: null };
 
