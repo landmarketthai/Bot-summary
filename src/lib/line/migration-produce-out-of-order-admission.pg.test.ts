@@ -184,6 +184,9 @@ describe.skipIf(!pgAvailable)("Produce out-of-order admission on PostgreSQL 17",
     await apply(join(
       ROOT, "supabase", "migrations", "20260815094931_produce_out_of_order_admission.sql",
     ));
+    await apply(join(
+      ROOT, "supabase", "migrations", "20260924090000_produce_generation_rotation_carry_forward.sql",
+    ));
   }, 60_000);
 
   afterAll(async () => {
@@ -206,6 +209,74 @@ describe.skipIf(!pgAvailable)("Produce out-of-order admission on PostgreSQL 17",
     expect(await open({ key, eventId: "01M025M0VW9X4KN9GNT3M6TRNY", timestamp: 1786779402624 }))
       .toMatchObject({ opened: true, reconciled_count: 1 });
     expect(await scalar("SELECT status FROM public.pending_produce_deferred_events WHERE line_event_id='01M025M0P6K6HBXZNMQYA1TYHZ'")).toBe("admitted");
+  });
+
+  test("2026-09-23 ITEM1 executes before HEADER and survives stale-generation rotation", async () => {
+    const key = keyFor("sep23-production");
+    const stale = await open({
+      key,
+      eventId: "sep23-stale-head",
+      timestamp: 1790176000000,
+      text: "รายการชั่งคืนก่อนหน้า",
+    });
+    const staleGeneration = (stale.session as { session_generation: string }).session_generation;
+
+    // Exact production execution order: Item 1 runs first. Because a previous
+    // live generation exists, the original RPC fast path admits it there and
+    // creates no deferred row.
+    expect(await item({
+      key,
+      eventId: "sep23-item-1",
+      timestamp: 1790176127487,
+      text: "1.น้อยหน่า40บาท\n30.5โล",
+    })).toMatchObject({ action: "admitted", session_generation: staleGeneration });
+    expect(await scalar(
+      "SELECT count(*) FROM public.pending_produce_deferred_events WHERE line_event_id='sep23-item-1'",
+    )).toBe("0");
+
+    // The authoritative Header is 160 ms earlier in LINE time but executes
+    // second. Rotation must carry Item 1 into the generation that will save.
+    const opened = await open({
+      key,
+      eventId: "sep23-head",
+      timestamp: 1790176127327,
+      text: "พี่เต้ย-ตลาด72 ชั่งคืน 23/9/2569",
+      expectedGeneration: staleGeneration,
+    });
+    expect(opened).toMatchObject({
+      opened: true,
+      carried_forward_count: 1,
+      reconciled_count: 1,
+    });
+    const saved = opened.session as { session_generation: string; accumulated_text: string };
+    expect(saved.session_generation).not.toBe(staleGeneration);
+    expect(parseWeighSession(saved.accumulated_text).items).toEqual([
+      expect.objectContaining({ item_number: 1, product_name: "น้อยหน่า", quantity: 30.5 }),
+    ]);
+    expect(await scalar(`SELECT count(*) FROM public.pending_session_ingest
+      WHERE session_generation=${q(saved.session_generation)}::uuid
+        AND line_event_id='sep23-item-1'
+        AND line_timestamp_ms=1790176127487`)).toBe("1");
+  });
+
+  test("rotation does not carry a truly timestamp-before-opener retired item", async () => {
+    const key = keyFor("rotation-before-boundary");
+    const stale = await open({ key, eventId: "rotation-old-head", timestamp: 1000 });
+    const staleGeneration = (stale.session as { session_generation: string }).session_generation;
+    expect(await item({ key, eventId: "rotation-old-item", timestamp: 1500 }))
+      .toMatchObject({ action: "admitted" });
+
+    const opened = await open({
+      key,
+      eventId: "rotation-new-head",
+      timestamp: 2000,
+      expectedGeneration: staleGeneration,
+    });
+    expect(opened).toMatchObject({ opened: true, carried_forward_count: 0 });
+    const generation = (opened.session as { session_generation: string }).session_generation;
+    expect(await scalar(`SELECT count(*) FROM public.pending_session_ingest
+      WHERE session_generation=${q(generation)}::uuid
+        AND line_event_id='rotation-old-item'`)).toBe("0");
   });
 
   test("items executing out of order reconstruct in timestamp order", async () => {

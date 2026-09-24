@@ -127,6 +127,7 @@ export interface OpenPlainTextGenerationResult {
   opened: boolean;
   reason: string;
   reconciled_count?: number;
+  carried_forward_count?: number;
   session?: PendingSession;
 }
 

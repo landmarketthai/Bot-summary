@@ -384,6 +384,9 @@ class RecoveryDatabase {
       ) {
         return { data: { opened: false, reason: "generation_conflict" }, error: null };
       }
+      const priorGeneration = pending?.session_generation;
+      const priorOpener = pending?.plain_text_opened_line_event_id;
+      const priorClose = pending?.close_line_event_id;
       const generation = crypto.randomUUID();
       const now = new Date().toISOString();
       if (!pending) {
@@ -441,8 +444,40 @@ class RecoveryDatabase {
         line_timestamp_ms: args.p_line_timestamp_ms,
         raw_text: args.p_raw_text,
       }, "insert");
+      let carriedForwardCount = 0;
+      if (priorGeneration != null) {
+        const stranded = this.rows("pending_session_ingest")
+          .filter((row) => row.session_key === args.p_session_key)
+          .filter((row) => row.session_generation === priorGeneration)
+          .filter((row) => Number(row.line_timestamp_ms) > Number(args.p_line_timestamp_ms))
+          .filter((row) => !args.p_mark_close
+            || Number(row.line_timestamp_ms) < Number(args.p_line_timestamp_ms))
+          .filter((row) => row.line_event_id !== args.p_line_event_id)
+          .filter((row) => row.line_event_id !== priorOpener && row.line_event_id !== priorClose)
+          .sort((a, b) => Number(a.line_timestamp_ms) - Number(b.line_timestamp_ms));
+        for (const row of stranded) {
+          const appended = this.appendPending({
+            p_session_key: args.p_session_key,
+            p_new_text: row.raw_text,
+            p_reply_token: args.p_reply_token,
+            p_line_event_id: row.line_event_id,
+            p_line_timestamp_ms: row.line_timestamp_ms,
+            p_mark_close: false,
+            p_expected_session_generation: generation,
+          });
+          if ((appended.data as { accepted?: boolean } | null)?.accepted) {
+            carriedForwardCount += 1;
+          }
+        }
+      }
       return {
-        data: { opened: true, reason: "created", reconciled_count: 0, session: pending },
+        data: {
+          opened: true,
+          reason: "created",
+          reconciled_count: carriedForwardCount,
+          carried_forward_count: carriedForwardCount,
+          session: pending,
+        },
         error: null,
       };
     }
@@ -626,6 +661,41 @@ function seedDeferred(
     }, "insert");
   }
 }
+
+describe("2026-09-23 stale-generation ordering incident", () => {
+  it("executes exact ITEM1 first, then timestamp-earlier HEADER, and keeps Item 1 in the saved generation", async () => {
+    const db = new RecoveryDatabase();
+    const webhook = service(db);
+    await send(webhook, "รายการชั่งคืนก่อนหน้า", 1790176000000, {
+      eventId: "sep23-stale-head",
+    });
+    const staleGeneration = db.pending()?.session_generation;
+
+    await send(webhook, "1.น้อยหน่า40บาท\n30.5โล", 1790176127487, {
+      eventId: "sep23-item-1",
+    });
+    expect(db.pending()?.session_generation).toBe(staleGeneration);
+    expect(db.deferred()).toHaveLength(0);
+
+    await send(webhook, "พี่เต้ย-ตลาด72 ชั่งคืน 23/9/2569", 1790176127327, {
+      eventId: "sep23-head",
+    });
+    const saved = db.pending();
+    expect(saved?.session_generation).not.toBe(staleGeneration);
+    expect(parseWeighSession(String(saved?.accumulated_text)).items).toEqual([
+      expect.objectContaining({ item_number: 1, product_name: "น้อยหน่า", quantity: 30.5 }),
+    ]);
+    expect(db.rows("pending_session_ingest")).toContainEqual(expect.objectContaining({
+      session_generation: saved?.session_generation,
+      line_event_id: "sep23-item-1",
+      line_timestamp_ms: 1790176127487,
+    }));
+    expect(db.rows("raw_messages")).toContainEqual(expect.objectContaining({
+      line_event_id: "sep23-item-1",
+      raw_text: "1.น้อยหน่า40บาท\n30.5โล",
+    }));
+  });
+});
 
 describe("before-opener Produce recovery", () => {
   it("refuses recovery before a valid header exists", async () => {
