@@ -17,6 +17,7 @@ import { WebhookService } from "./webhook-service";
 import { finalizePendingGeneration } from "./pending-session-finalizer";
 import { computeSessionHash } from "./session-dedup-service";
 import { parseWeighSession } from "@/lib/parsers/weigh-session/parser";
+import { PRODUCT_CODE_ENTRIES } from "@/lib/produce/product-code/dictionary";
 import type { PendingSession } from "./pending-session-service";
 import type { LineMessageEvent } from "./types";
 
@@ -69,6 +70,7 @@ const MASTER: Row[] = [{
 
 class Query {
   private readonly filters: Array<(row: Row) => boolean> = [];
+  private maxRows: number | null = null;
 
   constructor(
     private readonly db: CodeDatabase,
@@ -77,9 +79,12 @@ class Query {
     private readonly payload?: Row | Row[],
   ) {}
 
-  select = () => this;
+  select = (_columns?: string) => this;
   order = () => this;
-  limit = () => this;
+  limit = (count: number) => {
+    this.maxRows = count;
+    return this;
+  };
   not = () => this;
   eq(column: string, value: unknown) {
     this.filters.push((row) => row[column] === value);
@@ -104,7 +109,9 @@ class Query {
   private run(): { data: Row[] | Row | null; error: null } {
     const rows = this.db.rows(this.table);
     const matched = () => rows.filter((row) => this.filters.every((f) => f(row)));
-    if (this.mode === "select") return { data: matched(), error: null };
+    if (this.mode === "select") {
+      return { data: matched().slice(0, this.maxRows ?? rows.length), error: null };
+    }
     if (this.mode === "insert" || this.mode === "upsert") {
       const payloads = Array.isArray(this.payload) ? this.payload : [this.payload ?? {}];
       const mode = this.mode;
@@ -127,6 +134,13 @@ class CodeDatabase {
 
   constructor(master: Row[] = []) {
     this.tables.set("produce_transactions", [...master]);
+    this.tables.set("produce_product_codes", PRODUCT_CODE_ENTRIES.map((entry) => ({
+      product_code: entry.code,
+      category_code: entry.categoryCode,
+      category_name: entry.category,
+      canonical_name: entry.canonicalName,
+      code_enabled: entry.enabled,
+    })));
   }
 
   rows(table: string): Row[] {
@@ -164,7 +178,7 @@ class CodeDatabase {
   }
 
   from = (table: string) => ({
-    select: () => new Query(this, table, "select"),
+    select: (_columns?: string) => new Query(this, table, "select"),
     insert: (payload: Row | Row[]) => new Query(this, table, "insert", payload),
     upsert: (payload: Row | Row[]) => new Query(this, table, "upsert", payload),
     update: (payload: Row) => new Query(this, table, "update", payload),
