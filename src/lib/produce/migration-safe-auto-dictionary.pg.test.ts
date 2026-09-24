@@ -1,0 +1,129 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { randomBytes } from "node:crypto";
+
+const ROOT = join(import.meta.dir, "..", "..", "..");
+const PSQL = existsSync("C:\\Program Files\\PostgreSQL\\17\\bin\\psql.exe")
+  ? "C:\\Program Files\\PostgreSQL\\17\\bin\\psql.exe" : "psql";
+const PGHOST = process.env.PGHOST ?? "localhost";
+const PGUSER = process.env.PGUSER ?? "postgres";
+const PGPASSWORD = process.env.PGPASSWORD ?? "postgres";
+const PGPORT = process.env.PGPORT ?? "5432";
+const DATABASE = `sad_${randomBytes(4).toString("hex")}`;
+const ALLOWED_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+const BOOTSTRAP = join(ROOT, "supabase", "tests", "produce_product_code_dictionary_bootstrap.sql");
+const PRODUCT_CODES = join(ROOT, "supabase", "migrations", "20260813115826_produce_product_code_dictionary.sql");
+const MIGRATION = join(ROOT, "supabase", "migrations", "20260924123000_safe_auto_dictionary.sql");
+
+type PsqlResult = { code: number; stdout: string; stderr: string };
+
+async function psql(args: string[], database = DATABASE, stdin?: string): Promise<PsqlResult> {
+  const proc = Bun.spawn([PSQL, "-X", ...args], {
+    cwd: ROOT,
+    stdin: stdin === undefined ? undefined : new TextEncoder().encode(stdin),
+    env: { ...process.env, PGHOST, PGUSER, PGPASSWORD, PGPORT, PGDATABASE: database, PGCLIENTENCODING: "UTF8" },
+    stdout: "pipe", stderr: "pipe",
+  });
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited,
+  ]);
+  return { code, stdout, stderr };
+}
+
+async function run(sql: string, database = DATABASE): Promise<PsqlResult> {
+  return psql(["-v", "ON_ERROR_STOP=1", "-tA", "-f", "-"], database, sql);
+}
+
+async function scalar(sql: string, database = DATABASE): Promise<string> {
+  const result = await run(sql, database);
+  if (result.code !== 0) throw new Error(`${result.stderr || result.stdout}\nSQL: ${sql}`);
+  return result.stdout.split("\n").map((line) => line.trim()).find(Boolean) ?? "";
+}
+
+async function apply(file: string, database = DATABASE): Promise<void> {
+  const result = await psql(["-v", "ON_ERROR_STOP=1", "-f", file], database);
+  expect(result.code, `${file}\n${result.stderr}\n${result.stdout}`).toBe(0);
+}
+
+async function probe(): Promise<boolean> {
+  if (process.env.ALLOW_DISPOSABLE_POSTGRES_TESTS !== "1" || !ALLOWED_HOSTS.has(PGHOST)) return false;
+  const result = await psql(["-tAc", "SHOW server_version_num"], "postgres");
+  return result.code === 0 && Number(result.stdout.trim()) >= 140000;
+}
+
+const pgAvailable = await probe();
+let databaseCreated = false;
+if (!pgAvailable && process.env.REQUIRE_SAFE_AUTO_DICTIONARY_POSTGRES === "1") {
+  throw new Error("REQUIRE_SAFE_AUTO_DICTIONARY_POSTGRES=1 but PostgreSQL is unavailable");
+}
+
+const category = "ม";
+const categoryName = "ผลไม้";
+const name = "ทดสอบอัตโนมัติ";
+const raw = "  ทดสอบ  อัตโนมัติ ";
+
+describe.skipIf(!pgAvailable)("safe auto-dictionary migration", () => {
+  beforeAll(async () => {
+    const created = await psql(["-d", "postgres", "-c", `CREATE DATABASE ${DATABASE}`], "postgres");
+    expect(created.code, created.stderr).toBe(0);
+    databaseCreated = true;
+    await apply(BOOTSTRAP);
+    await apply(PRODUCT_CODES);
+    await apply(MIGRATION);
+  });
+
+  afterAll(async () => {
+    if (databaseCreated) await psql(["-d", "postgres", "-c", `DROP DATABASE IF EXISTS ${DATABASE} WITH (FORCE)`], "postgres");
+  });
+
+  async function observe(session: string, generation = randomBytes(16).toString("hex"), date = "2026-09-24", candidateName = name) {
+    const uuid = `${generation.slice(0, 8)}-${generation.slice(8, 12)}-${generation.slice(12, 16)}-${generation.slice(16, 20)}-${generation.slice(20, 32)}`;
+    return scalar(`SELECT public.observe_produce_dictionary_candidate(
+      ${quote(candidateName)}, ${quote(candidateName)}, ${quote(session)}, ${quote(uuid)}::uuid,
+      DATE ${quote(date)}, ${quote(category)}, ${quote(categoryName)}, NULL
+    )::text`);
+  }
+
+  test("requires three distinct sessions across two days and retries are idempotent", async () => {
+    expect(JSON.parse(await observe("s1", "11111111111111111111111111111111", "2026-09-24")).status).toBe("observing");
+    expect(JSON.parse(await observe("s1", "11111111111111111111111111111111", "2026-09-24")).distinct_sessions).toBe(1);
+    expect(JSON.parse(await observe("s2", "22222222222222222222222222222222", "2026-09-24")).status).toBe("observing");
+    const promoted = JSON.parse(await observe("s3", "33333333333333333333333333333333", "2026-09-25"));
+    expect(promoted.status).toBe("promoted");
+    expect(promoted.distinct_sessions).toBe(3);
+    expect(promoted.distinct_days).toBe(2);
+    const retry = JSON.parse(await observe("s3", "33333333333333333333333333333333", "2026-09-25"));
+    expect(retry.status).toBe("existing");
+    expect(retry.product_code).toBe(promoted.product_code);
+    expect(await scalar("SELECT count(*)::text FROM public.produce_dictionary_candidate_occurrences")).toBe("3");
+    expect(await scalar("SELECT count(*)::text FROM public.produce_dictionary_decisions WHERE decision = 'NEW_PRODUCT'")).toBe("1");
+  });
+
+  test("serializes concurrent observations and code allocation under the category advisory lock", async () => {
+    const promoted = await Promise.all(["a", "b"].map((suffix) => Promise.all([
+      observe(`lock-${suffix}-1`, randomBytes(16).toString("hex"), "2026-09-24", `concurrent-${suffix}`),
+      observe(`lock-${suffix}-2`, randomBytes(16).toString("hex"), "2026-09-24", `concurrent-${suffix}`),
+      observe(`lock-${suffix}-3`, randomBytes(16).toString("hex"), "2026-09-25", `concurrent-${suffix}`),
+    ])));
+    expect(promoted.flat().some((result) => JSON.parse(result).status === "promoted")).toBe(true);
+    expect(await scalar(`SELECT count(*)::text FROM public.produce_product_codes WHERE canonical_name LIKE 'concurrent-%'`)).toBe("2");
+    expect(await scalar(`SELECT count(DISTINCT product_code)::text FROM public.produce_dictionary_decisions WHERE decision = 'NEW_PRODUCT'`)).toBe("3");
+  });
+
+  test("keeps product identity immutable and locks down the surface", async () => {
+    const code = await scalar(`SELECT product_code FROM public.produce_product_codes WHERE canonical_name = ${quote(name)}`);
+    const changed = await run(`UPDATE public.produce_product_codes SET canonical_name = 'changed' WHERE product_code = ${quote(code)}`);
+    expect(changed.code).not.toBe(0);
+    expect(await scalar(`SELECT prosecdef::text || ':' || array_to_string(proconfig, ',') FROM pg_proc WHERE oid = 'public.observe_produce_dictionary_candidate(text,text,text,uuid,date,text,text,text)'::regprocedure`))
+      .toBe("true:search_path=pg_catalog, public, pg_temp");
+    expect(await scalar("SELECT relrowsecurity::text FROM pg_class WHERE oid = 'public.produce_dictionary_candidates'::regclass")).toBe("true");
+    expect(await scalar(`SELECT count(*)::text FROM information_schema.role_table_grants WHERE table_name IN ('produce_dictionary_candidates','produce_dictionary_candidate_occurrences','produce_dictionary_decisions') AND grantee IN ('anon','authenticated','PUBLIC')`)).toBe("0");
+    expect(await scalar("SELECT has_function_privilege('service_role', 'public.observe_produce_dictionary_candidate(text,text,text,uuid,date,text,text,text)', 'EXECUTE')::text")).toBe("true");
+    expect(await scalar("SELECT has_function_privilege('anon', 'public.observe_produce_dictionary_candidate(text,text,text,uuid,date,text,text,text)', 'EXECUTE')::text")).toBe("false");
+  });
+});
+
+function quote(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}

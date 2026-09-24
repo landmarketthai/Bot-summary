@@ -66,7 +66,7 @@ CREATE OR REPLACE FUNCTION public.observe_produce_dictionary_candidate(
 ) RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, pg_temp
+SET search_path = pg_catalog, public, pg_temp
 AS $$
 DECLARE
   v_name text := btrim(regexp_replace(normalize(p_normalized_name, NFC), '\s+', ' ', 'g'));
