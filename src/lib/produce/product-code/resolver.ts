@@ -70,6 +70,7 @@ const UNAVAILABLE_RUNTIME_DICTIONARY: RuntimeDictionarySnapshot = {
 };
 let runtimeDictionarySnapshot = LEGACY_RUNTIME_DICTIONARY;
 let runtimeDictionaryPreloadGeneration = 0;
+let runtimeDictionaryPreloadPromise: Promise<void> | null = null;
 
 interface RuntimeDictionaryClient {
   from(table: string): {
@@ -85,51 +86,64 @@ interface RuntimeDictionaryQuery {
 /** Refresh the bounded DB overlay used by the synchronous parser and reports. */
 export async function preloadRuntimeProductCodes(supabase: RuntimeDictionaryClient): Promise<void> {
   const generation = ++runtimeDictionaryPreloadGeneration;
-  try {
-    const query = supabase.from("produce_product_codes").select(
-      "product_code,category_code,category_name,canonical_name,code_enabled",
-    ) as RuntimeDictionaryQuery;
-    const response = await query.limit(RUNTIME_PRODUCT_CODE_LIMIT);
-    if (generation !== runtimeDictionaryPreloadGeneration) return;
-    if (response.error || !Array.isArray(response.data) || response.data.length >= RUNTIME_PRODUCT_CODE_LIMIT) {
-      runtimeDictionarySnapshot = UNAVAILABLE_RUNTIME_DICTIONARY;
-      return;
-    }
-
-    const next = new Map<string, ProductCodeEntry>();
-    for (const raw of response.data ?? []) {
-      const row = raw as {
-        product_code?: unknown;
-        category_code?: unknown;
-        category_name?: unknown;
-        canonical_name?: unknown;
-        code_enabled?: unknown;
-      };
-      if (
-        typeof row.product_code !== "string"
-        || typeof row.category_code !== "string"
-        || typeof row.category_name !== "string"
-        || typeof row.canonical_name !== "string"
-        || typeof row.code_enabled !== "boolean"
-        || !PRODUCT_CODE_TOKEN.test(row.product_code)
-        || !row.canonical_name.trim()
-        || next.has(row.product_code)
-      ) {
+  const preload = (async () => {
+    try {
+      const query = supabase.from("produce_product_codes").select(
+        "product_code,category_code,category_name,canonical_name,code_enabled",
+      ) as RuntimeDictionaryQuery;
+      const response = await query.limit(RUNTIME_PRODUCT_CODE_LIMIT);
+      if (generation !== runtimeDictionaryPreloadGeneration) return;
+      if (response.error || !Array.isArray(response.data) || response.data.length >= RUNTIME_PRODUCT_CODE_LIMIT) {
         runtimeDictionarySnapshot = UNAVAILABLE_RUNTIME_DICTIONARY;
         return;
       }
-      next.set(row.product_code, {
-        code: row.product_code,
-        categoryCode: row.category_code,
-        category: row.category_name,
-        canonicalName: row.canonical_name.normalize("NFC").replace(/\s+/g, " ").trim(),
-        enabled: row.code_enabled,
-      });
+
+      const next = new Map<string, ProductCodeEntry>();
+      for (const raw of response.data ?? []) {
+        const row = raw as {
+          product_code?: unknown;
+          category_code?: unknown;
+          category_name?: unknown;
+          canonical_name?: unknown;
+          code_enabled?: unknown;
+        };
+        if (
+          typeof row.product_code !== "string"
+          || typeof row.category_code !== "string"
+          || typeof row.category_name !== "string"
+          || typeof row.canonical_name !== "string"
+          || typeof row.code_enabled !== "boolean"
+          || !PRODUCT_CODE_TOKEN.test(row.product_code)
+          || !row.canonical_name.trim()
+          || next.has(row.product_code)
+        ) {
+          runtimeDictionarySnapshot = UNAVAILABLE_RUNTIME_DICTIONARY;
+          return;
+        }
+        next.set(row.product_code, {
+          code: row.product_code,
+          categoryCode: row.category_code,
+          category: row.category_name,
+          canonicalName: row.canonical_name.normalize("NFC").replace(/\s+/g, " ").trim(),
+          enabled: row.code_enabled,
+        });
+      }
+      runtimeDictionarySnapshot = { entries: next, state: "available" };
+    } catch {
+      if (generation === runtimeDictionaryPreloadGeneration) {
+        runtimeDictionarySnapshot = UNAVAILABLE_RUNTIME_DICTIONARY;
+      }
     }
-    runtimeDictionarySnapshot = { entries: next, state: "available" };
-  } catch {
-    if (generation === runtimeDictionaryPreloadGeneration) {
-      runtimeDictionarySnapshot = UNAVAILABLE_RUNTIME_DICTIONARY;
+  })();
+  runtimeDictionaryPreloadPromise = preload;
+  await preload;
+  if (generation !== runtimeDictionaryPreloadGeneration) {
+    // A superseded caller must wait until the newest in-flight refresh settles.
+    for (;;) {
+      const latest: Promise<void> | null = runtimeDictionaryPreloadPromise;
+      if (!latest) return;
+      await latest;
+      if (latest === runtimeDictionaryPreloadPromise) return;
     }
   }
 }
@@ -152,6 +166,7 @@ export function runtimeProductCodeEntryForName(productName: string): ProductCode
 /** Reset process-global resolver state between isolated tests. */
 export function resetRuntimeProductCodesForTests(): void {
   runtimeDictionaryPreloadGeneration += 1;
+  runtimeDictionaryPreloadPromise = null;
   runtimeDictionarySnapshot = LEGACY_RUNTIME_DICTIONARY;
 }
 

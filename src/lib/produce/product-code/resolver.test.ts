@@ -46,6 +46,11 @@ function deferredClient() {
   };
 }
 
+async function flushMicrotasks() {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
 function row(productCode: string, codeEnabled: boolean) {
   return {
     product_code: productCode,
@@ -141,12 +146,13 @@ describe("runtime product-code resolver", () => {
 
     expect(resolveProductCode(PROMOTED_CODE)).toBe(`product ${PROMOTED_CODE}`);
     older.complete({ data: [row(STALE_CODE, true)], error: null });
-    await olderPreload;
+    await flushMicrotasks();
     expect(resolveProductCode(PROMOTED_CODE)).toBe(`product ${PROMOTED_CODE}`);
     expect(resolveProductCode(STALE_CODE)).toBeNull();
 
     newer.complete({ data: [row(LATEST_CODE, true)], error: null });
-    await newerPreload;
+    // The superseded caller waits on this winner, so complete it before joining both.
+    await Promise.all([olderPreload, newerPreload]);
     expect(resolveProductCode(LATEST_CODE)).toBe(`product ${LATEST_CODE}`);
     expect(resolveProductCode(PROMOTED_CODE)).toBeNull();
   });
@@ -161,6 +167,36 @@ describe("runtime product-code resolver", () => {
 
     expect(resolveProductCode(LATEST_CODE)).toBe(`product ${LATEST_CODE}`);
     expect(resolveProductCode(STALE_CODE)).toBeNull();
+  });
+
+  it("holds a superseded caller until the winning snapshot is ready", async () => {
+    await preloadRuntimeProductCodes(client([row(PROMOTED_CODE, true)]) as never);
+    const older = deferredClient();
+    const newer = deferredClient();
+    let olderFinished = false;
+    const olderPreload = preloadRuntimeProductCodes(older.client as never).then(() => {
+      olderFinished = true;
+    });
+    const newerPreload = preloadRuntimeProductCodes(newer.client as never);
+
+    older.complete({ data: [row(STALE_CODE, true)], error: null });
+    await flushMicrotasks();
+    expect(olderFinished).toBe(false);
+
+    const latest = deferredClient();
+    const latestPreload = preloadRuntimeProductCodes(latest.client as never);
+    newer.complete({ data: [row(STATIC_CODE, true)], error: null });
+    await flushMicrotasks();
+    expect(olderFinished).toBe(false);
+    expect(resolveProductCode(PROMOTED_CODE)).toBe(`product ${PROMOTED_CODE}`);
+    expect(resolveProductCode(STATIC_CODE)).toBeNull();
+
+    latest.complete({ data: [row(LATEST_CODE, true)], error: null });
+    await Promise.all([olderPreload, newerPreload, latestPreload]);
+    expect(olderFinished).toBe(true);
+    expect(resolveItemLineProductCode(`${LATEST_CODE} 10`).kind).toBe("resolved");
+    expect(resolveItemLineProductCode(`${STALE_CODE} 10`).kind).toBe("unknown");
+    expect(resolveProductCode(PROMOTED_CODE)).toBeNull();
   });
 
   it("fails closed for an exactly-at-limit snapshot", async () => {
