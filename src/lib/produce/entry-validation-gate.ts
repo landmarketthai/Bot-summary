@@ -366,12 +366,6 @@ export async function runProduceFinalizeGate(
   let { result, reviewConfirmed } = await evaluateProduceEntryGate(supabase, ref, parsed);
   if (result.status === "blocked") return { decision: "blocked", result };
   if (result.status === "clean" || reviewConfirmed) return { decision: "proceed", result };
-  const observations = await observeAutoDictionaryReviews(supabase, ref, result.reviews);
-  if (observations.some((entry) => entry.status === "promoted" || entry.status === "existing")) {
-    ({ result, reviewConfirmed } = await evaluateProduceEntryGate(supabase, ref, parsed));
-    if (result.status === "blocked") return { decision: "blocked", result };
-    if (result.status === "clean" || reviewConfirmed) return { decision: "proceed", result };
-  }
   return { decision: "review_presented", result };
 }
 
