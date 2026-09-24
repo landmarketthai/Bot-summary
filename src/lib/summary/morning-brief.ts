@@ -7,6 +7,7 @@ import type {
   PurchaseStatus,
   PurchaseUncertaintyReason,
 } from "@/lib/summary/purchase-planning";
+import { stockCategoryFor } from "@/lib/summary/stock-categories";
 
 const CATEGORY_BY_PRODUCT = new Map(
   PRODUCT_CODE_ENTRIES
@@ -43,7 +44,7 @@ export function morningBriefProductIdentity(productName: string, unit: string): 
   const canonical = canonicalProduceProductIdentity(productName, unit);
   return {
     productName: canonical,
-    category: CATEGORY_BY_PRODUCT.get(canonical) ?? "อื่นๆ / ยังไม่เข้าหมวด",
+    category: CATEGORY_BY_PRODUCT.get(canonical) ?? stockCategoryFor(canonical),
   };
 }
 

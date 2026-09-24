@@ -65,7 +65,7 @@ describe("loadMorningBriefReport", () => {
       status: "available",
       groupCount: 1,
       totalValueSatang: 31_200,
-      items: [{ productName: "มะม่วง", category: "อื่นๆ / ยังไม่เข้าหมวด", unit: "กก.", quantity: 2, unitPriceSatang: 15_600, valueSatang: 31_200 }],
+      items: [{ productName: "มะม่วง", category: "ผลไม้", unit: "กก.", quantity: 2, unitPriceSatang: 15_600, valueSatang: 31_200 }],
     });
   });
 

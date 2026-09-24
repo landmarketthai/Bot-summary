@@ -9,7 +9,7 @@ import {
   type SalesTotal,
 } from "@/lib/sales/calculate";
 import type { PurchasePlanningItem } from "@/lib/summary/purchase-planning";
-import { summarizePurchasePlanning, summarizeSales } from "./morning-brief";
+import { morningBriefProductIdentity, summarizePurchasePlanning, summarizeSales } from "./morning-brief";
 
 function purchaseItem(status: PurchasePlanningItem["status"], productName: string): PurchasePlanningItem {
   return {
@@ -85,6 +85,14 @@ function salesReport(markets: SalesMarketSummary[]): SalesReport {
     scopeBlockers: [],
   };
 }
+
+describe("morningBriefProductIdentity", () => {
+  test("falls back to stock categories for fruit names missing from Product Code", () => {
+    expect(morningBriefProductIdentity("เมล่อน", "ลูก").category).toBe("ผลไม้");
+    expect(morningBriefProductIdentity("มะกอก", "กก.").category).toBe("ผลไม้");
+    expect(morningBriefProductIdentity("ผักกาดขาว", "กก.").category).toBe("ผัก / สมุนไพร / เครื่องประกอบอาหาร");
+  });
+});
 
 describe("summarizePurchasePlanning", () => {
   test("keeps every classified item, including unknown details", () => {
