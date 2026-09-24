@@ -54,7 +54,7 @@ const BY_CODE: ReadonlyMap<string, ProductCodeEntry> = new Map(
 
 const RUNTIME_BY_CODE = new Map<string, ProductCodeEntry>();
 const RUNTIME_PRODUCT_CODE_LIMIT = 5000;
-let hasAuthoritativeRuntimeSnapshot = false;
+let runtimeDictionaryState: "legacy" | "available" | "unavailable" = "legacy";
 
 interface RuntimeDictionaryClient {
   from(table: string): {
@@ -69,13 +69,14 @@ interface RuntimeDictionaryQuery {
 
 /** Refresh the bounded DB overlay used by the synchronous parser and reports. */
 export async function preloadRuntimeProductCodes(supabase: RuntimeDictionaryClient): Promise<void> {
+  runtimeDictionaryState = "unavailable";
+  RUNTIME_BY_CODE.clear();
   try {
     const query = supabase.from("produce_product_codes").select(
       "product_code,category_code,category_name,canonical_name,code_enabled",
     ) as RuntimeDictionaryQuery;
     const response = await query.limit(RUNTIME_PRODUCT_CODE_LIMIT);
     if (response.error || !Array.isArray(response.data) || response.data.length >= RUNTIME_PRODUCT_CODE_LIMIT) {
-      RUNTIME_BY_CODE.clear();
       return;
     }
 
@@ -98,7 +99,6 @@ export async function preloadRuntimeProductCodes(supabase: RuntimeDictionaryClie
         || !row.canonical_name.trim()
         || next.has(row.product_code)
       ) {
-        RUNTIME_BY_CODE.clear();
         return;
       }
       next.set(row.product_code, {
@@ -111,7 +111,7 @@ export async function preloadRuntimeProductCodes(supabase: RuntimeDictionaryClie
     }
     RUNTIME_BY_CODE.clear();
     for (const [code, entry] of next) RUNTIME_BY_CODE.set(code, entry);
-    hasAuthoritativeRuntimeSnapshot = true;
+    runtimeDictionaryState = "available";
   } catch {
     RUNTIME_BY_CODE.clear();
   }
@@ -119,9 +119,8 @@ export async function preloadRuntimeProductCodes(supabase: RuntimeDictionaryClie
 
 /** Runtime entry, or the generated entry when no DB overlay exists. */
 export function productCodeEntryFor(code: string): ProductCodeEntry | null {
-  return hasAuthoritativeRuntimeSnapshot
-    ? RUNTIME_BY_CODE.get(code) ?? null
-    : RUNTIME_BY_CODE.get(code) ?? BY_CODE.get(code) ?? null;
+  return RUNTIME_BY_CODE.get(code)
+    ?? (runtimeDictionaryState === "legacy" ? BY_CODE.get(code) ?? null : null);
 }
 
 export function runtimeProductCodeEntryForName(productName: string): ProductCodeEntry | null {
@@ -135,7 +134,7 @@ export function runtimeProductCodeEntryForName(productName: string): ProductCode
 /** Reset process-global resolver state between isolated tests. */
 export function resetRuntimeProductCodesForTests(): void {
   RUNTIME_BY_CODE.clear();
-  hasAuthoritativeRuntimeSnapshot = false;
+  runtimeDictionaryState = "legacy";
 }
 
 export type ProductCodeResolution =

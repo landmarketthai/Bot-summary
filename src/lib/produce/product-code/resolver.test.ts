@@ -85,6 +85,26 @@ describe("runtime product-code resolver", () => {
     expect(resolveProductCode(STATIC_CODE)).toBeNull();
   });
 
+  it("does not use a static code after a cold failed read", async () => {
+    const failedClient = {
+      from: () => ({
+        select() { return this; },
+        limit: async () => ({ data: null, error: { message: "read failed" } }),
+      }),
+    };
+    await preloadRuntimeProductCodes(failedClient as never);
+
+    expect(resolveProductCode(STATIC_CODE)).toBeNull();
+    expect(resolveItemLineProductCode(`${STATIC_CODE} 10`).kind).toBe("unknown");
+  });
+
+  it("does not use a static code after a cold preload throw", async () => {
+    await preloadRuntimeProductCodes({ from: () => { throw new Error("read failed"); } });
+
+    expect(resolveProductCode(STATIC_CODE)).toBeNull();
+    expect(resolveItemLineProductCode(`${STATIC_CODE} 10`).kind).toBe("unknown");
+  });
+
   it("clears the previous overlay when refresh throws", async () => {
     await preloadRuntimeProductCodes(client([row(PROMOTED_CODE, true)]) as never);
     await preloadRuntimeProductCodes({ from: () => { throw new Error("read failed"); } });
@@ -96,6 +116,8 @@ describe("runtime product-code resolver", () => {
       row(`\u0e21${String(index).padStart(4, "0")}`, true));
     await preloadRuntimeProductCodes(client(rows) as never);
 
+    expect(resolveProductCode(STATIC_CODE)).toBeNull();
+    expect(resolveItemLineProductCode(`${STATIC_CODE} 10`).kind).toBe("unknown");
     expect(resolveProductCode("\u0e21\u0030\u0030\u0030\u0030")).toBeNull();
     expect(resolveItemLineProductCode("\u0e21\u0039\u0039\u0039 10").kind).toBe("unknown");
   });
