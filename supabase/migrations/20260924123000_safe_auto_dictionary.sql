@@ -196,6 +196,8 @@ BEGIN
       'candidate_id',v_candidate.id,'distinct_sessions',v_sessions,'distinct_days',v_days);
   END IF;
 
+  -- ponytail: one global lock is required by the cross-category scan; shard only if promotion throughput needs it.
+  PERFORM pg_advisory_xact_lock(hashtext('produce-product-code:global-promotion'));
   PERFORM pg_advisory_xact_lock(hashtext('produce-product-code:' || p_category_code));
   SELECT product_code INTO v_existing_code
   FROM public.produce_product_codes

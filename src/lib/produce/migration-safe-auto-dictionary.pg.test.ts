@@ -77,11 +77,18 @@ describe.skipIf(!pgAvailable)("safe auto-dictionary migration", () => {
     if (databaseCreated) await psql(["-d", "postgres", "-c", `DROP DATABASE IF EXISTS ${DATABASE} WITH (FORCE)`], "postgres");
   });
 
-  async function observe(session: string, generation = randomBytes(16).toString("hex"), date = "2026-09-24", candidateName = name) {
+  async function observe(
+    session: string,
+    generation = randomBytes(16).toString("hex"),
+    date = "2026-09-24",
+    candidateName = name,
+    candidateCategory = category,
+    candidateCategoryName = categoryName,
+  ) {
     const uuid = `${generation.slice(0, 8)}-${generation.slice(8, 12)}-${generation.slice(12, 16)}-${generation.slice(16, 20)}-${generation.slice(20, 32)}`;
     return scalar(`SELECT public.observe_produce_dictionary_candidate(
       ${quote(candidateName)}, ${quote(candidateName)}, ${quote(session)}, ${quote(uuid)}::uuid,
-      DATE ${quote(date)}, ${quote(category)}, ${quote(categoryName)}, NULL
+      DATE ${quote(date)}, ${quote(candidateCategory)}, ${quote(candidateCategoryName)}, NULL
     )::text`);
   }
 
@@ -100,7 +107,7 @@ describe.skipIf(!pgAvailable)("safe auto-dictionary migration", () => {
     expect(await scalar("SELECT count(*)::text FROM public.produce_dictionary_decisions WHERE decision = 'NEW_PRODUCT'")).toBe("1");
   });
 
-  test("serializes concurrent observations and code allocation under the category advisory lock", async () => {
+  test("serializes concurrent observations and code allocation under the promotion advisory lock", async () => {
     const promoted = await Promise.all([["a", "concurrent-watermelon"], ["b", "concurrent-pomegranate"]].map(([suffix, candidateName]) => Promise.all([
       observe(`lock-${suffix}-1`, randomBytes(16).toString("hex"), "2026-09-24", candidateName),
       observe(`lock-${suffix}-2`, randomBytes(16).toString("hex"), "2026-09-24", candidateName),
@@ -111,7 +118,7 @@ describe.skipIf(!pgAvailable)("safe auto-dictionary migration", () => {
     expect(await scalar(`SELECT count(DISTINCT product_code)::text FROM public.produce_dictionary_decisions WHERE decision = 'NEW_PRODUCT'`)).toBe("3");
   });
 
-  test("rechecks near-duplicate enabled names under the category lock before promotion", async () => {
+  test("rechecks same-category near-duplicate enabled names before promotion", async () => {
     const first = "Concurrent near duplicate green apple";
     const second = "Concurrent near duplicate green apples";
     for (const candidateName of [first, second]) {
@@ -129,6 +136,87 @@ describe.skipIf(!pgAvailable)("safe auto-dictionary migration", () => {
     expect(await scalar(`SELECT count(*)::text FROM public.produce_dictionary_decisions d JOIN public.produce_dictionary_candidates c ON c.id = d.candidate_id WHERE c.normalized_name IN (${quote(first)}, ${quote(second)}) AND d.decision = 'NEEDS_REVIEW' AND d.reason = 'similar_enabled_product'`)).toBe("1");
   });
 
+  test("serializes cross-category near-duplicate promotions", async () => {
+    const token = randomBytes(4).toString("hex");
+    const stem = `cross-category near duplicate ${token}`;
+    const first = `${stem} plum`;
+    const second = `${stem} plums`;
+    const secondCategory = "ผ";
+    const gateKey = randomBytes(4).readUInt32BE(0) % 2_000_000_000 + 1;
+    const gateTrigger = "safe_auto_dictionary_test_insert_gate";
+    const gateFunction = "safe_auto_dictionary_test_insert_gate";
+
+    for (const [candidateName, candidateCategory, candidateCategoryName] of [
+      [first, category, categoryName],
+      [second, secondCategory, "Other category"],
+    ]) {
+      await observe(`${candidateName}-1`, randomBytes(16).toString("hex"), "2026-09-24", candidateName, candidateCategory, candidateCategoryName);
+      await observe(`${candidateName}-2`, randomBytes(16).toString("hex"), "2026-09-24", candidateName, candidateCategory, candidateCategoryName);
+    }
+
+    const triggerSetup = await run(`
+      CREATE FUNCTION public.${gateFunction}() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.canonical_name LIKE ${quote(`${stem}%`)} THEN
+          PERFORM pg_advisory_xact_lock(${gateKey});
+        END IF;
+        RETURN NEW;
+      END;
+      $$;
+      CREATE TRIGGER ${gateTrigger} BEFORE INSERT ON public.produce_product_codes
+      FOR EACH ROW EXECUTE FUNCTION public.${gateFunction}();
+    `);
+    expect(triggerSetup.code, triggerSetup.stderr || triggerSetup.stdout).toBe(0);
+
+    const holder = Bun.spawn([PSQL, "-X", "-c", `SELECT pg_advisory_lock(${gateKey}); SELECT pg_sleep(60)`], {
+      cwd: ROOT,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, PGHOST, PGUSER, PGPASSWORD, PGPORT, PGDATABASE: DATABASE, PGCLIENTENCODING: "UTF8" },
+    });
+    let race: Promise<string[]> | undefined;
+    let waitError: unknown;
+
+    try {
+      await waitUntil(async () => await scalar(`
+        SELECT count(*)::text FROM pg_locks
+        WHERE locktype = 'advisory' AND classid = 0 AND objid = ${gateKey}::oid
+          AND objsubid = 1 AND granted
+      `) === "1", "test insert gate");
+      race = Promise.all([
+        observe("cross-category-final-1", randomBytes(16).toString("hex"), "2026-09-25", first, category, categoryName),
+        observe("cross-category-final-2", randomBytes(16).toString("hex"), "2026-09-25", second, secondCategory, "Other category"),
+      ]);
+      try {
+        await waitUntil(async () => await scalar(`
+          SELECT count(DISTINCT pid)::text FROM pg_locks
+          WHERE locktype = 'advisory' AND NOT granted
+        `) === "2", "both promotions to reach the serialized critical section");
+      } catch (error) {
+        waitError = error;
+      }
+    } finally {
+      await run(`
+        SELECT pg_terminate_backend(pid)
+        FROM pg_locks
+        WHERE locktype = 'advisory' AND classid = 0 AND objid = ${gateKey}::oid
+        AND objsubid = 1 AND granted AND pid <> pg_backend_pid()
+      `);
+      holder.kill();
+      await Promise.all([new Response(holder.stdout).text(), new Response(holder.stderr).text(), holder.exited]);
+    }
+
+    if (!race) throw new Error("cross-category promotion race did not start");
+    const results = (await race).map((value) => JSON.parse(value));
+    if (waitError) throw waitError;
+    expect(results.map((result) => result.status).sort()).toEqual(["needs_review", "promoted"]);
+    expect(await scalar(`SELECT count(*)::text FROM public.produce_product_codes WHERE canonical_name IN (${quote(first)}, ${quote(second)})`)).toBe("1");
+    expect(await scalar(`SELECT count(*)::text FROM public.produce_dictionary_candidates WHERE normalized_name IN (${quote(first)}, ${quote(second)}) AND state = 'needs_review'`)).toBe("1");
+    expect(await scalar(`SELECT count(*)::text FROM public.produce_dictionary_decisions d JOIN public.produce_dictionary_candidates c ON c.id = d.candidate_id WHERE c.normalized_name IN (${quote(first)}, ${quote(second)}) AND d.decision = 'NEEDS_REVIEW' AND d.reason = 'similar_enabled_product'`)).toBe("1");
+    await run(`DROP TRIGGER ${gateTrigger} ON public.produce_product_codes; DROP FUNCTION public.${gateFunction}();`);
+  });
+
   test("keeps product identity immutable and locks down the surface", async () => {
     const code = await scalar(`SELECT product_code FROM public.produce_product_codes WHERE canonical_name = ${quote(name)}`);
     const changed = await run(`UPDATE public.produce_product_codes SET canonical_name = 'changed' WHERE product_code = ${quote(code)}`);
@@ -144,4 +232,13 @@ describe.skipIf(!pgAvailable)("safe auto-dictionary migration", () => {
 
 function quote(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
+}
+
+async function waitUntil(check: () => Promise<boolean>, description: string): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    if (await check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`timed out waiting for ${description}`);
 }
