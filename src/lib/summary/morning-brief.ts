@@ -1,6 +1,7 @@
 import { isSoldOutByAbsentReturn, type SalesReport } from "@/lib/sales/calculate";
 import type { SalesValueStatus } from "@/lib/sales/calculate";
 import { PRODUCT_CODE_ENTRIES } from "@/lib/produce/product-code/dictionary";
+import { runtimeProductCodeEntryForName } from "@/lib/produce/product-code/resolver";
 import { canonicalProduceProductIdentity } from "@/lib/produce/product-vocabulary";
 import type {
   PurchasePlanningReport,
@@ -44,7 +45,9 @@ export function morningBriefProductIdentity(productName: string, unit: string): 
   const canonical = canonicalProduceProductIdentity(productName, unit);
   return {
     productName: canonical,
-    category: CATEGORY_BY_PRODUCT.get(canonical) ?? stockCategoryFor(canonical),
+    category: runtimeProductCodeEntryForName(canonical)?.category
+      ?? CATEGORY_BY_PRODUCT.get(canonical)
+      ?? stockCategoryFor(canonical),
   };
 }
 
