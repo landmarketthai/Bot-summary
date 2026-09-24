@@ -1564,6 +1564,7 @@ export class WebhookService {
             incomingHeader,
             markClose,
             reconciledCount: opened.reconciled_count ?? 0,
+            carriedForwardCount: opened.carried_forward_count ?? 0,
           });
         } catch (replaceError) {
           const errorMessage = replaceError instanceof Error
@@ -2088,6 +2089,7 @@ export class WebhookService {
           openerEventId: eventId,
           openerTimestampMs: event.timestamp,
           reconciledCount: opened.reconciled_count ?? 0,
+          carriedForwardCount: opened.carried_forward_count ?? 0,
         });
       } catch (createErr) {
         const msg = createErr instanceof Error ? createErr.message : String(createErr);
@@ -2754,6 +2756,7 @@ export class WebhookService {
         markClose,
         expectedItemCount,
         reconciledCount: opened.reconciled_count ?? 0,
+        carriedForwardCount: opened.carried_forward_count ?? 0,
       });
 
       if (markClose && replyToken) {
