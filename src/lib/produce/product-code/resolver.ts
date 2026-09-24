@@ -52,9 +52,24 @@ const BY_CODE: ReadonlyMap<string, ProductCodeEntry> = new Map(
   PRODUCT_CODE_ENTRIES.map((entry) => [entry.code, entry]),
 );
 
-const RUNTIME_BY_CODE = new Map<string, ProductCodeEntry>();
 const RUNTIME_PRODUCT_CODE_LIMIT = 5000;
-let runtimeDictionaryState: "legacy" | "available" | "unavailable" = "legacy";
+type RuntimeDictionaryState = "legacy" | "available" | "unavailable";
+
+interface RuntimeDictionarySnapshot {
+  entries: ReadonlyMap<string, ProductCodeEntry>;
+  state: RuntimeDictionaryState;
+}
+
+const LEGACY_RUNTIME_DICTIONARY: RuntimeDictionarySnapshot = {
+  entries: new Map(),
+  state: "legacy",
+};
+const UNAVAILABLE_RUNTIME_DICTIONARY: RuntimeDictionarySnapshot = {
+  entries: new Map(),
+  state: "unavailable",
+};
+let runtimeDictionarySnapshot = LEGACY_RUNTIME_DICTIONARY;
+let runtimeDictionaryPreloadGeneration = 0;
 
 interface RuntimeDictionaryClient {
   from(table: string): {
@@ -69,14 +84,15 @@ interface RuntimeDictionaryQuery {
 
 /** Refresh the bounded DB overlay used by the synchronous parser and reports. */
 export async function preloadRuntimeProductCodes(supabase: RuntimeDictionaryClient): Promise<void> {
-  runtimeDictionaryState = "unavailable";
-  RUNTIME_BY_CODE.clear();
+  const generation = ++runtimeDictionaryPreloadGeneration;
   try {
     const query = supabase.from("produce_product_codes").select(
       "product_code,category_code,category_name,canonical_name,code_enabled",
     ) as RuntimeDictionaryQuery;
     const response = await query.limit(RUNTIME_PRODUCT_CODE_LIMIT);
+    if (generation !== runtimeDictionaryPreloadGeneration) return;
     if (response.error || !Array.isArray(response.data) || response.data.length >= RUNTIME_PRODUCT_CODE_LIMIT) {
+      runtimeDictionarySnapshot = UNAVAILABLE_RUNTIME_DICTIONARY;
       return;
     }
 
@@ -99,6 +115,7 @@ export async function preloadRuntimeProductCodes(supabase: RuntimeDictionaryClie
         || !row.canonical_name.trim()
         || next.has(row.product_code)
       ) {
+        runtimeDictionarySnapshot = UNAVAILABLE_RUNTIME_DICTIONARY;
         return;
       }
       next.set(row.product_code, {
@@ -109,23 +126,24 @@ export async function preloadRuntimeProductCodes(supabase: RuntimeDictionaryClie
         enabled: row.code_enabled,
       });
     }
-    RUNTIME_BY_CODE.clear();
-    for (const [code, entry] of next) RUNTIME_BY_CODE.set(code, entry);
-    runtimeDictionaryState = "available";
+    runtimeDictionarySnapshot = { entries: next, state: "available" };
   } catch {
-    RUNTIME_BY_CODE.clear();
+    if (generation === runtimeDictionaryPreloadGeneration) {
+      runtimeDictionarySnapshot = UNAVAILABLE_RUNTIME_DICTIONARY;
+    }
   }
 }
 
 /** Runtime entry, or the generated entry when no DB overlay exists. */
 export function productCodeEntryFor(code: string): ProductCodeEntry | null {
-  return RUNTIME_BY_CODE.get(code)
-    ?? (runtimeDictionaryState === "legacy" ? BY_CODE.get(code) ?? null : null);
+  const snapshot = runtimeDictionarySnapshot;
+  return snapshot.entries.get(code)
+    ?? (snapshot.state === "legacy" ? BY_CODE.get(code) ?? null : null);
 }
 
 export function runtimeProductCodeEntryForName(productName: string): ProductCodeEntry | null {
   const key = productName.normalize("NFC").trim();
-  for (const entry of RUNTIME_BY_CODE.values()) {
+  for (const entry of runtimeDictionarySnapshot.entries.values()) {
     if (entry.enabled && entry.canonicalName.normalize("NFC").trim() === key) return entry;
   }
   return null;
@@ -133,8 +151,8 @@ export function runtimeProductCodeEntryForName(productName: string): ProductCode
 
 /** Reset process-global resolver state between isolated tests. */
 export function resetRuntimeProductCodesForTests(): void {
-  RUNTIME_BY_CODE.clear();
-  runtimeDictionaryState = "legacy";
+  runtimeDictionaryPreloadGeneration += 1;
+  runtimeDictionarySnapshot = LEGACY_RUNTIME_DICTIONARY;
 }
 
 export type ProductCodeResolution =

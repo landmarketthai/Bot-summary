@@ -12,6 +12,8 @@ import {
 
 const STATIC_CODE = "\u0e21\u0030\u0032";
 const PROMOTED_CODE = "\u0e21\u0039\u0038";
+const STALE_CODE = "\u0e21\u0039\u0036";
+const LATEST_CODE = "\u0e21\u0039\u0037";
 
 function client(rows: unknown[]) {
   return {
@@ -23,6 +25,24 @@ function client(rows: unknown[]) {
         limit: async () => ({ data: rows, error: null }),
       };
     },
+  };
+}
+
+function deferredClient() {
+  type Response = { data: unknown[] | null; error: { message: string } | null };
+  let complete!: (response: Response) => void;
+  const response = new Promise<Response>((resolve) => { complete = resolve; });
+  return {
+    client: {
+      from(table: string) {
+        expect(table).toBe("produce_product_codes");
+        return {
+          select() { return this; },
+          limit: () => response,
+        };
+      },
+    },
+    complete,
   };
 }
 
@@ -112,11 +132,44 @@ describe("runtime product-code resolver", () => {
     expect(resolveProductCode(PROMOTED_CODE)).toBeNull();
   });
 
+  it("keeps the current snapshot while overlapping preloads are pending", async () => {
+    await preloadRuntimeProductCodes(client([row(PROMOTED_CODE, true)]) as never);
+    const older = deferredClient();
+    const newer = deferredClient();
+    const olderPreload = preloadRuntimeProductCodes(older.client as never);
+    const newerPreload = preloadRuntimeProductCodes(newer.client as never);
+
+    expect(resolveProductCode(PROMOTED_CODE)).toBe(`product ${PROMOTED_CODE}`);
+    older.complete({ data: [row(STALE_CODE, true)], error: null });
+    await olderPreload;
+    expect(resolveProductCode(PROMOTED_CODE)).toBe(`product ${PROMOTED_CODE}`);
+    expect(resolveProductCode(STALE_CODE)).toBeNull();
+
+    newer.complete({ data: [row(LATEST_CODE, true)], error: null });
+    await newerPreload;
+    expect(resolveProductCode(LATEST_CODE)).toBe(`product ${LATEST_CODE}`);
+    expect(resolveProductCode(PROMOTED_CODE)).toBeNull();
+  });
+
+  it("does not let an older preload overwrite a newer successful snapshot", async () => {
+    const older = deferredClient();
+    const olderPreload = preloadRuntimeProductCodes(older.client as never);
+    await preloadRuntimeProductCodes(client([row(LATEST_CODE, true)]) as never);
+
+    older.complete({ data: [row(STALE_CODE, true)], error: null });
+    await olderPreload;
+
+    expect(resolveProductCode(LATEST_CODE)).toBe(`product ${LATEST_CODE}`);
+    expect(resolveProductCode(STALE_CODE)).toBeNull();
+  });
+
   it("fails closed for an exactly-at-limit snapshot", async () => {
+    await preloadRuntimeProductCodes(client([row(PROMOTED_CODE, true)]) as never);
     const rows = Array.from({ length: 5000 }, (_, index) =>
       row(`\u0e21${String(index).padStart(4, "0")}`, true));
     await preloadRuntimeProductCodes(client(rows) as never);
 
+    expect(resolveProductCode(PROMOTED_CODE)).toBeNull();
     expect(resolveProductCode(STATIC_CODE)).toBeNull();
     expect(resolveItemLineProductCode(`${STATIC_CODE} 10`).kind).toBe("unknown");
     expect(resolveProductCode("\u0e21\u0030\u0030\u0030\u0030")).toBeNull();
