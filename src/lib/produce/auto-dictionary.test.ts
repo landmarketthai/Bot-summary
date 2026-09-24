@@ -37,6 +37,8 @@ describe("safe auto dictionary category inference", () => {
     ["ใบชะพลู", "ผ"],
     ["ใบมะกรูด", "ผ"],
     ["ใบกะเพรา", "ผ"],
+    ["ทุเรียนเทศ", "ม"],
+    ["ทุเรียนเทศขนาดใหญ่", "ม"],
     ["ทุเรียนพันธุ์ใหม่", "ท"],
     ["ปลาหวานสูตรใหม่", "ป"],
     ["เห็ดทดลอง", "ห"],
@@ -95,6 +97,34 @@ describe("safe auto dictionary category inference", () => {
     expect(observations.map((observation) => observation.status)).toEqual(names.map(() => "needs_review"));
     expect(rpcArgs.map((args) => args.p_category_code)).toEqual(names.map(() => null));
     expect(rpcArgs.map((args) => args.p_category_name)).toEqual(names.map(() => null));
+  });
+
+  it("sends soursop variants to observation as fruit", async () => {
+    const rpcArgs: Array<Record<string, unknown>> = [];
+    const client = {
+      from() {
+        return {
+          select() { return this; },
+          eq() { return this; },
+          async limit() { return { data: [], error: null }; },
+        };
+      },
+      async rpc(_name: string, args: Record<string, unknown>) {
+        rpcArgs.push(args);
+        return { data: { status: "observing" }, error: null };
+      },
+    };
+
+    await observeAutoDictionaryReviews(client as never, {
+      sessionKey: "produce:test",
+      sessionGeneration: "11111111-1111-1111-1111-111111111111",
+      businessDate: "2026-09-24",
+    }, [unknown("ทุเรียนเทศขนาดใหญ่")]);
+
+    expect(rpcArgs).toEqual([expect.objectContaining({
+      p_category_code: "ม",
+      p_category_name: "ผลไม้",
+    })]);
   });
 });
 

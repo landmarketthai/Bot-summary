@@ -44,6 +44,7 @@ const DRY_PREFIXES = ["ปลา", "กะปิ", "กุ้งแห้ง", "
 export function inferAutoDictionaryCategory(rawName: string): CategoryHint | null {
   const name = rawName.normalize("NFC").replace(/\s+/g, " ").trim();
   if (!name) return null;
+  if (name.startsWith("ทุเรียนเทศ")) return { code: "ม", name: "ผลไม้" };
   if (name.startsWith("ทุเรียน") || name.startsWith("หมอนทอง") || name.startsWith("ก้านยาว")) {
     return { code: "ท", name: "ทุเรียน" };
   }
