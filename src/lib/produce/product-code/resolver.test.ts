@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { parseWeighSession } from "@/lib/parsers/weigh-session/parser";
 import { validateProduceEntry } from "@/lib/produce/entry-validation";
 import { loadRuntimeApprovedProductNames } from "@/lib/produce/auto-dictionary";
@@ -37,6 +37,7 @@ function row(productCode: string, codeEnabled: boolean) {
 }
 
 describe("runtime product-code resolver", () => {
+  beforeEach(() => resetRuntimeProductCodesForTests());
   afterEach(() => resetRuntimeProductCodesForTests());
 
   it("keeps static legacy behavior before preload", () => {
