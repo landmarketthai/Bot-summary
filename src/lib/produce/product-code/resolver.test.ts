@@ -1,13 +1,17 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { parseWeighSession } from "@/lib/parsers/weigh-session/parser";
 import { validateProduceEntry } from "@/lib/produce/entry-validation";
 import { loadRuntimeApprovedProductNames } from "@/lib/produce/auto-dictionary";
 import { dictionaryCategoryFor } from "./category";
 import {
   preloadRuntimeProductCodes,
+  resetRuntimeProductCodesForTests,
   resolveItemLineProductCode,
   resolveProductCode,
 } from "./resolver";
+
+const STATIC_CODE = "\u0e21\u0030\u0032";
+const PROMOTED_CODE = "\u0e21\u0039\u0038";
 
 function client(rows: unknown[]) {
   return {
@@ -22,22 +26,39 @@ function client(rows: unknown[]) {
   };
 }
 
-describe("runtime product-code overlay", () => {
+function row(productCode: string, codeEnabled: boolean) {
+  return {
+    product_code: productCode,
+    category_code: "cat",
+    category_name: "category",
+    canonical_name: `product ${productCode}`,
+    code_enabled: codeEnabled,
+  };
+}
+
+describe("runtime product-code resolver", () => {
+  afterEach(() => resetRuntimeProductCodesForTests());
+
+  it("keeps static legacy behavior before preload", () => {
+    expect(resolveProductCode(STATIC_CODE)).not.toBeNull();
+  });
+
   it("resolves an auto-added code through ingest parsing and validation", async () => {
+    const canonicalName = "\u0e21\u0e30\u0e01\u0e2d\u0e01\u0e43\u0e2b\u0e21\u0e48";
     await preloadRuntimeProductCodes(client([{
-      product_code: "ม98",
-      category_code: "ม",
-      category_name: "ผลไม้",
-      canonical_name: "มะกอกใหม่",
+      product_code: PROMOTED_CODE,
+      category_code: "\u0e21",
+      category_name: "\u0e1c\u0e25\u0e44\u0e21\u0e49",
+      canonical_name: canonicalName,
       code_enabled: true,
     }]) as never);
 
-    const parsed = parseWeighSession("1.ม98 10บาท\n1โล");
-    expect(parsed.parse_errors).not.toContain("unknown product code ม98");
-    expect(parsed.items[0]?.product_name).toBe("มะกอกใหม่");
+    const parsed = parseWeighSession(`1.${PROMOTED_CODE} 10\u0e1a\u0e32\u0e17\n1\u0e42\u0e25`);
+    expect(parsed.parse_errors).not.toContain(`unknown product code ${PROMOTED_CODE}`);
+    expect(parsed.items[0]?.product_name).toBe(canonicalName);
 
     const runtimeApprovedProductNames = await loadRuntimeApprovedProductNames(client([{
-      canonical_name: "มะกอกใหม่",
+      canonical_name: canonicalName,
     }]) as never);
     const result = validateProduceEntry({
       parsed,
@@ -51,12 +72,31 @@ describe("runtime product-code overlay", () => {
       },
     });
     expect(result.reviews.some((review) => review.kind === "unknown_product_vocabulary")).toBe(false);
-    expect(dictionaryCategoryFor("มะกอกใหม่")).toBe("ม");
+    expect(dictionaryCategoryFor(canonicalName)).toBe("\u0e21");
   });
 
-  it("keeps static codes and fail-closed unknown codes unchanged", async () => {
-    await preloadRuntimeProductCodes(client([]) as never);
-    expect(resolveProductCode("ม02")).toBe("กล้วยน้ำว้า");
-    expect(resolveItemLineProductCode("ม999 10บาท").kind).toBe("unknown");
+  it("resolves a successful promoted code", async () => {
+    await preloadRuntimeProductCodes(client([row(PROMOTED_CODE, true)]) as never);
+    expect(resolveProductCode(PROMOTED_CODE)).toBe(`product ${PROMOTED_CODE}`);
+  });
+
+  it("lets a successful DB snapshot disable a static code", async () => {
+    await preloadRuntimeProductCodes(client([row(STATIC_CODE, false)]) as never);
+    expect(resolveProductCode(STATIC_CODE)).toBeNull();
+  });
+
+  it("clears the previous overlay when refresh throws", async () => {
+    await preloadRuntimeProductCodes(client([row(PROMOTED_CODE, true)]) as never);
+    await preloadRuntimeProductCodes({ from: () => { throw new Error("read failed"); } });
+    expect(resolveProductCode(PROMOTED_CODE)).toBeNull();
+  });
+
+  it("fails closed for an exactly-at-limit snapshot", async () => {
+    const rows = Array.from({ length: 5000 }, (_, index) =>
+      row(`\u0e21${String(index).padStart(4, "0")}`, true));
+    await preloadRuntimeProductCodes(client(rows) as never);
+
+    expect(resolveProductCode("\u0e21\u0030\u0030\u0030\u0030")).toBeNull();
+    expect(resolveItemLineProductCode("\u0e21\u0039\u0039\u0039 10").kind).toBe("unknown");
   });
 });

@@ -54,6 +54,7 @@ const BY_CODE: ReadonlyMap<string, ProductCodeEntry> = new Map(
 
 const RUNTIME_BY_CODE = new Map<string, ProductCodeEntry>();
 const RUNTIME_PRODUCT_CODE_LIMIT = 5000;
+let hasAuthoritativeRuntimeSnapshot = false;
 
 interface RuntimeDictionaryClient {
   from(table: string): {
@@ -72,8 +73,11 @@ export async function preloadRuntimeProductCodes(supabase: RuntimeDictionaryClie
     const query = supabase.from("produce_product_codes").select(
       "product_code,category_code,category_name,canonical_name,code_enabled",
     ) as RuntimeDictionaryQuery;
-    const response = await query.eq("code_enabled", true).limit(RUNTIME_PRODUCT_CODE_LIMIT);
-    if (response.error) return;
+    const response = await query.limit(RUNTIME_PRODUCT_CODE_LIMIT);
+    if (response.error || !Array.isArray(response.data) || response.data.length >= RUNTIME_PRODUCT_CODE_LIMIT) {
+      RUNTIME_BY_CODE.clear();
+      return;
+    }
 
     const next = new Map<string, ProductCodeEntry>();
     for (const raw of response.data ?? []) {
@@ -89,36 +93,49 @@ export async function preloadRuntimeProductCodes(supabase: RuntimeDictionaryClie
         || typeof row.category_code !== "string"
         || typeof row.category_name !== "string"
         || typeof row.canonical_name !== "string"
-        || row.code_enabled !== true
+        || typeof row.code_enabled !== "boolean"
         || !PRODUCT_CODE_TOKEN.test(row.product_code)
         || !row.canonical_name.trim()
-      ) continue;
+        || next.has(row.product_code)
+      ) {
+        RUNTIME_BY_CODE.clear();
+        return;
+      }
       next.set(row.product_code, {
         code: row.product_code,
         categoryCode: row.category_code,
         category: row.category_name,
         canonicalName: row.canonical_name.normalize("NFC").replace(/\s+/g, " ").trim(),
-        enabled: true,
+        enabled: row.code_enabled,
       });
     }
     RUNTIME_BY_CODE.clear();
     for (const [code, entry] of next) RUNTIME_BY_CODE.set(code, entry);
+    hasAuthoritativeRuntimeSnapshot = true;
   } catch {
-    // The static dictionary remains authoritative if the optional refresh fails.
+    RUNTIME_BY_CODE.clear();
   }
 }
 
 /** Runtime entry, or the generated entry when no DB overlay exists. */
 export function productCodeEntryFor(code: string): ProductCodeEntry | null {
-  return RUNTIME_BY_CODE.get(code) ?? BY_CODE.get(code) ?? null;
+  return hasAuthoritativeRuntimeSnapshot
+    ? RUNTIME_BY_CODE.get(code) ?? null
+    : RUNTIME_BY_CODE.get(code) ?? BY_CODE.get(code) ?? null;
 }
 
 export function runtimeProductCodeEntryForName(productName: string): ProductCodeEntry | null {
   const key = productName.normalize("NFC").trim();
   for (const entry of RUNTIME_BY_CODE.values()) {
-    if (entry.canonicalName.normalize("NFC").trim() === key) return entry;
+    if (entry.enabled && entry.canonicalName.normalize("NFC").trim() === key) return entry;
   }
   return null;
+}
+
+/** Reset process-global resolver state between isolated tests. */
+export function resetRuntimeProductCodesForTests(): void {
+  RUNTIME_BY_CODE.clear();
+  hasAuthoritativeRuntimeSnapshot = false;
 }
 
 export type ProductCodeResolution =
