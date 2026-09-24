@@ -60,6 +60,7 @@ import type {
   ProduceValidationResult,
 } from "@/lib/produce/entry-validation";
 import { getRuntimeEnvironment } from "@/lib/runtime-environment";
+import { preloadRuntimeProductCodes } from "@/lib/produce/product-code/resolver";
 
 type Supabase = SupabaseClient<Database>;
 type PushMessage = (to: string, text: string) => Promise<unknown>;
@@ -438,6 +439,7 @@ export async function finalizePendingGeneration(
   if (!ownsSnapshotEnvironment(snapshot)) {
     return { status: "skipped", reason: "wrong_environment" };
   }
+  await preloadRuntimeProductCodes(supabase);
   const finalizationStartedAt = new Date().toISOString();
   // The authoritative ingest identity, derived in one place (0036).
   const correlationId =

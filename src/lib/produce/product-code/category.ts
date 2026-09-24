@@ -12,6 +12,7 @@
  */
 
 import { PRODUCT_CODE_ENTRIES, type ProductCodeEntry } from "./dictionary";
+import { runtimeProductCodeEntryForName } from "./resolver";
 
 export const UNCATEGORIZED_CATEGORY_ID = "uncategorized" as const;
 
@@ -85,7 +86,7 @@ const BY_CANONICAL_NAME = buildCanonicalMap();
 export function dictionaryEntryFor(productName: string): ProductCodeEntry | null {
   const key = productName.normalize("NFC").trim();
   if (!key) return null;
-  return BY_CANONICAL_NAME.get(key) ?? null;
+  return BY_CANONICAL_NAME.get(key) ?? runtimeProductCodeEntryForName(key);
 }
 
 /**

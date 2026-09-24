@@ -52,6 +52,75 @@ const BY_CODE: ReadonlyMap<string, ProductCodeEntry> = new Map(
   PRODUCT_CODE_ENTRIES.map((entry) => [entry.code, entry]),
 );
 
+const RUNTIME_BY_CODE = new Map<string, ProductCodeEntry>();
+const RUNTIME_PRODUCT_CODE_LIMIT = 5000;
+
+interface RuntimeDictionaryClient {
+  from(table: string): {
+    select(columns: string): unknown;
+  };
+}
+
+interface RuntimeDictionaryQuery {
+  eq(column: string, value: unknown): RuntimeDictionaryQuery;
+  limit(count: number): Promise<{ data: unknown[] | null; error: { message: string } | null }>;
+}
+
+/** Refresh the bounded DB overlay used by the synchronous parser and reports. */
+export async function preloadRuntimeProductCodes(supabase: RuntimeDictionaryClient): Promise<void> {
+  try {
+    const query = supabase.from("produce_product_codes").select(
+      "product_code,category_code,category_name,canonical_name,code_enabled",
+    ) as RuntimeDictionaryQuery;
+    const response = await query.eq("code_enabled", true).limit(RUNTIME_PRODUCT_CODE_LIMIT);
+    if (response.error) return;
+
+    const next = new Map<string, ProductCodeEntry>();
+    for (const raw of response.data ?? []) {
+      const row = raw as {
+        product_code?: unknown;
+        category_code?: unknown;
+        category_name?: unknown;
+        canonical_name?: unknown;
+        code_enabled?: unknown;
+      };
+      if (
+        typeof row.product_code !== "string"
+        || typeof row.category_code !== "string"
+        || typeof row.category_name !== "string"
+        || typeof row.canonical_name !== "string"
+        || row.code_enabled !== true
+        || !PRODUCT_CODE_TOKEN.test(row.product_code)
+        || !row.canonical_name.trim()
+      ) continue;
+      next.set(row.product_code, {
+        code: row.product_code,
+        categoryCode: row.category_code,
+        category: row.category_name,
+        canonicalName: row.canonical_name.normalize("NFC").replace(/\s+/g, " ").trim(),
+        enabled: true,
+      });
+    }
+    RUNTIME_BY_CODE.clear();
+    for (const [code, entry] of next) RUNTIME_BY_CODE.set(code, entry);
+  } catch {
+    // The static dictionary remains authoritative if the optional refresh fails.
+  }
+}
+
+/** Runtime entry, or the generated entry when no DB overlay exists. */
+export function productCodeEntryFor(code: string): ProductCodeEntry | null {
+  return RUNTIME_BY_CODE.get(code) ?? BY_CODE.get(code) ?? null;
+}
+
+export function runtimeProductCodeEntryForName(productName: string): ProductCodeEntry | null {
+  const key = productName.normalize("NFC").trim();
+  for (const entry of RUNTIME_BY_CODE.values()) {
+    if (entry.canonicalName.normalize("NFC").trim() === key) return entry;
+  }
+  return null;
+}
+
 export type ProductCodeResolution =
   /** No code-shaped token here — the line is an ordinary product line. */
   | { kind: "none"; content: string }
@@ -62,7 +131,7 @@ export type ProductCodeResolution =
 
 /** The canonical product a code identifies, or null if it does not resolve. */
 export function resolveProductCode(code: string): string | null {
-  const entry = BY_CODE.get(code);
+  const entry = productCodeEntryFor(code);
   return entry && entry.enabled ? entry.canonicalName : null;
 }
 

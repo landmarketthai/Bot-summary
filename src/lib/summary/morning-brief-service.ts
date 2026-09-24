@@ -9,6 +9,7 @@ import { quantityTimesSatang, toMilliQuantity } from "@/lib/sales/calculate";
 import { loadSalesReport } from "@/lib/sales/load";
 import { fetchReconciliationReport } from "@/lib/reconciliation-report-service";
 import { loadPurchasePlanningReport } from "@/lib/summary/purchase-planning-service";
+import { preloadRuntimeProductCodes } from "@/lib/produce/product-code/resolver";
 import {
   morningBriefProductIdentity,
   summarizePurchasePlanning,
@@ -165,6 +166,7 @@ export async function loadMorningBriefReport(
   supabase: Supabase,
   businessDate: string,
 ): Promise<MorningBriefReport> {
+  await preloadRuntimeProductCodes(supabase);
   const [purchasePlanning, sales, houseStock, reconciliation] = await Promise.all([
     loadPurchasePlanningReport(supabase, businessDate),
     loadSalesReport(supabase, businessDate),
