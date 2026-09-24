@@ -20,6 +20,18 @@ describe("safe auto dictionary category inference", () => {
     ["มะกอก", "ม"],
     ["องุ่นสายพันธุ์ใหม่", "ม"],
     ["แตงกวาเล็กพิเศษ", "ผ"],
+    ["ต้นหอม", "ผ"],
+    ["ดอกแค", "ผ"],
+    ["ดอกขจร", "ผ"],
+    ["ยอดมะพร้าว", "ผ"],
+    ["ยอดฟักแม้ว", "ผ"],
+    ["หอมแดง", "ผ"],
+    ["หอมหัวใหญ่", "ผ"],
+    ["หอมใหญ่", "ผ"],
+    ["ใบเตย", "ผ"],
+    ["ใบชะพลู", "ผ"],
+    ["ใบมะกรูด", "ผ"],
+    ["ใบกะเพรา", "ผ"],
     ["ทุเรียนพันธุ์ใหม่", "ท"],
     ["ปลาหวานสูตรใหม่", "ป"],
     ["เห็ดทดลอง", "ห"],
@@ -34,6 +46,45 @@ describe("safe auto dictionary category inference", () => {
 
   it("leaves unrelated names beginning with ลูก for human review", () => {
     expect(inferAutoDictionaryCategory("ลูกค้าใหม่")).toBeNull();
+  });
+
+  const unrelatedPrefixCases = [
+    "ดอกกุหลาบ",
+    "ยอดขายรายเดือน",
+    "หอมกรุ่นน้ำหอม",
+    "ใบเสร็จรับเงิน",
+  ];
+
+  it.each(unrelatedPrefixCases)("leaves unrelated name %s for human review", (name) => {
+    expect(inferAutoDictionaryCategory(name)).toBeNull();
+  });
+
+  it("sends unmatched broad-prefix names for review without inferring a category", async () => {
+    const names = unrelatedPrefixCases;
+    const rpcArgs: Array<Record<string, unknown>> = [];
+    const client = {
+      from() {
+        return {
+          select() { return this; },
+          eq() { return this; },
+          async limit() { return { data: [], error: null }; },
+        };
+      },
+      async rpc(_name: string, args: Record<string, unknown>) {
+        rpcArgs.push(args);
+        return { data: { status: "needs_review" }, error: null };
+      },
+    };
+
+    const observations = await observeAutoDictionaryReviews(client as never, {
+      sessionKey: "produce:test",
+      sessionGeneration: "11111111-1111-1111-1111-111111111111",
+      businessDate: "2026-09-24",
+    }, names.map(unknown));
+
+    expect(observations.map((observation) => observation.status)).toEqual(names.map(() => "needs_review"));
+    expect(rpcArgs.map((args) => args.p_category_code)).toEqual(names.map(() => null));
+    expect(rpcArgs.map((args) => args.p_category_name)).toEqual(names.map(() => null));
   });
 });
 
