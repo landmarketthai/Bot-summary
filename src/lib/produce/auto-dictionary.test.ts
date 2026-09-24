@@ -25,6 +25,11 @@ describe("safe auto dictionary category inference", () => {
     ["ดอกขจร", "ผ"],
     ["ยอดมะพร้าว", "ผ"],
     ["ยอดฟักแม้ว", "ผ"],
+    ["ถั่วแขก", "ผ"],
+    ["ถั่วงอก", "ผ"],
+    ["ถั่วฝักยาว", "ผ"],
+    ["ถั่วพู", "ผ"],
+    ["ถั่วลันเตา", "ผ"],
     ["หอมแดง", "ผ"],
     ["หอมหัวใหญ่", "ผ"],
     ["หอมใหญ่", "ผ"],
@@ -54,13 +59,18 @@ describe("safe auto dictionary category inference", () => {
     "หอมกรุ่นน้ำหอม",
     "ใบเสร็จรับเงิน",
   ];
+  const ambiguousBeanCases = ["ถั่วลิสงคั่ว", "ถั่วเหลือง", "ถั่วแดง"];
 
   it.each(unrelatedPrefixCases)("leaves unrelated name %s for human review", (name) => {
     expect(inferAutoDictionaryCategory(name)).toBeNull();
   });
 
+  it.each(ambiguousBeanCases)("leaves ambiguous bean name %s for human review", (name) => {
+    expect(inferAutoDictionaryCategory(name)).toBeNull();
+  });
+
   it("sends unmatched broad-prefix names for review without inferring a category", async () => {
-    const names = unrelatedPrefixCases;
+    const names = [...unrelatedPrefixCases, ...ambiguousBeanCases];
     const rpcArgs: Array<Record<string, unknown>> = [];
     const client = {
       from() {
