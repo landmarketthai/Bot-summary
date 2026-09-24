@@ -121,7 +121,7 @@ describe.skipIf(!pgAvailable)("safe auto-dictionary migration", () => {
 
     const results = await Promise.all([first, second].map((candidateName, index) =>
       observe(`near-final-${index}`, randomBytes(16).toString("hex"), "2026-09-25", candidateName),
-    )).then((values) => values.map(JSON.parse));
+    )).then((values) => values.map((value) => JSON.parse(value)));
 
     expect(results.map((result) => result.status).sort()).toEqual(["needs_review", "promoted"]);
     expect(await scalar(`SELECT count(*)::text FROM public.produce_product_codes WHERE canonical_name IN (${quote(first)}, ${quote(second)})`)).toBe("1");
