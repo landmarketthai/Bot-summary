@@ -67,15 +67,19 @@ export async function observeAutoDictionaryReviews(
   reviews: readonly ProduceValidationReview[],
 ): Promise<AutoDictionaryObservation[]> {
   if (!ref.businessDate) return [];
-  const runtimeEntries = await loadRuntimeDictionaryEntries(supabase);
   const unknowns = reviews.filter((review) => review.kind === "unknown_product_vocabulary");
+  const runtimeDictionary = await loadRuntimeDictionaryEntries(supabase);
   const results: AutoDictionaryObservation[] = [];
   for (const review of unknowns) {
     const normalizedName = normalizeCandidateName(review.productName);
     if (!normalizedName) continue;
+    if (!runtimeDictionary.trustworthy) {
+      results.push({ productName: normalizedName, status: "needs_review", productCode: null, distinctSessions: null, distinctDays: null, reason: "automation_unavailable" });
+      continue;
+    }
     const category = inferAutoDictionaryCategory(normalizedName);
     const similarProductCode = review.suggestions[0]?.productCode
-      ?? nearestRuntimeProductCode(normalizedName, runtimeEntries);
+      ?? nearestRuntimeProductCode(normalizedName, runtimeDictionary.entries);
     let data: unknown = null;
     let error: { message: string } | null = null;
     try {
@@ -112,15 +116,27 @@ export async function observeAutoDictionaryReviews(
 }
 
 interface RuntimeDictionaryEntry { productCode: string; canonicalName: string }
+interface RuntimeDictionarySnapshot {
+  entries: RuntimeDictionaryEntry[];
+  trustworthy: boolean;
+}
 
-async function loadRuntimeDictionaryEntries(supabase: AnyClient): Promise<RuntimeDictionaryEntry[]> {
+const RUNTIME_DICTIONARY_ROW_LIMIT = 5000;
+
+async function loadRuntimeDictionaryEntries(supabase: AnyClient): Promise<RuntimeDictionarySnapshot> {
   try {
-    const response = await supabase.from("produce_product_codes").select("product_code,canonical_name").eq("code_enabled", true).limit(5000);
-    if (response.error) return [];
-    return (response.data ?? []).map((row: { product_code?: string | null; canonical_name?: string | null }) => ({
+    const response = await supabase.from("produce_product_codes").select("product_code,canonical_name").eq("code_enabled", true).limit(RUNTIME_DICTIONARY_ROW_LIMIT);
+    if (response.error || !Array.isArray(response.data) || response.data.length >= RUNTIME_DICTIONARY_ROW_LIMIT) {
+      return { entries: [], trustworthy: false };
+    }
+    const entries = response.data.map((row: { product_code?: string | null; canonical_name?: string | null }) => ({
       productCode: row.product_code ?? "", canonicalName: normalizeCandidateName(row.canonical_name ?? ""),
-    })).filter((row: RuntimeDictionaryEntry) => Boolean(row.productCode && row.canonicalName));
-  } catch { return []; }
+    }));
+    if (entries.some((row: RuntimeDictionaryEntry) => !row.productCode || !row.canonicalName)) {
+      return { entries: [], trustworthy: false };
+    }
+    return { entries, trustworthy: true };
+  } catch { return { entries: [], trustworthy: false }; }
 }
 
 function nearestRuntimeProductCode(name: string, entries: readonly RuntimeDictionaryEntry[]): string | null {

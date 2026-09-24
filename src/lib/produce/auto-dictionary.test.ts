@@ -34,6 +34,68 @@ describe("safe auto dictionary category inference", () => {
 });
 
 describe("runtime similarity guard", () => {
+  it.each(["error", "throw"]) ("fails closed when the runtime dictionary read %s", async (failure) => {
+    let rpcCalled = false;
+    const client = {
+      from() {
+        return {
+          select() { return this; },
+          eq() { return this; },
+          async limit() {
+            if (failure === "throw") throw new Error("database unavailable");
+            return { data: null, error: { message: "database unavailable" } };
+          },
+        };
+      },
+      async rpc() {
+        rpcCalled = true;
+        return { data: { status: "promoted", product_code: "à¸¡99" }, error: null };
+      },
+    };
+    const observations = await observeAutoDictionaryReviews(client as never, {
+      sessionKey: "produce:test",
+      sessionGeneration: "11111111-1111-1111-1111-111111111111",
+      businessDate: "2026-09-24",
+    }, [unknown("à¸¥à¸¹à¸à¸žà¸¥à¸¸à¸™")]);
+    expect(rpcCalled).toBe(false);
+    expect(observations).toEqual([expect.objectContaining({
+      status: "needs_review",
+      reason: "automation_unavailable",
+    })]);
+  });
+
+  it("fails closed when the runtime dictionary read reaches its limit", async () => {
+    let rpcCalled = false;
+    const client = {
+      from() {
+        return {
+          select() { return this; },
+          eq() { return this; },
+          async limit() {
+            return {
+              data: Array.from({ length: 5000 }, (_, index) => ({
+                product_code: `à¸¡${index}`,
+                canonical_name: `à¸ªà¸´à¸™à¸„à¹‰à¸²${index}`,
+              })),
+              error: null,
+            };
+          },
+        };
+      },
+      async rpc() {
+        rpcCalled = true;
+        return { data: { status: "promoted", product_code: "à¸¡99" }, error: null };
+      },
+    };
+    const observations = await observeAutoDictionaryReviews(client as never, {
+      sessionKey: "produce:test",
+      sessionGeneration: "11111111-1111-1111-1111-111111111111",
+      businessDate: "2026-09-24",
+    }, [unknown("à¸¥à¸¹à¸à¸žà¸¥à¸¸à¸™")]);
+    expect(rpcCalled).toBe(false);
+    expect(observations[0]).toMatchObject({ status: "needs_review", reason: "automation_unavailable" });
+  });
+
   it("holds a typo near a product that was added to the DB after deploy", async () => {
     let rpcArgs: Record<string, unknown> | null = null;
     const client = {
