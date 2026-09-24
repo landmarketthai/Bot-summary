@@ -101,14 +101,32 @@ describe.skipIf(!pgAvailable)("safe auto-dictionary migration", () => {
   });
 
   test("serializes concurrent observations and code allocation under the category advisory lock", async () => {
-    const promoted = await Promise.all(["a", "b"].map((suffix) => Promise.all([
-      observe(`lock-${suffix}-1`, randomBytes(16).toString("hex"), "2026-09-24", `concurrent-${suffix}`),
-      observe(`lock-${suffix}-2`, randomBytes(16).toString("hex"), "2026-09-24", `concurrent-${suffix}`),
-      observe(`lock-${suffix}-3`, randomBytes(16).toString("hex"), "2026-09-25", `concurrent-${suffix}`),
+    const promoted = await Promise.all([["a", "concurrent-watermelon"], ["b", "concurrent-pomegranate"]].map(([suffix, candidateName]) => Promise.all([
+      observe(`lock-${suffix}-1`, randomBytes(16).toString("hex"), "2026-09-24", candidateName),
+      observe(`lock-${suffix}-2`, randomBytes(16).toString("hex"), "2026-09-24", candidateName),
+      observe(`lock-${suffix}-3`, randomBytes(16).toString("hex"), "2026-09-25", candidateName),
     ])));
     expect(promoted.flat().some((result) => JSON.parse(result).status === "promoted")).toBe(true);
     expect(await scalar(`SELECT count(*)::text FROM public.produce_product_codes WHERE canonical_name LIKE 'concurrent-%'`)).toBe("2");
     expect(await scalar(`SELECT count(DISTINCT product_code)::text FROM public.produce_dictionary_decisions WHERE decision = 'NEW_PRODUCT'`)).toBe("3");
+  });
+
+  test("rechecks near-duplicate enabled names under the category lock before promotion", async () => {
+    const first = "Concurrent near duplicate green apple";
+    const second = "Concurrent near duplicate green apples";
+    for (const candidateName of [first, second]) {
+      await observe(`${candidateName}-1`, randomBytes(16).toString("hex"), "2026-09-24", candidateName);
+      await observe(`${candidateName}-2`, randomBytes(16).toString("hex"), "2026-09-24", candidateName);
+    }
+
+    const results = await Promise.all([first, second].map((candidateName, index) =>
+      observe(`near-final-${index}`, randomBytes(16).toString("hex"), "2026-09-25", candidateName),
+    )).then((values) => values.map(JSON.parse));
+
+    expect(results.map((result) => result.status).sort()).toEqual(["needs_review", "promoted"]);
+    expect(await scalar(`SELECT count(*)::text FROM public.produce_product_codes WHERE canonical_name IN (${quote(first)}, ${quote(second)})`)).toBe("1");
+    expect(await scalar(`SELECT count(*)::text FROM public.produce_dictionary_candidates WHERE normalized_name IN (${quote(first)}, ${quote(second)}) AND state = 'needs_review'`)).toBe("1");
+    expect(await scalar(`SELECT count(*)::text FROM public.produce_dictionary_decisions d JOIN public.produce_dictionary_candidates c ON c.id = d.candidate_id WHERE c.normalized_name IN (${quote(first)}, ${quote(second)}) AND d.decision = 'NEEDS_REVIEW' AND d.reason = 'similar_enabled_product'`)).toBe("1");
   });
 
   test("keeps product identity immutable and locks down the surface", async () => {

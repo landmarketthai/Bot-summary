@@ -47,6 +47,36 @@ CREATE INDEX produce_dictionary_candidates_state_idx
 CREATE INDEX produce_dictionary_occurrences_candidate_date_idx
   ON public.produce_dictionary_candidate_occurrences(candidate_id, business_date);
 
+CREATE OR REPLACE FUNCTION public.produce_dictionary_edit_distance(p_a text, p_b text, p_max integer)
+RETURNS integer
+LANGUAGE plpgsql
+IMMUTABLE
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  v_previous integer[] := ARRAY(SELECT i FROM generate_series(0, char_length(p_b)) AS g(i));
+  v_current integer[];
+  v_row_min integer;
+  v_value integer;
+BEGIN
+  IF abs(char_length(p_a) - char_length(p_b)) > p_max THEN RETURN NULL; END IF;
+  FOR i IN 1..char_length(p_a) LOOP
+    v_current := ARRAY[i];
+    v_row_min := i;
+    FOR j IN 1..char_length(p_b) LOOP
+      v_value := least(v_previous[j + 1] + 1, v_current[j] + 1,
+        v_previous[j] + CASE WHEN substr(p_a, i, 1) = substr(p_b, j, 1) THEN 0 ELSE 1 END);
+      v_current := array_append(v_current, v_value);
+      v_row_min := least(v_row_min, v_value);
+    END LOOP;
+    IF v_row_min > p_max THEN RETURN NULL; END IF;
+    v_previous := v_current;
+  END LOOP;
+  RETURN CASE WHEN v_previous[char_length(p_b) + 1] <= p_max THEN v_previous[char_length(p_b) + 1] END;
+END;
+$$;
+REVOKE ALL ON FUNCTION public.produce_dictionary_edit_distance(text,text,integer) FROM PUBLIC;
+
 ALTER TABLE public.produce_dictionary_candidates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.produce_dictionary_candidate_occurrences ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.produce_dictionary_decisions ENABLE ROW LEVEL SECURITY;
@@ -76,6 +106,7 @@ DECLARE
   v_days integer;
   v_next integer;
   v_code text;
+  v_similar_code text;
 BEGIN
   IF v_name = '' OR p_session_key IS NULL OR p_session_generation IS NULL OR p_business_date IS NULL THEN
     RAISE EXCEPTION 'invalid auto-dictionary observation';
@@ -175,6 +206,27 @@ BEGIN
     SET state='promoted', promoted_product_code=v_existing_code, updated_at=now()
     WHERE id=v_candidate.id;
     RETURN jsonb_build_object('status','existing','candidate_id',v_candidate.id,'product_code',v_existing_code);
+  END IF;
+
+  SELECT product_code INTO v_similar_code
+  FROM public.produce_product_codes
+  WHERE code_enabled AND canonical_name <> v_name
+    AND public.produce_dictionary_edit_distance(v_name, canonical_name, 2) IS NOT NULL
+  ORDER BY public.produce_dictionary_edit_distance(v_name, canonical_name, 2), product_code
+  LIMIT 1;
+  IF v_similar_code IS NOT NULL THEN
+    UPDATE public.produce_dictionary_candidates SET
+      state='needs_review', similar_product_code=v_similar_code, updated_at=now()
+    WHERE id=v_candidate.id;
+    INSERT INTO public.produce_dictionary_decisions(candidate_id, decision, reason, target_product_code)
+    SELECT v_candidate.id, 'NEEDS_REVIEW', 'similar_enabled_product', v_similar_code
+    WHERE NOT EXISTS (
+      SELECT 1 FROM public.produce_dictionary_decisions
+      WHERE candidate_id = v_candidate.id AND decision = 'NEEDS_REVIEW' AND reason = 'similar_enabled_product'
+    );
+    RETURN jsonb_build_object('status','needs_review','reason','similar_enabled_product',
+      'candidate_id',v_candidate.id,'similar_product_code',v_similar_code,
+      'distinct_sessions',v_sessions,'distinct_days',v_days);
   END IF;
 
   SELECT COALESCE(max((substring(product_code from 2))::integer), 0) + 1
