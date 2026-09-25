@@ -22,21 +22,21 @@ function thaiNumericDate(businessDate: string): string {
 const S = StyleSheet.create({
   page: {
     fontFamily: "SarabunPDF",
-    fontSize: 9.8,
+    fontSize: 11.1,
     paddingTop: 22,
     paddingBottom: 28,
     paddingHorizontal: 24,
     color: "#111827",
   },
   header: { marginBottom: 8 },
-  title: { fontSize: 20, fontWeight: "bold" },
-  subtitle: { fontSize: 9, color: "#6B7280", marginTop: 2 },
+  title: { fontSize: 21.5, fontWeight: "bold" },
+  subtitle: { fontSize: 10, color: "#6B7280", marginTop: 2 },
   kpiGrid: { flexDirection: "row", marginHorizontal: -2.5, marginBottom: 9 },
   kpi: { width: "20%", paddingHorizontal: 2.5 },
-  kpiBox: { borderWidth: 0.6, borderColor: "#C7C9CE", padding: 7, minHeight: 58 },
-  kpiLabel: { fontSize: 7.8, color: "#6B7280" },
-  kpiValue: { fontSize: 16.8, fontWeight: "bold", textAlign: "right", marginTop: 4 },
-  kpiUnit: { fontSize: 7.6, color: "#6B7280", textAlign: "right", marginTop: 1 },
+  kpiBox: { borderWidth: 0.6, borderColor: "#C7C9CE", padding: 7, minHeight: 62 },
+  kpiLabel: { fontSize: 8.8, color: "#6B7280" },
+  kpiValue: { fontSize: 18, fontWeight: "bold", textAlign: "right", marginTop: 4 },
+  kpiUnit: { fontSize: 8.4, color: "#6B7280", textAlign: "right", marginTop: 1 },
   explanation: {
     borderLeftWidth: 2.5,
     borderLeftColor: "#777B80",
@@ -45,10 +45,10 @@ const S = StyleSheet.create({
     paddingHorizontal: 8,
     marginBottom: 9,
   },
-  explanationTitle: { fontWeight: "bold", fontSize: 10.2, marginBottom: 2 },
-  explanationText: { fontSize: 8.8, lineHeight: 1.35 },
+  explanationTitle: { fontWeight: "bold", fontSize: 11.2, marginBottom: 2 },
+  explanationText: { fontSize: 9.8, lineHeight: 1.35 },
   sectionTitle: {
-    fontSize: 11.8,
+    fontSize: 13,
     fontWeight: "bold",
     borderTopWidth: 0.7,
     borderTopColor: "#B6BAC0",
@@ -61,11 +61,35 @@ const S = StyleSheet.create({
     borderRightWidth: 0.6,
     borderBottomWidth: 0.6,
     borderColor: "#B6BAC0",
-    paddingVertical: 3.4,
+    paddingVertical: 3.8,
     paddingHorizontal: 5,
   },
-  th: { fontWeight: "bold", fontSize: 10.2, backgroundColor: "#E8E8E8" },
+  th: { fontWeight: "bold", fontSize: 11.4, backgroundColor: "#E8E8E8" },
   totalRow: { backgroundColor: "#E8E8E8", fontWeight: "bold" },
+  marketTitle: {
+    fontSize: 20,
+    fontWeight: "bold",
+    borderTopWidth: 0.7,
+    borderTopColor: "#B6BAC0",
+    paddingTop: 7,
+    marginBottom: 7,
+  },
+  marketCell: {
+    borderRightWidth: 0.6,
+    borderBottomWidth: 0.6,
+    borderColor: "#CBD5E1",
+    paddingVertical: 9,
+    paddingHorizontal: 5,
+    fontSize: 13.6,
+    textAlign: "center",
+  },
+  marketHeader: { fontWeight: "bold", fontSize: 14.2 },
+  marketName: { backgroundColor: "#F4F5F7" },
+  marketWithdrawal: { backgroundColor: "#E5F0FD" },
+  marketSales: { backgroundColor: "#F8F0CD" },
+  marketReturn: { backgroundColor: "#E4F2E1" },
+  marketTotal: { fontWeight: "bold", fontSize: 14.6 },
+  matrixCell: { paddingVertical: 7.2, paddingHorizontal: 5, fontSize: 13.5 },
   matrixName: { backgroundColor: "#FFFFFF" },
   matrixAlternate: { backgroundColor: "#F4F7F4" },
   matrixTotal: { backgroundColor: "#DCEBD5" },
@@ -75,7 +99,7 @@ const S = StyleSheet.create({
   center: { textAlign: "center" },
   right: { textAlign: "right" },
   noteBox: { borderWidth: 0.7, borderColor: "#8E9298", padding: 5, marginTop: 5 },
-  note: { fontSize: 8.2, color: "#4B5563" },
+  note: { fontSize: 9.2, color: "#4B5563" },
   stockHeader: {
     borderBottomWidth: 1.4,
     borderBottomColor: "#111827",
@@ -89,7 +113,7 @@ const S = StyleSheet.create({
     right: 24,
     flexDirection: "row",
     justifyContent: "space-between",
-    fontSize: 7.6,
+    fontSize: 8.2,
     color: "#6B7280",
   },
 });
@@ -109,6 +133,31 @@ function Cell({
 }) {
   return <View style={[S.cell, header ? S.th : {}, total ? S.totalRow : {}, { width }]}>
     <Text style={right ? S.right : {}}>{children}</Text>
+  </View>;
+}
+
+function MarketCell({
+  width,
+  children,
+  tone,
+  header = false,
+  total = false,
+}: {
+  width: string;
+  children?: React.ReactNode;
+  tone: "name" | "withdrawal" | "sales" | "return";
+  header?: boolean;
+  total?: boolean;
+}) {
+  const toneStyle = tone === "withdrawal"
+    ? S.marketWithdrawal
+    : tone === "sales"
+      ? S.marketSales
+      : tone === "return"
+        ? S.marketReturn
+        : S.marketName;
+  return <View style={[S.marketCell, toneStyle, header ? S.marketHeader : {}, total ? S.marketTotal : {}, { width }]}>
+    <Text style={S.center}>{children}</Text>
   </View>;
 }
 
@@ -137,7 +186,7 @@ function MatrixCell({
         ? S.matrixHouse
         : S.matrixName;
 
-  return <View style={[S.cell, toneStyle, alternate && tone === "name" ? S.matrixAlternate : {}, header ? S.th : {}, { width }]}>
+  return <View style={[S.cell, S.matrixCell, toneStyle, alternate && tone === "name" ? S.matrixAlternate : {}, header ? S.th : {}, { width }]}>
     <Text style={[
       right ? S.right : center ? S.center : {},
       tone === "market" && !header ? S.matrixMarketText : {},
@@ -226,8 +275,8 @@ function StockMatrix({ items }: { items: ReturnType<typeof stockMatrixItems> }) 
 
   return <View style={S.table}>
     <View style={S.tr} fixed>
-      <MatrixCell width="40%" header>รายการ</MatrixCell>
-      <MatrixCell width="20%" header tone="house" center>คงเหลือในบ้าน</MatrixCell>
+      <MatrixCell width="40%" header center>รายการ</MatrixCell>
+      <MatrixCell width="20%" header tone="house" center>บ้านเจ๊</MatrixCell>
       <MatrixCell width="20%" header tone="market" center>ในตลาด</MatrixCell>
       <MatrixCell width="20%" header tone="total" center>รวมคงเหลือ</MatrixCell>
     </View>
@@ -237,10 +286,10 @@ function StockMatrix({ items }: { items: ReturnType<typeof stockMatrixItems> }) 
         const showUnit = (duplicateNames.get(item.productName) ?? 0) > 1;
         const name = showUnit ? `${item.productName} (${displayUnit(item.unit)})` : item.productName;
         return <View style={S.tr} key={`${item.productName}-${item.unit}-${index}`} wrap={false}>
-          <MatrixCell width="40%" alternate={index % 2 === 1}>{name}</MatrixCell>
-          <MatrixCell width="20%" tone="house" right>{stockQuantity(item.houseStockQuantity, true)}</MatrixCell>
-          <MatrixCell width="20%" tone="market" right>{stockQuantity(item.marketStockQuantity, true)}</MatrixCell>
-          <MatrixCell width="20%" tone="total" right>{stockQuantity(item.totalRemainingQuantity)}</MatrixCell>
+          <MatrixCell width="40%" center alternate={index % 2 === 1}>{name}</MatrixCell>
+          <MatrixCell width="20%" tone="house" center>{stockQuantity(item.houseStockQuantity, true)}</MatrixCell>
+          <MatrixCell width="20%" tone="market" center>{stockQuantity(item.marketStockQuantity, true)}</MatrixCell>
+          <MatrixCell width="20%" tone="total" center>{stockQuantity(item.totalRemainingQuantity)}</MatrixCell>
         </View>;
       })}
     {Array.from(new Set(items.map((item) => item.unit))).map((unit) => {
@@ -251,10 +300,10 @@ function StockMatrix({ items }: { items: ReturnType<typeof stockMatrixItems> }) 
           ? qty(unitItems.reduce((total, item) => total + item[key]!, 0))
           : "-";
       return <View style={S.tr} key={`total-${unit}`} wrap={false}>
-        <MatrixCell width="40%" tone="total">{`\u{e23}\u{e27}\u{e21} (${displayUnit(unit)})`}</MatrixCell>
-        <MatrixCell width="20%" tone="total" right>{houseKnown ? sum("houseStockQuantity") : "-"}</MatrixCell>
-        <MatrixCell width="20%" tone="total" right>{sum("marketStockQuantity")}</MatrixCell>
-        <MatrixCell width="20%" tone="total" right>{houseKnown ? sum("totalRemainingQuantity") : "-"}</MatrixCell>
+        <MatrixCell width="40%" tone="total" center>{`รวม (${displayUnit(unit)})`}</MatrixCell>
+        <MatrixCell width="20%" tone="total" center>{houseKnown ? sum("houseStockQuantity") : "-"}</MatrixCell>
+        <MatrixCell width="20%" tone="total" center>{sum("marketStockQuantity")}</MatrixCell>
+        <MatrixCell width="20%" tone="total" center>{houseKnown ? sum("totalRemainingQuantity") : "-"}</MatrixCell>
       </View>;
     })}
   </View>;
@@ -262,17 +311,9 @@ function StockMatrix({ items }: { items: ReturnType<typeof stockMatrixItems> }) 
 
 function categoryChunks(items: ReturnType<typeof stockMatrixItems>) {
   const chunks: typeof items[] = [];
-  let chunk: typeof items = [];
-  for (const item of items) {
-    const candidate = [...chunk, item];
-    if (chunk.length > 0 && candidate.length + new Set(candidate.map((row) => row.unit)).size + 1 > 30) {
-      chunks.push(chunk);
-      chunk = [item];
-    } else {
-      chunk = candidate;
-    }
+  for (let index = 0; index < items.length; index += 15) {
+    chunks.push(items.slice(index, index + 15));
   }
-  if (chunk.length) chunks.push(chunk);
   return chunks.length ? chunks : [[]];
 }
 
@@ -333,25 +374,25 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
         <Text style={S.explanationText}><Text style={{ fontWeight: "bold" }}>เบิกออกไปขาย</Text> คือมูลค่าสินค้าที่นำออกตลาดก่อนเริ่มขาย ส่วน <Text style={{ fontWeight: "bold" }}>คงเหลือพร้อมขาย</Text> คือของดีที่ชั่งคืนจากตลาดหลังขาย บวกกับของที่ยังอยู่บ้าน จึงอาจมีบางรายการที่คงเหลือน้อยกว่ายอดที่เบิกไปขาย</Text>
       </View>
 
-      <Text style={S.sectionTitle}>สรุปผลไม้ตามตลาด</Text>
+      <Text style={S.marketTitle}>สรุปผลไม้ตามตลาด</Text>
       <View style={S.table}>
         <View style={S.tr} fixed>
-          <Cell width="28%" header>ตลาด</Cell>
-          <Cell width="24%" header right>มูลค่าที่เบิกไปขาย</Cell>
-          <Cell width="24%" header right>ยอดขาย</Cell>
-          <Cell width="24%" header right>ของชั่งคืนดี</Cell>
+          <MarketCell width="28%" tone="name" header>ตลาด</MarketCell>
+          <MarketCell width="24%" tone="withdrawal" header>มูลค่าที่เบิกไปขาย</MarketCell>
+          <MarketCell width="24%" tone="sales" header>ยอดขาย</MarketCell>
+          <MarketCell width="24%" tone="return" header>ของชั่งคืนดี</MarketCell>
         </View>
         {marketTotals.map((market, index) => <View style={S.tr} key={`${market.marketLabel}-${index}`} wrap={false}>
-          <Cell width="28%">{market.marketLabel}</Cell>
-          <Cell width="24%" right>{bahtFromSatang(market.withdrawalValueSatang)}</Cell>
-          <Cell width="24%" right>{bahtFromSatang(market.salesValueSatang)}</Cell>
-          <Cell width="24%" right>{bahtFromSatang(market.goodReturnValueSatang)}</Cell>
+          <MarketCell width="28%" tone="name">{market.marketLabel}</MarketCell>
+          <MarketCell width="24%" tone="withdrawal">{bahtFromSatang(market.withdrawalValueSatang)}</MarketCell>
+          <MarketCell width="24%" tone="sales">{bahtFromSatang(market.salesValueSatang)}</MarketCell>
+          <MarketCell width="24%" tone="return">{bahtFromSatang(market.goodReturnValueSatang)}</MarketCell>
         </View>)}
         <View style={S.tr} wrap={false}>
-          <Cell width="28%" total>รวม</Cell>
-          <Cell width="24%" total right>{fruit ? bahtFromSatang(fruit.withdrawalValueSatang) : "-"}</Cell>
-          <Cell width="24%" total right>{fruit ? bahtFromSatang(fruit.salesValueSatang) : "-"}</Cell>
-          <Cell width="24%" total right>{fruit ? bahtFromSatang(fruit.goodReturnValueSatang) : "-"}</Cell>
+          <MarketCell width="28%" tone="name" total>รวม</MarketCell>
+          <MarketCell width="24%" tone="withdrawal" total>{fruit ? bahtFromSatang(fruit.withdrawalValueSatang) : "-"}</MarketCell>
+          <MarketCell width="24%" tone="sales" total>{fruit ? bahtFromSatang(fruit.salesValueSatang) : "-"}</MarketCell>
+          <MarketCell width="24%" tone="return" total>{fruit ? bahtFromSatang(fruit.goodReturnValueSatang) : "-"}</MarketCell>
         </View>
       </View>
       <View style={S.noteBox}>
