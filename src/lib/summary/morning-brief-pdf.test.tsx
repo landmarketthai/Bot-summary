@@ -121,13 +121,13 @@ describe("Morning Brief A4 PDF", () => {
     expect(text).toContain("มูลค่าสินค้าที่นำออกตลาดก่อนเริ่มขาย");
   });
 
-  test("uses the requested stock columns and remaps house, market, then total", () => {
+  test("uses the requested stock columns and remaps บ้านเจ๊, market, then total", () => {
     const layoutReport: MorningBriefReport = { ...report, businessDate: "2026-09-22" };
     const text = collectText(MorningBriefA4Doc({ report: layoutReport, generatedAt: new Date("2026-09-23T08:00:00+07:00") }));
     const normalized = text.replace(/\s+/g, " ").trim();
     expect(normalized).toContain("หมวดผลไม้ - 22 กันยายน 2569");
 
-    expect(normalized).toContain("รายการ คงเหลือในบ้าน ในตลาด รวมคงเหลือ");
+    expect(normalized).toContain("รายการ บ้านเจ๊ ในตลาด รวมคงเหลือ");
 
     const apple = text.indexOf("แอปเปิ้ล");
     const house = text.indexOf("40", apple);
@@ -137,7 +137,6 @@ describe("Morning Brief A4 PDF", () => {
     expect(house).toBeGreaterThan(apple);
     expect(market).toBeGreaterThan(house);
     expect(total).toBeGreaterThan(market);
-    expect(text).not.toContain("บ้านเจ๊");
   });
 
   test("renders all fixed categories in order and keeps house-only products visible", () => {
@@ -170,8 +169,8 @@ describe("Morning Brief A4 PDF", () => {
     expect(text.indexOf("สินค้าใหม่")).toBeGreaterThan(text.indexOf("หมวดยังไม่ได้จัดหมวดหมู่"));
   });
 
-  test("splits a long category into numbered continuation pages", async () => {
-    const items = Array.from({ length: 30 }, (_, index) => ({
+  test("splits a long category after every 15 item rows", async () => {
+    const items = Array.from({ length: 31 }, (_, index) => ({
       productName: `ผลไม้ทดสอบ${index + 1}`,
       originalProductName: null,
       category: "ผลไม้",
@@ -192,14 +191,17 @@ describe("Morning Brief A4 PDF", () => {
       houseStock: { status: "missing" },
     };
     const text = collectText(MorningBriefA4Doc({ report: pagedReport, generatedAt: new Date("2026-09-20T08:00:00+07:00") }));
-    expect(text).toContain("หมวดผลไม้ 1/2 - 19 กันยายน 2569");
-    expect(text).toContain("หมวดผลไม้ 2/2 - 19 กันยายน 2569");
+    expect(text).toContain("หมวดผลไม้ 1/3 - 19 กันยายน 2569");
+    expect(text).toContain("หมวดผลไม้ 2/3 - 19 กันยายน 2569");
+    expect(text).toContain("หมวดผลไม้ 3/3 - 19 กันยายน 2569");
+    expect((text.match(/รวม \(กก\.\)/g) ?? []).length).toBe(1);
+    expect(text.replace(/\s+/g, " ")).toContain("รวม (กก.) 0 496 496");
 
     registerFonts();
     const buffer = await renderToBuffer(
       <MorningBriefA4Doc report={pagedReport} generatedAt={new Date("2026-09-20T08:00:00+07:00")} />,
     );
-    expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(7);
+    expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(8);
   });
 
   test("persists one upserted reference sidecar for the business date", async () => {
