@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ProduceValidationReview } from "./entry-validation";
 import { boundedEditDistance } from "@/lib/parsers/weigh-session/units";
+import { readRuntimeProductCodeRows } from "./product-code/resolver";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyClient = SupabaseClient<any>;
@@ -123,15 +124,11 @@ interface RuntimeDictionarySnapshot {
   trustworthy: boolean;
 }
 
-const RUNTIME_DICTIONARY_ROW_LIMIT = 5000;
-
 async function loadRuntimeDictionaryEntries(supabase: AnyClient): Promise<RuntimeDictionarySnapshot> {
   try {
-    const response = await supabase.from("produce_product_codes").select("product_code,canonical_name").eq("code_enabled", true).limit(RUNTIME_DICTIONARY_ROW_LIMIT);
-    if (response.error || !Array.isArray(response.data) || response.data.length >= RUNTIME_DICTIONARY_ROW_LIMIT) {
-      return { entries: [], trustworthy: false };
-    }
-    const entries = response.data.map((row: { product_code?: string | null; canonical_name?: string | null }) => ({
+    const rows = await readRuntimeProductCodeRows(supabase, { enabledOnly: true });
+    if (!rows) return { entries: [], trustworthy: false };
+    const entries = (rows as Array<{ product_code?: string | null; canonical_name?: string | null }>).map((row) => ({
       productCode: row.product_code ?? "", canonicalName: normalizeCandidateName(row.canonical_name ?? ""),
     }));
     if (entries.some((row: RuntimeDictionaryEntry) => !row.productCode || !row.canonicalName)) {
@@ -152,24 +149,10 @@ function nearestRuntimeProductCode(name: string, entries: readonly RuntimeDictio
   return best?.code ?? null;
 }
 
+/** Enabled runtime names; empty (everything goes to review) unless the whole dictionary was read. */
 export async function loadRuntimeApprovedProductNames(
   supabase: AnyClient,
 ): Promise<ReadonlySet<string>> {
-  let data: Array<{ canonical_name?: string | null }> | null = null;
-  try {
-    const response = await supabase
-      .from("produce_product_codes")
-      .select("canonical_name")
-      .eq("code_enabled", true)
-      .limit(5000);
-    if (response.error) return new Set();
-    data = response.data as Array<{ canonical_name?: string | null }> | null;
-  } catch {
-    return new Set();
-  }
-  return new Set(
-    (data ?? [])
-      .map((row: { canonical_name?: string | null }) => row.canonical_name?.normalize("NFC").replace(/\s+/g, " ").trim())
-      .filter((name: string | undefined): name is string => Boolean(name)),
-  );
+  const { entries } = await loadRuntimeDictionaryEntries(supabase);
+  return new Set(entries.map((entry) => entry.canonicalName));
 }

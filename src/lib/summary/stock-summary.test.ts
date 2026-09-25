@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   preloadRuntimeProductCodes,
   resetRuntimeProductCodesForTests,
+  resolveProductCode,
+  runtimeProductCodeEntryForName,
 } from "@/lib/produce/product-code/resolver";
 import {
   buildStockSummaryFromRows,
@@ -338,20 +340,44 @@ describe("runtime dictionary categories", () => {
     return preloadRuntimeProductCodes({
       from: () => ({
         select: () => ({
-          limit: async () => ({
-            data: entries.map(([code, categoryCode, name, enabled = true]) => ({
-              product_code: code,
-              category_code: categoryCode,
-              category_name: categoryCode,
-              canonical_name: name,
-              code_enabled: enabled,
-            })),
-            error: null,
+          order: () => ({
+            limit: async () => ({
+              data: entries.map(([code, categoryCode, name, enabled = true]) => ({
+                product_code: code,
+                category_code: categoryCode,
+                category_name: categoryCode,
+                canonical_name: name,
+                code_enabled: enabled,
+              })),
+              error: null,
+            }),
           }),
         }),
       }),
     });
   }
+
+  test("a request keeps the snapshot it loaded when a later refresh fails closed", async () => {
+    // Request A loads ทุเรียนเทศขนาดใหญ่ as ม; request B's refresh then fails
+    // while A is still awaiting its rows.
+    const requestA = await preload([["ม901", "ม", "ทุเรียนเทศขนาดใหญ่"]]);
+    const requestB = await preloadRuntimeProductCodes({ from: () => { throw new Error("read failed"); } });
+    const rows = [row({ product_name: "ทุเรียนเทศขนาดใหญ่", quantity: 5, unit: "กก." })];
+
+    const summaryA = buildStockSummaryFromRows(DATE, rows, { runtimeDictionary: requestA });
+    expect(productIn(summaryA, "ผลไม้", "ทุเรียนเทศขนาดใหญ่")?.quantity).toBe(5);
+    expect(productIn(summaryA, "ทุเรียน", "ทุเรียนเทศขนาดใหญ่")).toBeUndefined();
+
+    // B and the process-wide resolver stay fail-closed: A's entry is not served.
+    expect(runtimeProductCodeEntryForName("ทุเรียนเทศขนาดใหญ่", requestB)).toBeNull();
+    expect(runtimeProductCodeEntryForName("ทุเรียนเทศขนาดใหญ่")).toBeNull();
+    expect(resolveProductCode("ม901")).toBeNull();
+    const summaryB = buildStockSummaryFromRows(DATE, rows, { runtimeDictionary: requestB });
+    expect(productIn(summaryB, "ทุเรียน", "ทุเรียนเทศขนาดใหญ่")?.quantity).toBe(5);
+    // A caller passing no snapshot (the manual command) reads the process-wide one.
+    const manual = buildStockSummaryFromRows(DATE, rows);
+    expect(productIn(manual, "ทุเรียน", "ทุเรียนเทศขนาดใหญ่")?.quantity).toBe(5);
+  });
 
   test("an enabled DB-only ม / ผ / ท entry wins over the durian substring guess", async () => {
     await preload([

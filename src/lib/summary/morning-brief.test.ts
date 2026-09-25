@@ -105,15 +105,17 @@ describe("morningBriefProductIdentity", () => {
     await preloadRuntimeProductCodes({
       from: () => ({
         select: () => ({
-          limit: async () => ({
-            data: [{
-              product_code: "ม98",
-              category_code: "ม",
-              category_name: "ผลไม้",
-              canonical_name: productName,
-              code_enabled: true,
-            }],
-            error: null,
+          order: () => ({
+            limit: async () => ({
+              data: [{
+                product_code: "ม98",
+                category_code: "ม",
+                category_name: "ผลไม้",
+                canonical_name: productName,
+                code_enabled: true,
+              }],
+              error: null,
+            }),
           }),
         }),
       }),

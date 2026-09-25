@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   inferAutoDictionaryCategory,
+  loadRuntimeApprovedProductNames,
   observeAutoDictionaryReviews,
 } from "./auto-dictionary";
 import type { ProduceValidationReview } from "./entry-validation";
@@ -13,6 +14,66 @@ function unknown(name: string): ProduceValidationReview {
     productName: name,
     suggestions: [],
   };
+}
+
+const SESSION = {
+  sessionKey: "produce:test",
+  sessionGeneration: "11111111-1111-1111-1111-111111111111",
+  businessDate: "2026-09-24",
+};
+
+/** PostgREST max_rows (supabase/config.toml): a larger limit is silently truncated. */
+const SERVER_MAX_ROWS = 1000;
+
+/** produce_product_codes behind PostgREST (eq/gt/order, the max_rows cap) plus the observe RPC. */
+function dictionaryClient(
+  rows: Array<Record<string, unknown>>,
+  observe: (args: Record<string, unknown>) => unknown = () => ({ status: "observing" }),
+) {
+  const pages: Array<string | null> = [];
+  const rpcArgs: Array<Record<string, unknown>> = [];
+  const client = {
+    from(table: string) {
+      expect(table).toBe("produce_product_codes");
+      let matched = [...rows];
+      let after: string | null = null;
+      const query = {
+        select: () => query,
+        eq(column: string, value: unknown) {
+          matched = matched.filter((row) => row[column] === value);
+          return query;
+        },
+        gt(column: string, value: string) {
+          after = value;
+          matched = matched.filter((row) => String(row[column]) > value);
+          return query;
+        },
+        order(column: string) {
+          matched.sort((a, b) => (String(a[column]) < String(b[column]) ? -1 : 1));
+          return query;
+        },
+        async limit(count: number) {
+          pages.push(after);
+          return { data: matched.slice(0, Math.min(count, SERVER_MAX_ROWS)), error: null };
+        },
+      };
+      return query;
+    },
+    async rpc(_name: string, args: Record<string, unknown>) {
+      rpcArgs.push(args);
+      return { data: observe(args), error: null };
+    },
+  };
+  return { client, pages, rpcArgs };
+}
+
+/** Enabled products in the ท namespace, which sorts before every ม code. */
+function fillerRows(count: number) {
+  return Array.from({ length: count }, (_, index) => ({
+    product_code: `ท${String(index).padStart(4, "0")}`,
+    canonical_name: `filler product ${index}`,
+    code_enabled: true,
+  }));
 }
 
 describe("safe auto dictionary category inference", () => {
@@ -79,6 +140,7 @@ describe("safe auto dictionary category inference", () => {
         return {
           select() { return this; },
           eq() { return this; },
+          order() { return this; },
           async limit() { return { data: [], error: null }; },
         };
       },
@@ -106,6 +168,7 @@ describe("safe auto dictionary category inference", () => {
         return {
           select() { return this; },
           eq() { return this; },
+          order() { return this; },
           async limit() { return { data: [], error: null }; },
         };
       },
@@ -136,6 +199,7 @@ describe("runtime similarity guard", () => {
         return {
           select() { return this; },
           eq() { return this; },
+          order() { return this; },
           async limit() {
             if (failure === "throw") throw new Error("database unavailable");
             return { data: null, error: { message: "database unavailable" } };
@@ -159,36 +223,30 @@ describe("runtime similarity guard", () => {
     })]);
   });
 
-  it("fails closed when the runtime dictionary read reaches its limit", async () => {
-    let rpcCalled = false;
-    const client = {
-      from() {
-        return {
-          select() { return this; },
-          eq() { return this; },
-          async limit() {
-            return {
-              data: Array.from({ length: 5000 }, (_, index) => ({
-                product_code: `à¸¡${index}`,
-                canonical_name: `à¸ªà¸´à¸™à¸„à¹‰à¸²${index}`,
-              })),
-              error: null,
-            };
-          },
-        };
-      },
-      async rpc() {
-        rpcCalled = true;
-        return { data: { status: "promoted", product_code: "à¸¡99" }, error: null };
-      },
-    };
-    const observations = await observeAutoDictionaryReviews(client as never, {
-      sessionKey: "produce:test",
-      sessionGeneration: "11111111-1111-1111-1111-111111111111",
-      businessDate: "2026-09-24",
-    }, [unknown("à¸¥à¸¹à¸à¸žà¸¥à¸¸à¸™")]);
-    expect(rpcCalled).toBe(false);
+  it.each([5000, 5001])("fails closed when the runtime dictionary reaches its ceiling (%i rows)", async (count) => {
+    const { client, pages, rpcArgs } = dictionaryClient(fillerRows(count));
+
+    const observations = await observeAutoDictionaryReviews(client as never, SESSION, [unknown("ลูกพลุน")]);
+
+    expect(pages).toHaveLength(5);
+    expect(rpcArgs).toEqual([]);
     expect(observations[0]).toMatchObject({ status: "needs_review", reason: "automation_unavailable" });
+  });
+
+  it("holds a typo whose near match sits beyond the first 1000 dictionary rows", async () => {
+    // The observe RPC's contract: a caller-supplied similar code always goes to review.
+    const { client, pages, rpcArgs } = dictionaryClient(
+      [...fillerRows(1200), { product_code: "ม93", canonical_name: "ลูกพรุน", code_enabled: true }],
+      (args) => (args.p_similar_product_code
+        ? { status: "needs_review", reason: "similar_existing_product" }
+        : { status: "promoted", product_code: "ม99" }),
+    );
+
+    const observations = await observeAutoDictionaryReviews(client as never, SESSION, [unknown("ลูกพลุน")]);
+
+    expect(pages).toEqual([null, "ท0999"]);
+    expect(rpcArgs.map((args) => args.p_similar_product_code)).toEqual(["ม93"]);
+    expect(observations[0]).toMatchObject({ status: "needs_review", reason: "similar_existing_product" });
   });
 
   it("holds a typo near a product that was added to the DB after deploy", async () => {
@@ -199,6 +257,7 @@ describe("runtime similarity guard", () => {
         return {
           select() { return this; },
           eq() { return this; },
+          order() { return this; },
           async limit() {
             return { data: [{ product_code: "ม93", canonical_name: "ลูกพรุน" }], error: null };
           },
@@ -218,5 +277,20 @@ describe("runtime similarity guard", () => {
     expect(rpcArgs).not.toBeNull();
     expect((rpcArgs as unknown as Record<string, unknown>).p_similar_product_code).toBe("ม93");
     expect(observations[0]?.status).toBe("needs_review");
+  });
+});
+
+describe("runtime approved names", () => {
+  it("approves enabled names only after reading every page", async () => {
+    const disabled = { product_code: "ม01", canonical_name: "disabled product", code_enabled: false };
+    const complete = await loadRuntimeApprovedProductNames(
+      dictionaryClient([...fillerRows(1500), disabled]).client as never,
+    );
+    expect(complete.size).toBe(1500);
+    expect(complete.has("filler product 1499")).toBe(true);
+    expect(complete.has("disabled product")).toBe(false);
+
+    const atCeiling = await loadRuntimeApprovedProductNames(dictionaryClient(fillerRows(5000)).client as never);
+    expect(atCeiling.size).toBe(0);
   });
 });

@@ -105,6 +105,7 @@ class FakeDb {
       const builder = {
         select: () => builder,
         eq: () => builder,
+        order: () => builder,
         limit: () => Promise.resolve({ data: [], error: null }),
       };
       return builder;

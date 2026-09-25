@@ -53,11 +53,18 @@ const BY_CODE: ReadonlyMap<string, ProductCodeEntry> = new Map(
 );
 
 const RUNTIME_PRODUCT_CODE_LIMIT = 5000;
+/** Must not exceed PostgREST max_rows (supabase/config.toml): only then does a short page prove the read is complete. */
+const RUNTIME_PRODUCT_CODE_PAGE_SIZE = 1000;
 type RuntimeDictionaryState = "legacy" | "available" | "unavailable";
 
-interface RuntimeDictionarySnapshot {
-  entries: ReadonlyMap<string, ProductCodeEntry>;
-  state: RuntimeDictionaryState;
+/**
+ * One preload's result. Never mutated — every refresh installs a new object —
+ * so a caller holding the snapshot its preload returned keeps classifying
+ * against it, whatever a later refresh (successful or failed) installs.
+ */
+export interface RuntimeDictionarySnapshot {
+  readonly entries: ReadonlyMap<string, ProductCodeEntry>;
+  readonly state: RuntimeDictionaryState;
 }
 
 const LEGACY_RUNTIME_DICTIONARY: RuntimeDictionarySnapshot = {
@@ -80,26 +87,65 @@ interface RuntimeDictionaryClient {
 
 interface RuntimeDictionaryQuery {
   eq(column: string, value: unknown): RuntimeDictionaryQuery;
-  limit(count: number): Promise<{ data: unknown[] | null; error: { message: string } | null }>;
+  gt(column: string, value: string): RuntimeDictionaryQuery;
+  order(column: string, options: { ascending: boolean }): RuntimeDictionaryQuery;
+  limit(count: number): PromiseLike<{ data: unknown[] | null; error: unknown }>;
 }
 
-/** Refresh the bounded DB overlay used by the synchronous parser and reports. */
-export async function preloadRuntimeProductCodes(supabase: RuntimeDictionaryClient): Promise<void> {
+/**
+ * Every produce_product_codes row (or only the enabled ones), read in
+ * product_code order one bounded keyset page at a time. PostgREST silently
+ * truncates a response at max_rows, so no single large request can prove it
+ * saw the whole dictionary; a short page can. null means the caller must fail
+ * closed: a read error, a malformed or oversized page, or a dictionary that
+ * reaches the explicit ceiling.
+ */
+export async function readRuntimeProductCodeRows(
+  supabase: RuntimeDictionaryClient,
+  { enabledOnly = false } = {},
+): Promise<unknown[] | null> {
+  const rows: unknown[] = [];
+  let after: string | null = null;
+  while (rows.length < RUNTIME_PRODUCT_CODE_LIMIT) {
+    let query = supabase.from("produce_product_codes").select(
+      "product_code,category_code,category_name,canonical_name,code_enabled",
+    ) as RuntimeDictionaryQuery;
+    if (enabledOnly) query = query.eq("code_enabled", true);
+    if (after !== null) query = query.gt("product_code", after);
+    const { data, error } = await query
+      .order("product_code", { ascending: true })
+      .limit(RUNTIME_PRODUCT_CODE_PAGE_SIZE);
+    if (error || !Array.isArray(data) || data.length > RUNTIME_PRODUCT_CODE_PAGE_SIZE) return null;
+    rows.push(...data);
+    if (data.length < RUNTIME_PRODUCT_CODE_PAGE_SIZE) return rows;
+    const last = (data[data.length - 1] as { product_code?: unknown } | null)?.product_code;
+    if (typeof last !== "string") return null;
+    after = last;
+  }
+  return null;
+}
+
+/**
+ * Refresh the bounded DB overlay used by the synchronous parser and reports,
+ * and return the snapshot this call leaves in place. A report should classify
+ * with that returned snapshot rather than the process-wide one, which another
+ * request may replace (or fail closed) while this one is still awaiting data.
+ */
+export async function preloadRuntimeProductCodes(
+  supabase: RuntimeDictionaryClient,
+): Promise<RuntimeDictionarySnapshot> {
   const generation = ++runtimeDictionaryPreloadGeneration;
   const preload = (async () => {
     try {
-      const query = supabase.from("produce_product_codes").select(
-        "product_code,category_code,category_name,canonical_name,code_enabled",
-      ) as RuntimeDictionaryQuery;
-      const response = await query.limit(RUNTIME_PRODUCT_CODE_LIMIT);
+      const rows = await readRuntimeProductCodeRows(supabase);
       if (generation !== runtimeDictionaryPreloadGeneration) return;
-      if (response.error || !Array.isArray(response.data) || response.data.length >= RUNTIME_PRODUCT_CODE_LIMIT) {
+      if (!rows) {
         runtimeDictionarySnapshot = UNAVAILABLE_RUNTIME_DICTIONARY;
         return;
       }
 
       const next = new Map<string, ProductCodeEntry>();
-      for (const raw of response.data ?? []) {
+      for (const raw of rows) {
         const row = raw as {
           product_code?: unknown;
           category_code?: unknown;
@@ -141,11 +187,12 @@ export async function preloadRuntimeProductCodes(supabase: RuntimeDictionaryClie
     // A superseded caller must wait until the newest in-flight refresh settles.
     for (;;) {
       const latest: Promise<void> | null = runtimeDictionaryPreloadPromise;
-      if (!latest) return;
+      if (!latest) break;
       await latest;
-      if (latest === runtimeDictionaryPreloadPromise) return;
+      if (latest === runtimeDictionaryPreloadPromise) break;
     }
   }
+  return runtimeDictionarySnapshot;
 }
 
 /** Runtime entry, or the generated entry when no DB overlay exists. */
@@ -155,9 +202,13 @@ export function productCodeEntryFor(code: string): ProductCodeEntry | null {
     ?? (snapshot.state === "legacy" ? BY_CODE.get(code) ?? null : null);
 }
 
-export function runtimeProductCodeEntryForName(productName: string): ProductCodeEntry | null {
+/** Enabled entry named exactly `productName` in `snapshot` (default: the process-wide one). */
+export function runtimeProductCodeEntryForName(
+  productName: string,
+  snapshot: RuntimeDictionarySnapshot = runtimeDictionarySnapshot,
+): ProductCodeEntry | null {
   const key = productName.normalize("NFC").trim();
-  for (const entry of runtimeDictionarySnapshot.entries.values()) {
+  for (const entry of snapshot.entries.values()) {
     if (entry.enabled && entry.canonicalName.normalize("NFC").trim() === key) return entry;
   }
   return null;

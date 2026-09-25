@@ -1,4 +1,7 @@
-import { runtimeProductCodeEntryForName } from "@/lib/produce/product-code/resolver";
+import {
+  runtimeProductCodeEntryForName,
+  type RuntimeDictionarySnapshot,
+} from "@/lib/produce/product-code/resolver";
 import {
   buildRemainingFruitReport,
   UNIDENTIFIED_MARKET_SECTION,
@@ -89,23 +92,27 @@ const STOCK_CATEGORY_BY_RUNTIME_CODE: ReadonlyMap<string, StockCategory> = new M
 ]);
 
 /**
- * An enabled runtime dictionary entry (preloaded by the caller) wins, so a
- * DB-only product such as ทุเรียนเทศขนาดใหญ่ (ม) is never filed as durian by
- * the substring rule. With no usable entry the legacy mapping applies.
+ * An enabled runtime dictionary entry wins, so a DB-only product such as
+ * ทุเรียนเทศขนาดใหญ่ (ม) is never filed as durian by the substring rule. With
+ * no usable entry the legacy mapping applies. `runtimeDictionary` is the
+ * snapshot the caller preloaded; omitted, the current process-wide one.
  */
-function categoryFor(productName: string): StockCategory {
-  const code = runtimeProductCodeEntryForName(productName)?.categoryCode ?? "";
+function categoryFor(productName: string, runtimeDictionary?: RuntimeDictionarySnapshot): StockCategory {
+  const code = runtimeProductCodeEntryForName(productName, runtimeDictionary)?.categoryCode ?? "";
   return STOCK_CATEGORY_BY_RUNTIME_CODE.get(code) ?? stockCategoryFor(productName);
 }
 
-function groupByCategory(sections: RemainingFruitMarketSection[]): StockCategoryGroup[] {
+function groupByCategory(
+  sections: RemainingFruitMarketSection[],
+  runtimeDictionary?: RuntimeDictionarySnapshot,
+): StockCategoryGroup[] {
   const byCategory = new Map<StockCategory, Map<string, StockProductTotal>>();
 
   for (const section of sections) {
     for (const item of section.items) {
       if (!hasSellableStock(item)) continue;
 
-      const category = categoryFor(item.fruitName);
+      const category = categoryFor(item.fruitName, runtimeDictionary);
       let products = byCategory.get(category);
       if (!products) {
         products = new Map();
@@ -176,7 +183,11 @@ function collectIncomplete(sections: RemainingFruitMarketSection[]): StockIncomp
   );
 }
 
-export function buildStockSummary(businessDate: string, report: RemainingFruitReport): StockSummary {
+export function buildStockSummary(
+  businessDate: string,
+  report: RemainingFruitReport,
+  runtimeDictionary?: RuntimeDictionarySnapshot,
+): StockSummary {
   const unidentifiedSections = report.unidentified?.markets ?? [];
   // Unidentified-market rows are reported separately so they are never double
   // counted into the all-market totals, and never silently dropped either.
@@ -192,10 +203,10 @@ export function buildStockSummary(businessDate: string, report: RemainingFruitRe
 
   return {
     businessDate,
-    categories: groupByCategory(report.markets),
+    categories: groupByCategory(report.markets, runtimeDictionary),
     incomplete,
     isComplete: incomplete.length === 0,
-    unidentified: groupByCategory(unidentifiedSections),
+    unidentified: groupByCategory(unidentifiedSections, runtimeDictionary),
     detail: report,
   };
 }
@@ -204,10 +215,10 @@ export function buildStockSummary(businessDate: string, report: RemainingFruitRe
 export function buildStockSummaryFromRows(
   businessDate: string,
   rows: readonly RemainingFruitSourceRow[],
-  options: { marketFilter?: string | null } = {},
+  options: { marketFilter?: string | null; runtimeDictionary?: RuntimeDictionarySnapshot } = {},
 ): StockSummary {
   const report = buildRemainingFruitReport(rows, { marketFilter: options.marketFilter });
-  return buildStockSummary(businessDate, report);
+  return buildStockSummary(businessDate, report, options.runtimeDictionary);
 }
 
 export { UNIDENTIFIED_MARKET_SECTION };

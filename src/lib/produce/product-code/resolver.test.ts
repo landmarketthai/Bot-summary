@@ -8,6 +8,7 @@ import {
   resetRuntimeProductCodesForTests,
   resolveItemLineProductCode,
   resolveProductCode,
+  runtimeProductCodeEntryForName,
 } from "./resolver";
 
 const STATIC_CODE = "\u0e21\u0030\u0032";
@@ -15,17 +16,46 @@ const PROMOTED_CODE = "\u0e21\u0039\u0038";
 const STALE_CODE = "\u0e21\u0039\u0036";
 const LATEST_CODE = "\u0e21\u0039\u0037";
 
-function client(rows: unknown[]) {
-  return {
+/** PostgREST max_rows (supabase/config.toml): a larger limit is silently truncated. */
+const SERVER_MAX_ROWS = 1000;
+
+/** produce_product_codes behind PostgREST: eq/gt filters, ordering, and the max_rows cap. */
+function dictionaryTable(rows: Array<Record<string, unknown>>) {
+  const pages: Array<{ after: string | null; limit: number; returned: number }> = [];
+  const client = {
     from(table: string) {
       expect(table).toBe("produce_product_codes");
-      return {
-        select() { return this; },
-        eq() { return this; },
-        limit: async () => ({ data: rows, error: null }),
+      let matched = [...rows];
+      let after: string | null = null;
+      const query = {
+        select: () => query,
+        eq(column: string, value: unknown) {
+          matched = matched.filter((row) => row[column] === value);
+          return query;
+        },
+        gt(column: string, value: string) {
+          after = value;
+          matched = matched.filter((row) => String(row[column]) > value);
+          return query;
+        },
+        order(column: string) {
+          matched.sort((a, b) => (String(a[column]) < String(b[column]) ? -1 : 1));
+          return query;
+        },
+        async limit(count: number) {
+          const data = matched.slice(0, Math.min(count, SERVER_MAX_ROWS));
+          pages.push({ after, limit: count, returned: data.length });
+          return { data, error: null };
+        },
       };
+      return query;
     },
   };
+  return { client, pages };
+}
+
+function client(rows: Array<Record<string, unknown>>) {
+  return dictionaryTable(rows).client;
 }
 
 function deferredClient() {
@@ -38,12 +68,18 @@ function deferredClient() {
         expect(table).toBe("produce_product_codes");
         return {
           select() { return this; },
+          order() { return this; },
           limit: () => response,
         };
       },
     },
     complete,
   };
+}
+
+/** A 4-digit code in the ท namespace, which sorts before every ม code. */
+function durianCode(index: number) {
+  return `ท${String(index).padStart(4, "0")}`;
 }
 
 async function flushMicrotasks() {
@@ -71,21 +107,20 @@ describe("runtime product-code resolver", () => {
 
   it("resolves an auto-added code through ingest parsing and validation", async () => {
     const canonicalName = "\u0e21\u0e30\u0e01\u0e2d\u0e01\u0e43\u0e2b\u0e21\u0e48";
-    await preloadRuntimeProductCodes(client([{
+    const promoted = {
       product_code: PROMOTED_CODE,
       category_code: "\u0e21",
       category_name: "\u0e1c\u0e25\u0e44\u0e21\u0e49",
       canonical_name: canonicalName,
       code_enabled: true,
-    }]) as never);
+    };
+    await preloadRuntimeProductCodes(client([promoted]) as never);
 
     const parsed = parseWeighSession(`1.${PROMOTED_CODE} 10\u0e1a\u0e32\u0e17\n1\u0e42\u0e25`);
     expect(parsed.parse_errors).not.toContain(`unknown product code ${PROMOTED_CODE}`);
     expect(parsed.items[0]?.product_name).toBe(canonicalName);
 
-    const runtimeApprovedProductNames = await loadRuntimeApprovedProductNames(client([{
-      canonical_name: canonicalName,
-    }]) as never);
+    const runtimeApprovedProductNames = await loadRuntimeApprovedProductNames(client([promoted]) as never);
     const result = validateProduceEntry({
       parsed,
       roundRows: [],
@@ -115,6 +150,7 @@ describe("runtime product-code resolver", () => {
     const failedClient = {
       from: () => ({
         select() { return this; },
+        order() { return this; },
         limit: async () => ({ data: null, error: { message: "read failed" } }),
       }),
     };
@@ -152,9 +188,24 @@ describe("runtime product-code resolver", () => {
 
     newer.complete({ data: [row(LATEST_CODE, true)], error: null });
     // The superseded caller waits on this winner, so complete it before joining both.
-    await Promise.all([olderPreload, newerPreload]);
+    const [olderSnapshot, newerSnapshot] = await Promise.all([olderPreload, newerPreload]);
     expect(resolveProductCode(LATEST_CODE)).toBe(`product ${LATEST_CODE}`);
     expect(resolveProductCode(PROMOTED_CODE)).toBeNull();
+    // ...and is handed the winner's snapshot, never its own stale read.
+    expect(olderSnapshot).toBe(newerSnapshot);
+    expect(runtimeProductCodeEntryForName(`product ${STALE_CODE}`, olderSnapshot)).toBeNull();
+  });
+
+  it("returns each caller's own snapshot, which a later failed refresh cannot change", async () => {
+    const loaded = await preloadRuntimeProductCodes(client([row(PROMOTED_CODE, true)]) as never);
+    const failed = await preloadRuntimeProductCodes({ from: () => { throw new Error("read failed"); } });
+
+    expect(runtimeProductCodeEntryForName(`product ${PROMOTED_CODE}`, loaded)?.code).toBe(PROMOTED_CODE);
+    expect(runtimeProductCodeEntryForName(`product ${PROMOTED_CODE}`, failed)).toBeNull();
+    // Everyone reading the process-wide resolver still fails closed.
+    expect(runtimeProductCodeEntryForName(`product ${PROMOTED_CODE}`)).toBeNull();
+    expect(resolveProductCode(PROMOTED_CODE)).toBeNull();
+    expect(resolveProductCode(STATIC_CODE)).toBeNull();
   });
 
   it("does not let an older preload overwrite a newer successful snapshot", async () => {
@@ -199,16 +250,42 @@ describe("runtime product-code resolver", () => {
     expect(resolveProductCode(PROMOTED_CODE)).toBeNull();
   });
 
-  it("fails closed for an exactly-at-limit snapshot", async () => {
-    await preloadRuntimeProductCodes(client([row(PROMOTED_CODE, true)]) as never);
-    const rows = Array.from({ length: 5000 }, (_, index) =>
-      row(`\u0e21${String(index).padStart(4, "0")}`, true));
-    await preloadRuntimeProductCodes(client(rows) as never);
+  it("reads every page of a dictionary larger than PostgREST max_rows", async () => {
+    // 1500 ท codes sort first, so the static code's DB tombstone and the
+    // promoted code only arrive on the second page.
+    const filler = Array.from({ length: 1500 }, (_, index) => row(durianCode(index), true));
+    const table = dictionaryTable([...filler, row(STATIC_CODE, false), row(PROMOTED_CODE, true)]);
 
+    await preloadRuntimeProductCodes(table.client as never);
+
+    expect(table.pages).toEqual([
+      { after: null, limit: 1000, returned: 1000 },
+      { after: durianCode(999), limit: 1000, returned: 502 },
+    ]);
+    expect(resolveProductCode(durianCode(0))).toBe(`product ${durianCode(0)}`);
+    expect(resolveProductCode(PROMOTED_CODE)).toBe(`product ${PROMOTED_CODE}`);
+    expect(resolveProductCode(STATIC_CODE)).toBeNull();
+  });
+
+  it("accepts a 4999-row dictionary read across five pages", async () => {
+    const table = dictionaryTable(Array.from({ length: 4999 }, (_, index) => row(durianCode(index), true)));
+
+    await preloadRuntimeProductCodes(table.client as never);
+
+    expect(table.pages.map((page) => page.returned)).toEqual([1000, 1000, 1000, 1000, 999]);
+    expect(resolveProductCode(durianCode(4998))).toBe(`product ${durianCode(4998)}`);
+  });
+
+  it.each([5000, 5001])("fails closed at a %i-row dictionary without reading past the ceiling", async (count) => {
+    await preloadRuntimeProductCodes(client([row(PROMOTED_CODE, true)]) as never);
+    const table = dictionaryTable(Array.from({ length: count }, (_, index) => row(durianCode(index), true)));
+
+    await preloadRuntimeProductCodes(table.client as never);
+
+    expect(table.pages.map((page) => page.returned)).toEqual([1000, 1000, 1000, 1000, 1000]);
+    expect(resolveProductCode(durianCode(0))).toBeNull();
     expect(resolveProductCode(PROMOTED_CODE)).toBeNull();
     expect(resolveProductCode(STATIC_CODE)).toBeNull();
     expect(resolveItemLineProductCode(`${STATIC_CODE} 10`).kind).toBe("unknown");
-    expect(resolveProductCode("\u0e21\u0030\u0030\u0030\u0030")).toBeNull();
-    expect(resolveItemLineProductCode("\u0e21\u0039\u0039\u0039 10").kind).toBe("unknown");
   });
 });

@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 import { HOUSE_STOCK_PRICED_PARSER_VERSION } from "@/lib/physical-inventory/types";
-import { resetRuntimeProductCodesForTests } from "@/lib/produce/product-code/resolver";
+import {
+  preloadRuntimeProductCodes,
+  resetRuntimeProductCodesForTests,
+  runtimeProductCodeEntryForName,
+} from "@/lib/produce/product-code/resolver";
 import { FakeDatabase } from "./test-fake-supabase";
 import { loadMorningBriefReport } from "./morning-brief-service";
 
@@ -102,9 +106,8 @@ describe("loadMorningBriefReport", () => {
     });
   });
 
-  test("includes a runtime-only promoted fruit in fruitFinancial", async () => {
-    const productName = "runtime-only promoted fruit";
-    const db = new FakeDatabase()
+  function runtimeOnlyFruitDatabase(productName: string) {
+    return new FakeDatabase()
       .seed("produce_product_codes", [{
         product_code: "ม98",
         category_code: "ม",
@@ -149,8 +152,12 @@ describe("loadMorningBriefReport", () => {
         raw_message_id: "raw-1",
         voided_at: null,
       }]);
+  }
 
-    const report = await loadMorningBriefReport(client(db), BUSINESS_DATE);
+  test("includes a runtime-only promoted fruit in fruitFinancial", async () => {
+    const productName = "runtime-only promoted fruit";
+
+    const report = await loadMorningBriefReport(client(runtimeOnlyFruitDatabase(productName)), BUSINESS_DATE);
 
     expect(report.fruitFinancial).toEqual({
       withdrawalValueSatang: 100_000,
@@ -165,5 +172,28 @@ describe("loadMorningBriefReport", () => {
         goodReturnValueSatang: 0,
       }],
     });
+  });
+
+  test("keeps its own dictionary snapshot when another request's refresh fails mid-load", async () => {
+    const productName = "runtime-only promoted fruit";
+    const db = runtimeOnlyFruitDatabase(productName);
+    let refresh: Promise<unknown> | null = null;
+    const racing = {
+      rpc: db.rpc.bind(db),
+      from(table: string) {
+        // Request B refreshes once this report's own preload is done and its
+        // loaders are reading, and fails closed.
+        if (!refresh && table !== "produce_product_codes") {
+          refresh = preloadRuntimeProductCodes({ from: () => { throw new Error("request B read failed"); } });
+        }
+        return db.from(table);
+      },
+    };
+
+    const report = await loadMorningBriefReport(racing as unknown as SupabaseClient<Database>, BUSINESS_DATE);
+    await refresh;
+
+    expect(report.fruitFinancial?.withdrawalValueSatang).toBe(100_000);
+    expect(runtimeProductCodeEntryForName(productName)).toBeNull();
   });
 });
