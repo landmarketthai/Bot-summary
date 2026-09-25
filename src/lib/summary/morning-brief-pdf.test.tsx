@@ -194,6 +194,8 @@ describe("Morning Brief A4 PDF", () => {
     expect(text).toContain("หมวดผลไม้ 1/3 - 19 กันยายน 2569");
     expect(text).toContain("หมวดผลไม้ 2/3 - 19 กันยายน 2569");
     expect(text).toContain("หมวดผลไม้ 3/3 - 19 กันยายน 2569");
+    expect((text.match(/รวม \(กก\.\)/g) ?? []).length).toBe(1);
+    expect(text.replace(/\s+/g, " ")).toContain("รวม (กก.) 0 496 496");
 
     registerFonts();
     const buffer = await renderToBuffer(

@@ -267,7 +267,15 @@ function displayUnit(unit: string): string {
   return unit === "โล" ? "กก." : unit;
 }
 
-function StockMatrix({ items }: { items: ReturnType<typeof stockMatrixItems> }) {
+function StockMatrix({
+  items,
+  totalsItems = items,
+  showTotals = true,
+}: {
+  items: ReturnType<typeof stockMatrixItems>;
+  totalsItems?: ReturnType<typeof stockMatrixItems>;
+  showTotals?: boolean;
+}) {
   const duplicateNames = new Map<string, number>();
   for (const item of items) {
     duplicateNames.set(item.productName, (duplicateNames.get(item.productName) ?? 0) + 1);
@@ -292,8 +300,8 @@ function StockMatrix({ items }: { items: ReturnType<typeof stockMatrixItems> }) 
           <MatrixCell width="20%" tone="total" center>{stockQuantity(item.totalRemainingQuantity)}</MatrixCell>
         </View>;
       })}
-    {Array.from(new Set(items.map((item) => item.unit))).map((unit) => {
-      const unitItems = items.filter((item) => item.unit === unit);
+    {showTotals ? Array.from(new Set(totalsItems.map((item) => item.unit))).map((unit) => {
+      const unitItems = totalsItems.filter((item) => item.unit === unit);
       const houseKnown = unitItems.every((item) => item.houseStockQuantity != null);
       const sum = (key: "houseStockQuantity" | "marketStockQuantity" | "totalRemainingQuantity") =>
         unitItems.every((item) => item[key] != null)
@@ -305,7 +313,7 @@ function StockMatrix({ items }: { items: ReturnType<typeof stockMatrixItems> }) 
         <MatrixCell width="20%" tone="total" center>{sum("marketStockQuantity")}</MatrixCell>
         <MatrixCell width="20%" tone="total" center>{houseKnown ? sum("totalRemainingQuantity") : "-"}</MatrixCell>
       </View>;
-    })}
+    }) : null}
   </View>;
 }
 
@@ -409,7 +417,11 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
           <Text style={S.title}>{`หมวด${category}${chunks.length > 1 ? ` ${index + 1}/${chunks.length}` : ""} - ${formatThaiDate(report.businessDate)}`}</Text>
           <Text style={S.subtitle}>รวมคงเหลือ = คงเหลือในบ้าน + ในตลาด</Text>
         </View>
-        <StockMatrix items={items} />
+        <StockMatrix
+          items={items}
+          totalsItems={categoryItems}
+          showTotals={index === chunks.length - 1}
+        />
         <Text style={[S.note, { marginTop: 6 }]}>คงเหลือในบ้าน = ของที่ยังอยู่บ้าน/คลัง • ในตลาด = ของดีชั่งคืนจากตลาด • ถ้าไม่ทราบข้อมูลฝั่งบ้านจะแสดง “-”</Text>
         <DataFooter generatedText={generatedText} />
       </Page>);
