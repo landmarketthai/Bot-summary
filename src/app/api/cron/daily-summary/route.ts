@@ -40,7 +40,7 @@ export async function GET(req: NextRequest) {
   });
 
   const supabase = createServiceClient();
-  await preloadRuntimeProductCodes(supabase);
+  const runtimeDictionary = await preloadRuntimeProductCodes(supabase);
   const { data: txData, error: txError } = await supabase
     .from("produce_transactions")
     .select("raw_message_id,staff_name,market_name,transaction_type,total_amount,product_name")
@@ -81,7 +81,7 @@ export async function GET(req: NextRequest) {
   // Same in-memory transactions array, no second query — see
   // dailySummaryCategoryLedgers for why the key is staff_name+market_name
   // (not source_id) and why knownNames is derived from the whole date.
-  const categoryLedgers = dailySummaryCategoryLedgers(transactions, sources);
+  const categoryLedgers = dailySummaryCategoryLedgers(transactions, sources, runtimeDictionary);
   const validSourceIds = new Set(
     sources
       .map((row) => row.source_id)

@@ -4,16 +4,21 @@ import { resetRuntimeProductCodesForTests } from "@/lib/produce/product-code/res
 
 let transactions: unknown[] = [];
 let productCodes: unknown[] = [];
+let productCodeError: unknown = null;
+let transactionReadGate: Promise<void> | null = null;
+let onTransactionRead: (() => void) | null = null;
 let pushed: string[] = [];
 const sources = [{ id: "raw-1", source_id: "CdailyTarget00001", source_type: "group" }];
 
 function chain(table: string) {
   const node: Record<string, unknown> = {};
   for (const method of ["select", "eq", "order", "in"]) node[method] = () => node;
-  node.limit = () => Promise.resolve({ data: table === "produce_product_codes" ? productCodes : [], error: null });
+  node.limit = () => Promise.resolve({ data: table === "produce_product_codes" ? productCodes : [], error: productCodeError });
   node.then = (resolve: (value: unknown) => unknown, reject: (error: unknown) => unknown) => {
     const data = table === "produce_transactions" ? transactions : table === "raw_messages" ? sources : [];
-    return Promise.resolve({ data, error: null }).then(resolve, reject);
+    const gate = table === "produce_transactions" ? transactionReadGate : null;
+    if (table === "produce_transactions") onTransactionRead?.();
+    return Promise.resolve(gate).then(() => ({ data, error: null })).then(resolve, reject);
   };
   return node;
 }
@@ -48,6 +53,9 @@ beforeEach(() => {
     canonical_name: "runtime promoted mango",
     code_enabled: true,
   }];
+  productCodeError = null;
+  transactionReadGate = null;
+  onTransactionRead = null;
   pushed = [];
   process.env.CRON_SECRET = "daily-secret";
 });
@@ -66,6 +74,31 @@ describe("daily summary cron runtime categories", () => {
     const response = await GET(request);
 
     expect(response.status).toBe(200);
+    expect(pushed).toHaveLength(1);
+    expect(pushed[0]).toContain("\ud83c\udf49 \u0e1c\u0e25\u0e44\u0e21\u0e49");
+    expect(pushed[0]).not.toContain("\u0e44\u0e21\u0e48\u0e08\u0e31\u0e14\u0e2b\u0e21\u0e27\u0e14");
+  });
+
+  test("keeps request A's category after request B fails to refresh the dictionary", async () => {
+    let releaseTransactionRead!: () => void;
+    transactionReadGate = new Promise<void>((resolve) => { releaseTransactionRead = resolve; });
+    const transactionReadStarted = new Promise<void>((resolve) => { onTransactionRead = resolve; });
+    const request = new NextRequest("http://localhost/api/cron/daily-summary?date=2026-07-25", {
+      headers: { authorization: "Bearer daily-secret" },
+    });
+
+    const requestA = GET(request);
+    await transactionReadStarted;
+    onTransactionRead = null;
+    transactionReadGate = null;
+    transactions = [];
+    productCodeError = { message: "dictionary read failed" };
+    const responseB = await GET(request);
+    expect(responseB.status).toBe(200);
+
+    releaseTransactionRead();
+    const responseA = await requestA;
+    expect(responseA.status).toBe(200);
     expect(pushed).toHaveLength(1);
     expect(pushed[0]).toContain("\ud83c\udf49 \u0e1c\u0e25\u0e44\u0e21\u0e49");
     expect(pushed[0]).not.toContain("\u0e44\u0e21\u0e48\u0e08\u0e31\u0e14\u0e2b\u0e21\u0e27\u0e14");
