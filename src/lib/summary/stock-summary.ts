@@ -11,8 +11,10 @@ import {
   type RemainingFruitSourceRow,
 } from "@/lib/summary/remaining-fruit";
 import {
+  explicitStockCategoryFor,
   stockCategoryFor,
   STOCK_CATEGORY_ORDER,
+  UNCATEGORIZED,
   type StockCategory,
 } from "@/lib/summary/stock-categories";
 
@@ -83,7 +85,7 @@ function isIncomplete(item: RemainingFruitItem): boolean {
 
 /**
  * Runtime dictionary category codes the Stock model represents directly.
- * ป / ห / พ are absent on purpose: they keep the legacy wet-market mapping.
+ * ป / ห / พ are absent on purpose: they keep an exact legacy wet-market mapping.
  */
 const STOCK_CATEGORY_BY_RUNTIME_CODE: ReadonlyMap<string, StockCategory> = new Map([
   ["ท", "ทุเรียน"],
@@ -92,14 +94,20 @@ const STOCK_CATEGORY_BY_RUNTIME_CODE: ReadonlyMap<string, StockCategory> = new M
 ]);
 
 /**
- * An enabled runtime dictionary entry wins, so a DB-only product such as
- * ทุเรียนเทศขนาดใหญ่ (ม) is never filed as durian by the substring rule. With
- * no usable entry the legacy mapping applies. `runtimeDictionary` is the
- * snapshot the caller preloaded; omitted, the current process-wide one.
+ * An enabled runtime dictionary entry is authoritative, so a DB-only product
+ * such as ทุเรียนเทศขนาดใหญ่ (ม) is never filed as durian by the substring
+ * rule. A code the Stock model does not represent (ป / ห / พ) keeps only an
+ * exact legacy mapping (เห็ด stays ผัก) and is otherwise ไม่จัดหมวด — visible,
+ * never guessed. With no usable entry the legacy mapping applies.
+ * `runtimeDictionary` is the snapshot the caller preloaded; omitted, the
+ * current process-wide one.
  */
 function categoryFor(productName: string, runtimeDictionary?: RuntimeDictionarySnapshot): StockCategory {
-  const code = runtimeProductCodeEntryForName(productName, runtimeDictionary)?.categoryCode ?? "";
-  return STOCK_CATEGORY_BY_RUNTIME_CODE.get(code) ?? stockCategoryFor(productName);
+  const entry = runtimeProductCodeEntryForName(productName, runtimeDictionary);
+  if (!entry) return stockCategoryFor(productName);
+  return STOCK_CATEGORY_BY_RUNTIME_CODE.get(entry.categoryCode)
+    ?? explicitStockCategoryFor(productName)
+    ?? UNCATEGORIZED;
 }
 
 function groupByCategory(

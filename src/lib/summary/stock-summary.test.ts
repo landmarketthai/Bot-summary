@@ -398,18 +398,38 @@ describe("runtime dictionary categories", () => {
     expect(productIn(summary, "ทุเรียน", "ชะนีไข่")?.quantity).toBe(3);
   });
 
-  test("unmodeled or disabled runtime entries keep the legacy wet-market category", async () => {
+  test("names absent from a preloaded snapshot keep the legacy fallback", async () => {
+    const runtimeDictionary = await preload([["ม901", "ม", "ทุเรียนเทศขนาดใหญ่"]]);
+
+    const summary = buildStockSummaryFromRows(DATE, [
+      row({ product_name: "ทุเรียนเทศขนาดใหญ่", quantity: 5, unit: "กก." }),
+      row({ product_name: "ทุเรียนแกะ", quantity: 3, unit: "กล่อง" }),
+      row({ product_name: "ของแปลกใหม่ไม่เคยเจอ", quantity: 1, unit: "ถุง" }),
+    ], { runtimeDictionary });
+
+    expect(productIn(summary, "ผลไม้", "ทุเรียนเทศขนาดใหญ่")?.quantity).toBe(5);
+    // A genuine compound durian with no runtime entry still takes the substring rule.
+    expect(productIn(summary, "ทุเรียน", "ทุเรียนแกะ")?.quantity).toBe(3);
+    expect(productIn(summary, "ไม่จัดหมวด", "ของแปลกใหม่ไม่เคยเจอ")?.quantity).toBe(1);
+  });
+
+  test("unmodeled runtime codes keep only an exact legacy category; disabled entries keep the legacy mapping", async () => {
     await preload([
       ["ห901", "ห", "เห็ด"],
+      ["ป901", "ป", "ทุเรียนทอด"],
       ["ม902", "ม", "หลงลับแล", false],
     ]);
 
     const summary = buildStockSummaryFromRows(DATE, [
       row({ product_name: "เห็ด", quantity: 2, unit: "กก." }),
+      row({ product_name: "ทุเรียนทอด", quantity: 4, unit: "ถุง" }),
       row({ product_name: "หลงลับแล", quantity: 1, unit: "กก." }),
     ]);
 
     expect(productIn(summary, "ผัก", "เห็ด")?.quantity).toBe(2);
+    // The dictionary says ป, not ท: visible as ไม่จัดหมวด, never guessed into durian.
+    expect(productIn(summary, "ไม่จัดหมวด", "ทุเรียนทอด")?.quantity).toBe(4);
+    expect(productIn(summary, "ทุเรียน", "ทุเรียนทอด")).toBeUndefined();
     expect(productIn(summary, "ทุเรียน", "หลงลับแล")?.quantity).toBe(1);
   });
 });
