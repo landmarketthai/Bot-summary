@@ -1,3 +1,4 @@
+import { runtimeProductCodeEntryForName } from "@/lib/produce/product-code/resolver";
 import {
   buildRemainingFruitReport,
   UNIDENTIFIED_MARKET_SECTION,
@@ -77,6 +78,26 @@ function isIncomplete(item: RemainingFruitItem): boolean {
   return item.hasWithdrawnData && !item.hasReturnGoodData;
 }
 
+/**
+ * Runtime dictionary category codes the Stock model represents directly.
+ * ป / ห / พ are absent on purpose: they keep the legacy wet-market mapping.
+ */
+const STOCK_CATEGORY_BY_RUNTIME_CODE: ReadonlyMap<string, StockCategory> = new Map([
+  ["ท", "ทุเรียน"],
+  ["ม", "ผลไม้"],
+  ["ผ", "ผัก"],
+]);
+
+/**
+ * An enabled runtime dictionary entry (preloaded by the caller) wins, so a
+ * DB-only product such as ทุเรียนเทศขนาดใหญ่ (ม) is never filed as durian by
+ * the substring rule. With no usable entry the legacy mapping applies.
+ */
+function categoryFor(productName: string): StockCategory {
+  const code = runtimeProductCodeEntryForName(productName)?.categoryCode ?? "";
+  return STOCK_CATEGORY_BY_RUNTIME_CODE.get(code) ?? stockCategoryFor(productName);
+}
+
 function groupByCategory(sections: RemainingFruitMarketSection[]): StockCategoryGroup[] {
   const byCategory = new Map<StockCategory, Map<string, StockProductTotal>>();
 
@@ -84,7 +105,7 @@ function groupByCategory(sections: RemainingFruitMarketSection[]): StockCategory
     for (const item of section.items) {
       if (!hasSellableStock(item)) continue;
 
-      const category = stockCategoryFor(item.fruitName);
+      const category = categoryFor(item.fruitName);
       let products = byCategory.get(category);
       if (!products) {
         products = new Map();

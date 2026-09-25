@@ -1,4 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import {
+  preloadRuntimeProductCodes,
+  resetRuntimeProductCodesForTests,
+} from "@/lib/produce/product-code/resolver";
 import {
   buildStockSummaryFromRows,
   type StockSummary,
@@ -323,6 +327,64 @@ describe("category grouping", () => {
     expect(
       summary.categories.find((g) => g.category === "ทุเรียน")?.products.map((p) => p.productName),
     ).toEqual(["หมอนทอง", "ก้านยาว", "ทุเรียนกล่อง"]);
+  });
+});
+
+describe("runtime dictionary categories", () => {
+  beforeEach(() => resetRuntimeProductCodesForTests());
+  afterEach(() => resetRuntimeProductCodesForTests());
+
+  function preload(entries: Array<[code: string, categoryCode: string, name: string, enabled?: boolean]>) {
+    return preloadRuntimeProductCodes({
+      from: () => ({
+        select: () => ({
+          limit: async () => ({
+            data: entries.map(([code, categoryCode, name, enabled = true]) => ({
+              product_code: code,
+              category_code: categoryCode,
+              category_name: categoryCode,
+              canonical_name: name,
+              code_enabled: enabled,
+            })),
+            error: null,
+          }),
+        }),
+      }),
+    });
+  }
+
+  test("an enabled DB-only ม / ผ / ท entry wins over the durian substring guess", async () => {
+    await preload([
+      ["ม901", "ม", "ทุเรียนเทศขนาดใหญ่"],
+      ["ผ901", "ผ", "ผักเชียงดา"],
+      ["ท901", "ท", "ชะนีไข่"],
+    ]);
+
+    const summary = buildStockSummaryFromRows(DATE, [
+      row({ product_name: "ทุเรียนเทศขนาดใหญ่", quantity: 5, unit: "กก." }),
+      row({ product_name: "ผักเชียงดา", quantity: 4, unit: "กก." }),
+      row({ product_name: "ชะนีไข่", quantity: 3, unit: "กก." }),
+    ]);
+
+    expect(productIn(summary, "ผลไม้", "ทุเรียนเทศขนาดใหญ่")?.quantity).toBe(5);
+    expect(productIn(summary, "ทุเรียน", "ทุเรียนเทศขนาดใหญ่")).toBeUndefined();
+    expect(productIn(summary, "ผัก", "ผักเชียงดา")?.quantity).toBe(4);
+    expect(productIn(summary, "ทุเรียน", "ชะนีไข่")?.quantity).toBe(3);
+  });
+
+  test("unmodeled or disabled runtime entries keep the legacy wet-market category", async () => {
+    await preload([
+      ["ห901", "ห", "เห็ด"],
+      ["ม902", "ม", "หลงลับแล", false],
+    ]);
+
+    const summary = buildStockSummaryFromRows(DATE, [
+      row({ product_name: "เห็ด", quantity: 2, unit: "กก." }),
+      row({ product_name: "หลงลับแล", quantity: 1, unit: "กก." }),
+    ]);
+
+    expect(productIn(summary, "ผัก", "เห็ด")?.quantity).toBe(2);
+    expect(productIn(summary, "ทุเรียน", "หลงลับแล")?.quantity).toBe(1);
   });
 });
 
