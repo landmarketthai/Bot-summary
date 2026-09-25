@@ -67,6 +67,7 @@ const S = StyleSheet.create({
   th: { fontWeight: "bold", fontSize: 10.2, backgroundColor: "#E8E8E8" },
   totalRow: { backgroundColor: "#E8E8E8", fontWeight: "bold" },
   matrixName: { backgroundColor: "#FFFFFF" },
+  matrixAlternate: { backgroundColor: "#F4F7F4" },
   matrixTotal: { backgroundColor: "#DCEBD5" },
   matrixMarket: { backgroundColor: "#D9E7EC" },
   matrixHouse: { backgroundColor: "#FFF0C9" },
@@ -118,6 +119,7 @@ function MatrixCell({
   tone = "name",
   right = false,
   center = false,
+  alternate = false,
 }: {
   width: string;
   children?: React.ReactNode;
@@ -125,6 +127,7 @@ function MatrixCell({
   tone?: "name" | "total" | "market" | "house";
   right?: boolean;
   center?: boolean;
+  alternate?: boolean;
 }) {
   const toneStyle = tone === "total"
     ? S.matrixTotal
@@ -134,7 +137,7 @@ function MatrixCell({
         ? S.matrixHouse
         : S.matrixName;
 
-  return <View style={[S.cell, toneStyle, header ? S.th : {}, { width }]}>
+  return <View style={[S.cell, toneStyle, alternate && tone === "name" ? S.matrixAlternate : {}, header ? S.th : {}, { width }]}>
     <Text style={[
       right ? S.right : center ? S.center : {},
       tone === "market" && !header ? S.matrixMarketText : {},
@@ -142,12 +145,69 @@ function MatrixCell({
   </View>;
 }
 
-function stockMatrixItems(report: MorningBriefReport) {
-  return (["strong", "surplus", "reduce", "unknown"] as const)
-    .flatMap((status) => report.purchasePlanning[status].items ?? [])
-    .filter((item) => item.category === "ผลไม้");
+const STOCK_CATEGORIES = ["ผลไม้", "ทุเรียน", "ผัก", "ของแห้ง", "ยังไม่ได้จัดหมวดหมู่"] as const;
+type StockPageCategory = typeof STOCK_CATEGORIES[number];
+
+type StockMatrixItem = {
+  productName: string;
+  category: string;
+  unit: string;
+  houseStockQuantity: number | null;
+  marketStockQuantity: number;
+  totalRemainingQuantity: number | null;
+};
+
+function stockCategory(category: string): StockPageCategory {
+  if (category === "ผลไม้") return "ผลไม้";
+  if (category === "ทุเรียน") return "ทุเรียน";
+  if (["ผัก / สมุนไพร / เครื่องประกอบอาหาร", "ผัก", "เห็ด"].includes(category)) return "ผัก";
+  if (["ปลา / อาหารแห้ง / ของแห้ง", "ปลา", "อาหารแห้ง", "ของแห้ง"].includes(category)) return "ของแห้ง";
+  return "ยังไม่ได้จัดหมวดหมู่";
 }
 
+function stockMatrixKey(productName: string, unit: string): string {
+  return `${productName}\u0000${displayUnit(unit)}`;
+}
+
+function stockMatrixItems(report: MorningBriefReport): StockMatrixItem[] {
+  const byKey = new Map<string, StockMatrixItem>();
+
+  for (const item of (["strong", "surplus", "reduce", "unknown"] as const)
+    .flatMap((status) => report.purchasePlanning[status].items ?? [])) {
+    byKey.set(stockMatrixKey(item.productName, item.unit), {
+      productName: item.productName,
+      category: item.category,
+      unit: item.unit,
+      houseStockQuantity: item.houseStockQuantity ?? null,
+      marketStockQuantity: item.marketStockQuantity ?? 0,
+      totalRemainingQuantity: item.totalRemainingQuantity ?? null,
+    });
+  }
+
+  if (report.houseStock.status === "available") {
+    for (const item of report.houseStock.items ?? []) {
+      const key = stockMatrixKey(item.productName, item.unit);
+      const existing = byKey.get(key);
+      if (existing) {
+        if (existing.houseStockQuantity == null) {
+          existing.houseStockQuantity = item.quantity;
+          existing.totalRemainingQuantity = item.quantity + existing.marketStockQuantity;
+        }
+        continue;
+      }
+      byKey.set(key, {
+        productName: item.productName,
+        category: item.category,
+        unit: item.unit,
+        houseStockQuantity: item.quantity,
+        marketStockQuantity: 0,
+        totalRemainingQuantity: item.quantity,
+      });
+    }
+  }
+
+  return [...byKey.values()];
+}
 function stockQuantity(value: number | null | undefined, blankZero = false): string {
   if (value == null) return "-";
   if (blankZero && value === 0) return "";
@@ -158,8 +218,7 @@ function displayUnit(unit: string): string {
   return unit === "โล" ? "กก." : unit;
 }
 
-function StockMatrix({ report }: { report: MorningBriefReport }) {
-  const items = stockMatrixItems(report);
+function StockMatrix({ items }: { items: ReturnType<typeof stockMatrixItems> }) {
   const duplicateNames = new Map<string, number>();
   for (const item of items) {
     duplicateNames.set(item.productName, (duplicateNames.get(item.productName) ?? 0) + 1);
@@ -178,13 +237,43 @@ function StockMatrix({ report }: { report: MorningBriefReport }) {
         const showUnit = (duplicateNames.get(item.productName) ?? 0) > 1;
         const name = showUnit ? `${item.productName} (${displayUnit(item.unit)})` : item.productName;
         return <View style={S.tr} key={`${item.productName}-${item.unit}-${index}`} wrap={false}>
-          <MatrixCell width="40%">{name}</MatrixCell>
+          <MatrixCell width="40%" alternate={index % 2 === 1}>{name}</MatrixCell>
           <MatrixCell width="20%" tone="house" right>{stockQuantity(item.houseStockQuantity, true)}</MatrixCell>
           <MatrixCell width="20%" tone="market" right>{stockQuantity(item.marketStockQuantity, true)}</MatrixCell>
           <MatrixCell width="20%" tone="total" right>{stockQuantity(item.totalRemainingQuantity)}</MatrixCell>
         </View>;
       })}
+    {Array.from(new Set(items.map((item) => item.unit))).map((unit) => {
+      const unitItems = items.filter((item) => item.unit === unit);
+      const houseKnown = unitItems.every((item) => item.houseStockQuantity != null);
+      const sum = (key: "houseStockQuantity" | "marketStockQuantity" | "totalRemainingQuantity") =>
+        unitItems.every((item) => item[key] != null)
+          ? qty(unitItems.reduce((total, item) => total + item[key]!, 0))
+          : "-";
+      return <View style={S.tr} key={`total-${unit}`} wrap={false}>
+        <MatrixCell width="40%" tone="total">{`\u{e23}\u{e27}\u{e21} (${displayUnit(unit)})`}</MatrixCell>
+        <MatrixCell width="20%" tone="total" right>{houseKnown ? sum("houseStockQuantity") : "-"}</MatrixCell>
+        <MatrixCell width="20%" tone="total" right>{sum("marketStockQuantity")}</MatrixCell>
+        <MatrixCell width="20%" tone="total" right>{houseKnown ? sum("totalRemainingQuantity") : "-"}</MatrixCell>
+      </View>;
+    })}
   </View>;
+}
+
+function categoryChunks(items: ReturnType<typeof stockMatrixItems>) {
+  const chunks: typeof items[] = [];
+  let chunk: typeof items = [];
+  for (const item of items) {
+    const candidate = [...chunk, item];
+    if (chunk.length > 0 && candidate.length + new Set(candidate.map((row) => row.unit)).size + 1 > 30) {
+      chunks.push(chunk);
+      chunk = [item];
+    } else {
+      chunk = candidate;
+    }
+  }
+  if (chunk.length) chunks.push(chunk);
+  return chunks.length ? chunks : [[]];
 }
 
 function DataFooter({ generatedText }: { generatedText: string }) {
@@ -271,14 +360,18 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
       <DataFooter generatedText={generatedText} />
     </Page>
 
-    <Page size="A4" style={S.page} wrap>
-      <View style={S.stockHeader}>
-        <Text style={S.title}>ตารางผลไม้คงเหลือสำหรับสั่งซื้อ - {formatThaiDate(report.businessDate)}</Text>
-        <Text style={S.subtitle}>รวมคงเหลือ = คงเหลือในบ้าน + ในตลาด</Text>
-      </View>
-      <StockMatrix report={report} />
-      <Text style={[S.note, { marginTop: 6 }]}>คงเหลือในบ้าน = ของที่ยังอยู่บ้าน/คลัง • ในตลาด = ของดีชั่งคืนจากตลาด • รวมคงเหลือ = คงเหลือในบ้าน + ในตลาด • ถ้าข้อมูลฝั่งบ้านยังไม่ทราบจะแสดง “-” และระบบจะไม่เดายอดรวม</Text>
-      <DataFooter generatedText={generatedText} />
-    </Page>
+    {STOCK_CATEGORIES.flatMap((category) => {
+      const categoryItems = stockMatrixItems(report).filter((item) => stockCategory(item.category) === category);
+      const chunks = categoryChunks(categoryItems);
+      return chunks.map((items, index) => <Page key={`${category}-${index}`} size="A4" style={S.page} wrap>
+        <View style={S.stockHeader}>
+          <Text style={S.title}>{`หมวด${category}${chunks.length > 1 ? ` ${index + 1}/${chunks.length}` : ""} - ${formatThaiDate(report.businessDate)}`}</Text>
+          <Text style={S.subtitle}>รวมคงเหลือ = คงเหลือในบ้าน + ในตลาด</Text>
+        </View>
+        <StockMatrix items={items} />
+        <Text style={[S.note, { marginTop: 6 }]}>คงเหลือในบ้าน = ของที่ยังอยู่บ้าน/คลัง • ในตลาด = ของดีชั่งคืนจากตลาด • ถ้าไม่ทราบข้อมูลฝั่งบ้านจะแสดง “-”</Text>
+        <DataFooter generatedText={generatedText} />
+      </Page>);
+    })}
   </Document>;
 }
