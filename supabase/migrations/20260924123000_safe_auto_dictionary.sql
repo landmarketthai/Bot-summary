@@ -102,6 +102,7 @@ DECLARE
   v_name text := btrim(regexp_replace(normalize(p_normalized_name, NFC), '\s+', ' ', 'g'));
   v_candidate public.produce_dictionary_candidates%ROWTYPE;
   v_existing_code text;
+  v_existing_enabled boolean;
   v_sessions integer;
   v_days integer;
   v_next integer;
@@ -112,12 +113,12 @@ BEGIN
     RAISE EXCEPTION 'invalid auto-dictionary observation';
   END IF;
 
-  SELECT product_code INTO v_existing_code
+  SELECT product_code, code_enabled INTO v_existing_code, v_existing_enabled
   FROM public.produce_product_codes
-  WHERE code_enabled AND canonical_name = v_name
-  ORDER BY product_code LIMIT 1;
+  WHERE canonical_name = v_name
+  ORDER BY code_enabled DESC, product_code LIMIT 1;
 
-  IF v_existing_code IS NOT NULL THEN
+  IF v_existing_enabled THEN
     RETURN jsonb_build_object('status','existing','product_code',v_existing_code);
   END IF;
 
@@ -161,7 +162,7 @@ BEGIN
     );
   END IF;
 
-  IF p_similar_product_code IS NOT NULL OR v_candidate.similar_product_code IS NOT NULL THEN
+  IF v_existing_code IS NULL AND (p_similar_product_code IS NOT NULL OR v_candidate.similar_product_code IS NOT NULL) THEN
     UPDATE public.produce_dictionary_candidates
     SET state = 'needs_review', updated_at = now()
     WHERE id = v_candidate.id;
@@ -181,6 +182,32 @@ BEGIN
       'distinct_sessions',v_sessions,'distinct_days',v_days);
   END IF;
 
+  -- ponytail: one global lock is required by the cross-category scan; shard only if promotion throughput needs it.
+  PERFORM pg_advisory_xact_lock(hashtext('produce-product-code:global-promotion'));
+  SELECT product_code, code_enabled INTO v_existing_code, v_existing_enabled
+  FROM public.produce_product_codes
+  WHERE canonical_name = v_name
+  ORDER BY code_enabled DESC, product_code LIMIT 1;
+  IF v_existing_enabled THEN
+    UPDATE public.produce_dictionary_candidates
+    SET state='promoted', promoted_product_code=v_existing_code, updated_at=now()
+    WHERE id=v_candidate.id;
+    RETURN jsonb_build_object('status','existing','candidate_id',v_candidate.id,'product_code',v_existing_code);
+  ELSIF v_existing_code IS NOT NULL THEN
+    UPDATE public.produce_dictionary_candidates
+    SET state='needs_review', similar_product_code=v_existing_code, updated_at=now()
+    WHERE id=v_candidate.id;
+    INSERT INTO public.produce_dictionary_decisions(candidate_id, decision, reason, target_product_code)
+    SELECT v_candidate.id, 'NEEDS_REVIEW', 'existing_disabled_product', v_existing_code
+    WHERE NOT EXISTS (
+      SELECT 1 FROM public.produce_dictionary_decisions
+      WHERE candidate_id = v_candidate.id AND decision = 'NEEDS_REVIEW' AND reason = 'existing_disabled_product'
+    );
+    RETURN jsonb_build_object('status','needs_review','reason','existing_disabled_product',
+      'candidate_id',v_candidate.id,'similar_product_code',v_existing_code,
+      'distinct_sessions',v_sessions,'distinct_days',v_days);
+  END IF;
+
   IF p_category_code IS NULL OR p_category_name IS NULL
      OR p_category_code !~ '^[มผปทหพ]$' OR btrim(p_category_name) = '' THEN
     UPDATE public.produce_dictionary_candidates
@@ -195,20 +222,7 @@ BEGIN
     RETURN jsonb_build_object('status','needs_review','reason','category_unknown',
       'candidate_id',v_candidate.id,'distinct_sessions',v_sessions,'distinct_days',v_days);
   END IF;
-
-  -- ponytail: one global lock is required by the cross-category scan; shard only if promotion throughput needs it.
-  PERFORM pg_advisory_xact_lock(hashtext('produce-product-code:global-promotion'));
   PERFORM pg_advisory_xact_lock(hashtext('produce-product-code:' || p_category_code));
-  SELECT product_code INTO v_existing_code
-  FROM public.produce_product_codes
-  WHERE code_enabled AND canonical_name = v_name
-  ORDER BY product_code LIMIT 1;
-  IF v_existing_code IS NOT NULL THEN
-    UPDATE public.produce_dictionary_candidates
-    SET state='promoted', promoted_product_code=v_existing_code, updated_at=now()
-    WHERE id=v_candidate.id;
-    RETURN jsonb_build_object('status','existing','candidate_id',v_candidate.id,'product_code',v_existing_code);
-  END IF;
 
   SELECT product_code INTO v_similar_code
   FROM public.produce_product_codes

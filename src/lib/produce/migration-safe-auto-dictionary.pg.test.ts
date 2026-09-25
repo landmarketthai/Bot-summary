@@ -107,6 +107,27 @@ describe.skipIf(!pgAvailable)("safe auto-dictionary migration", () => {
     expect(await scalar("SELECT count(*)::text FROM public.produce_dictionary_decisions WHERE decision = 'NEW_PRODUCT'")).toBe("1");
   });
 
+  test("reviews a disabled exact canonical name without issuing another code", async () => {
+    const candidateName = `disabled canonical ${randomBytes(4).toString("hex")}`;
+    const disabledCode = "ห9999";
+    const inserted = await run(`INSERT INTO public.produce_product_codes
+      (product_code, category_code, category_name, canonical_name, code_enabled)
+      VALUES (${quote(disabledCode)}, 'ห', 'Disabled category', ${quote(candidateName)}, false)`);
+    expect(inserted.code, inserted.stderr).toBe(0);
+
+    expect(JSON.parse(await observe("disabled-1", randomBytes(16).toString("hex"), "2026-09-24", candidateName)).status).toBe("observing");
+    expect(JSON.parse(await observe("disabled-2", randomBytes(16).toString("hex"), "2026-09-24", candidateName)).status).toBe("observing");
+    const reviewed = JSON.parse(await observe("disabled-3", randomBytes(16).toString("hex"), "2026-09-25", candidateName));
+    expect(reviewed.status).toBe("needs_review");
+    expect(reviewed.reason).toBe("existing_disabled_product");
+    expect(await scalar(`SELECT count(*)::text FROM public.produce_product_codes WHERE canonical_name = ${quote(candidateName)}`)).toBe("1");
+    expect(await scalar(`SELECT state FROM public.produce_dictionary_candidates WHERE normalized_name = ${quote(candidateName)}`)).toBe("needs_review");
+    expect(await scalar(`SELECT d.decision || ':' || d.reason || ':' || d.target_product_code
+      FROM public.produce_dictionary_decisions d
+      JOIN public.produce_dictionary_candidates c ON c.id = d.candidate_id
+      WHERE c.normalized_name = ${quote(candidateName)}`)).toBe(`NEEDS_REVIEW:existing_disabled_product:${disabledCode}`);
+  });
+
   test("serializes concurrent observations and code allocation under the promotion advisory lock", async () => {
     const promoted = await Promise.all([["a", "concurrent-watermelon"], ["b", "concurrent-pomegranate"]].map(([suffix, candidateName]) => Promise.all([
       observe(`lock-${suffix}-1`, randomBytes(16).toString("hex"), "2026-09-24", candidateName),
