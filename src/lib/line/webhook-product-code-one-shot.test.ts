@@ -12,11 +12,13 @@
  * finalize RPC refuses to persist a document carrying validation errors, the
  * way Production's does.
  */
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { WebhookService } from "./webhook-service";
 import { finalizePendingGeneration } from "./pending-session-finalizer";
 import { computeSessionHash } from "./session-dedup-service";
 import { parseWeighSession } from "@/lib/parsers/weigh-session/parser";
+import { PRODUCT_CODE_ENTRIES } from "@/lib/produce/product-code/dictionary";
+import { resetRuntimeProductCodesForTests } from "@/lib/produce/product-code/resolver";
 import type { PendingSession } from "./pending-session-service";
 import type { LineMessageEvent } from "./types";
 
@@ -69,6 +71,7 @@ const MASTER: Row[] = [{
 
 class Query {
   private readonly filters: Array<(row: Row) => boolean> = [];
+  private maxRows: number | null = null;
 
   constructor(
     private readonly db: CodeDatabase,
@@ -77,9 +80,12 @@ class Query {
     private readonly payload?: Row | Row[],
   ) {}
 
-  select = () => this;
+  select = (_columns?: string) => this;
   order = () => this;
-  limit = () => this;
+  limit = (count: number) => {
+    this.maxRows = count;
+    return this;
+  };
   not = () => this;
   eq(column: string, value: unknown) {
     this.filters.push((row) => row[column] === value);
@@ -102,9 +108,14 @@ class Query {
   }
 
   private run(): { data: Row[] | Row | null; error: null } {
+    if (this.table === "produce_product_codes" && this.mode === "select") {
+      this.db.calls.push("dictionaryQuery");
+    }
     const rows = this.db.rows(this.table);
     const matched = () => rows.filter((row) => this.filters.every((f) => f(row)));
-    if (this.mode === "select") return { data: matched(), error: null };
+    if (this.mode === "select") {
+      return { data: matched().slice(0, this.maxRows ?? rows.length), error: null };
+    }
     if (this.mode === "insert" || this.mode === "upsert") {
       const payloads = Array.isArray(this.payload) ? this.payload : [this.payload ?? {}];
       const mode = this.mode;
@@ -123,10 +134,18 @@ class Query {
 
 class CodeDatabase {
   private readonly tables = new Map<string, Row[]>();
+  readonly calls: string[] = [];
   finalizeCalls: Row[] = [];
 
-  constructor(master: Row[] = []) {
+  constructor(master: Row[] = [], private readonly emulateMissingOrderingRpc = false) {
     this.tables.set("produce_transactions", [...master]);
+    this.tables.set("produce_product_codes", PRODUCT_CODE_ENTRIES.map((entry) => ({
+      product_code: entry.code,
+      category_code: entry.categoryCode,
+      category_name: entry.category,
+      canonical_name: entry.canonicalName,
+      code_enabled: entry.enabled,
+    })));
   }
 
   rows(table: string): Row[] {
@@ -142,6 +161,7 @@ class CodeDatabase {
   }
 
   write(table: string, payload: Row, mode: "insert" | "upsert"): Row {
+    if (table === "raw_messages") this.calls.push("saveRawMessage");
     const rows = this.rows(table);
     if (mode === "upsert" && table === "pending_sessions") {
       const existing = rows.find((row) => row.session_key === payload.session_key);
@@ -164,7 +184,7 @@ class CodeDatabase {
   }
 
   from = (table: string) => ({
-    select: () => new Query(this, table, "select"),
+    select: (_columns?: string) => new Query(this, table, "select"),
     insert: (payload: Row | Row[]) => new Query(this, table, "insert", payload),
     upsert: (payload: Row | Row[]) => new Query(this, table, "upsert", payload),
     update: (payload: Row) => new Query(this, table, "update", payload),
@@ -172,6 +192,12 @@ class CodeDatabase {
   });
 
   rpc = async (name: string, args: Row) => {
+    if (name === "receive_line_webhook_event" && this.emulateMissingOrderingRpc) {
+      return {
+        data: null,
+        error: { code: "42883", message: "receive_line_webhook_event does not exist" },
+      };
+    }
     const pending = this.rows("pending_sessions")
       .find((row) => row.session_key === args.p_session_key);
 
@@ -258,6 +284,29 @@ async function paste(db: CodeDatabase, document: string): Promise<string[]> {
 // ── CASE N — the one-shot coded document ────────────────────────────────────
 
 describe("CASE N — a pasted coded document uses the PR #45 pipeline", () => {
+  afterEach(() => resetRuntimeProductCodesForTests());
+
+  it("saves raw input before preloading runtime codes, then parses with the preload", async () => {
+    const promotedCode = `${PRODUCT_CODE_ENTRIES[0].code.slice(0, 1)}999`;
+    const canonicalName = "\u0e21\u0e30\u0e01\u0e2d\u0e01\u0e43\u0e2b\u0e21\u0e48";
+    const db = new CodeDatabase([], true);
+    db.write("produce_product_codes", {
+      product_code: promotedCode,
+      category_code: "runtime",
+      category_name: "runtime",
+      canonical_name: canonicalName,
+      code_enabled: true,
+    }, "insert");
+
+    const document = CODED_WITHDRAWAL.replace(PRODUCT_CODE_ENTRIES[0].code, promotedCode);
+    await paste(db, document);
+
+    expect(db.calls.slice(0, 2)).toEqual(["saveRawMessage", "dictionaryQuery"]);
+    const parsed = parseWeighSession(document);
+    expect(parsed.parse_errors.some((error) => error.includes(`unknown product code ${promotedCode}`))).toBe(false);
+    expect(parsed.items.some((item) => item.product_name === canonicalName)).toBe(true);
+  });
+
   it("opens a pending generation instead of persisting directly", async () => {
     const db = new CodeDatabase();
 

@@ -1,6 +1,10 @@
 import { isSoldOutByAbsentReturn, type SalesReport } from "@/lib/sales/calculate";
 import type { SalesValueStatus } from "@/lib/sales/calculate";
 import { PRODUCT_CODE_ENTRIES } from "@/lib/produce/product-code/dictionary";
+import {
+  runtimeProductCodeEntryForName,
+  type RuntimeDictionarySnapshot,
+} from "@/lib/produce/product-code/resolver";
 import { canonicalProduceProductIdentity } from "@/lib/produce/product-vocabulary";
 import type {
   PurchasePlanningReport,
@@ -37,20 +41,28 @@ export interface MorningBriefPurchaseGroup {
 
 export type MorningBriefPurchasePlanning = Record<PurchaseStatus, MorningBriefPurchaseGroup>;
 
-export function morningBriefProductIdentity(productName: string, unit: string): {
+/** `runtimeDictionary`: the snapshot the report preloaded; omitted, the process-wide one. */
+export function morningBriefProductIdentity(
+  productName: string,
+  unit: string,
+  runtimeDictionary?: RuntimeDictionarySnapshot,
+): {
   productName: string;
   category: string;
 } {
   const canonical = canonicalProduceProductIdentity(productName, unit);
   return {
     productName: canonical,
-    category: CATEGORY_BY_PRODUCT.get(canonical) ?? stockCategoryFor(canonical),
+    category: runtimeProductCodeEntryForName(canonical, runtimeDictionary)?.category
+      ?? CATEGORY_BY_PRODUCT.get(canonical)
+      ?? stockCategoryFor(canonical),
   };
 }
 
 /** Keep every classified item; LINE/PDF presentation decides display size. */
 export function summarizePurchasePlanning(
   report: Pick<PurchasePlanningReport, "items">,
+  runtimeDictionary?: RuntimeDictionarySnapshot,
 ): MorningBriefPurchasePlanning {
   const empty = (): MorningBriefPurchaseGroup => ({ count: 0, productNames: [], items: [] });
   const summary: MorningBriefPurchasePlanning = {
@@ -59,7 +71,7 @@ export function summarizePurchasePlanning(
 
   for (const item of report.items) {
     const group = summary[item.status];
-    const identity = morningBriefProductIdentity(item.productName, item.unit);
+    const identity = morningBriefProductIdentity(item.productName, item.unit, runtimeDictionary);
     group.count += 1;
     group.productNames.push(identity.productName);
     group.items!.push({

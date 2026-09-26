@@ -13,6 +13,7 @@ import {
   type ProduceCategoryRow,
 } from "@/lib/summary/produce-category-totals";
 import { transactionBucket } from "@/lib/summary/transactions";
+import type { RuntimeDictionarySnapshot } from "@/lib/produce/product-code/resolver";
 
 export interface DailySummaryTransactionRow {
   raw_message_id: string;
@@ -153,6 +154,7 @@ export function groupDailySummariesBySource(
 export function dailySummaryCategoryLedgers(
   transactions: readonly DailySummaryTransactionRow[],
   sources: readonly DailySummarySourceRow[],
+  runtimeDictionary?: RuntimeDictionarySnapshot,
 ): Map<string, Map<string, CategoryLedgerEntry[]>> {
   const sourceByMessageId = new Map(
     sources
@@ -193,7 +195,7 @@ export function dailySummaryCategoryLedgers(
   for (const [sourceId, byIdentity] of rowsBySource) {
     const ledgers = new Map<string, CategoryLedgerEntry[]>();
     for (const [key, rows] of byIdentity) {
-      const breakdown = produceCategoryTotals(rows, knownNames, transactionBucket, false);
+      const breakdown = produceCategoryTotals(rows, knownNames, transactionBucket, false, runtimeDictionary);
       skipped += breakdown.skipped;
       ledgers.set(key, categoryLedger(breakdown));
     }

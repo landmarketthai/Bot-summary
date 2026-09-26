@@ -8,6 +8,7 @@ import {
 import { roundHalfUp } from "@/lib/sales/calculate";
 import { normalizeProductName } from "@/lib/summary/remaining-fruit";
 import { baseTransactionType, type TransactionBucket } from "@/lib/summary/transactions";
+import type { RuntimeDictionarySnapshot } from "@/lib/produce/product-code/resolver";
 
 /**
  * Shared category-aware money aggregation for produce output.
@@ -129,8 +130,9 @@ function exactToSatang(exact: number): number {
 export function resolveProduceCategory(
   rawProductName: string,
   knownNames?: ReadonlySet<string>,
+  runtimeDictionary?: RuntimeDictionarySnapshot,
 ): ReportCategoryId {
-  return dictionaryCategoryFor(normalizeProductName(rawProductName, undefined, knownNames));
+  return dictionaryCategoryFor(normalizeProductName(rawProductName, undefined, knownNames), runtimeDictionary);
 }
 
 interface MutableCategoryEntry {
@@ -274,6 +276,7 @@ export function produceCategoryTotals(
    * summed exactly and rounded once, at the end.
    */
   roundPerRow = true,
+  runtimeDictionary?: RuntimeDictionarySnapshot,
 ): CategoryBreakdown {
   const byBucket: Record<TransactionBucket, Map<ReportCategoryId, MutableCategoryEntry>> = {
     เบิก: new Map(),
@@ -290,7 +293,7 @@ export function produceCategoryTotals(
       continue;
     }
 
-    const categoryId = resolveProduceCategory(row.product_name, knownNames);
+    const categoryId = resolveProduceCategory(row.product_name, knownNames, runtimeDictionary);
     const map = byBucket[bucket];
     const entry = map.get(categoryId) ?? { id: categoryId, totalSatang: 0, itemCount: 0 };
     entry.totalSatang += roundPerRow

@@ -10,6 +10,10 @@ import { loadSalesReport } from "@/lib/sales/load";
 import { fetchReconciliationReport } from "@/lib/reconciliation-report-service";
 import { loadPurchasePlanningReport } from "@/lib/summary/purchase-planning-service";
 import {
+  preloadRuntimeProductCodes,
+  type RuntimeDictionarySnapshot,
+} from "@/lib/produce/product-code/resolver";
+import {
   morningBriefProductIdentity,
   summarizePurchasePlanning,
   summarizeSales,
@@ -22,7 +26,10 @@ import {
 type Supabase = SupabaseClient<Database>;
 type HouseRow = Database["public"]["Tables"]["physical_inventory_items"]["Row"];
 
-function summarizeHouseStockRows(rows: readonly HouseRow[]): MorningBriefHouseStockItem[] {
+function summarizeHouseStockRows(
+  rows: readonly HouseRow[],
+  runtimeDictionary: RuntimeDictionarySnapshot,
+): MorningBriefHouseStockItem[] {
   const groups = new Map<string, MorningBriefHouseStockItem & { quantityMilli: bigint }>();
   for (const row of rows) {
     const rawProduct = row.normalized_product?.trim() || row.raw_product_description?.trim();
@@ -34,7 +41,7 @@ function summarizeHouseStockRows(rows: readonly HouseRow[]): MorningBriefHouseSt
     const valueSatang = quantityTimesSatang(quantity, unitPriceSatang);
     if (quantityMilli === null || valueSatang === null || !Number.isSafeInteger(unitPriceSatang)) continue;
 
-    const identity = morningBriefProductIdentity(rawProduct, unit);
+    const identity = morningBriefProductIdentity(rawProduct, unit, runtimeDictionary);
     const key = JSON.stringify([rawProduct, unit, unitPriceSatang]);
     const group = groups.get(key) ?? {
       productName: identity.productName,
@@ -59,6 +66,7 @@ function summarizeHouseStockRows(rows: readonly HouseRow[]): MorningBriefHouseSt
 async function loadHouseStock(
   supabase: Supabase,
   businessDate: string,
+  runtimeDictionary: RuntimeDictionarySnapshot,
 ): Promise<MorningBriefHouseStock> {
   try {
     const snapshot = await fetchAuthoritativeHouseStockItems(supabase, businessDate);
@@ -68,7 +76,7 @@ async function loadHouseStock(
       status: "available",
       groupCount: report.groupCount,
       totalValueSatang: report.totalValueSatang,
-      items: summarizeHouseStockRows(snapshot.items),
+      items: summarizeHouseStockRows(snapshot.items, runtimeDictionary),
     };
   } catch (error) {
     logger.warn("morning brief house stock unavailable", {
@@ -115,10 +123,11 @@ async function loadReconciliation(
 function summarizeFruitFinancial(
   salesReport: Awaited<ReturnType<typeof loadSalesReport>>,
   houseStock: MorningBriefHouseStock,
+  runtimeDictionary: RuntimeDictionarySnapshot,
 ) {
   const markets = salesReport.markets.flatMap((market) => {
     const fruitRows = market.rows.filter(
-      (row) => morningBriefProductIdentity(row.productName, row.unit).category === "ผลไม้",
+      (row) => morningBriefProductIdentity(row.productName, row.unit, runtimeDictionary).category === "ผลไม้",
     );
     if (fruitRows.length === 0) return [];
 
@@ -165,18 +174,21 @@ export async function loadMorningBriefReport(
   supabase: Supabase,
   businessDate: string,
 ): Promise<MorningBriefReport> {
+  // Categories use the snapshot this report loaded, not whatever another
+  // request's refresh leaves process-wide while the loaders are awaiting.
+  const runtimeDictionary = await preloadRuntimeProductCodes(supabase);
   const [purchasePlanning, sales, houseStock, reconciliation] = await Promise.all([
     loadPurchasePlanningReport(supabase, businessDate),
     loadSalesReport(supabase, businessDate),
-    loadHouseStock(supabase, businessDate),
+    loadHouseStock(supabase, businessDate, runtimeDictionary),
     loadReconciliation(supabase, businessDate),
   ]);
 
   return {
     businessDate,
-    purchasePlanning: summarizePurchasePlanning(purchasePlanning),
+    purchasePlanning: summarizePurchasePlanning(purchasePlanning, runtimeDictionary),
     sales: summarizeSales(sales),
-    fruitFinancial: summarizeFruitFinancial(sales, houseStock),
+    fruitFinancial: summarizeFruitFinancial(sales, houseStock, runtimeDictionary),
     houseStock,
     reconciliation,
   };

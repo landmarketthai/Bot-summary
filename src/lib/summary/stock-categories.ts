@@ -345,6 +345,11 @@ export function stockCategoryFor(canonicalProductName: string): StockCategory {
   return UNCATEGORIZED;
 }
 
+/** The exact-match category alone — never the durian substring rule. */
+export function explicitStockCategoryFor(canonicalProductName: string): StockCategory | undefined {
+  return CATEGORY_BY_PRODUCT.get(canonicalProductName.normalize("NFC").trim());
+}
+
 /** Exposed for tests and for a future admin screen that audits the mapping. */
 export function stockCategoryEntries(): Array<[string, StockCategory]> {
   return [...CATEGORY_BY_PRODUCT.entries()];

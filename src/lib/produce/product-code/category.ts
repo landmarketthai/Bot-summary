@@ -12,6 +12,7 @@
  */
 
 import { PRODUCT_CODE_ENTRIES, type ProductCodeEntry } from "./dictionary";
+import { runtimeProductCodeEntryForName, type RuntimeDictionarySnapshot } from "./resolver";
 
 export const UNCATEGORIZED_CATEGORY_ID = "uncategorized" as const;
 
@@ -81,19 +82,29 @@ function buildCanonicalMap(): ReadonlyMap<string, ProductCodeEntry> {
 
 const BY_CANONICAL_NAME = buildCanonicalMap();
 
-/** Dictionary entry for an exact canonical name, or null if unknown. */
-export function dictionaryEntryFor(productName: string): ProductCodeEntry | null {
+/**
+ * Dictionary entry for an exact canonical name, or null if unknown. Runtime
+ * entries come from `runtimeDictionary` — the snapshot a report preloaded —
+ * or, when omitted, the current process-wide snapshot.
+ */
+export function dictionaryEntryFor(
+  productName: string,
+  runtimeDictionary?: RuntimeDictionarySnapshot,
+): ProductCodeEntry | null {
   const key = productName.normalize("NFC").trim();
   if (!key) return null;
-  return BY_CANONICAL_NAME.get(key) ?? null;
+  return BY_CANONICAL_NAME.get(key) ?? runtimeProductCodeEntryForName(key, runtimeDictionary);
 }
 
 /**
  * Resolve a (already identity-normalized) product name to a report category.
  * Unknown / blank names return ไม่จัดหมวด. Never guesses.
  */
-export function dictionaryCategoryFor(productName: string): ReportCategoryId {
-  const entry = dictionaryEntryFor(productName);
+export function dictionaryCategoryFor(
+  productName: string,
+  runtimeDictionary?: RuntimeDictionarySnapshot,
+): ReportCategoryId {
+  const entry = dictionaryEntryFor(productName, runtimeDictionary);
   if (!entry) return UNCATEGORIZED_CATEGORY_ID;
   return isDictionaryCategoryId(entry.categoryCode) ? entry.categoryCode : UNCATEGORIZED_CATEGORY_ID;
 }

@@ -48,6 +48,7 @@ interface ReviewRow {
 class FakeDb {
   readonly reviews: ReviewRow[] = [];
   readonly masterQueries: Array<string | null> = [];
+  readonly rpcCalls: string[] = [];
   masterError: string | null = null;
   masterRowOverride: RoundMasterRow[] | null = null;
 
@@ -100,10 +101,21 @@ class FakeDb {
       return builder;
     }
 
+    if (table === "produce_product_codes") {
+      const builder = {
+        select: () => builder,
+        eq: () => builder,
+        order: () => builder,
+        limit: () => Promise.resolve({ data: [], error: null }),
+      };
+      return builder;
+    }
+
     throw new Error(`unexpected table ${table}`);
   }
 
   private rpc(name: string, params: Record<string, unknown>) {
+    this.rpcCalls.push(name);
     if (name === "record_produce_validation_review") {
       const existing = this.find(params);
       if (existing) {
@@ -144,6 +156,10 @@ class FakeDb {
       row.confirmed_by_line_user_id = String(params.p_line_user_id);
       row.confirmed_line_event_id = String(params.p_line_event_id);
       return Promise.resolve({ data: { status: "confirmed" }, error: null });
+    }
+
+    if (name === "observe_produce_dictionary_candidate") {
+      return Promise.resolve({ data: { status: "observing" }, error: null });
     }
 
     throw new Error(`unexpected rpc ${name}`);
@@ -389,6 +405,15 @@ describe("finalize gate", () => {
     expect(db.reviews).toHaveLength(0);
   });
 
+  it("does not observe or promote an unknown product while finalizing", async () => {
+    const db = new FakeDb({ [ROUND]: [] });
+    const gate = await runProduceFinalizeGate(db.client(), REF, suspiciousWithdrawal());
+
+    expect(gate.decision).toBe("review_presented");
+    expect(db.rpcCalls).not.toContain("observe_produce_dictionary_candidate");
+    expect(db.rpcCalls.some((name) => name.includes("promot"))).toBe(false);
+  });
+
   it("blocks an acknowledged session once its withdrawal is voided away", async () => {
     const db = new FakeDb({ [ROUND]: withdrawal });
     // produce_transactions excludes voided sessions, so the master simply
@@ -421,6 +446,7 @@ describe("unknown product vocabulary", () => {
     ]);
     expect(db.reviews).toHaveLength(1);
     expect(db.reviews[0].confirmed_at).toBeNull();
+    expect(db.rpcCalls).toContain("observe_produce_dictionary_candidate");
   });
 
   it("proceeds once the operator confirms it is a genuinely new product", async () => {
