@@ -9,24 +9,26 @@ export class ManualSlipSessionService {
   constructor(private readonly supabase: Supabase) {}
 
   async findSession(sourceId: string, businessDate: string, marketKey: string): Promise<ManualSlipSessionRow | null> {
-    const { data } = await this.supabase
+    const { data, error } = await this.supabase
       .from("manual_slip_sessions")
       .select("*")
       .eq("source_id", sourceId)
       .eq("business_date", businessDate)
       .eq("market_key", marketKey)
       .maybeSingle();
+    if (error) throw new Error(`manual session lookup failed: ${error.message}`);
     return data;
   }
 
   // Returns the single open session for this source, if any.
   async findOpenSession(sourceId: string): Promise<ManualSlipSessionRow | null> {
-    const { data } = await this.supabase
+    const { data, error } = await this.supabase
       .from("manual_slip_sessions")
       .select("*")
       .eq("source_id", sourceId)
       .eq("status", "open")
       .maybeSingle();
+    if (error) throw new Error(`open manual session lookup failed: ${error.message}`);
     return data;
   }
 
@@ -76,45 +78,26 @@ export class ManualSlipSessionService {
     return { opened: true, session: data };
   }
 
-  // Returns current max sequence_no + 1 (0 if no entries yet).
-  async nextSequenceNo(sessionId: string): Promise<number> {
-    const { data } = await this.supabase
-      .from("manual_slip_entries")
-      .select("sequence_no")
-      .eq("session_id", sessionId)
-      .order("sequence_no", { ascending: false })
-      .limit(1);
-    return data && data.length > 0 ? (data[0].sequence_no as number) + 1 : 0;
-  }
-
   async appendEntries(params: {
     sessionId:      string;
     entries:        Array<{ rawLine: string; amount: number }>;
     lineMessageId:  string;
     lineUserId:     string | null;
   }): Promise<void> {
-    // Re-delivery check: if entries for this line_message_id already exist, skip.
-    const { data: existing } = await this.supabase
-      .from("manual_slip_entries")
-      .select("id")
-      .eq("session_id", params.sessionId)
-      .eq("line_message_id", params.lineMessageId)
-      .limit(1);
-    if (existing && existing.length > 0) return;
-
-    const startSeq = await this.nextSequenceNo(params.sessionId);
-    const rows = params.entries.map((e, i) => ({
-      session_id:      params.sessionId,
-      sequence_no:     startSeq + i,
-      raw_line:        e.rawLine,
-      amount:          e.amount,
-      line_message_id: params.lineMessageId,
-      line_user_id:    params.lineUserId,
+    // Append is serialized in the database against the parent session row so a
+    // closed session can never gain entries excluded from the close total. The
+    // RPC also enforces line_message_id idempotency for LINE re-delivery.
+    const payload = params.entries.map((entry) => ({
+      raw_line: entry.rawLine,
+      amount: entry.amount,
     }));
 
-    const { error } = await this.supabase
-      .from("manual_slip_entries")
-      .upsert(rows, { onConflict: "line_message_id,sequence_no", ignoreDuplicates: true });
+    const { error } = await this.supabase.rpc("append_manual_slip_entries_atomic", {
+      p_session_id: params.sessionId,
+      p_entries: payload,
+      p_line_message_id: params.lineMessageId,
+      p_line_user_id: params.lineUserId,
+    });
 
     if (error) throw new Error(`manual entry append failed: ${error.message}`);
   }
@@ -124,28 +107,24 @@ export class ManualSlipSessionService {
     lineUserId:     string | null;
     lineMessageId:  string;
   }): Promise<{ total: number; alreadyClosed: boolean }> {
-    const { data: entries } = await this.supabase
-      .from("manual_slip_entries")
-      .select("amount")
-      .eq("session_id", params.sessionId);
-
-    const total = (entries ?? []).reduce((sum, e) => sum + Number(e.amount), 0);
-
-    const { data: updated, error } = await this.supabase
-      .from("manual_slip_sessions")
-      .update({
-        status:                  "closed",
-        closed_at:               new Date().toISOString(),
-        closed_by_line_user_id:  params.lineUserId,
-        closed_line_message_id:  params.lineMessageId,
-      })
-      .eq("id", params.sessionId)
-      .eq("status", "open")
-      .select("id");
+    // Close is serialized against the same session row as append: the total is
+    // summed and the status flipped under one lock, so a concurrent late append
+    // is either included before close or rejected after it — never lost.
+    const { data, error } = await this.supabase.rpc("close_manual_slip_session_atomic", {
+      p_session_id: params.sessionId,
+      p_line_user_id: params.lineUserId,
+      p_line_message_id: params.lineMessageId,
+    });
 
     if (error) throw new Error(`manual session close failed: ${error.message}`);
+    const result = data as { total?: number | string; already_closed?: boolean } | null;
+    if (!result || result.total === undefined) {
+      throw new Error("manual session close failed: RPC returned no total");
+    }
 
-    const alreadyClosed = !updated || updated.length === 0;
-    return { total, alreadyClosed };
+    return {
+      total: Number(result.total),
+      alreadyClosed: result.already_closed === true,
+    };
   }
 }

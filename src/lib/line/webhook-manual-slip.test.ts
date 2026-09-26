@@ -133,6 +133,32 @@ function makeSupabase() {
       }
       return nullStub();
     },
+    async rpc(name: string, args: Record<string, unknown>) {
+      if (name === "append_manual_slip_entries_atomic") {
+        const session = sessions.find((row) => row.id === args.p_session_id);
+        if (!session || session.status !== "open") return { data: null, error: { message: "manual_slip_session_not_open" } };
+        if (entries.some((row) => row.session_id === args.p_session_id && row.line_message_id === args.p_line_message_id)) {
+          return { data: { inserted: 0, duplicate: true }, error: null };
+        }
+        const payload = args.p_entries as Array<{ raw_line: string; amount: number }>;
+        const current = entries.filter((row) => row.session_id === args.p_session_id);
+        let sequence = current.reduce((max, row) => Math.max(max, Number(row.sequence_no)), -1) + 1;
+        for (const item of payload) entries.push({ session_id: args.p_session_id, sequence_no: sequence++, raw_line: item.raw_line, amount: item.amount, line_message_id: args.p_line_message_id, line_user_id: args.p_line_user_id });
+        return { data: { inserted: payload.length, duplicate: false }, error: null };
+      }
+      if (name === "close_manual_slip_session_atomic") {
+        const session = sessions.find((row) => row.id === args.p_session_id);
+        if (!session) return { data: null, error: { message: "manual_slip_session_not_found" } };
+        const total = entries.filter((row) => row.session_id === args.p_session_id).reduce((sum, row) => sum + Number(row.amount), 0);
+        if (session.status === "closed") return { data: { total, already_closed: true }, error: null };
+        session.status = "closed";
+        session.closed_at = new Date().toISOString();
+        session.closed_by_line_user_id = args.p_line_user_id;
+        session.closed_line_message_id = args.p_line_message_id;
+        return { data: { total, already_closed: false }, error: null };
+      }
+      return { data: null, error: { message: "unexpected rpc: " + name } };
+    },
     _sessions: sessions,
     _entries:  entries,
   };

@@ -408,6 +408,7 @@ jobs:
       # HARD FAILURE of this job, never a green skip.
       REQUIRE_P4A_POSTGRES: "1"
       REQUIRE_PRODUCE_REORDER_POSTGRES: "1"
+      REQUIRE_MANUAL_SLIP_ATOMIC_POSTGRES: "1"
       PGHOST: localhost
       PGUSER: postgres
       PGPASSWORD: postgres
@@ -432,6 +433,8 @@ jobs:
         run: bunx bun test src/lib/produce/round-return-status.test.ts src/lib/summary/round-market-identity.test.ts src/lib/sales/round-return-sold-out.test.ts
       - name: Produce out-of-order admission real-PostgreSQL suite
         run: bun test src/lib/line/migration-produce-out-of-order-admission.pg.test.ts
+      - name: Manual slip atomic append-close real-PostgreSQL suite
+        run: bun run test:pg:manual-slip-atomic
       - name: Typecheck
         run: npm run type-check
       - name: git diff --check against the PR base
