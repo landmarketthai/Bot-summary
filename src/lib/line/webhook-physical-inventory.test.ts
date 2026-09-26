@@ -150,6 +150,41 @@ function makeSupabaseDouble() {
           error: null,
         };
       }
+      if (name === "append_manual_slip_entries_atomic") {
+        const session = rows.manual_slip_sessions!.find((row) => row.id === args.p_session_id);
+        if (!session) return { data: null, error: { message: "manual_slip_session_not_found" } };
+        if (session.status !== "open") return { data: null, error: { message: "manual_slip_session_not_open" } };
+        const messageId = String(args.p_line_message_id);
+        const sessionEntries = rows.manual_slip_entries!.filter((row) => row.session_id === args.p_session_id);
+        if (sessionEntries.some((row) => row.line_message_id === messageId)) {
+          return { data: { inserted: 0, duplicate: true }, error: null };
+        }
+        const payload = args.p_entries as Array<{ raw_line: string; amount: number }>;
+        payload.forEach((entry, index) => rows.manual_slip_entries!.push({
+          session_id: args.p_session_id,
+          sequence_no: sessionEntries.length + index,
+          raw_line: entry.raw_line,
+          amount: entry.amount,
+          line_message_id: messageId,
+          line_user_id: args.p_line_user_id ?? null,
+        }));
+        return { data: { inserted: payload.length, duplicate: false }, error: null };
+      }
+      if (name === "close_manual_slip_session_atomic") {
+        const session = rows.manual_slip_sessions!.find((row) => row.id === args.p_session_id);
+        if (!session) return { data: null, error: { message: "manual_slip_session_not_found" } };
+        const total = rows.manual_slip_entries!
+          .filter((row) => row.session_id === args.p_session_id)
+          .reduce((sum, row) => sum + Number(row.amount), 0);
+        const already = session.status === "closed";
+        if (!already) {
+          session.status = "closed";
+          session.closed_at = new Date().toISOString();
+          session.closed_by_line_user_id = args.p_line_user_id ?? null;
+          session.closed_line_message_id = args.p_line_message_id ?? null;
+        }
+        return { data: { total, already_closed: already }, error: null };
+      }
       throw new Error(`unexpected base RPC ${name}`);
     },
     _seed(table: string, row: Row) {
