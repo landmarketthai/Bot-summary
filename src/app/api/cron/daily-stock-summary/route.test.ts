@@ -5,6 +5,12 @@ import {
   HOUSE_STOCK_PRICED_PARSER_VERSION,
   PHYSICAL_INVENTORY_PARSER_VERSION,
 } from "@/lib/physical-inventory/types";
+import {
+  preloadRuntimeProductCodes,
+  resetRuntimeProductCodesForTests,
+  resolveProductCode,
+  runtimeProductCodeEntryForName,
+} from "@/lib/produce/product-code/resolver";
 
 // ── Stubs ──────────────────────────────────────────────────────────────────
 //
@@ -22,6 +28,7 @@ let physicalItemResult: QueryResult = { data: [], error: null };
 /** P2E round identity + the unfinalized documents attributed to those rounds. */
 let roundResult: QueryResult = { data: [], error: null };
 let pendingResult: QueryResult = { data: [], error: null };
+let productCodesResult: QueryResult = { data: [], error: null };
 
 /**
  * Answer produce_transactions per query rather than per table.
@@ -32,6 +39,9 @@ let pendingResult: QueryResult = { data: [], error: null };
  * Null keeps every existing test on the single produceResult fixture.
  */
 let produceByQuery: ((filters: Record<string, unknown>) => QueryResult | null) | null = null;
+
+/** Awaited inside the route's first produce read, i.e. after its own dictionary preload. */
+let beforeProduceRead: (() => Promise<void>) | null = null;
 
 function chain(result: () => QueryResult, produceAware = false, pricedSnapshotAware = false): Record<string, unknown> {
   const filters: Record<string, unknown> = {};
@@ -71,13 +81,23 @@ function chain(result: () => QueryResult, produceAware = false, pricedSnapshotAw
 mock.module("@/lib/supabase/server", () => ({
   createServiceClient: () => ({
     from(table: string) {
-      if (table === "produce_transactions") return chain(() => produceResult, true);
+      if (table === "produce_transactions") {
+        const node = chain(() => produceResult, true);
+        const hook = beforeProduceRead;
+        beforeProduceRead = null;
+        if (hook) {
+          const range = node.range as () => Promise<QueryResult>;
+          node.range = () => hook().then(range);
+        }
+        return node;
+      }
       if (table === "produce_sessions") return chain(() => sessionResult);
       if (table === "raw_messages") return chain(() => messageResult);
       if (table === "physical_inventory_snapshots") return chain(() => physicalSnapshotResult, false, true);
       if (table === "physical_inventory_items") return chain(() => physicalItemResult);
       if (table === "accountability_rounds") return chain(() => roundResult);
       if (table === "pending_sessions") return chain(() => pendingResult);
+      if (table === "produce_product_codes") return chain(() => productCodesResult);
       throw new Error(`Unexpected table: ${table}`);
     },
   }),
@@ -136,12 +156,16 @@ beforeEach(() => {
   physicalItemResult = { data: [], error: null };
   roundResult = { data: [], error: null };
   pendingResult = { data: [], error: null };
+  productCodesResult = { data: [], error: null };
+  resetRuntimeProductCodesForTests();
   produceByQuery = null;
+  beforeProduceRead = null;
   process.env.CRON_SECRET = "stock-secret";
   delete process.env.STOCK_SUMMARY_LINE_TARGETS;
 });
 
 afterEach(() => {
+  resetRuntimeProductCodesForTests();
   restore("CRON_SECRET", originalSecret);
   restore("STOCK_SUMMARY_LINE_TARGETS", originalTargets);
 });
@@ -194,6 +218,53 @@ describe("daily stock summary cron — authentication", () => {
 });
 
 describe("daily stock summary cron — delivery", () => {
+  test("preloads runtime-only promoted products before scheduled category output", async () => {
+    const promotedName = "runtime promoted mango";
+    productCodesResult = {
+      data: [{
+        product_code: "\u0e21\u0039\u0038",
+        category_code: "\u0e21",
+        category_name: "\u0e1c\u0e25\u0e44\u0e21\u0e49",
+        canonical_name: promotedName,
+        code_enabled: true,
+      }],
+      error: null,
+    };
+    produceResult = { data: [
+      { market_name: "\u0e15\u0e25\u0e32\u0e14\u0e01\u0e35\u0e49", product_name: promotedName, quantity: 10, unit: "\u0e42\u0e25", transaction_type: TX_WITHDRAW, price_per_unit: 20 },
+      { market_name: "\u0e15\u0e25\u0e32\u0e14\u0e01\u0e35\u0e49", product_name: promotedName, quantity: 5, unit: "\u0e42\u0e25", transaction_type: TX_RETURN },
+    ], error: null };
+
+    const body = await (await GET(request("?date=2026-07-25&debug=1"))).json();
+
+    expect(body.messages.join("\n")).toContain("\ud83c\udf49 \u0e1c\u0e25\u0e44\u0e21\u0e49");
+  });
+
+  test("keeps this request's dictionary snapshot when another request's refresh fails mid-build", async () => {
+    const name = "\u0e17\u0e38\u0e40\u0e23\u0e35\u0e22\u0e19\u0e40\u0e17\u0e28\u0e02\u0e19\u0e32\u0e14\u0e43\u0e2b\u0e0d\u0e48";
+    productCodesResult = {
+      data: [{ product_code: "\u0e21901", category_code: "\u0e21", category_name: "\u0e1c\u0e25\u0e44\u0e21\u0e49", canonical_name: name, code_enabled: true }],
+      error: null,
+    };
+    produceResult = { data: [
+      { market_name: "\u0e15\u0e25\u0e32\u0e14\u0e01\u0e35\u0e49", product_name: name, quantity: 10, unit: "\u0e42\u0e25", transaction_type: TX_WITHDRAW, price_per_unit: 20 },
+      { market_name: "\u0e15\u0e25\u0e32\u0e14\u0e01\u0e35\u0e49", product_name: name, quantity: 5, unit: "\u0e42\u0e25", transaction_type: TX_RETURN },
+    ], error: null };
+    // Request B refreshes after this request's preload, while it awaits its rows, and fails closed.
+    beforeProduceRead = async () => {
+      await preloadRuntimeProductCodes({ from: () => { throw new Error("request B read failed"); } });
+    };
+
+    const body = await (await GET(request("?date=2026-07-25&debug=1"))).json();
+
+    const text = body.messages.join("\n");
+    expect(text).toContain("\ud83c\udf49 \u0e1c\u0e25\u0e44\u0e21\u0e49");
+    expect(text).not.toContain("\u2753 \u0e44\u0e21\u0e48\u0e08\u0e31\u0e14\u0e2b\u0e21\u0e27\u0e14");
+    // B, and every reader of the process-wide resolver, stays fail-closed.
+    expect(runtimeProductCodeEntryForName(name)).toBeNull();
+    expect(resolveProductCode("\u0e21901")).toBeNull();
+  });
+
   test("does nothing when no LINE targets are configured", async () => {
     produceResult = { data: produceRows(), error: null };
 

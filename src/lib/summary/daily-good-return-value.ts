@@ -13,6 +13,7 @@ import {
   REPORT_CATEGORY_ORDER,
   type ReportCategoryId,
 } from "@/lib/produce/product-code/category";
+import type { RuntimeDictionarySnapshot } from "@/lib/produce/product-code/resolver";
 import { dedupeRemainingSourceRows, formatQuantity, normalizeProductName, type RemainingFruitSourceRow } from "@/lib/summary/remaining-fruit";
 import { transactionBucket } from "@/lib/summary/transactions";
 
@@ -59,13 +60,18 @@ function categoryRowNeedsReview(row: Pick<GoodReturnValueProduct, "unvaluedQuant
 /**
  * Partition report rows by dictionary category. Every product belongs to exactly
  * one bucket, so SUM(confirmedSatang) === confirmed grand total.
+ * `runtimeDictionary` is the snapshot the caller preloaded (omitted: the
+ * current process-wide one), as for every category lookup in this report.
  */
-export function goodReturnCategoryTotals(products: readonly GoodReturnValueProduct[]): GoodReturnCategoryTotal[] {
+export function goodReturnCategoryTotals(
+  products: readonly GoodReturnValueProduct[],
+  runtimeDictionary?: RuntimeDictionarySnapshot,
+): GoodReturnCategoryTotal[] {
   const buckets = new Map<ReportCategoryId, GoodReturnCategoryTotal>(
     REPORT_CATEGORY_ORDER.map((id) => [id, { id, confirmedSatang: 0, itemCount: 0, unresolvedItemCount: 0, unresolvedProductNames: [] }]),
   );
   for (const row of products) {
-    const bucket = buckets.get(dictionaryCategoryFor(row.productName))!;
+    const bucket = buckets.get(dictionaryCategoryFor(row.productName, runtimeDictionary))!;
     bucket.confirmedSatang += row.valueSatang;
     bucket.itemCount += 1;
     if (categoryRowNeedsReview(row)) {
@@ -121,11 +127,11 @@ function cellBlockers(cell: Cell): Blocker[] {
   return cell.prices.size > 1 ? ["ราคาจากรายการเบิกขัดแย้งกัน"] : [];
 }
 
-const productOrder = (a: GoodReturnValueProduct, b: GoodReturnValueProduct) =>
-  reportCategoryIndex(dictionaryCategoryFor(a.productName)) - reportCategoryIndex(dictionaryCategoryFor(b.productName)) ||
+const productOrder = (runtimeDictionary?: RuntimeDictionarySnapshot) => (a: GoodReturnValueProduct, b: GoodReturnValueProduct) =>
+  reportCategoryIndex(dictionaryCategoryFor(a.productName, runtimeDictionary)) - reportCategoryIndex(dictionaryCategoryFor(b.productName, runtimeDictionary)) ||
   b.quantity - a.quantity || a.productName.localeCompare(b.productName, "th") || a.unit.localeCompare(b.unit, "th");
-const anomalyOrder = (a: MarketAnomaly, b: MarketAnomaly) =>
-  reportCategoryIndex(dictionaryCategoryFor(a.productName)) - reportCategoryIndex(dictionaryCategoryFor(b.productName)) ||
+const anomalyOrder = (runtimeDictionary?: RuntimeDictionarySnapshot) => (a: MarketAnomaly, b: MarketAnomaly) =>
+  reportCategoryIndex(dictionaryCategoryFor(a.productName, runtimeDictionary)) - reportCategoryIndex(dictionaryCategoryFor(b.productName, runtimeDictionary)) ||
   a.productName.localeCompare(b.productName, "th") || a.unit.localeCompare(b.unit, "th") || a.marketName.localeCompare(b.marketName, "th");
 
 /**
@@ -138,7 +144,7 @@ const anomalyOrder = (a: MarketAnomaly, b: MarketAnomaly) =>
  * still surfaces as a market-level anomaly even when it contributes zero to
  * the physical aggregate.
  */
-export function buildDailyGoodReturnValueReport(businessDate: string, rows: readonly RemainingFruitSourceRow[], rounds: RoundLabelLookup = new Map()): GoodReturnValueReport {
+export function buildDailyGoodReturnValueReport(businessDate: string, rows: readonly RemainingFruitSourceRow[], rounds: RoundLabelLookup = new Map(), runtimeDictionary?: RuntimeDictionarySnapshot): GoodReturnValueReport {
   const source = dedupeRemainingSourceRows(rows); const known = new Set(source.map((row) => normalizeProductName(row.product_name))); const cells = new Map<string, Cell>();
   source.forEach((row, index) => {
     const bucket = transactionBucket(row.transaction_type); if (!bucket) return;
@@ -203,7 +209,7 @@ export function buildDailyGoodReturnValueReport(businessDate: string, rows: read
   // so it stays a pure anomaly-only entry (products.length can be 0 while
   // anomalies.length > 0).
   for (const [key, markets] of anomalyMarketsByProduct) { const product = products.get(key); if (product) product.anomalyMarketCount = markets.size; }
-  return { businessDate, products: [...products.values()].sort(productOrder), anomalies: anomalies.sort(anomalyOrder), hasActivity: cells.size > 0 };
+  return { businessDate, products: [...products.values()].sort(productOrder(runtimeDictionary)), anomalies: anomalies.sort(anomalyOrder(runtimeDictionary)), hasActivity: cells.size > 0 };
 }
 
 function productBlock(row: GoodReturnValueProduct, index: number, includeDiagnostics = true): string {
@@ -254,14 +260,14 @@ function cappedNameList(names: readonly string[], indent: string): string[] {
   return lines;
 }
 
-function categorySummaryBlock(report: GoodReturnValueReport, includeDiagnostics = true): string | null {
-  const totals = goodReturnCategoryTotals(report.products);
+function categorySummaryBlock(report: GoodReturnValueReport, includeDiagnostics = true, runtimeDictionary?: RuntimeDictionarySnapshot): string | null {
+  const totals = goodReturnCategoryTotals(report.products, runtimeDictionary);
   if (!totals.length) return null;
   const lines = ["💰 สรุปมูลค่าของดีชั่งคืนแยกตามหมวด"];
   for (const row of totals) {
     lines.push(formatCategoryTotal(row, includeDiagnostics));
     if (row.id === UNCATEGORIZED_CATEGORY_ID) {
-      const names = report.products.filter((product) => dictionaryCategoryFor(product.productName) === UNCATEGORIZED_CATEGORY_ID).map((product) => product.productName);
+      const names = report.products.filter((product) => dictionaryCategoryFor(product.productName, runtimeDictionary) === UNCATEGORIZED_CATEGORY_ID).map((product) => product.productName);
       lines.push(...cappedNameList(names, "   "));
     }
   }
@@ -275,7 +281,7 @@ function categorySummaryBlock(report: GoodReturnValueReport, includeDiagnostics 
   return lines.join("\n");
 }
 
-function summaryBlock(report: GoodReturnValueReport, omittedProductCount: number, omittedAnomalyCount: number, includeDiagnostics = true): string {
+function summaryBlock(report: GoodReturnValueReport, omittedProductCount: number, omittedAnomalyCount: number, includeDiagnostics = true, runtimeDictionary?: RuntimeDictionarySnapshot): string {
   // A product is only "fully calculated" when nothing about it is flagged —
   // anomalyMarketCount > 0 means some market's evidence is still untrustworthy,
   // even when that market contributed zero to unvaluedQuantity (unknown, not zero).
@@ -284,7 +290,7 @@ function summaryBlock(report: GoodReturnValueReport, omittedProductCount: number
   return [
     includeDiagnostics && omittedProductCount ? `⚠️ ไม่ได้แสดงสินค้าบางส่วน ${omittedProductCount} รายการ เนื่องจากขีดจำกัด LINE` : null,
     includeDiagnostics && omittedAnomalyCount ? `⚠️ ไม่ได้แสดงรายละเอียดผิดปกติ ${omittedAnomalyCount} รายการ เนื่องจากขีดจำกัด LINE` : null,
-    categorySummaryBlock(report, includeDiagnostics),
+    categorySummaryBlock(report, includeDiagnostics, runtimeDictionary),
     `รวมมูลค่าของดีที่ยืนยันได้ ${satangToBahtText(confirmedGoodReturnTotalSatang(report.products))} บาท`,
     `✅ สินค้าที่คำนวณมูลค่าได้ครบ ${complete} รายการ`,
     includeDiagnostics && report.anomalies.length ? `⚠️ พบข้อมูลผิดปกติ ${report.anomalies.length} รายการ จาก ${anomalyMarketCount} ตลาด` : null,
@@ -343,7 +349,7 @@ function rebalanceParts<T>(initialParts: readonly (readonly T[])[], renderPart: 
  */
 export function buildDailyGoodReturnValueMessages(
   report: GoodReturnValueReport,
-  options: { latest?: LatestDataLookup; hasIncompleteReturnEvidence?: boolean; includeDiagnostics?: boolean } = {},
+  options: { latest?: LatestDataLookup; hasIncompleteReturnEvidence?: boolean; includeDiagnostics?: boolean; runtimeDictionary?: RuntimeDictionarySnapshot } = {},
 ): string[] {
   const includeDiagnostics = options.includeDiagnostics ?? true;
   // An anomaly-only report (zero product rows, but invalid-only good-return
@@ -386,7 +392,7 @@ export function buildDailyGoodReturnValueMessages(
   // depends on the final part count, which packing itself determines).
   const initialProductParts: Entry[][] = []; let currentProduct: Entry[] = [];
   for (const [index, row] of report.products.entries()) {
-    const entry: Entry = { category: dictionaryCategoryFor(row.productName), block: productBlock(row, index + 1, includeDiagnostics), shortened: false };
+    const entry: Entry = { category: dictionaryCategoryFor(row.productName, options.runtimeDictionary), block: productBlock(row, index + 1, includeDiagnostics), shortened: false };
     if (currentProduct.length && countCodePoints(lines([...currentProduct, entry])) > GOOD_RETURN_READABLE_MAX_CODE_POINTS) { initialProductParts.push(currentProduct); currentProduct = []; }
     currentProduct.push(entry);
   }
@@ -443,7 +449,7 @@ export function buildDailyGoodReturnValueMessages(
   ];
 
   const messages = groups.map((g) => g.text);
-  const final = summaryBlock(report, omittedProductCount, omittedAnomalyCount, includeDiagnostics);
+  const final = summaryBlock(report, omittedProductCount, omittedAnomalyCount, includeDiagnostics, options.runtimeDictionary);
   if (messages.length === 0) {
     messages.push(final);
   } else {

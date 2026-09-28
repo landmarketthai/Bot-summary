@@ -298,10 +298,12 @@ export interface ProduceValidationInput {
     sessionGeneration: string;
     accountabilityRoundId: string | null;
   };
+  /** Runtime DB dictionary additions, including safe auto-promotions. */
+  runtimeApprovedProductNames?: ReadonlySet<string>;
 }
 
 export function validateProduceEntry(input: ProduceValidationInput): ProduceValidationResult {
-  const { parsed, roundRows, roundBound } = input;
+  const { parsed, roundRows, roundBound, runtimeApprovedProductNames } = input;
   const sessionRows = masterRowsFromSession(parsed);
   const master = buildWithdrawalMaster([...roundRows, ...sessionRows]);
 
@@ -393,7 +395,7 @@ export function validateProduceEntry(input: ProduceValidationInput): ProduceVali
   // the round's master instead (§2) — that master is the authority for what
   // this round actually holds, and it is exactly what this section protects
   // from being created under a misspelled name in the first place.
-  reviews.push(...vocabularyExceptions(parsed));
+  reviews.push(...vocabularyExceptions(parsed, runtimeApprovedProductNames));
   reviews.push(...subunitExceptions(parsed));
 
   // ── 2. Identity and price of every return line, against the master.
@@ -518,7 +520,10 @@ function subunitExceptions(parsed: WeighSession): ProduceValidationReview[] {
  * one spelling to fix, not one per line that carries it. Ordered by item
  * number so the reply is deterministic.
  */
-function vocabularyExceptions(parsed: WeighSession): ProduceValidationReview[] {
+function vocabularyExceptions(
+  parsed: WeighSession,
+  runtimeApprovedProductNames?: ReadonlySet<string>,
+): ProduceValidationReview[] {
   const seen = new Set<string>();
   const exceptions: ProduceValidationReview[] = [];
   for (const item of [...parsed.items].sort((a, b) => a.item_number - b.item_number)) {
@@ -529,7 +534,8 @@ function vocabularyExceptions(parsed: WeighSession): ProduceValidationReview[] {
     // A box-suffixed spelling is judged on the identity the master will use,
     // so the operator is not asked to vouch for a name the round already
     // treats as แอปเปิ้ล. The suggestion list still describes what they typed.
-    if (isApprovedProductName(canonicalProduceProductIdentity(name, item.unit))) continue;
+    const identity = canonicalProduceProductIdentity(name, item.unit);
+    if (isApprovedProductName(identity) || runtimeApprovedProductNames?.has(identity)) continue;
     exceptions.push({
       kind: "unknown_product_vocabulary",
       severity: "review_required",

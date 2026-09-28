@@ -13,6 +13,7 @@ import {
 } from "@/lib/physical-inventory/house-stock-report";
 import { countUnresolvedPendingSessions } from "@/lib/sales/load";
 import { runDailyClosePreflight } from "@/lib/produce/preflight-service";
+import { preloadRuntimeProductCodes } from "@/lib/produce/product-code/resolver";
 import {
   loadRoundReturnStatuses,
   type RoundReturnStatus,
@@ -98,6 +99,10 @@ export async function GET(req: NextRequest) {
   });
 
   const supabase = createServiceClient();
+  // The report builders below classify with the snapshot THIS request loaded.
+  // The awaits in between let another request refresh the process-wide one —
+  // possibly failing closed — and that must not change this report's categories.
+  const runtimeDictionary = await preloadRuntimeProductCodes(supabase);
 
   let report;
   let stockSummary;
@@ -119,8 +124,9 @@ export async function GET(req: NextRequest) {
           { marketLabel: row.marketLabel },
         ]),
       ),
+      runtimeDictionary,
     );
-    stockSummary = buildStockSummaryFromRows(businessDate, rows);
+    stockSummary = buildStockSummaryFromRows(businessDate, rows, { runtimeDictionary });
     houseStockReport = await fetchAuthoritativeHouseStockReport(supabase, businessDate);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -212,6 +218,7 @@ export async function GET(req: NextRequest) {
     latest,
     hasIncompleteReturnEvidence,
     includeDiagnostics: false,
+    runtimeDictionary,
   });
   const houseStockMessages = houseStockReport?.messages ?? buildNoHouseStockMessage(businessDate);
   const productCount = report.products.length;

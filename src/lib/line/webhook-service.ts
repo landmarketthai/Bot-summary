@@ -184,6 +184,7 @@ import {
   isExactCancelActiveDraftCommand,
 } from "@/lib/produce/cancel-active-draft";
 import { getRuntimeEnvironment } from "@/lib/runtime-environment";
+import { preloadRuntimeProductCodes } from "@/lib/produce/product-code/resolver";
 
 type Supabase      = SupabaseClient<Database>;
 type ChildLogger   = ReturnType<typeof logger.child>;
@@ -789,6 +790,8 @@ export class WebhookService {
         });
       }
     }
+
+    await preloadRuntimeProductCodes(this.supabase);
 
     if (this.orderedQueueAvailable !== false) {
       const resultByEventId = new Map<string, WebhookProcessResult>();

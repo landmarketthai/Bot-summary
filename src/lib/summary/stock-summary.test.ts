@@ -1,4 +1,10 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import {
+  preloadRuntimeProductCodes,
+  resetRuntimeProductCodesForTests,
+  resolveProductCode,
+  runtimeProductCodeEntryForName,
+} from "@/lib/produce/product-code/resolver";
 import {
   buildStockSummaryFromRows,
   type StockSummary,
@@ -323,6 +329,108 @@ describe("category grouping", () => {
     expect(
       summary.categories.find((g) => g.category === "ทุเรียน")?.products.map((p) => p.productName),
     ).toEqual(["หมอนทอง", "ก้านยาว", "ทุเรียนกล่อง"]);
+  });
+});
+
+describe("runtime dictionary categories", () => {
+  beforeEach(() => resetRuntimeProductCodesForTests());
+  afterEach(() => resetRuntimeProductCodesForTests());
+
+  function preload(entries: Array<[code: string, categoryCode: string, name: string, enabled?: boolean]>) {
+    return preloadRuntimeProductCodes({
+      from: () => ({
+        select: () => ({
+          order: () => ({
+            limit: async () => ({
+              data: entries.map(([code, categoryCode, name, enabled = true]) => ({
+                product_code: code,
+                category_code: categoryCode,
+                category_name: categoryCode,
+                canonical_name: name,
+                code_enabled: enabled,
+              })),
+              error: null,
+            }),
+          }),
+        }),
+      }),
+    });
+  }
+
+  test("a request keeps the snapshot it loaded when a later refresh fails closed", async () => {
+    // Request A loads ทุเรียนเทศขนาดใหญ่ as ม; request B's refresh then fails
+    // while A is still awaiting its rows.
+    const requestA = await preload([["ม901", "ม", "ทุเรียนเทศขนาดใหญ่"]]);
+    const requestB = await preloadRuntimeProductCodes({ from: () => { throw new Error("read failed"); } });
+    const rows = [row({ product_name: "ทุเรียนเทศขนาดใหญ่", quantity: 5, unit: "กก." })];
+
+    const summaryA = buildStockSummaryFromRows(DATE, rows, { runtimeDictionary: requestA });
+    expect(productIn(summaryA, "ผลไม้", "ทุเรียนเทศขนาดใหญ่")?.quantity).toBe(5);
+    expect(productIn(summaryA, "ทุเรียน", "ทุเรียนเทศขนาดใหญ่")).toBeUndefined();
+
+    // B and the process-wide resolver stay fail-closed: A's entry is not served.
+    expect(runtimeProductCodeEntryForName("ทุเรียนเทศขนาดใหญ่", requestB)).toBeNull();
+    expect(runtimeProductCodeEntryForName("ทุเรียนเทศขนาดใหญ่")).toBeNull();
+    expect(resolveProductCode("ม901")).toBeNull();
+    const summaryB = buildStockSummaryFromRows(DATE, rows, { runtimeDictionary: requestB });
+    expect(productIn(summaryB, "ทุเรียน", "ทุเรียนเทศขนาดใหญ่")?.quantity).toBe(5);
+    // A caller passing no snapshot (the manual command) reads the process-wide one.
+    const manual = buildStockSummaryFromRows(DATE, rows);
+    expect(productIn(manual, "ทุเรียน", "ทุเรียนเทศขนาดใหญ่")?.quantity).toBe(5);
+  });
+
+  test("an enabled DB-only ม / ผ / ท entry wins over the durian substring guess", async () => {
+    await preload([
+      ["ม901", "ม", "ทุเรียนเทศขนาดใหญ่"],
+      ["ผ901", "ผ", "ผักเชียงดา"],
+      ["ท901", "ท", "ชะนีไข่"],
+    ]);
+
+    const summary = buildStockSummaryFromRows(DATE, [
+      row({ product_name: "ทุเรียนเทศขนาดใหญ่", quantity: 5, unit: "กก." }),
+      row({ product_name: "ผักเชียงดา", quantity: 4, unit: "กก." }),
+      row({ product_name: "ชะนีไข่", quantity: 3, unit: "กก." }),
+    ]);
+
+    expect(productIn(summary, "ผลไม้", "ทุเรียนเทศขนาดใหญ่")?.quantity).toBe(5);
+    expect(productIn(summary, "ทุเรียน", "ทุเรียนเทศขนาดใหญ่")).toBeUndefined();
+    expect(productIn(summary, "ผัก", "ผักเชียงดา")?.quantity).toBe(4);
+    expect(productIn(summary, "ทุเรียน", "ชะนีไข่")?.quantity).toBe(3);
+  });
+
+  test("names absent from a preloaded snapshot keep the legacy fallback", async () => {
+    const runtimeDictionary = await preload([["ม901", "ม", "ทุเรียนเทศขนาดใหญ่"]]);
+
+    const summary = buildStockSummaryFromRows(DATE, [
+      row({ product_name: "ทุเรียนเทศขนาดใหญ่", quantity: 5, unit: "กก." }),
+      row({ product_name: "ทุเรียนแกะ", quantity: 3, unit: "กล่อง" }),
+      row({ product_name: "ของแปลกใหม่ไม่เคยเจอ", quantity: 1, unit: "ถุง" }),
+    ], { runtimeDictionary });
+
+    expect(productIn(summary, "ผลไม้", "ทุเรียนเทศขนาดใหญ่")?.quantity).toBe(5);
+    // A genuine compound durian with no runtime entry still takes the substring rule.
+    expect(productIn(summary, "ทุเรียน", "ทุเรียนแกะ")?.quantity).toBe(3);
+    expect(productIn(summary, "ไม่จัดหมวด", "ของแปลกใหม่ไม่เคยเจอ")?.quantity).toBe(1);
+  });
+
+  test("unmodeled runtime codes keep only an exact legacy category; disabled entries keep the legacy mapping", async () => {
+    await preload([
+      ["ห901", "ห", "เห็ด"],
+      ["ป901", "ป", "ทุเรียนทอด"],
+      ["ม902", "ม", "หลงลับแล", false],
+    ]);
+
+    const summary = buildStockSummaryFromRows(DATE, [
+      row({ product_name: "เห็ด", quantity: 2, unit: "กก." }),
+      row({ product_name: "ทุเรียนทอด", quantity: 4, unit: "ถุง" }),
+      row({ product_name: "หลงลับแล", quantity: 1, unit: "กก." }),
+    ]);
+
+    expect(productIn(summary, "ผัก", "เห็ด")?.quantity).toBe(2);
+    // The dictionary says ป, not ท: visible as ไม่จัดหมวด, never guessed into durian.
+    expect(productIn(summary, "ไม่จัดหมวด", "ทุเรียนทอด")?.quantity).toBe(4);
+    expect(productIn(summary, "ทุเรียน", "ทุเรียนทอด")).toBeUndefined();
+    expect(productIn(summary, "ทุเรียน", "หลงลับแล")?.quantity).toBe(1);
   });
 });
 

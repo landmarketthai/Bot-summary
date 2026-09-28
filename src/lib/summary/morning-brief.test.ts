@@ -1,5 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { centralPriceMapKey } from "@/lib/white-sheet/pricing";
+import {
+  preloadRuntimeProductCodes,
+  resetRuntimeProductCodesForTests,
+} from "@/lib/produce/product-code/resolver";
 import {
   calculateSalesReport,
   type SalesSourceRow,
@@ -87,10 +91,40 @@ function salesReport(markets: SalesMarketSummary[]): SalesReport {
 }
 
 describe("morningBriefProductIdentity", () => {
+  beforeEach(() => resetRuntimeProductCodesForTests());
+  afterEach(() => resetRuntimeProductCodesForTests());
+
   test("falls back to stock categories for fruit names missing from Product Code", () => {
     expect(morningBriefProductIdentity("เมล่อน", "ลูก").category).toBe("ผลไม้");
     expect(morningBriefProductIdentity("มะกอก", "กก.").category).toBe("ผลไม้");
     expect(morningBriefProductIdentity("ผักกาดขาว", "กก.").category).toBe("ผัก / สมุนไพร / เครื่องประกอบอาหาร");
+  });
+
+  test("uses the preloaded runtime category for an auto-promoted fruit", async () => {
+    const productName = "runtime-only promoted fruit";
+    await preloadRuntimeProductCodes({
+      from: () => ({
+        select: () => ({
+          order: () => ({
+            limit: async () => ({
+              data: [{
+                product_code: "ม98",
+                category_code: "ม",
+                category_name: "ผลไม้",
+                canonical_name: productName,
+                code_enabled: true,
+              }],
+              error: null,
+            }),
+          }),
+        }),
+      }),
+    } as never);
+
+    expect(morningBriefProductIdentity(productName, "กก.")).toEqual({
+      productName,
+      category: "ผลไม้",
+    });
   });
 });
 

@@ -17,6 +17,7 @@ import {
   type ProduceValidationReview,
   type RoundMasterRow,
 } from "./entry-validation";
+import { loadRuntimeApprovedProductNames, observeAutoDictionaryReviews } from "./auto-dictionary";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyClient = SupabaseClient<any>;
@@ -117,10 +118,12 @@ export async function evaluateProduceEntryGate(
     ? await loadRoundMasterRows(supabase, ref.accountabilityRoundId)
     : [];
 
+  const runtimeApprovedProductNames = await loadRuntimeApprovedProductNames(supabase);
   const result = validateProduceEntry({
     parsed,
     roundRows,
     roundBound: ref.accountabilityRoundId !== null,
+    runtimeApprovedProductNames,
     validationIdentity: {
       sessionKey: ref.sessionKey,
       sessionGeneration: ref.sessionGeneration,
@@ -300,9 +303,16 @@ export async function runProduceCloseGate(
   parsed: WeighSession,
   lineEventId: string,
 ): Promise<ProduceCloseGateDecision> {
-  const { result, reviewConfirmed } = await evaluateProduceEntryGate(supabase, ref, parsed);
+  let { result, reviewConfirmed } = await evaluateProduceEntryGate(supabase, ref, parsed);
   if (result.status === "blocked") return { decision: "blocked", result };
   if (result.status === "clean" || reviewConfirmed) return { decision: "proceed", result };
+
+  const observations = await observeAutoDictionaryReviews(supabase, ref, result.reviews);
+  if (observations.some((entry) => entry.status === "promoted" || entry.status === "existing")) {
+    ({ result, reviewConfirmed } = await evaluateProduceEntryGate(supabase, ref, parsed));
+    if (result.status === "blocked") return { decision: "blocked", result };
+    if (result.status === "clean" || reviewConfirmed) return { decision: "proceed", result };
+  }
 
   const recorded = await recordProduceValidationReview(supabase, ref, result, lineEventId, parsed);
   if (recorded.confirmed) {
@@ -353,7 +363,7 @@ export async function runProduceFinalizeGate(
   ref: ProduceValidationSessionRef,
   parsed: WeighSession,
 ): Promise<ProduceCloseGateDecision> {
-  const { result, reviewConfirmed } = await evaluateProduceEntryGate(supabase, ref, parsed);
+  let { result, reviewConfirmed } = await evaluateProduceEntryGate(supabase, ref, parsed);
   if (result.status === "blocked") return { decision: "blocked", result };
   if (result.status === "clean" || reviewConfirmed) return { decision: "proceed", result };
   return { decision: "review_presented", result };
