@@ -94,6 +94,11 @@ function buildSalesBlock(report: MorningBriefReport): string {
   return lines.join("\n");
 }
 
+function buildVegetableDataBlock(report: MorningBriefReport): string | null {
+  if (report.sales.vegetableMarketDataPresent !== false) return null;
+  return "🥬 ยอดผัก\nไม่พบยอดผักในระบบ — ไม่สามารถตรวจสอบยอดผักได้";
+}
+
 function displayPrice(satang: number): string {
   return satangToBahtText(satang).replace(/\.00$/, "");
 }
@@ -123,9 +128,11 @@ function buildHouseStockBlock(report: MorningBriefReport): string {
 }
 
 export function buildMorningBriefBlocks(report: MorningBriefReport): string[] {
+  const vegetableDataBlock = buildVegetableDataBlock(report);
   return [
     `${MORNING_BRIEF_TITLE} — ${formatThaiDate(report.businessDate)}`,
     buildSalesBlock(report),
+    ...(vegetableDataBlock ? [vegetableDataBlock] : []),
     ...buildPurchaseBlocks(report),
     buildHouseStockBlock(report),
   ];

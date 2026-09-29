@@ -96,6 +96,18 @@ describe("Morning Decision Brief", () => {
     expect(message).not.toContain("⚠️ ข้อมูลที่ต้องตรวจ");
   });
 
+  test("warns clearly when the daily พาซิโอ้ผัก market has no data", () => {
+    const missing = buildMorningBriefMessage(report({
+      sales: { ...report().sales, vegetableMarketDataPresent: false },
+    }));
+    const present = buildMorningBriefMessage(report({
+      sales: { ...report().sales, vegetableMarketDataPresent: true },
+    }));
+
+    expect(missing).toContain("🥬 ยอดผัก\nไม่พบยอดผักในระบบ — ไม่สามารถตรวจสอบยอดผักได้");
+    expect(present).not.toContain("ไม่พบยอดผักในระบบ");
+  });
+
   test("does not dump sales review products, markets, or reason codes into LINE", () => {
     const message = buildMorningBriefMessage(report());
     expect(message).not.toContain("รายละเอียดรอตรวจ");

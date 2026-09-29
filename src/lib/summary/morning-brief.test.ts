@@ -165,12 +165,20 @@ describe("summarizeSales", () => {
       priceIssueCount: 2,
       incompleteReturnIssueCount: 1,
       excludedFromSalesCount: 1,
+      vegetableMarketDataPresent: false,
       reviewItems: [
         { marketLabel: "ตลาดเอ", productName: "หลักฐานคืนไม่ครบ", unit: "กก.", status: "TRUSTED", valueStatus: "CONFIRMED", reasons: [], soldQuantity: 10, enteredPriceSatang: 1000, centralPriceSatang: 1000, confirmedSalesSatang: 10_000, pendingReviewSalesSatang: null, adjustmentSatang: 0, returnEvidenceIncomplete: true },
         { marketLabel: "ตลาดเอ", productName: "ขัดแย้งเอ", unit: "กก.", status: "VALUE_BLOCKED", valueStatus: "PENDING_REVIEW", reasons: ["central_price_conflict"], soldQuantity: 10, enteredPriceSatang: 1000, centralPriceSatang: null, confirmedSalesSatang: null, pendingReviewSalesSatang: 10_000, adjustmentSatang: 0, returnEvidenceIncomplete: false },
         { marketLabel: "ตลาดบี", productName: "ขัดแย้งบี", unit: "กก.", status: "QUANTITY_BLOCKED", valueStatus: "UNAVAILABLE", reasons: ["central_price_conflict"], soldQuantity: null, enteredPriceSatang: 1000, centralPriceSatang: null, confirmedSalesSatang: null, pendingReviewSalesSatang: null, adjustmentSatang: 0, returnEvidenceIncomplete: false },
       ],
     });
+  });
+
+  test("detects พาซิโอ้ผัก by canonical market identity", () => {
+    const report = salesReport([
+      market("market-veg", [salesRow({ marketKey: "market-veg", marketLabel: "พาสิโอ้ผัก" })]),
+    ]);
+    expect(summarizeSales(report).vegetableMarketDataPresent).toBe(true);
   });
 
   test("P5: product_return_absent is counted as a return issue and its provisional value remains visible", () => {
