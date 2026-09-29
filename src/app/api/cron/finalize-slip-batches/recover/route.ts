@@ -38,7 +38,7 @@ export interface RecoverResult {
  * in processing with summary_sent_at IS NULL.
  *
  * Safety guarantees:
- *   - Only operates on status=processing AND summary_sent_at IS NULL.
+ *   - Only operates on status IN (processing, review_needed) AND summary_sent_at IS NULL.
  *   - Reuses the deterministic batch-id retry key; 409 → already_accepted (no duplicate).
  *   - Refuses to re-send if the batch is older than LINE's 24-hour retry key window.
  *   - Never reverts status to collecting or closing.
@@ -76,11 +76,13 @@ export async function recoverSlipBatch(
     return { ok: true, result: "already_finalized", batchId };
   }
 
-  // Guard: only operate on processing batches (never collecting / closing).
-  if (batch.status !== "processing") {
+  // Guard: only operate on processing batches, or unsent review_needed batches
+  // parked by stale recovery after a permanent LINE rejection (summary_sent_at
+  // is null here — sent batches returned above). Never collecting / closing.
+  if (batch.status !== "processing" && batch.status !== "review_needed") {
     log.warn("recover-slip-batch: wrong status", { status: batch.status });
     throw Object.assign(
-      new Error(`Batch is not in processing status (current: ${batch.status})`),
+      new Error(`Batch is not in processing or unsent review_needed status (current: ${batch.status})`),
       { statusCode: 422 },
     );
   }

@@ -91,6 +91,7 @@ interface DbCfg {
   entries?:          object[];
   sessions?:         { open: boolean };
   batches?:          { active: number };
+  slipBatches?:      Array<{ status: string; summary_sent_at: string | null }>;
   unbatchedEvIds?:   string[];     // IDs for unbatched evidences
   processingChecks?: boolean;      // whether unbatched checks are PROCESSING
   incompleteSessions?: Array<{ id: string; raw_message_id: string }>;
@@ -144,15 +145,20 @@ function makeDb(cfg: DbCfg = {}) {
       }
 
       if (table === "slip_batches") {
+        const rows = cfg.slipBatches ?? Array.from({ length: batches.active }, () => ({ status: "processing", summary_sent_at: null }));
         return {
           select: () => ({
             eq: () => ({
-              in: () => ({
-                gte: () => ({
-                  lt: () => ({
-                    limit: async () => ({
-                      data: batches.active > 0 ? [{ id: "b1" }] : [],
-                      error: null,
+              in: (_col: string, statuses: string[]) => ({
+                is: (_col2: string, value: null) => ({
+                  gte: () => ({
+                    lt: () => ({
+                      limit: async () => ({
+                        data: rows
+                          .filter((r) => statuses.includes(r.status) && r.summary_sent_at === value)
+                          .map((_, i) => ({ id: `b${i + 1}` })),
+                        error: null,
+                      }),
                     }),
                   }),
                 }),
@@ -324,6 +330,28 @@ describe("tryFinalizeSettlement — readiness", () => {
   it("returns not_ready when a slip batch is still active", async () => {
     const db = makeDb({ batches: { active: 1 } });
     expect(await tryFinalizeSettlement(db as never, "grp1", "2026-06-17", noopPush)).toBe("not_ready");
+  });
+
+  it("returns not_ready while a review_needed slip batch summary is still unsent (permanent LINE failure)", async () => {
+    const db = makeDb({ slipBatches: [{ status: "review_needed", summary_sent_at: null }] });
+    const pushed: string[] = [];
+    const result = await tryFinalizeSettlement(db as never, "grp1", "2026-06-17", async (_to, text) => {
+      pushed.push(text);
+    });
+    expect(result).toBe("not_ready");
+    expect(pushed).toHaveLength(0);
+  });
+
+  it("finalizes when review_needed/completed/failed slip batches already sent their summary", async () => {
+    const sentAt = "2026-06-17T05:00:00.000Z";
+    const db = makeDb({
+      slipBatches: [
+        { status: "review_needed", summary_sent_at: sentAt },
+        { status: "completed", summary_sent_at: sentAt },
+        { status: "failed", summary_sent_at: sentAt },
+      ],
+    });
+    expect(await tryFinalizeSettlement(db as never, "grp1", "2026-06-17", noopPush)).toBe("finalized");
   });
 
   it("returns not_ready when an unbatched slip_check is PROCESSING", async () => {
