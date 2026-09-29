@@ -250,11 +250,14 @@ export interface MorningBriefFruitFinancialSummary {
   markets: MorningBriefFruitMarketSummary[];
 }
 
+export type MorningBriefWhiteSheetStatus = "entered" | "missing" | "unavailable";
+
 export interface MorningBriefReport {
   businessDate: string;
   purchasePlanning: MorningBriefPurchasePlanning;
   sales: MorningBriefSales;
   houseStock: MorningBriefHouseStock;
+  whiteSheetStatus?: MorningBriefWhiteSheetStatus;
   fruitFinancial?: MorningBriefFruitFinancialSummary;
   reconciliation?: MorningBriefReconciliation;
 }

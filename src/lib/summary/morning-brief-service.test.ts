@@ -39,6 +39,27 @@ describe("loadMorningBriefReport", () => {
       unresolvedCount: 0,
     });
     expect(report.houseStock).toEqual({ status: "missing" });
+    expect(report.whiteSheetStatus).toBe("missing");
+  });
+
+  test("treats a zero-baht white sheet as entered, not missing", async () => {
+    const db = new FakeDatabase().seed("digital_white_sheet_cash_entries", [
+      { business_date: BUSINESS_DATE, white_sheet_sales: 0 },
+    ]);
+
+    const report = await loadMorningBriefReport(client(db), BUSINESS_DATE);
+
+    expect(report.whiteSheetStatus).toBe("entered");
+  });
+
+  test("treats a null white-sheet sales value as not entered", async () => {
+    const db = new FakeDatabase().seed("digital_white_sheet_cash_entries", [
+      { business_date: BUSINESS_DATE, white_sheet_sales: null },
+    ]);
+
+    const report = await loadMorningBriefReport(client(db), BUSINESS_DATE);
+
+    expect(report.whiteSheetStatus).toBe("missing");
   });
 
   test("loads authoritative House Stock group count and value", async () => {
