@@ -1,9 +1,8 @@
 name: daily-morning-brief
 
+# Automatic 08:00 Asia/Bangkok delivery is owned by Supabase Cron.
+# Keep GitHub Actions manual-only so two schedulers cannot race the same report.
 on:
-  schedule:
-    # GitHub cron uses UTC: 01:00 UTC = 08:00 Asia/Bangkok.
-    - cron: "0 1 * * *"
   workflow_dispatch:
     inputs:
       date:

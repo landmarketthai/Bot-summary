@@ -155,6 +155,19 @@ describe("scheduler configuration", () => {
     expect(yaml).not.toContain("date=2026");
   });
 
+  test("the daily-morning-brief GitHub Actions workflow is manual-only (Supabase Cron owns schedule)", async () => {
+    const yaml = await Bun.file(
+      `${import.meta.dir}/../../../.github/workflows/daily-morning-brief.yml`,
+    ).text();
+
+    expect(yaml).toContain("workflow_dispatch:");
+    expect(yaml).not.toMatch(/^\s*schedule:/m);
+    expect(yaml).not.toMatch(/^\s*- cron:/m);
+    expect(yaml).toContain("Supabase Cron");
+    expect(yaml).toContain("/api/cron/daily-morning-brief");
+    expect(yaml).toContain("Authorization: Bearer ${{ secrets.CRON_SECRET }}");
+  });
+
   test("daily-stock-summary is NOT a vercel.json cron (Hobby plan firing is approximate)", async () => {
     const file = await import("../../../vercel.json", { with: { type: "json" } });
     const config = file.default as { crons?: Array<{ path: string; schedule: string }> };
