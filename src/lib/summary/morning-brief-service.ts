@@ -17,6 +17,7 @@ import {
   type MorningBriefHouseStockItem,
   type MorningBriefReconciliation,
   type MorningBriefReport,
+  type MorningBriefWhiteSheetStatus,
 } from "@/lib/summary/morning-brief";
 
 type Supabase = SupabaseClient<Database>;
@@ -112,6 +113,28 @@ async function loadReconciliation(
   }
 }
 
+async function loadWhiteSheetStatus(
+  supabase: Supabase,
+  businessDate: string,
+): Promise<MorningBriefWhiteSheetStatus> {
+  try {
+    const { data, error } = await supabase
+      .from("digital_white_sheet_cash_entries")
+      .select("white_sheet_sales")
+      .eq("business_date", businessDate);
+    if (error) throw error;
+    return (data ?? []).some((row) => row.white_sheet_sales !== null)
+      ? "entered"
+      : "missing";
+  } catch (error) {
+    logger.warn("morning brief white sheet unavailable", {
+      businessDate,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return "unavailable";
+  }
+}
+
 function summarizeFruitFinancial(
   salesReport: Awaited<ReturnType<typeof loadSalesReport>>,
   houseStock: MorningBriefHouseStock,
@@ -165,11 +188,12 @@ export async function loadMorningBriefReport(
   supabase: Supabase,
   businessDate: string,
 ): Promise<MorningBriefReport> {
-  const [purchasePlanning, sales, houseStock, reconciliation] = await Promise.all([
+  const [purchasePlanning, sales, houseStock, reconciliation, whiteSheetStatus] = await Promise.all([
     loadPurchasePlanningReport(supabase, businessDate),
     loadSalesReport(supabase, businessDate),
     loadHouseStock(supabase, businessDate),
     loadReconciliation(supabase, businessDate),
+    loadWhiteSheetStatus(supabase, businessDate),
   ]);
 
   return {
@@ -178,6 +202,7 @@ export async function loadMorningBriefReport(
     sales: summarizeSales(sales),
     fruitFinancial: summarizeFruitFinancial(sales, houseStock),
     houseStock,
+    whiteSheetStatus,
     reconciliation,
   };
 }

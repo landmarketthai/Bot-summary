@@ -104,8 +104,19 @@ describe("Morning Decision Brief", () => {
       sales: { ...report().sales, vegetableMarketDataPresent: true },
     }));
 
-    expect(missing).toContain("🥬 ยอดผัก\nไม่พบยอดผักในระบบ — ไม่สามารถตรวจสอบยอดผักได้");
-    expect(present).not.toContain("ไม่พบยอดผักในระบบ");
+    expect(missing).toContain("🥬 ยอดผัก\nไม่มีข้อมูลยอดผักในระบบ");
+    expect(missing).not.toContain("ไม่สามารถตรวจสอบยอดผักได้");
+    expect(present).not.toContain("ไม่มีข้อมูลยอดผักในระบบ");
+  });
+
+  test("warns when no white sheet has been entered", () => {
+    const missing = buildMorningBriefMessage(report({ whiteSheetStatus: "missing" }));
+    const entered = buildMorningBriefMessage(report({ whiteSheetStatus: "entered" }));
+    const unavailable = buildMorningBriefMessage(report({ whiteSheetStatus: "unavailable" }));
+
+    expect(missing).toContain("⚠️ ใบขาว\nยังไม่มีการกรอกใบขาวในระบบ");
+    expect(entered).not.toContain("ยังไม่มีการกรอกใบขาวในระบบ");
+    expect(unavailable).not.toContain("ยังไม่มีการกรอกใบขาวในระบบ");
   });
 
   test("does not dump sales review products, markets, or reason codes into LINE", () => {

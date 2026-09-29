@@ -96,7 +96,12 @@ function buildSalesBlock(report: MorningBriefReport): string {
 
 function buildVegetableDataBlock(report: MorningBriefReport): string | null {
   if (report.sales.vegetableMarketDataPresent !== false) return null;
-  return "🥬 ยอดผัก\nไม่พบยอดผักในระบบ — ไม่สามารถตรวจสอบยอดผักได้";
+  return "🥬 ยอดผัก\nไม่มีข้อมูลยอดผักในระบบ";
+}
+
+function buildWhiteSheetDataBlock(report: MorningBriefReport): string | null {
+  if (report.whiteSheetStatus !== "missing") return null;
+  return "⚠️ ใบขาว\nยังไม่มีการกรอกใบขาวในระบบ";
 }
 
 function displayPrice(satang: number): string {
@@ -129,10 +134,12 @@ function buildHouseStockBlock(report: MorningBriefReport): string {
 
 export function buildMorningBriefBlocks(report: MorningBriefReport): string[] {
   const vegetableDataBlock = buildVegetableDataBlock(report);
+  const whiteSheetDataBlock = buildWhiteSheetDataBlock(report);
   return [
     `${MORNING_BRIEF_TITLE} — ${formatThaiDate(report.businessDate)}`,
     buildSalesBlock(report),
     ...(vegetableDataBlock ? [vegetableDataBlock] : []),
+    ...(whiteSheetDataBlock ? [whiteSheetDataBlock] : []),
     ...buildPurchaseBlocks(report),
     buildHouseStockBlock(report),
   ];
