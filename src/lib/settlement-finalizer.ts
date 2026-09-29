@@ -170,12 +170,16 @@ export async function tryFinalizeSettlement(
   // computeAiVerifiedTotal's slip_evidences.received_at query.
   // ponytail: batches spanning midnight may have evidences counted in a
   //           different window than last_image_at — accepted rare inconsistency.
+  // summary_sent_at is only ever written together with a final status, so the
+  // null filter keeps every collecting/closing/processing row and adds only
+  // review_needed rows parked unsent after a permanent LINE rejection.
   const { startUtc, endUtc } = businessDateToUtcRange(businessDate);
   const { data: activeBatches } = await scoped(supabase
     .from("slip_batches")
     .select("id")
     .eq("source_id", sourceId)
-    .in("status", ["collecting", "closing", "processing"])
+    .in("status", ["collecting", "closing", "processing", "review_needed"])
+    .is("summary_sent_at", null)
     .gte("last_image_at", startUtc)
     .lt("last_image_at", endUtc))
     .limit(1);

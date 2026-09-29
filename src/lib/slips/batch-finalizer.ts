@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, SlipCheckStatus, SlipBatchRow, SlipType } from "@/types/database";
-import { pushLineMessage } from "@/lib/line/reply";
+import { LinePushError, pushLineMessage } from "@/lib/line/reply";
 import { logger } from "@/lib/logger";
 import { bangkokBusinessDateFromTimestamp } from "@/lib/business-date";
 import { tryFinalizeSettlement } from "@/lib/settlement-finalizer";
@@ -265,6 +265,7 @@ export interface ProcessingRecoveryRun {
   failed: number;
   skippedOutsideRetryWindow: number;
   deferredByTimeBudget: number;
+  movedToReview: number;
 }
 
 /**
@@ -272,6 +273,11 @@ export interface ProcessingRecoveryRun {
  * Fresh rows are excluded by updated_at, retries keep the batch UUID as LINE's
  * retry key, and rows older than LINE's 24-hour retry-key window are left for
  * manual review.
+ *
+ * A permanent LINE rejection (non-retryable 4xx) would fail identically on
+ * every sweep, so the batch moves to review_needed with summary_sent_at and
+ * finalized_at still null. That state drops out of this sweep, keeps settlement
+ * blocked, and stays retryable through the protected manual recover endpoint.
  */
 export async function recoverStaleProcessingSlipBatches(
   supabase: Supabase,
@@ -298,6 +304,7 @@ export async function recoverStaleProcessingSlipBatches(
       failed: 0,
       skippedOutsideRetryWindow: 0,
       deferredByTimeBudget: 0,
+      movedToReview: 0,
     };
   }
 
@@ -308,6 +315,7 @@ export async function recoverStaleProcessingSlipBatches(
     failed: 0,
     skippedOutsideRetryWindow: 0,
     deferredByTimeBudget: 0,
+    movedToReview: 0,
   };
   // GitHub Actions gives this cron caller 30 seconds. Keep recovery well below
   // that so normal batch finalization and network variance retain headroom.
@@ -334,15 +342,55 @@ export async function recoverStaleProcessingSlipBatches(
       if (result && !result.persisted) run.failed += 1;
       else run.recovered += 1;
     } catch (recoveryError) {
+      const reason = recoveryError instanceof Error ? recoveryError.message : String(recoveryError);
+      if (isPermanentLineRejection(recoveryError)) {
+        // Conditional on processing + unsent so a concurrent finalize wins;
+        // select id so a zero-row match is never counted as moved.
+        const { data: moved, error: reviewError } = await supabase
+          .from("slip_batches")
+          .update({ status: "review_needed" })
+          .eq("id", batch.id)
+          .eq("status", "processing")
+          .is("summary_sent_at", null)
+          .select("id")
+          .maybeSingle();
+        if (moved) {
+          run.movedToReview += 1;
+          logger.error("recover-stale-slip-batches: permanent LINE failure — moved to review_needed for manual recovery", {
+            batchId: batch.id,
+            httpStatus: recoveryError.httpStatus,
+            reason,
+          });
+          continue;
+        }
+        logger.error("recover-stale-slip-batches: review_needed transition not applied", {
+          batchId: batch.id,
+          reason: reviewError?.message ?? "no processing+unsent row matched (changed concurrently)",
+        });
+      }
       run.failed += 1;
-      logger.error("recover-stale-slip-batches: retry failed", {
-        batchId: batch.id,
-        reason: recoveryError instanceof Error ? recoveryError.message : String(recoveryError),
-      });
+      logger.error("recover-stale-slip-batches: retry failed", { batchId: batch.id, reason });
     }
   }
 
   return run;
+}
+
+/**
+ * Permanent per-batch LINE rejection: non-retryable 4xx except 401/403.
+ * 401/403 mean a bad/expired channel token or missing permission — systemic
+ * config faults that recover once credentials are fixed, so those batches stay
+ * in processing for the next sweep instead of fanning out into manual review.
+ * 429/5xx/network are already retryable in LinePushError.
+ */
+function isPermanentLineRejection(error: unknown): error is LinePushError {
+  return error instanceof LinePushError
+    && !error.retryable
+    && error.httpStatus !== null
+    && error.httpStatus >= 400
+    && error.httpStatus < 500
+    && error.httpStatus !== 401
+    && error.httpStatus !== 403;
 }
 
 // ── Single-batch finalization ─────────────────────────────────────────────────

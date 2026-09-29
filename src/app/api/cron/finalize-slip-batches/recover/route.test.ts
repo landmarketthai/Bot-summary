@@ -254,8 +254,59 @@ describe("recoverSlipBatch — delivery + persistence outcomes", () => {
   it("wrong batch status → throws 422", async () => {
     const supabase = makeRecoverSupabase({ status: "closing", summary_sent_at: null });
     await expect(recoverSlipBatch(supabase, "batch-1", deliveredPush())).rejects.toThrow(
-      "not in processing status",
+      "not in processing or unsent review_needed status",
     );
+  });
+
+  it("unsent review_needed batch (permanent LINE failure) → retried with batch-id key and finalized", async () => {
+    const pushCalls: Array<{ to: string; retryKey?: string }> = [];
+    const statusUpdates: Array<Record<string, unknown>> = [];
+    const supabase = makeRecoverSupabase(
+      { status: "review_needed", summary_sent_at: null },
+      { statusUpdates },
+    );
+
+    const result = await recoverSlipBatch(supabase, "batch-1", deliveredPush(pushCalls));
+
+    expect(result).toEqual({ ok: true, result: "finalized", batchId: "batch-1" });
+    expect(pushCalls).toEqual([{ to: "group-abc", retryKey: "batch-1" }]);
+    expect(statusUpdates[0]?.summary_sent_at).toBeTruthy();
+  });
+
+  it("sent review_needed batch → already_finalized, no message sent", async () => {
+    const pushCalls: Array<{ to: string; retryKey?: string }> = [];
+    const supabase = makeRecoverSupabase({
+      status:          "review_needed",
+      summary_sent_at: "2026-01-01T00:00:00Z",
+    });
+
+    const result = await recoverSlipBatch(supabase, "batch-1", deliveredPush(pushCalls));
+
+    expect(result.result).toBe("already_finalized");
+    expect(pushCalls).toHaveLength(0);
+  });
+
+  it("unsent review_needed batch outside 24-hour window → requires_manual_review, no message", async () => {
+    const pushCalls: Array<{ to: string; retryKey?: string }> = [];
+    const supabase = makeRecoverSupabase({
+      status:          "review_needed",
+      summary_sent_at: null,
+      closing_at:      new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
+    });
+
+    const result = await recoverSlipBatch(supabase, "batch-1", deliveredPush(pushCalls));
+
+    expect(result.result).toBe("requires_manual_review");
+    expect(pushCalls).toHaveLength(0);
+  });
+
+  it("unsent completed/failed batch → still rejected with 422", async () => {
+    for (const status of ["completed", "failed"]) {
+      const supabase = makeRecoverSupabase({ status, summary_sent_at: null });
+      await expect(recoverSlipBatch(supabase, "batch-1", deliveredPush())).rejects.toThrow(
+        "not in processing or unsent review_needed status",
+      );
+    }
   });
 
   it("batch not found → throws error", async () => {

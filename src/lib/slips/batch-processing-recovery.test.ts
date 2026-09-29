@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
+import { LinePushError } from "@/lib/line/reply";
 import { recoverStaleProcessingSlipBatches } from "./batch-finalizer";
 
 type RecoveryRow = {
@@ -18,8 +19,17 @@ function makeRecoverySupabase(rows: RecoveryRow[]): SupabaseClient<Database> {
     from(table: string) {
       if (table !== "slip_batches") throw new Error(`Unexpected table: ${table}`);
       let filtered = [...rows];
+      let patch: Partial<RecoveryRow> | null = null;
       const builder = {
         select() { return builder; },
+        update(values: Partial<RecoveryRow>) {
+          patch = values;
+          return builder;
+        },
+        maybeSingle() {
+          for (const target of filtered) Object.assign(target, patch);
+          return Promise.resolve({ data: filtered[0] ? { id: filtered[0].id } : null, error: null });
+        },
         eq(column: keyof RecoveryRow, value: unknown) {
           filtered = filtered.filter((row) => row[column] === value);
           return builder;
@@ -140,5 +150,101 @@ describe("recoverStaleProcessingSlipBatches", () => {
     expect(finalized).toEqual(["a", "b"]);
     expect(result.failed).toBe(1);
     expect(result.recovered).toBe(1);
+  });
+
+  it("moves a permanent LINE 400 to unsent review_needed so later sweeps stop retrying it", async () => {
+    const rows = [row("rejected", 3)];
+    const supabase = makeRecoverySupabase(rows);
+    let finalizeCalls = 0;
+    const finalize = async () => {
+      finalizeCalls += 1;
+      throw new LinePushError("LINE push HTTP 400", 400, false);
+    };
+
+    const first = await recoverStaleProcessingSlipBatches(supabase, async () => {}, 2, 20, finalize);
+
+    expect(first.movedToReview).toBe(1);
+    expect(first.failed).toBe(0);
+    expect(rows[0].status).toBe("review_needed");
+    expect(rows[0].summary_sent_at).toBeNull();
+
+    const second = await recoverStaleProcessingSlipBatches(supabase, async () => {}, 2, 20, finalize);
+
+    expect(second.due).toBe(0);
+    expect(finalizeCalls).toBe(1);
+  });
+
+  for (const status of [401, 403]) {
+    it(`keeps a LINE ${status} (channel auth/config) in processing for automatic retry after the fix`, async () => {
+      const rows = [row(`auth-${status}`, 3)];
+      const supabase = makeRecoverySupabase(rows);
+      let finalizeCalls = 0;
+      const finalize = async () => {
+        finalizeCalls += 1;
+        if (finalizeCalls === 1) throw new LinePushError(`LINE push HTTP ${status}`, status, false);
+      };
+
+      const first = await recoverStaleProcessingSlipBatches(supabase, async () => {}, 2, 20, finalize);
+
+      expect(first.failed).toBe(1);
+      expect(first.movedToReview).toBe(0);
+      expect(rows[0].status).toBe("processing");
+
+      // Token fixed: next sweep picks the batch up again and recovers it.
+      const second = await recoverStaleProcessingSlipBatches(supabase, async () => {}, 2, 20, finalize);
+
+      expect(second.due).toBe(1);
+      expect(second.recovered).toBe(1);
+      expect(finalizeCalls).toBe(2);
+    });
+  }
+
+  it("keeps a non-4xx non-retryable LINE failure in processing", async () => {
+    const rows = [row("redirect", 3)];
+    const supabase = makeRecoverySupabase(rows);
+    const finalize = async () => {
+      throw new LinePushError("LINE push HTTP 302", 302, false);
+    };
+
+    const result = await recoverStaleProcessingSlipBatches(supabase, async () => {}, 2, 20, finalize);
+
+    expect(result.movedToReview).toBe(0);
+    expect(result.failed).toBe(1);
+    expect(rows[0].status).toBe("processing");
+  });
+
+  it("does not count a permanent rejection as moved when a concurrent worker already changed the batch", async () => {
+    const rows = [row("raced", 3)];
+    const supabase = makeRecoverySupabase(rows);
+    const finalize = async () => {
+      // Another worker finalizes the batch before this sweep's transition runs.
+      Object.assign(rows[0], { status: "completed", summary_sent_at: new Date().toISOString() });
+      throw new LinePushError("LINE push HTTP 400", 400, false);
+    };
+
+    const result = await recoverStaleProcessingSlipBatches(supabase, async () => {}, 2, 20, finalize);
+
+    expect(result.movedToReview).toBe(0);
+    expect(result.failed).toBe(1);
+    expect(rows[0].status).toBe("completed");
+  });
+
+  it("keeps a retryable LINE 503 in processing and retries it on the next sweep", async () => {
+    const rows = [row("unavailable", 3)];
+    const supabase = makeRecoverySupabase(rows);
+    let finalizeCalls = 0;
+    const finalize = async () => {
+      finalizeCalls += 1;
+      throw new LinePushError("LINE push HTTP 503", 503, true);
+    };
+
+    const first = await recoverStaleProcessingSlipBatches(supabase, async () => {}, 2, 20, finalize);
+    const second = await recoverStaleProcessingSlipBatches(supabase, async () => {}, 2, 20, finalize);
+
+    expect(first.failed).toBe(1);
+    expect(first.movedToReview).toBe(0);
+    expect(rows[0].status).toBe("processing");
+    expect(second.due).toBe(1);
+    expect(finalizeCalls).toBe(2);
   });
 });
