@@ -4,6 +4,7 @@ import { logger } from "@/lib/logger";
 import {
   finalizeDueSlipBatches,
   finalizeClosingSlipBatches,
+  recoverStaleProcessingSlipBatches,
   parseAbandonedMinutes,
   parseCloseSeconds,
 } from "@/lib/slips/batch-finalizer";
@@ -39,6 +40,9 @@ export async function GET(req: NextRequest) {
     finalizeDueSlipBatches(supabase),
     finalizeClosingSlipBatches(supabase),
   ]);
+  // Run recovery only after normal claims finish; the two-minute stale guard
+  // keeps freshly claimed work out of this sweep.
+  const processingRecovery = await recoverStaleProcessingSlipBatches(supabase);
 
   const abandonedMinutes  = parseAbandonedMinutes(process.env.SLIP_ABANDONED_SESSION_MINUTES);
   const closeQuietSeconds = parseCloseSeconds(process.env.SLIP_CLOSE_QUIET_SECONDS, 10);
@@ -47,6 +51,7 @@ export async function GET(req: NextRequest) {
   logger.info("finalize-slip-batches completed", {
     abandonedCount,
     closedCount,
+    processingRecovery,
     abandonedMinutes,
     closeQuietSeconds,
     closeMaxSeconds,
@@ -55,7 +60,8 @@ export async function GET(req: NextRequest) {
     ok: true,
     abandonedCount,
     closedCount,
-    finalizedCount: abandonedCount + closedCount,
+    processingRecovery,
+    finalizedCount: abandonedCount + closedCount + processingRecovery.recovered,
     abandonedSessionMinutes: abandonedMinutes,
     closeQuietSeconds,
     closeMaxSeconds,

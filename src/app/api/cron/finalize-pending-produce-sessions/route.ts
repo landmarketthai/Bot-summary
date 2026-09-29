@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { checkCronAuth } from "@/app/api/cron/finalize-slip-batches/auth";
 import { createServiceClient } from "@/lib/supabase/server";
 import { finalizeDuePendingGenerations } from "@/lib/line/pending-session-finalizer";
@@ -8,6 +8,7 @@ import {
   resendProduceNotification,
 } from "@/lib/line/produce-notification-delivery";
 import { processExpiredPendingProduceEvents } from "@/lib/line/pending-produce-reorder";
+import { WebhookService } from "@/lib/line/webhook-service";
 import { recoverStrandedPendingCloses } from "@/lib/line/pending-close-recovery";
 import {
   sweepPendingSessionInactivityWarnings,
@@ -37,6 +38,24 @@ export async function GET(req: NextRequest) {
 
   try {
     const supabase = createServiceClient();
+    // Reuse the existing once-per-minute durable scheduler as a wake-up source for
+    // recent ordered webhook backlog, but do not delay the Produce finalizer.
+    // The recovery itself runs after this response and stays bounded.
+    const webhookQueueService = new WebhookService(supabase, {
+      scheduleBackgroundTask: (task) => after(task),
+    });
+    after(async () => {
+      try {
+        const recovery = await webhookQueueService.recoverPendingOrderedEvents();
+        if (recovery.processed > 0) {
+          logger.info("ordered webhook recovery completed", recovery);
+        }
+      } catch (error) {
+        logger.error("ordered webhook recovery failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
     // Resolve/reject the bounded reorder ledger before any closing generation
     // is allowed to enter authoritative Produce persistence.
     const deferredProduceEvents = await processExpiredPendingProduceEvents(supabase);

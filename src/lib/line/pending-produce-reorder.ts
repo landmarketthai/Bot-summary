@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 import { logger } from "@/lib/logger";
-import { replyLineMessage } from "@/lib/line/reply";
+import { pushLineMessage } from "@/lib/line/reply";
 import { PendingSessionService } from "@/lib/line/pending-session-service";
 import { boundaryRejectReply, type RecoveryReason } from "@/lib/line/pending-produce-recovery";
 
@@ -14,7 +14,7 @@ export interface DeferredProduceSweepResult {
   replyErrors: number;
 }
 
-type Reply = (replyToken: string, text: string) => Promise<void>;
+type Push = (to: string, text: string) => Promise<unknown>;
 
 function expiredRejectReason(status: string): RecoveryReason {
   if (status === "rejected_after_close") return "after_close";
@@ -28,7 +28,7 @@ function expiredRejectReason(status: string): RecoveryReason {
  */
 export async function processExpiredPendingProduceEvents(
   supabase: SupabaseClient<Database>,
-  reply: Reply = replyLineMessage,
+  push: Push = pushLineMessage,
   limit = 25,
 ): Promise<DeferredProduceSweepResult> {
   const events = await new PendingSessionService(supabase)
@@ -60,10 +60,9 @@ export async function processExpiredPendingProduceEvents(
       ageMs: Date.parse(event.resolved_at) - Date.parse(event.received_at),
       rawText: event.raw_text,
     });
-    if (!event.reply_token) continue;
     try {
-      await reply(
-        event.reply_token,
+      await push(
+        event.source_id,
         boundaryRejectReply(
           countByKey.get(event.session_key) ?? 1,
           expiredRejectReason(event.status),
@@ -72,7 +71,7 @@ export async function processExpiredPendingProduceEvents(
       result.replied += 1;
     } catch (error) {
       result.replyErrors += 1;
-      logger.error("deferred Produce orphan reply failed", {
+      logger.error("deferred Produce rejection push failed", {
         lineEventId: event.line_event_id,
         sessionKey: event.session_key,
         error: error instanceof Error ? error.message : String(error),
