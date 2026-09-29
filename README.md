@@ -82,14 +82,15 @@ GET /api/cron/finalize-pending-produce-sessions
 Authorization: Bearer <CRON_SECRET>
 ```
 
-Call the route every 1–2 seconds. Release B deliberately does not create a
-Supabase Cron job and `vercel.json` does not advertise a one-minute cron as an
-8-second experience.
+Production calls this route once per minute through Supabase Cron. Release B
+does not create a Vercel cron, so `vercel.json` remains empty and Vercel is not
+invoked more frequently than the production scheduler requires.
 
 User-visible timing:
 
 - With no late webhook, finalization becomes eligible 8 seconds after close and
-  normally starts on the next scheduler call.
+  starts on the next once-per-minute scheduler call, so the visible delay can
+  be up to about one minute.
 - Every eligible late item rearms eligibility to 8 seconds after that item,
   capped at 30 seconds after the first close.
 - `จบรายการ N รายการ` waits for every indexed number `1..N`. At the first due

@@ -61,6 +61,12 @@ const CLOSE_MAX_SECONDS = parseCloseSeconds(
   120,
 );
 
+// A batch that has stayed in processing beyond two normal request windows is
+// treated as stranded and becomes eligible for bounded automatic recovery.
+const PROCESSING_RECOVERY_STALE_MINUTES = 2;
+const PROCESSING_RECOVERY_LIMIT = 20;
+const LINE_RETRY_KEY_WINDOW_HOURS = 24;
+
 type Supabase = SupabaseClient<Database>;
 
 // retryKey is the batch UUID passed as X-Line-Retry-Key for idempotent push.
@@ -253,6 +259,92 @@ export async function finalizeClosingSlipBatches(
   return count;
 }
 
+export interface ProcessingRecoveryRun {
+  due: number;
+  recovered: number;
+  failed: number;
+  skippedOutsideRetryWindow: number;
+  deferredByTimeBudget: number;
+}
+
+/**
+ * Retry slip batches that were claimed into processing but never finished.
+ * Fresh rows are excluded by updated_at, retries keep the batch UUID as LINE's
+ * retry key, and rows older than LINE's 24-hour retry-key window are left for
+ * manual review.
+ */
+export async function recoverStaleProcessingSlipBatches(
+  supabase: Supabase,
+  push: PushMessage = defaultPush,
+  staleMinutes = PROCESSING_RECOVERY_STALE_MINUTES,
+  limit = PROCESSING_RECOVERY_LIMIT,
+  _finalize: FinalizeFn = finalizeSlipBatch,
+): Promise<ProcessingRecoveryRun> {
+  const cutoff = new Date(Date.now() - staleMinutes * 60 * 1000).toISOString();
+  const { data, error } = await supabase
+    .from("slip_batches")
+    .select("id, source_id, closing_at, created_at, updated_at")
+    .eq("status", "processing")
+    .is("summary_sent_at", null)
+    .lte("updated_at", cutoff)
+    .order("updated_at", { ascending: true })
+    .limit(limit);
+
+  if (error) {
+    logger.error("recover-stale-slip-batches: fetch failed", { reason: error.message });
+    return {
+      due: 0,
+      recovered: 0,
+      failed: 0,
+      skippedOutsideRetryWindow: 0,
+      deferredByTimeBudget: 0,
+    };
+  }
+
+  const batches = data ?? [];
+  const run: ProcessingRecoveryRun = {
+    due: batches.length,
+    recovered: 0,
+    failed: 0,
+    skippedOutsideRetryWindow: 0,
+    deferredByTimeBudget: 0,
+  };
+  // GitHub Actions gives this cron caller 30 seconds. Keep recovery well below
+  // that so normal batch finalization and network variance retain headroom.
+  const deadlineMs = Date.now() + 15_000;
+
+  for (const [index, batch] of batches.entries()) {
+    if (Date.now() >= deadlineMs) {
+      run.deferredByTimeBudget = batches.length - index;
+      break;
+    }
+    const referenceTime = batch.closing_at ?? batch.created_at;
+    const ageHours = (Date.now() - new Date(referenceTime).getTime()) / (60 * 60 * 1000);
+    if (!Number.isFinite(ageHours) || ageHours > LINE_RETRY_KEY_WINDOW_HOURS) {
+      run.skippedOutsideRetryWindow += 1;
+      continue;
+    }
+
+    try {
+      const result = await _finalize(
+        supabase,
+        batch.id,
+        (text) => push(batch.source_id, text, batch.id),
+      );
+      if (result && !result.persisted) run.failed += 1;
+      else run.recovered += 1;
+    } catch (recoveryError) {
+      run.failed += 1;
+      logger.error("recover-stale-slip-batches: retry failed", {
+        batchId: batch.id,
+        reason: recoveryError instanceof Error ? recoveryError.message : String(recoveryError),
+      });
+    }
+  }
+
+  return run;
+}
+
 // ── Single-batch finalization ─────────────────────────────────────────────────
 
 /**
@@ -271,9 +363,9 @@ export async function finalizeClosingSlipBatches(
  * FAILURE HANDLING:
  *   Pre-send failure (messageSent=false): the batch stays in 'processing' with
  *   summary_sent_at=null.  It is NOT reverted to 'collecting' — reverting would
- *   re-open image collection on a batch the user already closed.  The operator
- *   can manually re-trigger via a protected admin endpoint.  Because the caller
- *   passes the batch ID as X-Line-Retry-Key, a safe re-send will not duplicate.
+ *   re-open image collection on a batch the user already closed.  The stale-
+ *   processing sweep retries it after two minutes while LINE's retry-key window
+ *   is still safe; the protected admin endpoint remains the manual fallback.
  *
  *   Post-send DB failure (messageSent=true): the summary was delivered.  We log
  *   the error and return without throwing so the caller does not revert state.
@@ -397,11 +489,10 @@ export async function finalizeSlipBatch(
     if (!messageSent) {
       // Pre-send failure: do NOT revert to 'collecting'.
       // Reverting would re-open image collection on a closed batch, which must
-      // never happen after finalization starts.  The batch stays in 'processing'
-      // so it is invisible to the cron (which only handles 'closing' batches).
-      // An operator can manually re-trigger delivery via a protected admin endpoint.
+      // never happen after finalization starts. The bounded stale-processing
+      // recovery sweep will retry it later with the same LINE retry key.
       log.error(
-        "finalizeSlipBatch: pre-send failure — batch stays in processing, requires manual retry",
+        "finalizeSlipBatch: pre-send failure — batch stays in processing for stale recovery",
         { batchId },
       );
     }

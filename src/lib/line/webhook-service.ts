@@ -750,7 +750,11 @@ export class WebhookService {
       ?? ((candidate) => upsertDataQualityIssuesAtomically(this.supabase, [candidate]));
   }
 
-  async processEvents(events: LineEvent[], destination: string): Promise<WebhookProcessResult[]> {
+  async processEvents(
+    events: LineEvent[],
+    destination: string,
+    options: { deferOrderedProcessing?: boolean } = {},
+  ): Promise<WebhookProcessResult[]> {
     // LINE's array order is the only ordering guarantee inside one payload.
     // Persist every event before any worker starts so a later close can see
     // every earlier event in the durable queue.
@@ -795,8 +799,25 @@ export class WebhookService {
       const orderedReceipts = receipts.filter((receipt) => receipt.ordered);
       const sourceIds = [...new Set(orderedReceipts.map(({ sourceId }) => sourceId))];
       try {
-        for (const sourceId of sourceIds) {
-          await this.drainOrderedSource(sourceId, destination, resultByEventId);
+        if (options.deferOrderedProcessing && sourceIds.length > 0) {
+          this.scheduleBackgroundTask(async () => {
+            const backgroundResults = new Map<string, WebhookProcessResult>();
+            const deadlineMs = Date.now() + 45_000;
+            for (const sourceId of sourceIds) {
+              if (Date.now() >= deadlineMs) break;
+              await this.drainOrderedSource(
+                sourceId,
+                destination,
+                backgroundResults,
+                30,
+                deadlineMs,
+              );
+            }
+          });
+        } else {
+          for (const sourceId of sourceIds) {
+            await this.drainOrderedSource(sourceId, destination, resultByEventId);
+          }
         }
         for (const receipt of receipts.filter((item) => !item.ordered)) {
           resultByEventId.set(receipt.event.webhookEventId, await this.processOne(
@@ -4444,14 +4465,49 @@ export class WebhookService {
   }
 
   // ── DB helpers ────────────────────────────────────────────────────────────
+  async recoverPendingOrderedEvents(
+    maxEvents = 5,
+    maxAgeMinutes = 60,
+  ): Promise<{ sources: number; processed: number }> {
+    const cutoff = new Date(Date.now() - maxAgeMinutes * 60 * 1000).toISOString();
+    const { data, error } = await this.supabase
+      .from("line_webhook_event_queue")
+      .select("source_id")
+      .eq("status", "pending")
+      .gte("received_at", cutoff)
+      .order("receive_order", { ascending: true })
+      .limit(maxEvents);
+    if (error) throw new Error(`ordered webhook recovery lookup failed: ${error.message}`);
+
+    const sourceIds = [...new Set((data ?? []).map((row) => row.source_id))];
+    const results = new Map<string, WebhookProcessResult>();
+    const deadlineMs = Date.now() + 10_000;
+    let processed = 0;
+    for (const sourceId of sourceIds) {
+      if (processed >= maxEvents || Date.now() >= deadlineMs) break;
+      processed += await this.drainOrderedSource(
+        sourceId,
+        "",
+        results,
+        maxEvents - processed,
+        deadlineMs,
+      );
+    }
+    return { sources: sourceIds.length, processed };
+  }
+
   private async drainOrderedSource(
     sourceId: string,
     destination: string,
     resultByEventId: Map<string, WebhookProcessResult>,
-  ): Promise<void> {
-    while (true) {
+    maxEvents = Number.POSITIVE_INFINITY,
+    deadlineMs = Number.POSITIVE_INFINITY,
+  ): Promise<number> {
+    let processed = 0;
+    while (processed < maxEvents && Date.now() < deadlineMs) {
       const claim = await this.claimOrderedEvent(sourceId);
-      if (!claim) return;
+      if (!claim) return processed;
+      processed += 1;
 
       let result: WebhookProcessResult;
       const replies: DeferredReply[] = [];
@@ -4465,9 +4521,18 @@ export class WebhookService {
       this.replyMessages = captureTexts;
       this.replyApiMessages = captureApi;
       try {
-        const event = await this.loadQueuedEvent(claim.raw_message_id);
-        result = event
-          ? await this.processOne(event, destination, 0, 1, claim.raw_message_id, captureText, captureTexts, captureApi)
+        const queued = await this.loadQueuedEvent(claim.raw_message_id);
+        result = queued
+          ? await this.processOne(
+            queued.event,
+            queued.destination || destination,
+            0,
+            1,
+            claim.raw_message_id,
+            captureText,
+            captureTexts,
+            captureApi,
+          )
           : {
             eventId: claim.line_event_id,
             eventType: "message",
@@ -4496,9 +4561,9 @@ export class WebhookService {
         );
         if (released) {
           resultByEventId.set(result.eventId, { ...result, retryable: true });
-          // Do not reclaim the same row again inside this request. LINE will
-          // redeliver after the route returns a non-2xx response.
-          return;
+          // Do not reclaim the same row again inside this worker. A webhook
+          // redelivery or the durable recovery sweep can retry it later.
+          return processed;
         }
         continue;
       }
@@ -4539,6 +4604,7 @@ export class WebhookService {
 
       resultByEventId.set(result.eventId, result);
     }
+    return processed;
   }
 
   private async claimOrderedEvent(sourceId: string): Promise<QueueClaim | null> {
@@ -4549,14 +4615,21 @@ export class WebhookService {
     return (data as QueueClaim | null) ?? null;
   }
 
-  private async loadQueuedEvent(rawMessageId: string): Promise<LineEvent | null> {
+  private async loadQueuedEvent(
+    rawMessageId: string,
+  ): Promise<{ event: LineEvent; destination: string } | null> {
     const { data, error } = await this.supabase
       .from("raw_messages")
-      .select("payload")
+      .select("payload, destination")
       .eq("id", rawMessageId)
       .maybeSingle();
     if (error) throw new Error(`queued raw event lookup failed: ${error.message}`);
-    return data ? data.payload as unknown as LineEvent : null;
+    return data
+      ? {
+        event: data.payload as unknown as LineEvent,
+        destination: data.destination ?? "",
+      }
+      : null;
   }
 
   private async completeOrderedEvent(
@@ -4636,6 +4709,7 @@ export class WebhookService {
       this.isWhiteSheetOrderingEvent(event)
       || isProduceOrderingEvent(event)
       || isPhysicalInventoryOrderingEvent(event)
+      || (event.type === "message" && message?.type === "image")
     ) && this.orderedQueueAvailable !== false) {
       let data: unknown;
       let error: { code?: string; message: string } | null = null;

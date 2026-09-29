@@ -55,7 +55,11 @@ export async function POST(req: NextRequest) {
     scheduleBackgroundTask: (task) => after(task),
   });
 
-  const results = await service.processEvents(body.events, body.destination);
+  const results = await service.processEvents(
+    body.events,
+    body.destination,
+    { deferOrderedProcessing: true },
+  );
 
   const saved     = results.filter((r) => r.status === "saved").length;
   const duplicate = results.filter((r) => r.status === "duplicate").length;
