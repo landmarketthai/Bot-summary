@@ -1,0 +1,28 @@
+name: daily-data-quality-scan
+
+# Data Quality Inbox refresh for the previous Bangkok calendar/business day.
+# 08:30 Asia/Bangkok = 01:30 UTC (Bangkok has no DST). This runs after the
+# 08:00 stock and 08:10 sales reporting jobs so their underlying day is stable.
+
+on:
+  schedule:
+    - cron: "30 1 * * *"
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Optional business date override (YYYY-MM-DD)."
+        required: false
+        type: string
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call data-quality-scan cron
+        run: |
+          URL="https://bot-summary.vercel.app/api/cron/data-quality-scan"
+          if [ -n "${{ inputs.date }}" ]; then URL="$URL?date=${{ inputs.date }}"; fi
+          curl -sf --max-time 120 \
+            -X GET \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "$URL"
