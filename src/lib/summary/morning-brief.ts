@@ -1,3 +1,4 @@
+import { canonicalMarketLabel } from "@/lib/market";
 import { isSoldOutByAbsentReturn, type SalesReport } from "@/lib/sales/calculate";
 import type { SalesValueStatus } from "@/lib/sales/calculate";
 import { PRODUCT_CODE_ENTRIES } from "@/lib/produce/product-code/dictionary";
@@ -122,6 +123,8 @@ export interface MorningBriefSales {
   priceIssueCount: number;
   incompleteReturnIssueCount: number;
   excludedFromSalesCount: number;
+  /** true when the daily sales report contains the dedicated พาซิโอ้ผัก market. */
+  vegetableMarketDataPresent?: boolean;
   reviewItems?: MorningBriefSalesReviewItem[];
   markets?: MorningBriefSalesMarket[];
 }
@@ -162,6 +165,9 @@ export function summarizeSales(report: SalesReport): MorningBriefSales {
     priceIssueCount: rows.filter((row) => hasPriceIssue(row.reasons)).length,
     incompleteReturnIssueCount: rows.filter(hasReturnIssue).length,
     excludedFromSalesCount: rows.filter((row) => row.valueStatus === "UNAVAILABLE").length,
+    vegetableMarketDataPresent: report.markets.some(
+      (market) => canonicalMarketLabel(market.marketLabel) === "พาซิโอ้ผัก",
+    ),
     markets: report.markets.map((market) => ({
       marketLabel: market.marketLabel,
       totalSalesSatang: market.total.totalSalesSatang,
