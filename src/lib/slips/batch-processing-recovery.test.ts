@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, setSystemTime } from "bun:test";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 import { LinePushError } from "@/lib/line/reply";
@@ -13,6 +13,24 @@ type RecoveryRow = {
   created_at: string;
   updated_at: string;
 };
+
+function splitTerms(expression: string): string[] {
+  const terms: string[] = [];
+  let depth = 0;
+  let current = "";
+  for (const char of expression) {
+    if (char === "," && depth === 0) {
+      terms.push(current);
+      current = "";
+      continue;
+    }
+    if (char === "(") depth += 1;
+    if (char === ")") depth -= 1;
+    current += char;
+  }
+  terms.push(current);
+  return terms;
+}
 
 function makeRecoverySupabase(rows: RecoveryRow[]): SupabaseClient<Database> {
   return {
@@ -40,6 +58,22 @@ function makeRecoverySupabase(rows: RecoveryRow[]): SupabaseClient<Database> {
         },
         lte(column: keyof RecoveryRow, value: string) {
           filtered = filtered.filter((row) => String(row[column]) <= value);
+          return builder;
+        },
+        // PostgREST or() subset: top-level terms are OR'ed, and(...) terms
+        // AND their parts; each part is `column.gte.value` or `column.is.null`.
+        or(expression: string) {
+          const matches = (target: RecoveryRow, term: string): boolean => {
+            const nested = /^and\((.*)\)$/.exec(term);
+            if (nested) return splitTerms(nested[1]).every((part) => matches(target, part));
+            const [column, op, ...rest] = term.split(".");
+            const value = rest.join(".");
+            const actual = target[column as keyof RecoveryRow];
+            if (op === "is" && value === "null") return actual === null;
+            if (op === "gte") return actual !== null && String(actual) >= value;
+            throw new Error(`Unsupported or() term: ${term}`);
+          };
+          filtered = filtered.filter((target) => splitTerms(expression).some((term) => matches(target, term)));
           return builder;
         },
         order(column: keyof RecoveryRow) {
@@ -133,8 +167,104 @@ describe("recoverStaleProcessingSlipBatches", () => {
     );
 
     expect(finalizeCalls).toBe(0);
-    expect(result.skippedOutsideRetryWindow).toBe(1);
+    expect(result.due).toBe(0);
     expect(result.recovered).toBe(0);
+  });
+
+  it("many stale rows outside the 24-hour window never starve younger recoverable batches", async () => {
+    // 25 out-of-window rows with the oldest updated_at would fill the whole
+    // 20-row oldest-first page if they were fetched.
+    const expired = Array.from({ length: 25 }, (_, index) => row(`expired-${index}`, 60 * 30 + index, 30));
+    const eligible = [row("eligible-a", 3), row("eligible-b", 5, 23)];
+    const rows = [...expired, ...eligible];
+    const supabase = makeRecoverySupabase(rows);
+    const finalized: string[] = [];
+    const finalize = async (_db: unknown, batchId: string) => {
+      finalized.push(batchId);
+      return { delivered: true as const, persisted: true as const };
+    };
+
+    for (let sweep = 0; sweep < 3; sweep += 1) {
+      await recoverStaleProcessingSlipBatches(supabase, async () => {}, undefined, undefined, finalize);
+    }
+
+    expect(finalized.sort()).toEqual(["eligible-a", "eligible-b"]);
+    // Out-of-window rows stay untouched in processing for manual recovery.
+    for (const target of expired) {
+      expect(target.status).toBe("processing");
+      expect(target.summary_sent_at).toBeNull();
+    }
+  });
+
+  it("uses closing_at, falling back to created_at, as the retry-window reference", async () => {
+    const closedRecently = { ...row("closed-recently", 3, 30), closing_at: new Date(Date.now() - 60 * 60 * 1000).toISOString() };
+    const closedLongAgo = { ...row("closed-long-ago", 3, 1), closing_at: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString() };
+    const neverClosedYoung = { ...row("never-closed-young", 3, 1), closing_at: null };
+    const neverClosedOld = { ...row("never-closed-old", 3, 25), closing_at: null };
+    const supabase = makeRecoverySupabase([closedRecently, closedLongAgo, neverClosedYoung, neverClosedOld]);
+    const finalized: string[] = [];
+
+    const result = await recoverStaleProcessingSlipBatches(supabase, async () => {}, 2, 20, async (_db, batchId) => {
+      finalized.push(batchId);
+      return { delivered: true, persisted: true };
+    });
+
+    expect(finalized.sort()).toEqual(["closed-recently", "never-closed-young"]);
+    expect(result.due).toBe(2);
+  });
+
+  it("does not lease a fetched batch that crosses the 24-hour boundary mid-sweep", async () => {
+    const start = Date.now();
+    const first = row("first", 5);
+    const edge = { ...row("edge", 3), closing_at: new Date(start - 24 * 60 * 60 * 1000 + 500).toISOString() };
+    const supabase = makeRecoverySupabase([first, edge]);
+    const edgeUpdatedAt = edge.updated_at;
+    const finalized: string[] = [];
+
+    try {
+      const result = await recoverStaleProcessingSlipBatches(supabase, async () => {}, 2, 20, async (_db, batchId) => {
+        finalized.push(batchId);
+        setSystemTime(new Date(start + 1_000));
+        return { delivered: true, persisted: true };
+      });
+
+      expect(result.due).toBe(2);
+      expect(finalized).toEqual(["first"]);
+      expect(result.skippedOutsideRetryWindow).toBe(1);
+      expect(edge.updated_at).toBe(edgeUpdatedAt);
+    } finally {
+      setSystemTime();
+    }
+  });
+
+  it("defers unleased batches past the 15-second budget and serves them first next sweep", async () => {
+    const start = Date.now();
+    const rows = [row("slow", 9), row("deferred-a", 8), row("deferred-b", 7)];
+    const supabase = makeRecoverySupabase(rows);
+    const finalized: string[] = [];
+
+    try {
+      const first = await recoverStaleProcessingSlipBatches(supabase, async () => {}, 2, 20, async (_db, batchId) => {
+        finalized.push(batchId);
+        setSystemTime(new Date(start + 16_000));
+        return { delivered: true, persisted: true };
+      });
+
+      expect(finalized).toEqual(["slow"]);
+      expect(first.deferredByTimeBudget).toBe(2);
+      // Deferred rows were never leased, so they keep the oldest updated_at.
+      nextScheduledSweep(rows[0]);
+      setSystemTime();
+      const second = await recoverStaleProcessingSlipBatches(supabase, async () => {}, 2, 1, async (_db, batchId) => {
+        finalized.push(batchId);
+        return { delivered: true, persisted: true };
+      });
+
+      expect(second.recovered).toBe(1);
+      expect(finalized).toEqual(["slow", "deferred-a"]);
+    } finally {
+      setSystemTime();
+    }
   });
 
   it("keeps sweeping after one recovered batch fails", async () => {

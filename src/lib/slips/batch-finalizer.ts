@@ -289,12 +289,18 @@ export async function recoverStaleProcessingSlipBatches(
   _finalize: FinalizeFn = finalizeSlipBatch,
 ): Promise<ProcessingRecoveryRun> {
   const cutoff = new Date(Date.now() - staleMinutes * 60 * 1000).toISOString();
+  // Only fetch rows still inside the retry-key window (closing_at ?? created_at).
+  // Out-of-window rows are never leased, so their updated_at never moves; if
+  // they shared the oldest-first page they would fill it on every sweep and
+  // starve younger recoverable batches.
+  const retryWindowStart = new Date(Date.now() - LINE_RETRY_KEY_WINDOW_HOURS * 60 * 60 * 1000).toISOString();
   const { data, error } = await supabase
     .from("slip_batches")
     .select("id, source_id, closing_at, created_at, updated_at")
     .eq("status", "processing")
     .is("summary_sent_at", null)
     .lte("updated_at", cutoff)
+    .or(`closing_at.gte.${retryWindowStart},and(closing_at.is.null,created_at.gte.${retryWindowStart})`)
     .order("updated_at", { ascending: true })
     .limit(limit);
 

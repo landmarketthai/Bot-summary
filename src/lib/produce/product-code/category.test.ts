@@ -6,7 +6,7 @@ import {
   dictionaryEntryFor,
   reportCategoryHeading,
 } from "./category";
-import { normalizeProductName } from "@/lib/summary/remaining-fruit";
+import { PRODUCT_ALIASES, normalizeProductName } from "@/lib/summary/remaining-fruit";
 import { stockCategoryFor } from "@/lib/summary/stock-categories";
 
 describe("dictionaryCategoryFor", () => {
@@ -204,9 +204,7 @@ describe("20260818100000 dictionary cleanup — ม54 correction and ม63–ม
 
   test("no fuzzy folding — near-miss ไชมัส/ไซมัส spellings stay uncategorized and unchanged", () => {
     for (const name of [
-      "ไชมัสเก่า",
       "ไชมัสใหม่",
-      "ไซมัสเก่า",
       "ไซมัสใหม่",
       "ไซมัสคัส",
       "องุ่นไชมัส",
@@ -215,6 +213,22 @@ describe("20260818100000 dictionary cleanup — ม54 correction and ม63–ม
       expect(normalizeProductName(name)).toBe(name);
       expect(dictionaryCategoryFor(name)).toBe(UNCATEGORIZED_CATEGORY_ID);
     }
+  });
+
+  test("ไซมัสเก่า is its own ม84 identity; only its two confirmed exact typos fold into it", () => {
+    // 20260918150000: "เก่า" old stock is priced separately, so it never folds
+    // back into ม54 ไซมัส.
+    expect(dictionaryEntryFor("ไซมัสเก่า")?.code).toBe("ม84");
+    expect(normalizeProductName("ไซมัสเก่า")).toBe("ไซมัสเก่า");
+    for (const typo of ["ไชมัสเก่า", "ไซทัสเก่า"]) {
+      expect(normalizeProductName(typo)).toBe("ไซมัสเก่า");
+      expect(dictionaryCategoryFor(normalizeProductName(typo))).toBe("ม");
+      // The raw typo is not itself a dictionary entry.
+      expect(dictionaryCategoryFor(typo)).toBe(UNCATEGORIZED_CATEGORY_ID);
+    }
+    expect(Object.keys(PRODUCT_ALIASES).filter((key) => PRODUCT_ALIASES[key] === "ไซมัสเก่า").sort())
+      .toEqual(["ไชมัสเก่า", "ไซทัสเก่า"].sort());
+    expect(dictionaryEntryFor("ไซมัส")?.code).toBe("ม54");
   });
 });
 
@@ -239,10 +253,19 @@ describe("dictionary cleanup extension — ม69–ม71 and the เขียว
     // เขียวมรกต — and must never fold into it. มะม่วงมรกต does not occur in
     // Production at all; it is included here as the adversarial near-miss of
     // the full canonical name itself.
-    for (const name of ["เขียวมรกตเก่า", "เขียวมรกตใหม่", "มรกต", "มะม่วงมรกต"]) {
+    for (const name of ["เขียวมรกตใหม่", "มรกต", "มะม่วงมรกต"]) {
       expect(normalizeProductName(name)).toBe(name);
       expect(dictionaryCategoryFor(name)).toBe(UNCATEGORIZED_CATEGORY_ID);
     }
+  });
+
+  test("เขียวมรกตเก่า is its own ม86 identity, never folded into ม31", () => {
+    // 20260918150000 issued ม86 for the separately priced old stock.
+    expect(normalizeProductName("เขียวมรกตเก่า")).toBe("เขียวมรกตเก่า");
+    expect(dictionaryEntryFor("เขียวมรกตเก่า")?.code).toBe("ม86");
+    expect(Object.values(PRODUCT_ALIASES)).not.toContain("เขียวมรกตเก่า");
+    expect(PRODUCT_ALIASES["เขียวมรกตเก่า"]).toBeUndefined();
+    expect(dictionaryEntryFor(normalizeProductName("เขียวมรกต"))?.code).toBe("ม31");
   });
 
   describe("identity distinctness — new codes never alias into a pre-existing product", () => {
