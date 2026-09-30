@@ -99,13 +99,14 @@ export interface Database {
           source_id: string;
           raw_message_id: string;
           receive_order: number;
-          status: "pending" | "processing" | "processed" | "failed";
+          status: "pending" | "processing" | "processed" | "failed" | "stale";
           error_message: string | null;
           received_at: string;
           processing_started_at: string | null;
           processing_attempts: number;
           claim_token: string | null;
           completed_at: string | null;
+          stale_surfaced_at: string | null;
         };
         Insert: {
           id?: string;
@@ -113,13 +114,14 @@ export interface Database {
           source_id: string;
           raw_message_id: string;
           receive_order?: number;
-          status?: "pending" | "processing" | "processed" | "failed";
+          status?: "pending" | "processing" | "processed" | "failed" | "stale";
           error_message?: string | null;
           received_at?: string;
           processing_started_at?: string | null;
           processing_attempts?: number;
           claim_token?: string | null;
           completed_at?: string | null;
+          stale_surfaced_at?: string | null;
         };
         Update: {
           id?: string;
@@ -127,13 +129,14 @@ export interface Database {
           source_id?: string;
           raw_message_id?: string;
           receive_order?: number;
-          status?: "pending" | "processing" | "processed" | "failed";
+          status?: "pending" | "processing" | "processed" | "failed" | "stale";
           error_message?: string | null;
           received_at?: string;
           processing_started_at?: string | null;
           processing_attempts?: number;
           claim_token?: string | null;
           completed_at?: string | null;
+          stale_surfaced_at?: string | null;
         };
         Relationships: [];
       };
@@ -2403,6 +2406,10 @@ export interface Database {
           receive_order: number;
           claim_token: string;
         } | null;
+      };
+      reconcile_line_webhook_queue: {
+        Args: { p_surface_limit?: number };
+        Returns: Json;
       };
       complete_line_webhook_event: {
         Args: {

@@ -93,6 +93,17 @@ describe("canonicalMarketLabel", () => {
     expect(canonicalMarketLabel("วิหาร")).not.toBe(canonicalMarketLabel("รถเร่"));
   });
 
+  test("20260930 — contiguous vegetable-market spellings resolve to พาซิโอ้ผัก", () => {
+    expect(canonicalMarketLabel("พาซีโอ้ผัก")).toBe("พาซิโอ้ผัก");
+    expect(canonicalMarketLabel("พาสิโอ้ผัก")).toBe("พาซิโอ้ผัก");
+    expect(canonicalMarketLabel("ตลาดพาซิโอ้ผัก")).toBe("พาซิโอ้ผัก");
+    expect(canonicalMarketLabel("เบิก พาซีโอ้ผัก 30/9/69")).toBe("พาซิโอ้ผัก");
+    // Context-unsafe: "พาซิโอ้ เบิกผัก" is a general พาซิโอ้ withdrawal title.
+    expect(canonicalMarketLabel("พาซิโอ้ เบิกผัก")).not.toBe("พาซิโอ้ผัก");
+    expect(canonicalMarketLabel("พาซิโอ้ ผัก")).not.toBe("พาซิโอ้ผัก");
+    expect(canonicalMarketLabel("พาซีโอ้")).toBe("พาซิโอ้");
+  });
+
   test("an unidentifiable title has no market identity", () => {
     expect(canonicalMarketLabel("ชั่งคืน")).toBe("");
     expect(canonicalMarketLabel(null)).toBe("");

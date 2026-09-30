@@ -92,6 +92,7 @@ describe.skipIf(!pgAvailable)("0060 separated webhook ordering on PostgreSQL 17"
       "20260801140442_manual_white_sheet_event_ordering.sql",
       "20260915170100_line_webhook_queue_retryable_completion.sql",
       "20260919134000_line_webhook_semantic_timestamp_order.sql",
+      "20260930090000_line_webhook_stale_queue_review.sql",
     ]) await apply(join(ROOT, "supabase", "migrations", name));
   }, 60_000);
 

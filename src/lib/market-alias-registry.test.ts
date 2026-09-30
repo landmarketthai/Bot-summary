@@ -33,6 +33,7 @@ function tuples(sql: string, block: RegExp): Array<[string, string]> {
 
 const CATALOG_0055 = read("20260730090006_guided_menu_seller_market_catalog.sql");
 const GUARD = read("20260815213206_produce_market_identity_guard.sql");
+const PASEO_VEGETABLE = read("20260930090100_paseo_vegetable_market_aliases.sql");
 
 /** market_code -> canonical label, from both migrations. */
 const seededMarkets = new Map<string, string>([
@@ -49,6 +50,7 @@ const seededAliases = new Map<string, string>(
   [
     ...tuples(CATALOG_0055, /INSERT INTO _gm55_market_aliases VALUES[\s\S]*?;/),
     ...tuples(GUARD, /INSERT INTO public\.line_guided_menu_market_aliases[\s\S]*?;/),
+    ...tuples(PASEO_VEGETABLE, /INSERT INTO public\.line_guided_menu_market_aliases[\s\S]*?;/),
   ].map(([alias, code]) => {
     const label = seededMarkets.get(code);
     if (!label) throw new Error(`alias ${alias} references unseeded market ${code}`);
@@ -60,7 +62,7 @@ describe("reviewed market registry", () => {
   test("the migrations actually seed what this test thinks they do", () => {
     // A parse that silently matched nothing would make every assertion vacuous.
     expect(seededMarkets.size).toBeGreaterThanOrEqual(13);
-    expect(seededAliases.size).toBeGreaterThanOrEqual(23);
+    expect(seededAliases.size).toBeGreaterThanOrEqual(25);
     expect(seededMarkets.get("paseo")).toBe("พาซิโอ้");
     expect(seededAliases.get("พาซีโอ้")).toBe("พาซิโอ้");
     expect(seededAliases.get("พาสิโอ้")).toBe("พาซิโอ้");
@@ -86,5 +88,14 @@ describe("reviewed market registry", () => {
         ["พาซีโอ้", "paseo"],
         ["พาสิโอ้", "paseo"],
       ]);
+  });
+
+  test("the vegetable-market migration adds only contiguous ผัก spellings", () => {
+    expect(tuples(PASEO_VEGETABLE, /INSERT INTO public\.line_guided_menu_market_aliases[\s\S]*?;/))
+      .toEqual([
+        ["พาซีโอ้ผัก", "paseo_vegetable"],
+        ["ตลาดพาซิโอ้ผัก", "paseo_vegetable"],
+      ]);
+    expect(seededMarkets.get("paseo_vegetable")).toBe("พาซิโอ้ผัก");
   });
 });

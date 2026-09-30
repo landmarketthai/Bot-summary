@@ -489,4 +489,23 @@ describe.skipIf(!pgAvailable)("produce market identity guard on PostgreSQL 17", 
       SELECT count(*)::text FROM public.accountability_rounds
       WHERE status = 'cancelled'`)).toBe("0");
   });
+
+  // Last on purpose: every case above runs against the pre-20260930 catalog.
+  test("20260930 vegetable aliases resolve to พาซิโอ้ผัก only, idempotently", async () => {
+    const migration = join(ROOT, "supabase", "migrations", "20260930090100_paseo_vegetable_market_aliases.sql");
+    await apply(migration);
+    await apply(migration);
+    for (const alias of ["พาซีโอ้ผัก", "ตลาดพาซิโอ้ผัก", "พาซิโอ้ผัก"]) {
+      expect(await scalar(`SELECT public.accountability_round_market_code(${q(alias)})`))
+        .toBe("paseo_vegetable");
+    }
+    // "พาซิโอ้ เบิกผัก" cleans to this; it must not become the vegetable market.
+    expect(await scalar(`SELECT public.accountability_round_market_code(${q("พาซิโอ้ ผัก")}) IS NULL`))
+      .toBe("t");
+    expect(await scalar(`SELECT public.accountability_round_market_code(${q("พาซีโอ้")})`))
+      .toBe("paseo");
+    expect(await scalar(`
+      SELECT count(*)::text FROM public.line_guided_menu_market_aliases
+      WHERE market_code = 'paseo_vegetable'`)).toBe("2");
+  });
 });

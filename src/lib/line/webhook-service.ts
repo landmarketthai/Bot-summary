@@ -195,6 +195,22 @@ type QueueClaim = {
   receive_order: number;
   claim_token: string;
 };
+/** reconcile_line_webhook_queue result: bounded counts plus newly stale rows. */
+export type WebhookQueueReconcile = {
+  quarantined: number;
+  surfaced: Array<{
+    line_event_id: string;
+    source_id: string;
+    raw_message_id: string;
+    received_at: string;
+    processing_attempts: number;
+  }>;
+  pending_count: number;
+  processing_count: number;
+  oldest_pending_age_seconds: number | null;
+  stale_count: number;
+  oldest_stale_age_seconds: number | null;
+};
 type OrderedEventReceipt = {
   rawMessageId: string;
   sourceId: string;
@@ -4494,6 +4510,25 @@ export class WebhookService {
       );
     }
     return { sources: sourceIds.length, processed };
+  }
+
+  /**
+   * Quarantine queue rows older than 60 minutes as `stale` (never replayed),
+   * surface each newly stale row exactly once, and read bounded queue metrics.
+   * Null when the RPC is not deployed yet, so callers keep pre-migration
+   * behaviour instead of failing their sweep.
+   */
+  async reconcileOrderedQueue(surfaceLimit = 20): Promise<WebhookQueueReconcile | null> {
+    const { data, error } = await this.supabase.rpc("reconcile_line_webhook_queue", {
+      p_surface_limit: surfaceLimit,
+    });
+    if (error) {
+      if (this.isOrderingSchemaCacheError(error) || this.isMissingOrderingInfrastructure(error)) {
+        return null;
+      }
+      throw new Error(`ordered webhook reconcile failed: ${error.message}`);
+    }
+    return data as unknown as WebhookQueueReconcile;
   }
 
   private async drainOrderedSource(

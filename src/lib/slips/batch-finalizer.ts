@@ -266,6 +266,8 @@ export interface ProcessingRecoveryRun {
   skippedOutsideRetryWindow: number;
   deferredByTimeBudget: number;
   movedToReview: number;
+  /** Stale batches another concurrent sweep leased first. */
+  claimConflicts: number;
 }
 
 /**
@@ -305,6 +307,7 @@ export async function recoverStaleProcessingSlipBatches(
       skippedOutsideRetryWindow: 0,
       deferredByTimeBudget: 0,
       movedToReview: 0,
+      claimConflicts: 0,
     };
   }
 
@@ -316,6 +319,7 @@ export async function recoverStaleProcessingSlipBatches(
     skippedOutsideRetryWindow: 0,
     deferredByTimeBudget: 0,
     movedToReview: 0,
+    claimConflicts: 0,
   };
   // GitHub Actions gives this cron caller 30 seconds. Keep recovery well below
   // that so normal batch finalization and network variance retain headroom.
@@ -330,6 +334,29 @@ export async function recoverStaleProcessingSlipBatches(
     const ageHours = (Date.now() - new Date(referenceTime).getTime()) / (60 * 60 * 1000);
     if (!Number.isFinite(ageHours) || ageHours > LINE_RETRY_KEY_WINDOW_HOURS) {
       run.skippedOutsideRetryWindow += 1;
+      continue;
+    }
+
+    // Atomic lease, same conditional-UPDATE pattern as finalizeDueSlipBatches:
+    // only the caller whose UPDATE still matches the stale updated_at wins.
+    // trg_slip_batches_updated_at stamps now(), so an overlapping sweep or
+    // scheduler retry no longer finalizes the same batch concurrently.
+    const { data: leased, error: leaseError } = await supabase
+      .from("slip_batches")
+      .update({ status: "processing", updated_at: new Date().toISOString() })
+      .eq("id", batch.id)
+      .eq("status", "processing")
+      .is("summary_sent_at", null)
+      .lte("updated_at", cutoff)
+      .select("id")
+      .maybeSingle();
+    if (leaseError) {
+      run.failed += 1;
+      logger.error("recover-stale-slip-batches: lease failed", { batchId: batch.id, reason: leaseError.message });
+      continue;
+    }
+    if (!leased) {
+      run.claimConflicts += 1;
       continue;
     }
 
@@ -391,6 +418,54 @@ function isPermanentLineRejection(error: unknown): error is LinePushError {
     && error.httpStatus < 500
     && error.httpStatus !== 401
     && error.httpStatus !== 403;
+}
+
+export interface SlipBatchStateHealth {
+  count: number;
+  /** Age of the oldest such batch since it was created. */
+  oldestAgeSeconds: number | null;
+}
+
+export interface SlipBatchHealth {
+  /** processing with no summary sent: in-flight or awaiting stale recovery. */
+  processingUnsent: SlipBatchStateHealth;
+  /** review_needed with no summary sent: parked after a permanent LINE rejection. */
+  reviewNeededUnsent: SlipBatchStateHealth;
+}
+
+/**
+ * Two bounded reads (exact count + the single oldest row) for internal cron
+ * output. Returns null on any read error so metrics never fail the sweep.
+ */
+export async function loadSlipBatchHealth(supabase: Supabase): Promise<SlipBatchHealth | null> {
+  const nowMs = Date.now();
+  const read = async (status: "processing" | "review_needed"): Promise<SlipBatchStateHealth> => {
+    const { data, count, error } = await supabase
+      .from("slip_batches")
+      .select("created_at", { count: "exact" })
+      .eq("status", status)
+      .is("summary_sent_at", null)
+      .order("created_at", { ascending: true })
+      .limit(1);
+    if (error) throw new Error(error.message);
+    const oldest = data?.[0]?.created_at;
+    return {
+      count: count ?? 0,
+      oldestAgeSeconds: oldest ? Math.max(0, Math.floor((nowMs - Date.parse(oldest)) / 1000)) : null,
+    };
+  };
+  try {
+    const [processingUnsent, reviewNeededUnsent] = await Promise.all([
+      read("processing"),
+      read("review_needed"),
+    ]);
+    return { processingUnsent, reviewNeededUnsent };
+  } catch (error) {
+    logger.error("slip batch health read failed", {
+      reason: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
 }
 
 // ── Single-batch finalization ─────────────────────────────────────────────────
