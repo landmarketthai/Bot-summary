@@ -276,4 +276,29 @@ describe("dictionary cleanup extension — ม69–ม71 and the เขียว
   });
 });
 
+describe("2026-09-30 vegetable market products classify as ผัก", () => {
+  // Already dictionary rows (ผ05–ผ82); this pins them so no alias or dictionary
+  // edit silently moves them, and proves no duplicate row is needed.
+  const vegetables = [
+    "แครอท", "มันฝรั่ง", "แตงร้าน", "แตงกวา", "กระเทียมหัว",
+    "กระเทียมกลีบเล็ก", "กระเทียมกลีบใหญ่", "ขมิ้น", "กระชายซอย", "ขิงซอย",
+  ];
+
+  test("each resolves to exactly one enabled ผ dictionary row, unchanged by aliases", () => {
+    for (const name of vegetables) {
+      expect(normalizeProductName(name)).toBe(name);
+      expect(dictionaryCategoryFor(name)).toBe("ผ");
+      expect(PRODUCT_CODE_ENTRIES.filter((entry) => entry.enabled && entry.canonicalName === name))
+        .toHaveLength(1);
+    }
+  });
+
+  test("ambiguous names are not guessed into any category", () => {
+    for (const name of ["ลูกพลุน", "องุ่นมีเม็ด", "ลูกไหนดำแดง"]) {
+      expect(normalizeProductName(name)).toBe(name);
+      expect(dictionaryCategoryFor(name)).toBe(UNCATEGORIZED_CATEGORY_ID);
+    }
+  });
+});
+
 type ReportCategoryExpectation = "ท" | "ม" | "ผ" | "ป" | "ห" | "พ";

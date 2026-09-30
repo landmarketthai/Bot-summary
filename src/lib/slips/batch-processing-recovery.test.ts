@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 import { LinePushError } from "@/lib/line/reply";
-import { recoverStaleProcessingSlipBatches } from "./batch-finalizer";
+import { loadSlipBatchHealth, recoverStaleProcessingSlipBatches } from "./batch-finalizer";
 
 type RecoveryRow = {
   id: string;
@@ -66,6 +66,12 @@ function row(id: string, updatedMinutesAgo: number, createdHoursAgo = 1): Recove
     created_at: new Date(now - createdHoursAgo * 60 * 60 * 1000).toISOString(),
     updated_at: new Date(now - updatedMinutesAgo * 60 * 1000).toISOString(),
   };
+}
+
+// The recovery lease renews updated_at. The next scheduled sweep (5-minute
+// cadence) runs after the 2-minute stale guard, which this models directly.
+function nextScheduledSweep(target: RecoveryRow): void {
+  target.updated_at = new Date(Date.now() - 3 * 60 * 1000).toISOString();
 }
 
 describe("recoverStaleProcessingSlipBatches", () => {
@@ -191,6 +197,7 @@ describe("recoverStaleProcessingSlipBatches", () => {
       expect(rows[0].status).toBe("processing");
 
       // Token fixed: next sweep picks the batch up again and recovers it.
+      nextScheduledSweep(rows[0]);
       const second = await recoverStaleProcessingSlipBatches(supabase, async () => {}, 2, 20, finalize);
 
       expect(second.due).toBe(1);
@@ -239,6 +246,7 @@ describe("recoverStaleProcessingSlipBatches", () => {
     };
 
     const first = await recoverStaleProcessingSlipBatches(supabase, async () => {}, 2, 20, finalize);
+    nextScheduledSweep(rows[0]);
     const second = await recoverStaleProcessingSlipBatches(supabase, async () => {}, 2, 20, finalize);
 
     expect(first.failed).toBe(1);
@@ -246,5 +254,91 @@ describe("recoverStaleProcessingSlipBatches", () => {
     expect(rows[0].status).toBe("processing");
     expect(second.due).toBe(1);
     expect(finalizeCalls).toBe(2);
+  });
+
+  it("overlapping sweeps finalize each stale batch exactly once", async () => {
+    const rows = [row("a", 3), row("b", 3)];
+    const supabase = makeRecoverySupabase(rows);
+    const finalized: string[] = [];
+    const finalize = async (_db: unknown, batchId: string) => {
+      finalized.push(batchId);
+      return { delivered: true as const, persisted: true as const };
+    };
+
+    const [first, second] = await Promise.all([
+      recoverStaleProcessingSlipBatches(supabase, async () => {}, 2, 20, finalize),
+      recoverStaleProcessingSlipBatches(supabase, async () => {}, 2, 20, finalize),
+    ]);
+
+    expect(finalized.sort()).toEqual(["a", "b"]);
+    expect(first.recovered + second.recovered).toBe(2);
+    expect(first.claimConflicts + second.claimConflicts).toBe(2);
+  });
+
+  it("a just-leased batch is not retried again by an immediate re-run", async () => {
+    const rows = [row("leased", 3)];
+    const supabase = makeRecoverySupabase(rows);
+    let finalizeCalls = 0;
+    const finalize = async () => {
+      finalizeCalls += 1;
+      throw new LinePushError("LINE push HTTP 503", 503, true);
+    };
+
+    await recoverStaleProcessingSlipBatches(supabase, async () => {}, 2, 20, finalize);
+    const rerun = await recoverStaleProcessingSlipBatches(supabase, async () => {}, 2, 20, finalize);
+
+    expect(rerun.due).toBe(0);
+    expect(finalizeCalls).toBe(1);
+    expect(rows[0].status).toBe("processing");
+  });
+});
+
+describe("loadSlipBatchHealth", () => {
+  function healthSupabase(rows: RecoveryRow[], failWith?: string): SupabaseClient<Database> {
+    return {
+      from() {
+        let filtered = [...rows];
+        const builder = {
+          select() { return builder; },
+          eq(column: keyof RecoveryRow, value: unknown) {
+            filtered = filtered.filter((item) => item[column] === value);
+            return builder;
+          },
+          is(column: keyof RecoveryRow, value: unknown) {
+            filtered = filtered.filter((item) => item[column] === value);
+            return builder;
+          },
+          order(column: keyof RecoveryRow) {
+            filtered.sort((a, b) => String(a[column]).localeCompare(String(b[column])));
+            return builder;
+          },
+          limit(limit: number) {
+            return Promise.resolve(failWith
+              ? { data: null, count: null, error: { message: failWith } }
+              : { data: filtered.slice(0, limit), count: filtered.length, error: null });
+          },
+        };
+        return builder;
+      },
+    } as unknown as SupabaseClient<Database>;
+  }
+
+  it("counts unsent processing and review_needed batches with the oldest age", async () => {
+    const parked = { ...row("parked", 30, 5), status: "review_needed" };
+    const sent = { ...row("sent", 30, 9), status: "review_needed", summary_sent_at: new Date().toISOString() };
+    const health = await loadSlipBatchHealth(healthSupabase([row("p1", 3, 1), row("p2", 3, 2), parked, sent]));
+
+    expect(health?.processingUnsent.count).toBe(2);
+    expect(health?.processingUnsent.oldestAgeSeconds).toBeGreaterThanOrEqual(2 * 60 * 60 - 5);
+    expect(health?.reviewNeededUnsent.count).toBe(1);
+    expect(health?.reviewNeededUnsent.oldestAgeSeconds).toBeGreaterThanOrEqual(5 * 60 * 60 - 5);
+  });
+
+  it("reports empty backlogs as zero with no age, and read errors as null", async () => {
+    expect(await loadSlipBatchHealth(healthSupabase([]))).toEqual({
+      processingUnsent: { count: 0, oldestAgeSeconds: null },
+      reviewNeededUnsent: { count: 0, oldestAgeSeconds: null },
+    });
+    expect(await loadSlipBatchHealth(healthSupabase([], "timeout"))).toBeNull();
   });
 });

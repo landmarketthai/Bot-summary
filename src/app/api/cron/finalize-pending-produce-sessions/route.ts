@@ -44,8 +44,30 @@ export async function GET(req: NextRequest) {
     const webhookQueueService = new WebhookService(supabase, {
       scheduleBackgroundTask: (task) => after(task),
     });
+    // Quarantine >60-minute queue rows (never auto-replayed) and read bounded
+    // queue metrics concurrently with the Produce work below. Internal output
+    // only; a failure here never fails the finalizer.
+    const webhookQueuePromise = webhookQueueService.reconcileOrderedQueue()
+      .then((reconcile) => {
+        if (reconcile?.surfaced.length) {
+          // Surfaced once per row by the database (stale_surfaced_at), so log
+          // here before any later Produce failure can drop the response.
+          logger.warn("ordered webhook events went stale and need manual review", {
+            count: reconcile.surfaced.length,
+            events: reconcile.surfaced,
+          });
+        }
+        return reconcile;
+      })
+      .catch((error: unknown) => {
+        logger.error("ordered webhook reconcile failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      });
     after(async () => {
       try {
+        // Recent rows only; the claim RPC itself refuses anything >60 minutes.
         const recovery = await webhookQueueService.recoverPendingOrderedEvents();
         if (recovery.processed > 0) {
           logger.info("ordered webhook recovery completed", recovery);
@@ -72,6 +94,16 @@ export async function GET(req: NextRequest) {
     // recorded first.
     const inactivityWarnings = await sweepPendingSessionInactivityWarnings(supabase);
     const inactivityExpiry = await sweepPendingSessionInactivityExpiry(supabase);
+    const webhookQueueReconcile = await webhookQueuePromise;
+    const webhookQueue = webhookQueueReconcile && {
+      pendingCount: webhookQueueReconcile.pending_count,
+      oldestPendingAgeSeconds: webhookQueueReconcile.oldest_pending_age_seconds,
+      processingCount: webhookQueueReconcile.processing_count,
+      staleCount: webhookQueueReconcile.stale_count,
+      oldestStaleAgeSeconds: webhookQueueReconcile.oldest_stale_age_seconds,
+      quarantined: webhookQueueReconcile.quarantined,
+      surfacedStale: webhookQueueReconcile.surfaced.length,
+    };
     logger.info("pending produce finalizer completed", {
       ...result,
       deferredProduceEvents,
@@ -79,6 +111,7 @@ export async function GET(req: NextRequest) {
       closeRecovery,
       inactivityWarnings,
       inactivityExpiry,
+      webhookQueue,
     });
     return NextResponse.json({
       ok: true,
@@ -88,6 +121,7 @@ export async function GET(req: NextRequest) {
       closeRecovery,
       inactivityWarnings,
       inactivityExpiry,
+      webhookQueue,
       triggeredAt: new Date().toISOString(),
     });
   } catch (error) {

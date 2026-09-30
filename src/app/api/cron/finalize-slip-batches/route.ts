@@ -5,6 +5,7 @@ import {
   finalizeDueSlipBatches,
   finalizeClosingSlipBatches,
   recoverStaleProcessingSlipBatches,
+  loadSlipBatchHealth,
   parseAbandonedMinutes,
   parseCloseSeconds,
 } from "@/lib/slips/batch-finalizer";
@@ -43,6 +44,8 @@ export async function GET(req: NextRequest) {
   // Run recovery only after normal claims finish; the two-minute stale guard
   // keeps freshly claimed work out of this sweep.
   const processingRecovery = await recoverStaleProcessingSlipBatches(supabase);
+  // Post-sweep backlog: what is still stuck after this run (internal only).
+  const health = await loadSlipBatchHealth(supabase);
 
   const abandonedMinutes  = parseAbandonedMinutes(process.env.SLIP_ABANDONED_SESSION_MINUTES);
   const closeQuietSeconds = parseCloseSeconds(process.env.SLIP_CLOSE_QUIET_SECONDS, 10);
@@ -52,6 +55,7 @@ export async function GET(req: NextRequest) {
     abandonedCount,
     closedCount,
     processingRecovery,
+    health,
     abandonedMinutes,
     closeQuietSeconds,
     closeMaxSeconds,
@@ -61,6 +65,7 @@ export async function GET(req: NextRequest) {
     abandonedCount,
     closedCount,
     processingRecovery,
+    health,
     finalizedCount: abandonedCount + closedCount + processingRecovery.recovered,
     abandonedSessionMinutes: abandonedMinutes,
     closeQuietSeconds,

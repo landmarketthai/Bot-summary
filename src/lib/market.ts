@@ -161,6 +161,10 @@ export const REVIEWED_MARKET_ALIASES: Readonly<Record<string, string>> = {
   // reviewed. Confirmed by the shop as one market.
   "พาซีโอ้": "พาซิโอ้",
   "พาสิโอ้": "พาซิโอ้",
+  // 20260930090100 — contiguous vegetable-market spellings only. Space forms
+  // like "พาซิโอ้ ผัก" stay unmapped: "พาซิโอ้ เบิกผัก" cleans to exactly that.
+  "พาซีโอ้ผัก": "พาซิโอ้ผัก",
+  "ตลาดพาซิโอ้ผัก": "พาซิโอ้ผัก",
 };
 
 /** Canonical market labels, i.e. the reviewed catalog's own `label` column. */

@@ -128,4 +128,54 @@ describe("webhook timeout hardening", () => {
     expect(drained).toEqual(["source-a", "source-b"]);
     expect(result).toEqual({ sources: 2, processed: 3 });
   });
+
+  it("reconciles the queue through the database RPC and returns its metrics", async () => {
+    const metrics = {
+      quarantined: 1,
+      surfaced: [{
+        line_event_id: "evt-stale",
+        source_id: "source-a",
+        raw_message_id: "raw-stale",
+        received_at: "2026-09-30T00:00:00Z",
+        processing_attempts: 2,
+      }],
+      pending_count: 3,
+      processing_count: 0,
+      oldest_pending_age_seconds: 120,
+      stale_count: 1,
+      oldest_stale_age_seconds: 4000,
+    };
+    const calls: Array<{ name: string; args: unknown }> = [];
+    const db = {
+      async rpc(name: string, args: unknown) {
+        calls.push({ name, args });
+        return { data: metrics, error: null };
+      },
+    } as unknown as SupabaseClient<Database>;
+
+    expect(await new WebhookService(db).reconcileOrderedQueue()).toEqual(metrics);
+    expect(calls).toEqual([{ name: "reconcile_line_webhook_queue", args: { p_surface_limit: 20 } }]);
+  });
+
+  it("treats a not-yet-deployed reconcile RPC as unavailable, not as a failure", async () => {
+    const missing = {
+      async rpc() {
+        return {
+          data: null,
+          error: {
+            code: "PGRST202",
+            message: "Could not find the function public.reconcile_line_webhook_queue(p_surface_limit) in the schema cache",
+          },
+        };
+      },
+    } as unknown as SupabaseClient<Database>;
+    expect(await new WebhookService(missing).reconcileOrderedQueue()).toBeNull();
+
+    const broken = {
+      async rpc() {
+        return { data: null, error: { code: "57014", message: "canceling statement due to statement timeout" } };
+      },
+    } as unknown as SupabaseClient<Database>;
+    await expect(new WebhookService(broken).reconcileOrderedQueue()).rejects.toThrow("ordered webhook reconcile failed");
+  });
 });

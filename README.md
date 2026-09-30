@@ -99,6 +99,13 @@ User-visible timing:
 - Bare `จบรายการ` is quiet-window best-effort and has no indexed-completeness
   guarantee.
 
+The same call also reconciles the ordered LINE webhook queue. Rows received
+within the last 60 minutes may be retried; older pending rows move to status
+`stale` inside the claim RPC and are never auto-replayed. Each stale row is
+logged once (`ordered webhook events went stale and need manual review`) and
+the response carries internal `webhookQueue` counts. After review, close a row
+without replay by setting `status = 'failed'` with an `error_message`.
+
 ## Physical Inventory deferred finalizer (P2A Slice C)
 
 Physical Inventory routing is enabled only for LINE group IDs in
