@@ -8,9 +8,11 @@ import type {
   ProduceValidationReview,
 } from "./entry-validation";
 import {
+  buildBlockingValidationReply,
   buildPlainTextReviewValidationReply,
   buildReviewValidationReply,
 } from "./entry-validation-message";
+import { parseWeighSession } from "@/lib/parsers/weigh-session/parser";
 
 function review(
   itemNumber: number,
@@ -104,5 +106,67 @@ describe("unknown-product review actions", () => {
     expect(reply).toContain("ส่ง “จบรายการเบิก” อีกครั้ง");
     expect(reply).toContain("✏️ ถ้าต้องการแก้ชื่อ");
     expect(reply).toEndWith("รายการอื่นยังอยู่ครบ ไม่ต้องเริ่มใหม่");
+  });
+});
+
+describe("blocked document value preview", () => {
+  const blocked: ProduceValidationResult = {
+    status: "blocked",
+    blocking: [{
+      kind: "return_exceeds_withdrawal",
+      severity: "blocking",
+      productName: "หมอนทอง",
+      unit: "โล",
+      withdrawnQuantity: 1,
+      goodReturnQuantity: 2,
+      damagedQuantity: 0,
+      excessQuantity: 1,
+    }],
+    reviews: [],
+    advisories: [],
+    digest: "blocked-digest",
+  };
+
+  it("shows all 79 return lines without claiming sales or a confirmed shortage", () => {
+    const items = Array.from({ length: 79 }, (_, index) =>
+      `${index + 1}.หมอนทอง${index === 78 ? "4541.83" : "100"}บาท\n1โล`,
+    );
+    const parsed = parseWeighSession(`ดำ-ทุ่งลานนา ชั่งคืน 29/9/2569\n${items.join("\n")}\nจบรายการชั่งคืน`, "2026-09-29");
+    expect(parsed.items).toHaveLength(79);
+    const reply = buildBlockingValidationReply(blocked, undefined, parsed);
+    expect(reply).toContain("ชั่งคืน 79 รายการ: 12,341.83 บาท");
+    expect(reply).toContain("ยังไม่บันทึก/ยังไม่ยืนยัน");
+    expect(reply).toContain("ยังไม่ใช่ยอดขายหรือยอดเงินขาดที่ยืนยันแล้ว");
+    expect(reply).toContain("ของยกมาที่รับไปขายจริงและเบิกเพิ่ม");
+    expect(reply).not.toContain("เบิก 0 รายการ");
+    expect(reply).not.toContain("แก้เฉพาะรายการที่ทำให้ยอดเกิน");
+    expect(countCodePoints(reply)).toBeLessThanOrEqual(LINE_TEXT_MESSAGE_HARD_MAX_CODE_POINTS);
+  });
+
+  it("aggregates unit rows before rounding and keeps bundled-price totals", () => {
+    const parsed = parseWeighSession("ดำ-ทุ่งลานนา ชั่งคืน 29/9/2569\n1.หมอนทอง8.29บาท\n3.5โล\n2.หมอนทอง8.29บาท\n3.5โล\n3.มะพร้าว3หัว20บาท\n32หัว\nจบรายการชั่งคืน", "2026-09-29");
+    expect(parsed.items).toHaveLength(3);
+    expect(buildBlockingValidationReply(blocked, undefined, parsed)).toContain("ชั่งคืน 3 รายการ: 271.36 บาท");
+  });
+
+  it("does not turn missing quantities into zero or a partial total", () => {
+    const parsed = parseWeighSession("ดำ-ทุ่งลานนา ชั่งคืน 29/9/2569\n1.หมอนทอง100บาท\n1โล\nจบรายการชั่งคืน", "2026-09-29");
+    parsed.items[0].quantity = null;
+    const reply = buildBlockingValidationReply(blocked, undefined, parsed);
+    expect(reply).toContain("ชั่งคืน 1 รายการ: ยังคำนวณครบไม่ได้");
+    expect(reply).not.toContain("0.00 บาท");
+  });
+
+  it("keeps the preview and correction instructions when long issue details are omitted", () => {
+    const parsed = parseWeighSession("ดำ-ทุ่งลานนา ชั่งคืน 29/9/2569\n1.หมอนทอง100บาท\n1โล\nจบรายการชั่งคืน", "2026-09-29");
+    const oversized: ProduceValidationResult = {
+      ...blocked,
+      blocking: blocked.blocking.map((entry) => ({ ...entry, productName: "ก".repeat(5000) })),
+    };
+    const reply = buildBlockingValidationReply(oversized, 1000, parsed);
+    expect(countCodePoints(reply)).toBeLessThanOrEqual(1000);
+    expect(reply).toContain("ชั่งคืน 1 รายการ: 100.00 บาท");
+    expect(reply).toContain("ให้เพิ่มเฉพาะส่วนที่ขาด");
+    expect(reply).toContain('แล้วส่งข้อความ "จบรายการ" อีกครั้ง');
   });
 });

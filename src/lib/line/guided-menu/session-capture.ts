@@ -375,7 +375,7 @@ export class GuidedSessionCaptureService {
       return {
         status: "validation_failed",
         errors: gate.result.blocking.map((exception) => exception.kind),
-        detail: buildBlockingValidationReply(gate.result),
+        detail: buildBlockingValidationReply(gate.result, undefined, current.parsed),
         ...snapshot,
       };
     }

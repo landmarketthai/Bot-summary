@@ -2712,7 +2712,7 @@ export class WebhookService {
           return { refusalText: CLOSE_RACED_LATE_ITEM_REPLY };
         }
         // Not confirmable: no presentation to prove.
-        return { refusalText: buildBlockingValidationReply(decision.result) };
+        return { refusalText: buildBlockingValidationReply(decision.result, undefined, parsed) };
       }
       if (decision.decision === "review_presented") {
         // Render first, then authorize only what the rendering shows. The set

@@ -120,7 +120,7 @@ describe("webhook close gate wiring", () => {
     const guard = source.indexOf("closeGapBlockIsStragglerFabricable(decision.result)");
     const recheck = source.indexOf("this.closeSnapshotMovedUnderGate(pending, log)");
     const raced = source.indexOf("return { refusalText: CLOSE_RACED_LATE_ITEM_REPLY };");
-    const definitive = source.indexOf("refusalText: buildBlockingValidationReply(decision.result)");
+    const definitive = source.indexOf("refusalText: buildBlockingValidationReply(decision.result,");
 
     expect(guard).toBeGreaterThan(0);
     expect(recheck).toBeGreaterThan(guard);

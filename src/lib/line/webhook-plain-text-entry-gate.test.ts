@@ -345,6 +345,8 @@ describe("P4A on the plain-text close", () => {
     expect(replies[0]).not.toContain("ไม่พบรอบเบิกของรายการนี้");
     expect(replies[0]).toContain("ทุเรียน");
     expect(replies[0]).toContain("ไม่พบในรายการเบิกของรอบนี้");
+    expect(replies[0]).toContain("ชั่งคืน 1 รายการ: 180.00 บาท");
+    expect(replies[0]).toContain("ยังไม่บันทึก/ยังไม่ยืนยัน");
     expect(db.pending.close_event_timestamp_ms).toBeNull();
     expect(db.tables.produce_transactions).toHaveLength(before);
   });
