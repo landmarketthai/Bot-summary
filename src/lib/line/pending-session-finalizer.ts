@@ -1114,7 +1114,7 @@ async function runEntryGateForFinalization(
   if (gate.decision === "blocked") {
     return {
       errors: gate.result.blocking.map((exception) => exception.kind),
-      detail: buildBlockingValidationReply(gate.result),
+      detail: buildBlockingValidationReply(gate.result, undefined, parsed),
       advisories: [],
       reviewPresented: false,
       reviewResult: null,

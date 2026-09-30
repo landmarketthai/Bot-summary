@@ -1,12 +1,13 @@
 /**
  * P4A — operator-facing Thai text for the produce entry validation gate.
  *
- * Exceptions only. A round with fifty good lines and one bad one gets one
- * problem back, not fifty confirmations, and the list is capped so a pathological
- * session can never approach the LINE message limit.
+ * Exception details are capped to fit LINE. Blocked drafts also show compact,
+ * unconfirmed document totals so the operator can check the source document.
  */
 
 import { formatQuantity } from "@/lib/summary/remaining-fruit";
+import type { WeighSession } from "@/lib/parsers/weigh-session/types";
+import { exactLineTotalScaled, scaledToBaht } from "./exact-line-total";
 import {
   countCodePoints,
   LINE_TEXT_MESSAGE_HARD_MAX_CODE_POINTS,
@@ -168,7 +169,11 @@ function correctionGuidance(exceptions: ProduceValidationException[]): string[] 
       "หรือแก้เลขข้อให้ต่อเนื่องแล้วส่งใหม่",
     ];
   }
-  return ["แก้เฉพาะรายการที่ทำให้ยอดเกิน แล้วปิดรายการอีกครั้ง"];
+  return [
+    "ตรวจรายการเบิกว่าครบทั้งของยกมาที่รับไปขายจริงและเบิกเพิ่มหรือไม่",
+    "ถ้าลงเบิกแล้ว ให้เพิ่มเฉพาะส่วนที่ขาดเพื่อไม่ให้นับซ้ำ",
+    "ตรวจจำนวนคืนดีและคืนเสียกับเอกสารจริง แล้วปิดรายการอีกครั้ง",
+  ];
 }
 
 function renderPriceAdvisoryWarning(
@@ -258,14 +263,37 @@ export function buildPriceAdvisoryNotification(
   return `${safeSummary}${ADVISORY_SEPARATOR}${warning}`;
 }
 
-/**
- * The round cannot finalize. Nothing was written and the round stays open, so
- * the operator can send the corrected line as an ordinary item message.
- */
+function draftValueLines(session: WeighSession): string[] {
+  if (!session.items.length) return [];
+  const lines = ["ยอดจากรายการที่อ่านได้ — ยังไม่บันทึก/ยังไม่ยืนยัน"];
+  for (const [label, types] of [
+    ["เบิก", ["เบิก", "เบิกเพิ่ม"]],
+    ["ชั่งคืน", ["คืน"]],
+    ["คืนเสีย", ["คืนเสีย"]],
+  ] as const) {
+    const items = session.items.filter((item) => (types as readonly string[]).includes(item.transaction_type));
+    if (!items.length) continue;
+    const totals = items.map((item) => exactLineTotalScaled({
+      quantity: item.quantity,
+      pricePerUnit: item.price_per_unit,
+      basisQuantity: item.basis_quantity,
+      basisPrice: item.basis_price,
+    }));
+    const amount = totals.some((total) => total === null)
+      ? "ยังคำนวณครบไม่ได้"
+      : `${scaledToBaht(totals.reduce<bigint>((sum, total) => sum + total!, BigInt(0))).toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท`;
+    lines.push(`${label} ${items.length} รายการ: ${amount}`);
+  }
+  return [...lines, "ใช้ตรวจเอกสารเบื้องต้น ยังไม่ใช่ยอดขายหรือยอดเงินขาดที่ยืนยันแล้ว", ""];
+}
+
+/** Nothing was written; totals describe the draft only, never final sales. */
 export function buildBlockingValidationReply(
   result: ProduceValidationResult,
   maxCodePoints = LINE_TEXT_MESSAGE_HARD_MAX_CODE_POINTS,
+  session?: WeighSession,
 ): string {
+  const preview = session ? draftValueLines(session) : [];
   const actionBlock = [
     "รายการอื่นยังอยู่ครบ ไม่ต้องยกเลิก",
     ...correctionGuidance(result.blocking),
@@ -279,6 +307,7 @@ export function buildBlockingValidationReply(
     const reply = [
       `⛔ พบ ${result.blocking.length} รายการที่ต้องแก้ไขก่อนจบรายการ`,
       "",
+      ...preview,
       ...numberedBlocks(result.blocking, listed),
       "",
       ...actionBlock,

@@ -263,7 +263,7 @@ describe("webhook wiring", () => {
 
   it("only a review_presented decision carries a presentation to prove", async () => {
     const source = await Bun.file(webhookPath).text();
-    const blocking = source.indexOf("refusalText: buildBlockingValidationReply(decision.result)");
+    const blocking = source.indexOf("refusalText: buildBlockingValidationReply(decision.result,");
     expect(blocking).toBeGreaterThan(0);
     // The blocking branch must not carry reviewPresentation.
     const blockingBranch = source.slice(blocking, blocking + 160);
