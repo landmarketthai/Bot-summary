@@ -6,6 +6,7 @@ import {
   WeighSessionParser,
   assertWeighSessionFinalizable,
   buildWeighSessionValidationReply,
+  getWeighSessionFinalizationErrors,
 } from "./parser";
 import { RE } from "./regex";
 
@@ -1208,6 +1209,37 @@ describe("real sample: พาซิโอ้ผัก borrow session with ถุ
       0,
     );
     expect(total).toBe(340);
+  });
+});
+
+describe("seller-market header with Latin market suffix", () => {
+  const result = parseWeighSession(`\
+ดำ-ทดสอบบอทUAT เบิก 31/12/2569
+1.มังคุด45บาท
+6โล
+2.หอมแดง20บาท
+12แพค
+3.มะนาว20บาท
+8แพค
+4.กระเทียมหัว30บาท
+5แพค
+จบรายการเบิก`);
+
+  it("keeps seller and mixed Thai-Latin market metadata while parsing all items", () => {
+    expect(result.staff_name).toBe("ดำ");
+    expect(result.session_title).toBe("ทดสอบบอทUAT");
+    expect(result.date).toBe("2026-12-31");
+    expect(result.parse_errors).toEqual([]);
+    expect(result.items).toHaveLength(4);
+    expect(getWeighSessionFinalizationErrors(result)).toEqual([]);
+  });
+
+  it("never claims item parsing failed when a DB-level validation fallback sees a complete parse", () => {
+    const reply = buildWeighSessionValidationReply(result);
+    expect(reply).toContain("อ่านรายการสินค้าได้ครบ");
+    expect(reply).toContain("อ่านสินค้าได้ 4 รายการ");
+    expect(reply).not.toContain("อ่านไม่สำเร็จ 0 รายการ");
+    expect(reply).not.toContain("อ่านรายการไม่ครบ จึงยังไม่บันทึก");
   });
 });
 

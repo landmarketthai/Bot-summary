@@ -634,7 +634,21 @@ export function buildWeighSessionValidationReply(session: WeighSession): string 
   const successCount     = session.items.length - invalidItemCount;
   const failCount        = session.parse_errors.length + invalidItemCount;
 
-  const details = getWeighSessionFinalizationErrors(session).map((error) => {
+  const finalizationErrors = getWeighSessionFinalizationErrors(session);
+
+  // This helper is also the last-resort text for an authoritative DB-level
+  // validation refusal. If every parsed item is complete, never tell the
+  // operator that item parsing failed ("อ่านไม่สำเร็จ 0 รายการ"). The actual
+  // missing field may be session metadata that the DB rejected.
+  if (finalizationErrors.length === 0) {
+    return [
+      "อ่านรายการสินค้าได้ครบ แต่ข้อมูลสำหรับบันทึกยังไม่ครบ",
+      `อ่านสินค้าได้ ${successCount} รายการ`,
+      "กรุณาตรวจหัวรายการ ชื่อคนขาย ตลาด วันที่ และข้อมูลสินค้า แล้วส่งใหม่",
+    ].join("\n");
+  }
+
+  const details = finalizationErrors.map((error) => {
     // An unregistered code is named explicitly rather than shown as a line the
     // bot "could not read" — the operator's next move is to check the code, not
     // to retype the line. Nothing about this row was saved.

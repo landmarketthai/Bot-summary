@@ -8,7 +8,9 @@
 // Thai character class (letters + vowel signs + tone marks, all in U+0E00-U+0E7F)
 const TH = "\\u0E00-\\u0E7F";
 const UNIT = `${TH}A-Za-z`;
-const MARKET = `${TH}\\d\\sฯๆ().\\-/`;
+// Market labels may contain Latin suffixes used by real/test operations (e.g. "ทดสอบบอทUAT").
+// Keep the character class bounded to human-readable label characters rather than \S.
+const MARKET = `${TH}A-Za-z\\d\\sฯๆ().\\-/`;
 
 export const RE = {
   // "18:53 เสือ <content>" — time separator can be colon or dot
