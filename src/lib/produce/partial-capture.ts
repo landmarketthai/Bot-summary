@@ -33,6 +33,14 @@ export interface ProducePartialCapture {
   issues: ProducePartialCaptureIssue[];
   acceptedCount: number;
   reviewCount: number;
+  /** Sum of every parsed line whose quantity/price can be calculated, even if identity still needs review. */
+  readableAmount: number | null;
+  readableAmountCount: number;
+  uncalculatedAmountCount: number;
+  /** Money visible on review lines whose numeric quantity/price are already trustworthy. */
+  reviewReadableAmount: number | null;
+  reviewReadableCount: number;
+  /** Sum of lines whose product identity/validation is already accepted. */
   acceptedAmount: number | null;
 }
 
@@ -118,16 +126,34 @@ export function buildProducePartialCapture(
     return { item, status, issueKinds };
   });
 
-  const accepted = items.filter((entry) => entry.status === "accepted");
-  const totals = accepted.map(({ item }) => exactLineTotalScaled({
+  const lineTotal = ({ item }: ProducePartialCaptureItem) => exactLineTotalScaled({
     quantity: item.quantity,
     pricePerUnit: item.price_per_unit,
     basisQuantity: item.basis_quantity,
     basisPrice: item.basis_price,
-  }));
-  const acceptedAmount = totals.some((total) => total === null)
+  });
+  const sumKnownTotals = (entries: ProducePartialCaptureItem[]): {
+    amount: number | null;
+    count: number;
+  } => {
+    const totals = entries
+      .map((entry) => lineTotal(entry))
+      .filter((total): total is bigint => total !== null);
+    if (totals.length === 0) return { amount: null, count: 0 };
+    return {
+      amount: scaledToBaht(totals.reduce((sum, total) => sum + total, BigInt(0))),
+      count: totals.length,
+    };
+  };
+
+  const accepted = items.filter((entry) => entry.status === "accepted");
+  const acceptedTotals = accepted.map((entry) => lineTotal(entry));
+  const acceptedAmount = acceptedTotals.some((total) => total === null)
     ? null
-    : scaledToBaht(totals.reduce<bigint>((sum, total) => sum + total!, BigInt(0)));
+    : scaledToBaht(acceptedTotals.reduce<bigint>((sum, total) => sum + total!, BigInt(0)));
+  const readable = sumKnownTotals(items);
+  const needsReview = items.filter((entry) => entry.status === "needs_review");
+  const reviewReadable = sumKnownTotals(needsReview);
 
   return {
     version: 1,
@@ -144,20 +170,24 @@ export function buildProducePartialCapture(
     issues,
     acceptedCount: accepted.length,
     reviewCount: issues.length,
+    readableAmount: readable.amount,
+    readableAmountCount: readable.count,
+    uncalculatedAmountCount: items.length - readable.count,
+    reviewReadableAmount: reviewReadable.amount,
+    reviewReadableCount: reviewReadable.count,
     acceptedAmount,
   };
 }
 
-function amountLabel(items: ProducePartialCaptureItem[]): string {
-  const accepted = items.filter((entry) => entry.status === "accepted");
-  const types = new Set(accepted.map((entry) => entry.item.transaction_type));
+function amountBaseLabel(items: ProducePartialCaptureItem[]): string {
+  const types = new Set(items.map((entry) => entry.item.transaction_type));
   if (types.size === 1) {
     const [type] = [...types];
-    if (type === "คืน") return "ยอดชั่งคืนที่ยืนยันแล้ว";
-    if (type === "คืนเสีย") return "ยอดคืนเสียที่ยืนยันแล้ว";
-    if (type === "เบิก" || type === "เบิกเพิ่ม") return "ยอดเบิกที่ยืนยันแล้ว";
+    if (type === "คืน") return "ยอดชั่งคืน";
+    if (type === "คืนเสีย") return "ยอดคืนเสีย";
+    if (type === "เบิก" || type === "เบิกเพิ่ม") return "ยอดเบิก";
   }
-  return "ยอดรายการที่ยืนยันแล้ว";
+  return "ยอดรายการ";
 }
 
 function formatAmount(value: number): string {
@@ -168,18 +198,34 @@ function formatAmount(value: number): string {
 }
 
 export function buildPartialCaptureSavedReply(capture: ProducePartialCapture): string {
+  const baseLabel = amountBaseLabel(capture.items);
   const lines = [
     `✅ บันทึกรายการที่ตรวจผ่านแล้ว ${capture.acceptedCount} รายการ`,
   ];
+
+  if (capture.readableAmount !== null) {
+    const readableLabel = capture.uncalculatedAmountCount === 0
+      ? `${baseLabel}ตามตัวเลขที่อ่านได้`
+      : `${baseLabel}จาก ${capture.readableAmountCount} รายการที่คำนวณได้`;
+    lines.push(`💰 ${readableLabel}: ${formatAmount(capture.readableAmount)} บาท`);
+  }
   if (capture.acceptedAmount !== null) {
-    lines.push(`💰 ${amountLabel(capture.items)}: ${formatAmount(capture.acceptedAmount)} บาท`);
+    lines.push(`✅ ${baseLabel}ที่ยืนยันสินค้าแล้ว: ${formatAmount(capture.acceptedAmount)} บาท`);
+  }
+  if (capture.reviewReadableAmount !== null && capture.reviewReadableCount > 0) {
+    lines.push(
+      `⚠️ ยอดรอตรวจที่คำนวณตัวเลขได้: ${formatAmount(capture.reviewReadableAmount)} บาท (${capture.reviewReadableCount} รายการ)`,
+    );
+  }
+  if (capture.uncalculatedAmountCount > 0) {
+    lines.push(`⚠️ อีก ${capture.uncalculatedAmountCount} รายการยังคำนวณยอดไม่ได้`);
   }
   if (capture.reviewCount > 0) {
     lines.push(`⚠️ มี ${capture.reviewCount} จุดรอตรวจสอบ`);
   }
   lines.push(
     "รายการที่ผ่านแล้วถูกพักไว้อย่างถาวร ไม่ต้องส่งใหม่",
-    "ยังไม่ส่งยอดเข้า Settlement จนกว่ารายการรอตรวจจะเรียบร้อย",
+    "⏸️ Settlement / ขาด-เกิน ยังไม่สรุป Final จนกว่ารายการรอตรวจจะเรียบร้อย",
   );
   return lines.join("\n");
 }

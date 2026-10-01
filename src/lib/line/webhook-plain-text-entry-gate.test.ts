@@ -363,7 +363,10 @@ describe("P4A on the plain-text close", () => {
 
     expect(replies).toHaveLength(2);
     expect(replies[0]).toContain("บันทึกรายการที่ตรวจผ่านแล้ว 1 รายการ");
-    expect(replies[0]).toContain("ยอดชั่งคืนที่ยืนยันแล้ว: 180.00 บาท");
+    expect(replies[0]).toContain("ยอดชั่งคืนตามตัวเลขที่อ่านได้: 260.00 บาท");
+    expect(replies[0]).toContain("ยอดชั่งคืนที่ยืนยันสินค้าแล้ว: 180.00 บาท");
+    expect(replies[0]).toContain("ยอดรอตรวจที่คำนวณตัวเลขได้: 80.00 บาท (1 รายการ)");
+    expect(replies[0]).toContain("Settlement / ขาด-เกิน ยังไม่สรุป Final");
     expect(replies[1]).toContain("พักผ่อน");
     expect(replies[1]).toContain("แก้ข้อ 2");
     expect(db.pending.close_event_timestamp_ms).toBeNull();

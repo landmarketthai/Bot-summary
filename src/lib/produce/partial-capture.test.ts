@@ -68,6 +68,11 @@ describe("Produce partial capture", () => {
 
     const capture = buildProducePartialCapture(parsed, validation, []);
     expect(capture.acceptedCount).toBe(2);
+    expect(capture.readableAmount).toBe(240);
+    expect(capture.readableAmountCount).toBe(3);
+    expect(capture.uncalculatedAmountCount).toBe(0);
+    expect(capture.reviewReadableAmount).toBe(80);
+    expect(capture.reviewReadableCount).toBe(1);
     expect(capture.acceptedAmount).toBe(160);
     expect(capture.items.map((entry) => [entry.item.item_number, entry.status])).toEqual([
       [1, "accepted"],
@@ -77,7 +82,10 @@ describe("Produce partial capture", () => {
 
     const saved = buildPartialCaptureSavedReply(capture);
     expect(saved).toContain("บันทึกรายการที่ตรวจผ่านแล้ว 2 รายการ");
-    expect(saved).toContain("ยอดชั่งคืนที่ยืนยันแล้ว: 160.00 บาท");
+    expect(saved).toContain("ยอดชั่งคืนตามตัวเลขที่อ่านได้: 240.00 บาท");
+    expect(saved).toContain("ยอดชั่งคืนที่ยืนยันสินค้าแล้ว: 160.00 บาท");
+    expect(saved).toContain("ยอดรอตรวจที่คำนวณตัวเลขได้: 80.00 บาท (1 รายการ)");
+    expect(saved).toContain("Settlement / ขาด-เกิน ยังไม่สรุป Final");
     expect(saved).toContain("ไม่ต้องส่งใหม่");
 
     const review = buildPartialCaptureReviewReply(capture);
