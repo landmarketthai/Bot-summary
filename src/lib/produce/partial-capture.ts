@@ -60,7 +60,7 @@ function parseErrorItemNumber(detail: string): number | null {
 function exceptionDetail(exception: ProduceValidationException): string {
   switch (exception.kind) {
     case "unknown_product_vocabulary":
-      return `ไม่พบสินค้า “${exception.productName}” ใน Dictionary`;
+      return `ไม่พบชื่อสินค้า “${exception.productName}”`;
     case "unknown_unit":
       return `ไม่รู้จักหน่วย “${exception.unit}” ของ ${exception.productName}`;
     case "unit_not_withdrawn":
@@ -190,6 +190,14 @@ function amountBaseLabel(items: ProducePartialCaptureItem[]): string {
   return "ยอดรายการ";
 }
 
+function captureLabel(items: ProducePartialCaptureItem[]): string {
+  const base = amountBaseLabel(items);
+  if (base === "ยอดชั่งคืน") return "รายการชั่งคืน";
+  if (base === "ยอดคืนเสีย") return "รายการคืนเสีย";
+  if (base === "ยอดเบิก") return "รายการเบิก";
+  return "รายการ";
+}
+
 function formatAmount(value: number): string {
   return value.toLocaleString("th-TH", {
     minimumFractionDigits: 2,
@@ -197,35 +205,83 @@ function formatAmount(value: number): string {
   });
 }
 
+function formatCompactNumber(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "?";
+  return value.toLocaleString("th-TH", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 3,
+  });
+}
+
+function linePriceText(item: WeighSessionItem): string {
+  if (
+    item.basis_quantity !== null
+    && item.basis_quantity !== undefined
+    && item.basis_price !== null
+    && item.basis_price !== undefined
+  ) {
+    const basisUnit = item.basis_unit ?? item.unit;
+    return `${formatCompactNumber(item.basis_price)} บาท/${formatCompactNumber(item.basis_quantity)} ${basisUnit}`;
+  }
+  return `${formatCompactNumber(item.price_per_unit)} บาท`;
+}
+
+function lineTotalText(item: WeighSessionItem): string {
+  const total = exactLineTotalScaled({
+    quantity: item.quantity,
+    pricePerUnit: item.price_per_unit,
+    basisQuantity: item.basis_quantity,
+    basisPrice: item.basis_price,
+  });
+  return total === null ? "ยังคิดยอดไม่ได้" : `${formatAmount(scaledToBaht(total))} บาท`;
+}
+
+function reviewStatusLabel(entry: ProducePartialCaptureItem): string {
+  if (entry.issueKinds.includes("unknown_product_vocabulary")) return "รอตรวจชื่อสินค้า";
+  if (entry.issueKinds.includes("unknown_unit") || entry.issueKinds.includes("unit_not_withdrawn")) {
+    return "รอตรวจหน่วย";
+  }
+  if (entry.issueKinds.includes("subunit_confirmation")) return "รอยืนยันจำนวน";
+  return "รอตรวจ";
+}
+
+function itemSummaryLine(entry: ProducePartialCaptureItem): string {
+  const item = entry.item;
+  const review = entry.status === "needs_review" ? ` ⚠️ ${reviewStatusLabel(entry)}` : "";
+  return `${item.item_number}. ${item.product_name} ${formatCompactNumber(item.quantity)} ${item.unit} × ${linePriceText(item)} = ${lineTotalText(item)}${review}`;
+}
+
 export function buildPartialCaptureSavedReply(capture: ProducePartialCapture): string {
-  const baseLabel = amountBaseLabel(capture.items);
+  const label = captureLabel(capture.items);
+  const orderedItems = [...capture.items].sort(
+    (left, right) => left.item.item_number - right.item.item_number,
+  );
   const lines = [
-    `✅ บันทึกรายการที่ตรวจผ่านแล้ว ${capture.acceptedCount} รายการ`,
+    `✅ รับ${label}แล้ว`,
+    "",
+    "รายการที่อ่านได้",
+    ...orderedItems.map(itemSummaryLine),
+    "",
   ];
 
   if (capture.readableAmount !== null) {
-    const readableLabel = capture.uncalculatedAmountCount === 0
-      ? `${baseLabel}ตามตัวเลขที่อ่านได้`
-      : `${baseLabel}จาก ${capture.readableAmountCount} รายการที่คำนวณได้`;
-    lines.push(`💰 ${readableLabel}: ${formatAmount(capture.readableAmount)} บาท`);
+    lines.push(`💰 ยอดจากรายการที่อ่านได้ทั้งหมด: ${formatAmount(capture.readableAmount)} บาท`);
   }
   if (capture.acceptedAmount !== null) {
-    lines.push(`✅ ${baseLabel}ที่ยืนยันสินค้าแล้ว: ${formatAmount(capture.acceptedAmount)} บาท`);
+    lines.push(`✅ ยอดที่ตรวจแล้ว: ${formatAmount(capture.acceptedAmount)} บาท`);
   }
   if (capture.reviewReadableAmount !== null && capture.reviewReadableCount > 0) {
     lines.push(
-      `⚠️ ยอดรอตรวจที่คำนวณตัวเลขได้: ${formatAmount(capture.reviewReadableAmount)} บาท (${capture.reviewReadableCount} รายการ)`,
+      `⚠️ รอตรวจ: ${formatAmount(capture.reviewReadableAmount)} บาท (${capture.reviewReadableCount} รายการ)`,
     );
   }
   if (capture.uncalculatedAmountCount > 0) {
-    lines.push(`⚠️ อีก ${capture.uncalculatedAmountCount} รายการยังคำนวณยอดไม่ได้`);
-  }
-  if (capture.reviewCount > 0) {
-    lines.push(`⚠️ มี ${capture.reviewCount} จุดรอตรวจสอบ`);
+    lines.push(`⚠️ อีก ${capture.uncalculatedAmountCount} รายการยังคิดยอดไม่ได้`);
   }
   lines.push(
-    "รายการที่ผ่านแล้วถูกพักไว้อย่างถาวร ไม่ต้องส่งใหม่",
-    "⏸️ Settlement / ขาด-เกิน ยังไม่สรุป Final จนกว่ารายการรอตรวจจะเรียบร้อย",
+    "",
+    "รายการอื่นเก็บไว้แล้ว ไม่ต้องส่งใหม่",
+    "ยอดขาด-เกินจะสรุปหลังแก้รายการที่รอตรวจเรียบร้อย",
   );
   return lines.join("\n");
 }
@@ -236,32 +292,74 @@ function readableParseIssue(issue: ProducePartialCaptureIssue): string {
   return issue.detail;
 }
 
+function issueDetailForUser(issue: ProducePartialCaptureIssue): string {
+  if (issue.kind === "parse_error") return "อ่านรายการนี้ไม่ชัด กรุณาส่งข้อนี้ใหม่";
+  return issue.detail;
+}
+
 export function buildPartialCaptureReviewReply(capture: ProducePartialCapture): string {
-  const lines = [`⚠️ กรุณาตรวจสอบ ${capture.reviewCount} จุด`];
-  for (const issue of capture.issues.slice(0, 10)) {
-    const prefix = issue.itemNumber === null ? "•" : `ข้อ ${issue.itemNumber} —`;
-    lines.push(`${prefix} ${readableParseIssue(issue)}`);
-  }
-  if (capture.issues.length > 10) {
-    lines.push(`…และอีก ${capture.issues.length - 10} จุด`);
-  }
   const itemNumbers = [...new Set(
     capture.issues.flatMap((issue) => issue.itemNumber === null ? [] : [issue.itemNumber]),
   )];
-  lines.push("");
-  if (itemNumbers.length === 1) {
+  const unnumbered = capture.issues.filter((issue) => issue.itemNumber === null);
+  const reviewItemCount = itemNumbers.length + unnumbered.length;
+  const lines = [`⚠️ มี ${reviewItemCount} รายการที่ต้องแก้`, ""];
+
+  for (const itemNumber of itemNumbers.slice(0, 10)) {
+    const entry = capture.items.find((candidate) => candidate.item.item_number === itemNumber);
+    const issues = capture.issues.filter((issue) => issue.itemNumber === itemNumber);
+    lines.push(`ข้อ ${itemNumber}`);
+    if (entry) {
+      lines.push(
+        `${entry.item.product_name} ${linePriceText(entry.item)}`,
+        `${formatCompactNumber(entry.item.quantity)} ${entry.item.unit}`,
+      );
+    } else {
+      const source = issues.map(readableParseIssue).find((detail) => detail !== issueDetailForUser(issues[0]!));
+      if (source) lines.push(source);
+    }
+    for (const detail of [...new Set(issues.map(issueDetailForUser))]) {
+      lines.push(detail);
+    }
+    lines.push("");
+  }
+
+  for (const issue of unnumbered.slice(0, Math.max(0, 10 - itemNumbers.length))) {
+    lines.push(`• ${readableParseIssue(issue)}`, issueDetailForUser(issue), "");
+  }
+
+  if (reviewItemCount > 10) {
+    lines.push(`…และอีก ${reviewItemCount - 10} รายการ`, "");
+  }
+
+  if (itemNumbers.length > 0) {
+    const first = itemNumbers[0];
     lines.push(
-      `ส่ง “แก้ข้อ ${itemNumbers[0]}”`,
-      `แล้วส่งเฉพาะข้อ ${itemNumbers[0]} ที่ถูกต้องใหม่ พร้อมราคาและจำนวน`,
-    );
-  } else if (itemNumbers.length > 1) {
-    lines.push(
-      `แก้เฉพาะข้อที่แจ้ง: ${itemNumbers.map((number) => `“แก้ข้อ ${number}”`).join(", ")}`,
-      "หลังแต่ละคำสั่ง ส่งเฉพาะข้อนั้นใหม่พร้อมราคาและจำนวน",
+      "วิธีแก้",
+      `พิมพ์ “แก้ข้อ ${first}” แล้วส่งเฉพาะข้อนั้นที่ถูกต้องใหม่`,
+      "",
+      "ตัวอย่าง",
+      `แก้ข้อ ${first}`,
+      `${first}.หอมแดง20บาท`,
+      "4แพค",
+      "",
+      `ถ้าข้อ ${first} ไม่ต้องใช้ ให้พิมพ์ “ลบข้อ ${first}”`,
+      "",
+      "ตัวอย่างกรณีมีหลายข้อ สามารถส่งรวมในข้อความเดียวได้",
+      "แก้ข้อ 2",
+      "2.หอมแดง20บาท",
+      "4แพค",
+      "",
+      "แก้ข้อ 5",
+      "5.มะนาว20บาท",
+      "3แพค",
+      "",
+      "ลบข้อ 8",
+      "",
+      "รายการอื่นไม่ต้องส่งซ้ำ",
     );
   } else {
-    lines.push("แก้เฉพาะจุดที่แจ้ง แล้วปิดรายการอีกครั้ง");
+    lines.push("แก้เฉพาะรายการที่แจ้ง แล้วปิดรายการอีกครั้ง", "รายการอื่นไม่ต้องส่งซ้ำ");
   }
-  lines.push("รายการที่บันทึกไว้แล้วไม่ต้องส่งซ้ำ");
   return lines.join("\n");
 }

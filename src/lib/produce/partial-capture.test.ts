@@ -81,16 +81,30 @@ describe("Produce partial capture", () => {
     ]);
 
     const saved = buildPartialCaptureSavedReply(capture);
-    expect(saved).toContain("บันทึกรายการที่ตรวจผ่านแล้ว 2 รายการ");
-    expect(saved).toContain("ยอดชั่งคืนตามตัวเลขที่อ่านได้: 240.00 บาท");
-    expect(saved).toContain("ยอดชั่งคืนที่ยืนยันสินค้าแล้ว: 160.00 บาท");
-    expect(saved).toContain("ยอดรอตรวจที่คำนวณตัวเลขได้: 80.00 บาท (1 รายการ)");
-    expect(saved).toContain("Settlement / ขาด-เกิน ยังไม่สรุป Final");
-    expect(saved).toContain("ไม่ต้องส่งใหม่");
+    expect(saved).toContain("✅ รับรายการชั่งคืนแล้ว");
+    expect(saved).toContain("1. มะนาว 3 แพค × 20 บาท = 60.00 บาท");
+    expect(saved).toContain("2. พักผ่อน 4 แพค × 20 บาท = 80.00 บาท ⚠️ รอตรวจชื่อสินค้า");
+    expect(saved).toContain("3. หอมแดง 5 แพค × 20 บาท = 100.00 บาท");
+    expect(saved).toContain("ยอดจากรายการที่อ่านได้ทั้งหมด: 240.00 บาท");
+    expect(saved).toContain("ยอดที่ตรวจแล้ว: 160.00 บาท");
+    expect(saved).toContain("⚠️ รอตรวจ: 80.00 บาท (1 รายการ)");
+    expect(saved).toContain("ยอดขาด-เกินจะสรุปหลังแก้รายการที่รอตรวจเรียบร้อย");
+    expect(saved).not.toContain("Dictionary");
+    expect(saved).not.toContain("Settlement");
+    expect(saved).not.toContain("Final");
 
     const review = buildPartialCaptureReviewReply(capture);
+    expect(review).toContain("⚠️ มี 1 รายการที่ต้องแก้");
     expect(review).toContain("ข้อ 2");
-    expect(review).toContain("พักผ่อน");
+    expect(review).toContain("พักผ่อน 20 บาท");
+    expect(review).toContain("4 แพค");
+    expect(review).toContain("ไม่พบชื่อสินค้า “พักผ่อน”");
+    expect(review).toContain("แก้ข้อ 2");
+    expect(review).toContain("ลบข้อ 2");
+    expect(review).toContain("ตัวอย่างกรณีมีหลายข้อ");
+    expect(review).toContain("แก้ข้อ 5");
+    expect(review).toContain("ลบข้อ 8");
+    expect(review).not.toContain("Dictionary");
   });
 
   it("keeps parsed good lines when a separate malformed source line cannot be parsed", () => {
@@ -108,5 +122,16 @@ describe("Produce partial capture", () => {
     expect(capture.acceptedCount).toBe(2);
     expect(capture.issues.some((issue) => issue.kind === "parse_error")).toBe(true);
     expect(buildPartialCaptureReviewReply(capture)).toContain("2.มะเขือยาว 36..1 โล 30 บาท");
+  });
+
+  it("keeps an 80-item review summary inside LINE's text limit", () => {
+    const parsed = session(Array.from({ length: 80 }, (_, index) =>
+      item(index + 1, "มะนาว", index + 1, 20)));
+    const validation = validateProduceEntry({ parsed, roundRows: [], roundBound: false });
+    const capture = buildProducePartialCapture(parsed, validation, []);
+    const reply = buildPartialCaptureSavedReply(capture);
+
+    expect(reply).toContain("80. มะนาว 80 แพค × 20 บาท = 1,600.00 บาท");
+    expect([...reply].length).toBeLessThanOrEqual(5000);
   });
 });

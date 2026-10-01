@@ -372,6 +372,30 @@ describe("explicit same-draft item correction", () => {
     expect(parsed.items.map((row) => row.quantity)).toEqual([0.1, 2, 0.07]);
   });
 
+  it("accepts several แก้ข้อ commands plus ลบข้อ in one message", () => {
+    const parsed = parseWeighSession(returnDocument(
+      ...item(2, "พักผ่อน", 20, 4),
+      ...item(5, "มะนาว", 20, 8),
+      ...item(8, "หอมแดง", 20, 1),
+      "แก้ข้อ 2",
+      ...item(2, "หอมแดง", 20, 4),
+      "แก้ข้อ 5",
+      ...item(5, "มะนาว", 20, 3),
+      "ลบข้อ 8",
+    ));
+
+    expect(parsed.parse_errors).toEqual([]);
+    expect(parsed.items.map((row) => [row.item_number, row.product_name, row.quantity])).toEqual([
+      [2, "หอมแดง", 4],
+      [5, "มะนาว", 3],
+    ]);
+    expect(parsed.draft_item_actions?.map((action) => [action.kind, action.item_number, action.status])).toEqual([
+      ["correct", 2, "applied"],
+      ["correct", 5, "applied"],
+      ["remove", 8, "applied"],
+    ]);
+  });
+
   it("replays the audited มะม่วงจิ๋ว spelling repair without a full-list retry", () => {
     const parsed = parseWeighSession(document(
       ...item(17, "มะม่วงจิ๋ว", 50, 10),
