@@ -286,17 +286,23 @@ describe("guard scope", () => {
     expect(vocabulary(result)).toHaveLength(1);
   });
 
-  it("does not apply to คืน or คืนเสีย — a return is judged against the master", () => {
+  it("reviews an unknown return identity while keeping the unmatched-return advisory separate", () => {
     const parsed = session([
       item({ product_name: "อินทผลัม", transaction_type: "เบิก", quantity: 5 }),
       item({ product_name: "อินมผรัม", transaction_type: "คืน", quantity: 1 }),
     ]);
     const result = validateProduceEntry({ parsed, roundRows: [], roundBound: true });
-    expect(vocabulary(result)).toHaveLength(0);
-    // The return is unmatched for its own, separate reason.
+    expect(vocabulary(result)).toHaveLength(1);
+    expect(vocabulary(result)[0]).toMatchObject({
+      kind: "unknown_product_vocabulary",
+      itemNumber: 2,
+      productName: "อินมผรัม",
+    });
+    // The same measured return is also preserved as unmatched round evidence.
     expect(result.advisories.map((exception) => exception.kind)).toEqual([
       "product_not_withdrawn",
     ]);
+    expect(result.status).toBe("review_required");
   });
 
   it("keeps unknown_product_vocabulary and product_not_withdrawn separate", () => {
