@@ -133,7 +133,7 @@ describe("registered products whose identity includes the word", () => {
       session([item({ product_name: "ผลไม้กล่อง", transaction_type: "คืน", quantity: 1 })]),
       [withdrawal("ทุเรียนกล่อง")],
     );
-    expect(result.blocking.map((entry) => entry.kind)).toContain("product_not_withdrawn");
+    expect(result.advisories.map((entry) => entry.kind)).toContain("product_not_withdrawn");
   });
 });
 
@@ -174,7 +174,7 @@ describe("withdrawal and return meet on one identity", () => {
       session([item({ product_name: "แอปเปิ้ล", transaction_type: "คืน", quantity: 1 })]),
       [withdrawal("แอปเปิ้ลกล่อง")],
     );
-    expect(result.blocking.map((entry) => entry.kind)).not.toContain("product_not_withdrawn");
+    expect(result.advisories.map((entry) => entry.kind)).not.toContain("product_not_withdrawn");
     expect(result.blocking.map((entry) => entry.kind)).not.toContain("unit_not_withdrawn");
   });
 
@@ -183,7 +183,7 @@ describe("withdrawal and return meet on one identity", () => {
       session([item({ product_name: "แอปเปิ้ลกล่อง", transaction_type: "คืน", quantity: 1 })]),
       [withdrawal("แอปเปิ้ล")],
     );
-    expect(result.blocking.map((entry) => entry.kind)).not.toContain("product_not_withdrawn");
+    expect(result.advisories.map((entry) => entry.kind)).not.toContain("product_not_withdrawn");
   });
 
   it("matches a damaged return the same way, in both directions", () => {
@@ -191,13 +191,13 @@ describe("withdrawal and return meet on one identity", () => {
       session([item({ product_name: "แอปเปิ้ล", transaction_type: "คืนเสีย", quantity: 1 })]),
       [withdrawal("แอปเปิ้ลกล่อง")],
     );
-    expect(damagedPlain.blocking.map((entry) => entry.kind)).not.toContain("product_not_withdrawn");
+    expect(damagedPlain.advisories.map((entry) => entry.kind)).not.toContain("product_not_withdrawn");
 
     const damagedBoxed = validate(
       session([item({ product_name: "แอปเปิ้ลกล่อง", transaction_type: "คืนเสีย", quantity: 1 })]),
       [withdrawal("แอปเปิ้ล")],
     );
-    expect(damagedBoxed.blocking.map((entry) => entry.kind)).not.toContain("product_not_withdrawn");
+    expect(damagedBoxed.advisories.map((entry) => entry.kind)).not.toContain("product_not_withdrawn");
   });
 
   it("still enforces the inventory invariant across the two spellings", () => {
@@ -207,7 +207,7 @@ describe("withdrawal and return meet on one identity", () => {
       session([item({ product_name: "แอปเปิ้ล", transaction_type: "คืน", quantity: 4 })]),
       [withdrawal("แอปเปิ้ลกล่อง", BOX, 3)],
     );
-    expect(result.blocking.map((entry) => entry.kind)).toContain("return_exceeds_withdrawal");
+    expect(result.advisories.map((entry) => entry.kind)).toContain("return_exceeds_withdrawal");
   });
 
   it("keeps a unit mismatch visible rather than folding it away", () => {
@@ -217,7 +217,7 @@ describe("withdrawal and return meet on one identity", () => {
       session([item({ product_name: "แอปเปิ้ลกล่อง", transaction_type: "คืน", unit: "ลูก", quantity: 1 })]),
       [withdrawal("แอปเปิ้ล")],
     );
-    expect(result.blocking.map((entry) => entry.kind)).toContain("product_not_withdrawn");
+    expect(result.advisories.map((entry) => entry.kind)).toContain("product_not_withdrawn");
   });
 });
 

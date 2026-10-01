@@ -14,6 +14,7 @@ export interface GroupRow {
   คืน:      number;
   คืนเสีย:  number;
   ยอดส่ง:   number;
+  produceNetStatus?: "trusted" | "returns_exceed_withdrawal";
 }
 
 export interface SettlementEntry {
@@ -43,6 +44,12 @@ function gk(date: string, time: string | null, seller: string, market: string) {
 function fmtNum(n: number, dec = 2): string {
   return n.toLocaleString("th-TH", { minimumFractionDigits: dec, maximumFractionDigits: dec });
 }
+
+function produceNetTrusted(group: GroupRow): boolean {
+  return group.produceNetStatus !== "returns_exceed_withdrawal";
+}
+
+const NET_REVIEW_TEXT = "ต้องตรวจสอบ";
 
 function fmtDate(d: string): string {
   return new Intl.DateTimeFormat("th-TH", { day: "numeric", month: "short", year: "2-digit" })
@@ -178,12 +185,14 @@ export function FinancialTable({
 
   let grandเบิก = 0, grandคืน = 0, grandคืนเสีย = 0, grandยอดส่ง = 0,
       grandโอน = 0, grandสด = 0, grandExpenses = 0, grandLabor = 0;
+  let untrustedNetCount = 0;
   for (const g of groups) {
     const c = getCell(gk(g.date, g.time, g.seller, g.market));
     grandเบิก    += g.เบิก;
     grandคืน     += g.คืน;
     grandคืนเสีย += g.คืนเสีย;
-    grandยอดส่ง  += g.ยอดส่ง;
+    if (produceNetTrusted(g)) grandยอดส่ง += g.ยอดส่ง;
+    else untrustedNetCount += 1;
     grandโอน     += c.money_transfer;
     grandสด      += c.money_cash;
     grandExpenses += c.expenses;
@@ -197,7 +206,7 @@ export function FinancialTable({
     labor: grandLabor,
   });
   const grandยอดขาย = grandSettlement.ยอดขาย;
-  const grandขาดเกิน = grandSettlement.ขาดเกิน;
+  const grandขาดเกิน = untrustedNetCount === 0 ? grandSettlement.ขาดเกิน : null;
 
   return (
     <div className="space-y-4">
@@ -207,12 +216,12 @@ export function FinancialTable({
           { label: "เบิกรวม",    value: grandเบิก,    cls: "text-emerald-700", bg: "bg-emerald-50" },
           { label: "คืนรวม",     value: grandคืน,     cls: "text-blue-700",   bg: "bg-blue-50" },
           { label: "คืนเสียรวม", value: grandคืนเสีย, cls: "text-red-600",    bg: "bg-red-50" },
-          { label: "ยอดส่งรวม",  value: grandยอดส่ง,  cls: "text-slate-800",  bg: "bg-slate-50" },
+          { label: "ยอดส่งรวม",  value: untrustedNetCount === 0 ? grandยอดส่ง : null,  cls: "text-slate-800",  bg: "bg-slate-50" },
           { label: "ยอดขายรวม",  value: grandยอดขาย,  cls: "text-slate-800",  bg: "bg-slate-50" },
         ].map(({ label, value, cls, bg }) => (
           <div key={label} className={`rounded-lg ${bg} px-3 py-2.5 text-center`}>
             <div className="text-[0.6875rem] font-medium text-slate-500 uppercase tracking-wide">{label}</div>
-            <div className={`mt-1 text-xl font-bold tabular-nums leading-tight ${cls}`}>{fmtNum(value)}</div>
+            <div className={`mt-1 text-xl font-bold tabular-nums leading-tight ${cls}`}>{value === null ? NET_REVIEW_TEXT : fmtNum(value)}</div>
           </div>
         ))}
       </div>
@@ -227,6 +236,7 @@ export function FinancialTable({
           {groups.map((g) => {
             const k = gk(g.date, g.time, g.seller, g.market);
             const c = getCell(k);
+            const netTrusted = produceNetTrusted(g);
             const settlement = calculateSettlementTotals({
               ยอดส่ง: g.ยอดส่ง,
               money_transfer: c.money_transfer,
@@ -245,7 +255,9 @@ export function FinancialTable({
                       {fmtDate(g.date)}{g.time ? ` · ${g.time}` : ""} · {g.market}
                     </p>
                   </div>
-                  {settlement.ขาดเกิน === 0 ? (
+                  {!netTrusted ? (
+                    <span className="text-xs font-semibold text-amber-700 shrink-0">{NET_REVIEW_TEXT}</span>
+                  ) : settlement.ขาดเกิน === 0 ? (
                     <span className="text-xs font-medium text-slate-400 tabular-nums shrink-0">±0</span>
                   ) : settlement.ขาดเกิน > 0 ? (
                     <span className="text-xs font-semibold text-emerald-700 tabular-nums shrink-0">
@@ -261,7 +273,7 @@ export function FinancialTable({
                 <div className="grid grid-cols-2 gap-1.5">
                   <div className="rounded-md bg-slate-50 px-2.5 py-1.5">
                     <p className="text-[10px] text-slate-400 uppercase tracking-wide">ยอดส่ง</p>
-                    <p className="text-sm font-semibold text-slate-700 tabular-nums">{fmtNum(g.ยอดส่ง)}</p>
+                    <p className="text-sm font-semibold text-slate-700 tabular-nums">{netTrusted ? fmtNum(g.ยอดส่ง) : NET_REVIEW_TEXT}</p>
                   </div>
                   <div className="rounded-md bg-slate-50 px-2.5 py-1.5">
                     <p className="text-[10px] text-slate-400 uppercase tracking-wide">ยอดขาย</p>
@@ -372,7 +384,8 @@ export function FinancialTable({
               groups.map((g, i) => {
                 const k       = gk(g.date, g.time, g.seller, g.market);
                 const c       = getCell(k);
-                const settlement = calculateSettlementTotals({
+                const netTrusted = produceNetTrusted(g);
+            const settlement = calculateSettlementTotals({
                   ยอดส่ง: g.ยอดส่ง,
                   money_transfer: c.money_transfer,
                   money_cash: c.money_cash,
@@ -408,7 +421,7 @@ export function FinancialTable({
                       {fmtNum(g.คืนเสีย)}
                     </td>
                     <td className={`${TD} text-right font-semibold text-slate-800`}>
-                      {fmtNum(g.ยอดส่ง)}
+                      {netTrusted ? fmtNum(g.ยอดส่ง) : NET_REVIEW_TEXT}
                     </td>
                     <td className="px-3 py-2 text-right">
                       <input
@@ -468,7 +481,10 @@ export function FinancialTable({
                     <td className={`${TD} text-right font-semibold text-slate-800`}>
                       {fmtNum(ยอดขาย)}
                     </td>
-                    <DiffCell value={ขาดเกิน} />
+                    {netTrusted
+                      ? <DiffCell value={ขาดเกิน} />
+                      : <td className={`${TD} text-right font-semibold text-amber-700`}>{NET_REVIEW_TEXT}</td>}
+
                   </tr>
                 );
               })
@@ -483,13 +499,16 @@ export function FinancialTable({
                 <td className={`${TD} text-right font-bold text-emerald-800`}>{fmtNum(grandเบิก)}</td>
                 <td className={`${TD} text-right font-bold text-blue-800`}>{fmtNum(grandคืน)}</td>
                 <td className={`${TD} text-right font-bold text-red-700`}>{fmtNum(grandคืนเสีย)}</td>
-                <td className={`${TD} text-right font-bold text-slate-800`}>{fmtNum(grandยอดส่ง)}</td>
+                <td className={`${TD} text-right font-bold text-slate-800`}>{untrustedNetCount === 0 ? fmtNum(grandยอดส่ง) : NET_REVIEW_TEXT}</td>
                 <td className={`${TD} text-right font-bold text-indigo-800`}>{fmtNum(grandโอน)}</td>
                 <td className={`${TD} text-right font-bold text-amber-700`}>{fmtNum(grandสด)}</td>
                 <td className={`${TD} text-right font-bold text-orange-700`}>{fmtNum(grandExpenses)}</td>
                 <td className={`${TD} text-right font-bold text-pink-700`}>{fmtNum(grandLabor)}</td>
                 <td className={`${TD} text-right font-bold text-slate-800`}>{fmtNum(grandยอดขาย)}</td>
-                <DiffCell value={grandขาดเกิน} />
+                {grandขาดเกิน === null
+                  ? <td className={`${TD} text-right font-bold text-amber-700`}>{NET_REVIEW_TEXT}</td>
+                  : <DiffCell value={grandขาดเกิน} />}
+
               </tr>
             </tfoot>
           )}

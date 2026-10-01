@@ -94,19 +94,19 @@ export type ProduceValidationException =
       unit: string;
       withdrawnUnits: string[];
     }
-  /** Nothing by this name was withdrawn in this round. */
+  /** Nothing by this name was withdrawn in this round. Keep the real return and flag it. */
   | {
       kind: "product_not_withdrawn";
-      severity: "blocking";
+      severity: "advisory";
       itemNumber: number;
       productName: string;
       unit: string;
       suggestions: string[];
     }
-  /** Good + damaged returns exceed what was withdrawn. Never confirmable. */
+  /** Good + damaged returns exceed what was withdrawn. Preserve the measured return and flag it. */
   | {
       kind: "return_exceeds_withdrawal";
-      severity: "blocking";
+      severity: "advisory";
       productName: string;
       unit: string;
       withdrawnQuantity: number;
@@ -389,10 +389,11 @@ export function validateProduceEntry(input: ProduceValidationInput): ProduceVali
       .map((exception) => exception.itemNumber),
   );
 
-  // ── 1b. Product vocabulary, on withdrawals only. A return is checked against
-  // the round's master instead (§2) — that master is the authority for what
-  // this round actually holds, and it is exactly what this section protects
-  // from being created under a misspelled name in the first place.
+  // ── 1b. Product vocabulary on withdrawals. A return gets an additional
+  // vocabulary review only when it ALSO fails to match the round master (§2).
+  // That distinction keeps a real round product usable even when the global
+  // Dictionary is temporarily behind, while a stray name such as “พักผ่อน”
+  // cannot silently become a new return identity.
   reviews.push(...vocabularyExceptions(parsed));
   reviews.push(...subunitExceptions(parsed));
 
@@ -416,9 +417,22 @@ export function validateProduceEntry(input: ProduceValidationInput): ProduceVali
       const withdrawnUnits = master.unitsByProduct.get(product);
 
       if (!withdrawnUnits) {
-        blocking.push({
+        // A missing withdrawal is not enough to reject a measured return. But
+        // when the name is ALSO outside the reviewed Dictionary there is no
+        // trusted identity at all; park only this line for human correction.
+        const reviewedIdentity = canonicalProduceProductIdentity(item.product_name, item.unit);
+        if (!isApprovedProductName(reviewedIdentity)) {
+          reviews.push({
+            kind: "unknown_product_vocabulary",
+            severity: "review_required",
+            itemNumber: item.item_number,
+            productName: item.product_name,
+            suggestions: suggestDictionaryProducts(item.product_name),
+          });
+        }
+        advisories.push({
           kind: "product_not_withdrawn",
-          severity: "blocking",
+          severity: "advisory",
           itemNumber: item.item_number,
           productName: item.product_name,
           unit,
@@ -464,9 +478,9 @@ export function validateProduceEntry(input: ProduceValidationInput): ProduceVali
       // product; adding "returned more than the zero you withdrew" on top of
       // that would be two exceptions for one mistake.
       if (!master.unitsByProduct.get(cell.productName)?.has(cell.unit)) continue;
-      blocking.push({
+      advisories.push({
         kind: "return_exceeds_withdrawal",
-        severity: "blocking",
+        severity: "advisory",
         productName: cell.productName,
         unit: cell.unit,
         withdrawnQuantity: round3(cell.withdrawnQuantity),

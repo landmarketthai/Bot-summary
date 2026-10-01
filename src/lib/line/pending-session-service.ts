@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getRuntimeEnvironment } from "@/lib/runtime-environment";
+import type { ProducePartialCapture } from "@/lib/produce/partial-capture";
 
 const TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -108,6 +109,14 @@ export interface PendingSession {
    * ordinary session. See src/lib/produce/replacement-draft.ts.
    */
   replaces_produce_session_id?:       string | null;
+  /**
+   * Durable non-financial snapshot of lines retained while other lines in the
+   * same Produce draft still need correction. Settlement never reads this as
+   * finalized Produce.
+   */
+  partial_capture_revision?:          number | null;
+  partial_capture?:                   unknown | null;
+  partial_capture_updated_at?:        string | null;
 }
 
 export interface OpenPlainTextGenerationInput {
@@ -724,6 +733,40 @@ export class PendingSessionService {
 
     if (error) {
       throw new Error(`pending session control activity update failed: ${error.message}`);
+    }
+    return data as PendingSession | null;
+  }
+
+  /**
+   * Persist a durable, generation/revision-fenced staging snapshot when some
+   * Produce lines are already trustworthy but the document cannot finalize.
+   * No produce_items row is created here, so reports and Settlement remain
+   * isolated from partial data.
+   */
+  async savePartialCapture(
+    sessionKey: string,
+    expectedGeneration: string,
+    expectedIngestRevision: number,
+    capture: ProducePartialCapture,
+  ): Promise<PendingSession | null> {
+    const now = new Date().toISOString();
+    const { data, error } = await this.supabase
+      .from("pending_sessions")
+      .update({
+        partial_capture_revision: expectedIngestRevision,
+        partial_capture: capture,
+        partial_capture_updated_at: now,
+        updated_at: now,
+      })
+      .eq("session_key", sessionKey)
+      .eq("session_generation", expectedGeneration)
+      .eq("ingest_revision", expectedIngestRevision)
+      .eq("terminalized", false)
+      .select("*")
+      .maybeSingle();
+
+    if (error) {
+      throw new Error(`pending partial capture save failed: ${error.message}`);
     }
     return data as PendingSession | null;
   }

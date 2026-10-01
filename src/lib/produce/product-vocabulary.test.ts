@@ -294,7 +294,7 @@ describe("guard scope", () => {
     const result = validateProduceEntry({ parsed, roundRows: [], roundBound: true });
     expect(vocabulary(result)).toHaveLength(0);
     // The return is unmatched for its own, separate reason.
-    expect(result.blocking.map((exception) => exception.kind)).toEqual([
+    expect(result.advisories.map((exception) => exception.kind)).toEqual([
       "product_not_withdrawn",
     ]);
   });
@@ -306,11 +306,11 @@ describe("guard scope", () => {
     ]);
     const result = validateProduceEntry({ parsed, roundRows: [], roundBound: true });
     expect(vocabulary(result)).toHaveLength(1);
-    expect(result.blocking.map((exception) => exception.kind)).toEqual([
+    expect(result.advisories.map((exception) => exception.kind)).toEqual([
       "product_not_withdrawn",
     ]);
     // Blocking wins: an unresolvable return is not downgraded by a review.
-    expect(result.status).toBe("blocked");
+    expect(result.status).toBe("review_required");
   });
 
   it("reports one exception per distinct spelling, at its first item number", () => {

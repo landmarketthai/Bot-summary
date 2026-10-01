@@ -170,6 +170,49 @@ describe("explicit same-draft item correction", () => {
     expect(latestDraftItemAction(parsed)?.status).toBe("target_not_found");
   });
 
+  it("repairs a numbered raw line that failed to parse without resending good rows", () => {
+    const parsed = parseWeighSession(returnDocument(
+      "1. มะนาว 20 บาท",
+      "3 แพค",
+      "2.มะเขือยาว 36..1 โล 30 บาท",
+      "3. หอมแดง 20 บาท",
+      "5 แพค",
+      "แก้ข้อ 2",
+      "2. มะเขือยาว 30 บาท",
+      "36.1 โล",
+    ));
+
+    expect(parsed.parse_errors).toEqual([]);
+    expect(parsed.items).toHaveLength(3);
+    expect(parsed.items.find((row) => row.item_number === 2)).toMatchObject({
+      product_name: "มะเขือยาว",
+      price_per_unit: 30,
+      quantity: 36.1,
+      unit: "โล",
+      transaction_type: "คืน",
+    });
+    expect(latestDraftItemAction(parsed)?.status).toBe("applied");
+  });
+
+  it("can remove one numbered raw line that failed to parse", () => {
+    const parsed = parseWeighSession(returnDocument(
+      "1. มะนาว 20 บาท",
+      "3 แพค",
+      "2.มะเขือยาว 36..1 โล 30 บาท",
+      "3. หอมแดง 20 บาท",
+      "5 แพค",
+      "ลบข้อ 2",
+    ));
+
+    expect(parsed.parse_errors).toEqual([]);
+    expect(parsed.items.map((row) => row.item_number)).toEqual([1, 3]);
+    expect(latestDraftItemAction(parsed)).toMatchObject({
+      kind: "remove",
+      item_number: 2,
+      status: "applied",
+    });
+  });
+
   it("keeps the old item when the replacement uses the wrong item number", () => {
     const parsed = parseWeighSession(document(
       ...item(17, "มังคุด", 45, 2),

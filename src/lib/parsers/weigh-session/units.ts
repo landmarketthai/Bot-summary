@@ -34,7 +34,8 @@ const CANONICAL_UNITS = new Set([
 // quantity rescaling).
 const UNIT_ALIASES: Record<string, string> = {
   "แพ็ค": "แพค", "แพ็ก": "แพค", "เเพ็ค": "แพค", "เเพค": "แพค",
-  "แพต": "แพค", "แพ็ด": "แพค", "แผค": "แพค",
+  "แพต": "แพค", "แพ็ด": "แพค", "แพ็ต": "แพค", "แผค": "แพค",
+  "pack": "แพค", "Pack": "แพค", "PACK": "แพค",
   "กก.": "โล", "กก": "โล", "กิโล": "โล", "กิโลกรัม": "โล",
   // Shop-confirmed shorthand. Same container, factor 1 — never a quantity change.
   "ปุก": "กระปุก",

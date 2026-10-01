@@ -249,6 +249,17 @@ describe("produceComponentProvenance", () => {
     });
   });
 
+  it("INVALID preserves measured components but never certifies the net", () => {
+    expect(produceComponentProvenance("invalid", {
+      เบิก: true, คืน: true, คืนเสีย: true,
+    })).toEqual({
+      withdrawal: "known",
+      goodReturn: "known",
+      damagedReturn: "known",
+      net: "unknown",
+    });
+  });
+
   it("missing overall status is unknown on every component", () => {
     expect(produceComponentProvenance("missing", {
       เบิก: true, คืน: true, คืนเสีย: true,

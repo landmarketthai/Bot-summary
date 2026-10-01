@@ -113,14 +113,16 @@ describe("blocked document value preview", () => {
   const blocked: ProduceValidationResult = {
     status: "blocked",
     blocking: [{
-      kind: "return_exceeds_withdrawal",
+      kind: "unit_not_withdrawn",
       severity: "blocking",
+      itemNumber: 1,
       productName: "หมอนทอง",
-      unit: "โล",
-      withdrawnQuantity: 1,
-      goodReturnQuantity: 2,
-      damagedQuantity: 0,
-      excessQuantity: 1,
+      unit: "ลูก",
+      withdrawnUnits: ["โล"],
+
+
+
+
     }],
     reviews: [],
     advisories: [],
@@ -137,7 +139,7 @@ describe("blocked document value preview", () => {
     expect(reply).toContain("ชั่งคืน 79 รายการ: 12,341.83 บาท");
     expect(reply).toContain("ยังไม่บันทึก/ยังไม่ยืนยัน");
     expect(reply).toContain("ยังไม่ใช่ยอดขายหรือยอดเงินขาดที่ยืนยันแล้ว");
-    expect(reply).toContain("ของยกมาที่รับไปขายจริงและเบิกเพิ่ม");
+    expect(reply).toContain("รายการอื่นยังอยู่ครบ");
     expect(reply).not.toContain("เบิก 0 รายการ");
     expect(reply).not.toContain("แก้เฉพาะรายการที่ทำให้ยอดเกิน");
     expect(countCodePoints(reply)).toBeLessThanOrEqual(LINE_TEXT_MESSAGE_HARD_MAX_CODE_POINTS);
@@ -166,7 +168,7 @@ describe("blocked document value preview", () => {
     const reply = buildBlockingValidationReply(oversized, 1000, parsed);
     expect(countCodePoints(reply)).toBeLessThanOrEqual(1000);
     expect(reply).toContain("ชั่งคืน 1 รายการ: 100.00 บาท");
-    expect(reply).toContain("ให้เพิ่มเฉพาะส่วนที่ขาด");
+    expect(reply).toContain("รายการอื่นยังอยู่ครบ");
     expect(reply).toContain('แล้วส่งข้อความ "จบรายการ" อีกครั้ง');
   });
 });

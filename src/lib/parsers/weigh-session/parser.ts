@@ -87,11 +87,40 @@ export function parseWeighSession(
   // Raw source lines that built the current pendingItem — surfaced in the
   // "no price line" error below so the user can find and resend it.
   let   pendingItemLines: string[]              = [];
+  type FailedItemTarget = {
+    itemNumber: number;
+    section: string;
+    transactionType: TransactionType;
+    parseError: string;
+  };
+  const failedItemTargets = new Map<number, FailedItemTarget[]>();
   let activeCorrection: {
     action: DraftItemAction;
     targetIndex: number | null;
     targetItem: WeighSessionItem | null;
+    targetContext: Pick<FailedItemTarget, "section" | "transactionType"> | null;
+    failedParseError: string | null;
   } | null = null;
+
+  const registerFailedItemTarget = (
+    itemNumber: number,
+    parseError: string,
+    section = currentSection,
+    transactionType = currentTxType,
+  ) => {
+    const targets = failedItemTargets.get(itemNumber) ?? [];
+    targets.push({ itemNumber, section, transactionType, parseError });
+    failedItemTargets.set(itemNumber, targets);
+  };
+
+  const clearFailedItemTarget = (itemNumber: number, parseError: string) => {
+    const errorIndex = parseErrors.indexOf(parseError);
+    if (errorIndex >= 0) parseErrors.splice(errorIndex, 1);
+    const remaining = (failedItemTargets.get(itemNumber) ?? [])
+      .filter((target) => target.parseError !== parseError);
+    if (remaining.length > 0) failedItemTargets.set(itemNumber, remaining);
+    else failedItemTargets.delete(itemNumber);
+  };
 
   const failActiveCorrection = (detail: string) => {
     if (!activeCorrection) {
@@ -128,9 +157,10 @@ export function parseWeighSession(
       activeCorrection = null;
       return;
     }
+    const hasParsedTarget = correction.targetIndex !== null && correction.targetItem !== null;
+    const hasFailedRawTarget = correction.targetContext !== null && correction.failedParseError !== null;
     if (
-      correction.targetIndex === null
-      || correction.targetItem === null
+      (!hasParsedTarget && !hasFailedRawTarget)
       || item.item_number !== correction.action.item_number
     ) {
       failActiveCorrection(
@@ -152,10 +182,19 @@ export function parseWeighSession(
     const replacement: WeighSessionItem = {
       ...item,
       item_number: correction.action.item_number,
-      section: correction.targetItem.section,
-      transaction_type: correction.targetItem.transaction_type,
+      section: correction.targetItem?.section ?? correction.targetContext!.section,
+      transaction_type:
+        correction.targetItem?.transaction_type ?? correction.targetContext!.transactionType,
     };
-    items[correction.targetIndex] = replacement;
+    if (correction.targetIndex !== null) {
+      items[correction.targetIndex] = replacement;
+    } else {
+      // The original numbered source line never parsed into an item. The
+      // correction supplies that missing item now; do not replay/save any of
+      // the already-good rows.
+      items.push(replacement);
+      clearFailedItemTarget(correction.action.item_number, correction.failedParseError!);
+    }
     correction.action.status = "applied";
     correction.action.replacement_item = { ...replacement };
     activeCorrection = null;
@@ -173,8 +212,12 @@ export function parseWeighSession(
         + `"${pendingItemLines.join(" ")}"`,
       );
     } else {
-      const section = activeCorrection?.targetItem?.section ?? currentSection;
-      const txType = activeCorrection?.targetItem?.transaction_type ?? currentTxType;
+      const section = activeCorrection?.targetItem?.section
+        ?? activeCorrection?.targetContext?.section
+        ?? currentSection;
+      const txType = activeCorrection?.targetItem?.transaction_type
+        ?? activeCorrection?.targetContext?.transactionType
+        ?? currentTxType;
       commitParsedItem(finalize(pendingItem, section, txType));
     }
     pendingItem = null;
@@ -224,9 +267,14 @@ export function parseWeighSession(
       const matches = items
         .map((item, index) => ({ item, index }))
         .filter(({ item }) => item.item_number === draftCommand.itemNumber);
-      const status = matches.length === 0
+      const failedMatches = failedItemTargets.get(draftCommand.itemNumber) ?? [];
+      const matchCount = matches.length + failedMatches.length;
+      const failedTarget = matches.length === 0 && failedMatches.length === 1
+        ? failedMatches[0]
+        : null;
+      const status = matchCount === 0
         ? "target_not_found"
-        : matches.length > 1
+        : matchCount > 1
           ? "ambiguous_target"
           : draftCommand.kind === "remove"
             ? "applied"
@@ -235,24 +283,29 @@ export function parseWeighSession(
         kind: draftCommand.kind,
         item_number: draftCommand.itemNumber,
         status,
-        match_count: matches.length,
+        match_count: matchCount,
         ...(matches.length === 1 ? { previous_item: { ...matches[0].item } } : {}),
       };
       draftItemActions.push(action);
 
-      if (matches.length === 0) {
+      if (matchCount === 0) {
         parseErrors.push(`ไม่พบข้อ ${draftCommand.itemNumber} ในรายการที่กำลังกรอก`);
-      } else if (matches.length > 1) {
+      } else if (matchCount > 1) {
         parseErrors.push(`เลขข้อ ${draftCommand.itemNumber} ซ้ำ จึงระบุรายการที่จะแก้ไม่ได้`);
       }
 
       if (draftCommand.kind === "remove") {
-        if (matches.length === 1) items.splice(matches[0].index, 1);
+        if (matches.length === 1 && matchCount === 1) items.splice(matches[0].index, 1);
+        else if (failedTarget) clearFailedItemTarget(draftCommand.itemNumber, failedTarget.parseError);
       } else {
         activeCorrection = {
           action,
-          targetIndex: matches.length === 1 ? matches[0].index : null,
-          targetItem: matches.length === 1 ? { ...matches[0].item } : null,
+          targetIndex: matches.length === 1 && matchCount === 1 ? matches[0].index : null,
+          targetItem: matches.length === 1 && matchCount === 1 ? { ...matches[0].item } : null,
+          targetContext: failedTarget
+            ? { section: failedTarget.section, transactionType: failedTarget.transactionType }
+            : null,
+          failedParseError: failedTarget?.parseError ?? null,
         };
       }
       continue;
@@ -373,6 +426,13 @@ export function parseWeighSession(
           // matching prior behavior exactly. Never reached with an item that
           // still needs a price (see the branches below).
           applyQuantity(pendingItem, parseFloat(qm[1]), qm[2]);
+          // Compact basis shorthand (e.g. "3/20") omits the basis unit from
+          // the header. The immediately following quantity line is the only
+          // authoritative source for that unit, so bind it here instead of
+          // guessing from the product name.
+          if (pendingItem.pricing_mode === "basis" && !pendingItem.basis_unit && pendingItem.unit) {
+            pendingItem.basis_unit = pendingItem.unit;
+          }
           if (pendingItem.basis_unit && pendingItem.unit !== pendingItem.basis_unit) {
             const wasCorrection = activeCorrection !== null;
             recordItemParseError(
@@ -478,7 +538,18 @@ export function parseWeighSession(
               mainSegmentClosed = false;
             }
           } else {
-            recordItemParseError(`unrecognized line: "${line}"`);
+            const detail = `unrecognized line: "${line}"`;
+            // Keep a correction target even when the malformed numbered line
+            // never became a WeighSessionItem. Later “แก้ข้อ N” can replace
+            // this exact failed line without asking the operator to resend the
+            // already-good document.
+            if (!activeCorrection) {
+              const explicitFailedItem = itemContent.match(/^(\d+)[.)]\s*/);
+              if (explicitFailedItem) {
+                registerFailedItemTarget(Number(explicitFailedItem[1]), detail);
+              }
+            }
+            recordItemParseError(detail);
           }
         }
       }
@@ -718,6 +789,26 @@ function parseItemLine(
       ...(withBasis[4] === "ขีด" || withBasis[4] === "กรัม"
         ? { entered_quantity: parseFloat(withBasis[3]), entered_unit: withBasis[4] }
         : {}),
+    };
+  }
+
+  const shorthandBasis = normalizedContent.match(RE.ITEM_WITH_BASIS_SHORTHAND);
+  if (shorthandBasis) {
+    const basisQuantity = parseFloat(shorthandBasis[3]);
+    const basisPrice = parseFloat(shorthandBasis[4]);
+    if (!Number.isFinite(basisQuantity) || basisQuantity <= 0 || !Number.isFinite(basisPrice)) return null;
+
+    return {
+      item_number:    parseInt(shorthandBasis[1], 10),
+      item_number_explicit: true,
+      product_name:   shorthandBasis[2].trim(),
+      price_per_unit: Number((basisPrice / basisQuantity).toFixed(2)),
+      quantity:       null,
+      unit:           null,
+      pricing_mode:   "basis",
+      basis_quantity: basisQuantity,
+      basis_unit:     null,
+      basis_price:    basisPrice,
     };
   }
 

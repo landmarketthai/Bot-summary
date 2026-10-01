@@ -94,6 +94,23 @@ export function summarizeProduceTransactionRows(
   return { totals, presence, effectiveRowCount: rows.length };
 }
 
+export type ProduceNetStatus = "trusted" | "returns_exceed_withdrawal";
+
+/**
+ * Returns are measured evidence and may legitimately persist even when the
+ * earlier withdrawal document is incomplete. A negative Produce net is still
+ * not an authoritative financial result, so money-facing callers must check
+ * this status before presenting or finalizing dependent values.
+ */
+export function produceNetStatus({
+  เบิก,
+  คืน,
+  คืนเสีย,
+}: Pick<TransactionTotals, "เบิก" | "คืน" | "คืนเสีย">): ProduceNetStatus {
+  // Monetary rows are 2dp; this only absorbs floating-point dust.
+  return คืน + คืนเสีย > เบิก + 0.005 ? "returns_exceed_withdrawal" : "trusted";
+}
+
 export function calculateYodSong({
   เบิก,
   คืน,

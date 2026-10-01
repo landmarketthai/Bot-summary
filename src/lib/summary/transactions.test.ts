@@ -3,6 +3,7 @@ import {
   calculateSettlementTotals,
   calculateYodSong,
   summarizeProduceTransactionRows,
+  produceNetStatus,
 } from "./transactions";
 
 describe("summarizeProduceTransactionRows", () => {
@@ -59,6 +60,18 @@ describe("summarizeProduceTransactionRows", () => {
     expect(totals.เบิก).toBe(100);
     expect(totals.คืนเสีย).toBe(5);
     expect(totals.ยอดส่ง).toBe(95);
+  });
+});
+
+describe("Produce net financial safety", () => {
+  it("flags returns that exceed withdrawal instead of trusting a negative net", () => {
+    expect(produceNetStatus({ เบิก: 200, คืน: 180, คืนเสีย: 60 }))
+      .toBe("returns_exceed_withdrawal");
+  });
+
+  it("keeps normal and exact-zero net cases trusted", () => {
+    expect(produceNetStatus({ เบิก: 200, คืน: 100, คืนเสีย: 50 })).toBe("trusted");
+    expect(produceNetStatus({ เบิก: 200, คืน: 180, คืนเสีย: 20 })).toBe("trusted");
   });
 });
 

@@ -218,15 +218,16 @@ describe("product identity", () => {
     expect(result.status).toBe("clean");
   });
 
-  it("never auto-merges เขียวมรกต with เขียวมรกตเก่า", () => {
+  it("never auto-merges เขียวมรกต with เขียวมรกตเก่า, but preserves the measured return", () => {
     const result = bound(
       session([
         item({ product_name: "เขียวมรกตเก่า", quantity: 2, price_per_unit: 80, transaction_type: "คืน" }),
       ]),
       master([{ product_name: "เขียวมรกต", quantity: 10, price_per_unit: 80 }]),
     );
-    expect(result.status).toBe("blocked");
-    expect(kinds(result.blocking)).toEqual(["product_not_withdrawn"]);
+    expect(result.status).toBe("clean");
+    expect(result.blocking).toEqual([]);
+    expect(kinds(result.advisories)).toEqual(["product_not_withdrawn"]);
   });
 
   it("blocks a known product returned in a unit it was never withdrawn in", () => {
@@ -241,12 +242,14 @@ describe("product identity", () => {
     expect(exception.kind === "unit_not_withdrawn" && exception.withdrawnUnits).toEqual(["ลูก"]);
   });
 
-  it("blocks a return with no withdrawal anywhere in a bound round", () => {
+  it("preserves a return with no withdrawal anywhere in a bound round and advises", () => {
     const result = bound(
       session([item({ product_name: "ลำไย", quantity: 3, transaction_type: "คืน" })]),
       [],
     );
-    expect(kinds(result.blocking)).toEqual(["product_not_withdrawn"]);
+    expect(result.status).toBe("clean");
+    expect(result.blocking).toEqual([]);
+    expect(kinds(result.advisories)).toEqual(["product_not_withdrawn"]);
   });
 
   it("leaves an unbound legacy session alone rather than guessing its round", () => {
@@ -350,7 +353,7 @@ describe("price change", () => {
 // ── CASE J — the inventory invariant ──────────────────────────────────────────
 
 describe("quantity invariant", () => {
-  it("blocks when good + damaged returns exceed the withdrawal", () => {
+  it("advises when good + damaged returns exceed the withdrawal without dropping the return", () => {
     const result = bound(
       session([
         item({ product_name: "ทุเรียน", quantity: 9, transaction_type: "คืน" }),
@@ -359,13 +362,14 @@ describe("quantity invariant", () => {
       master([{ product_name: "ทุเรียน", quantity: 10 }]),
     );
 
-    expect(result.status).toBe("blocked");
-    const [exception] = result.blocking;
+    expect(result.status).toBe("clean");
+    expect(result.blocking).toEqual([]);
+    const [exception] = result.advisories;
     expect(exception.kind).toBe("return_exceeds_withdrawal");
     expect(exception.kind === "return_exceeds_withdrawal" && exception.excessQuantity).toBe(2);
   });
 
-  it("keeps a price advisory alongside a real quantity block", () => {
+  it("keeps price and excess-return findings together as advisories", () => {
     const result = bound(
       session([
         item({ product_name: "มังคุด", quantity: 35.2, price_per_unit: 50, transaction_type: "คืน" }),
@@ -373,9 +377,12 @@ describe("quantity invariant", () => {
       master([{ product_name: "มังคุด", quantity: 28.8, price_per_unit: 45 }]),
     );
 
-    expect(result.status).toBe("blocked");
-    expect(kinds(result.blocking)).toContain("return_exceeds_withdrawal");
-    expect(kinds(result.advisories)).toContain("price_not_withdrawn");
+    expect(result.status).toBe("clean");
+    expect(result.blocking).toEqual([]);
+    expect(kinds(result.advisories)).toEqual(expect.arrayContaining([
+      "price_not_withdrawn",
+      "return_exceeds_withdrawal",
+    ]));
   });
 
   it("aggregates across every price bucket instead of per bucket", () => {
@@ -389,7 +396,7 @@ describe("quantity invariant", () => {
     expect(result.status).toBe("clean");
   });
 
-  it("counts returns already finalized elsewhere in the round", () => {
+  it("counts returns already finalized elsewhere in the round and advises on the excess", () => {
     const result = bound(
       session([item({ product_name: "ทุเรียน", quantity: 4, transaction_type: "คืน" })]),
       master([
@@ -397,7 +404,8 @@ describe("quantity invariant", () => {
         { product_name: "ทุเรียน", quantity: 7, transaction_type: "คืน" },
       ]),
     );
-    expect(kinds(result.blocking)).toEqual(["return_exceeds_withdrawal"]);
+    expect(result.blocking).toEqual([]);
+    expect(kinds(result.advisories)).toEqual(["return_exceeds_withdrawal"]);
   });
 
   it("counts an additional withdrawal batch towards the master", () => {
@@ -446,7 +454,7 @@ describe("duplicate printed item numbers", () => {
     expect(reply).not.toContain("แก้ข้อ 16");
   });
 
-  it("reports duplicate, absent-product, and excess-return blockers together", () => {
+  it("keeps duplicate numbering blocking while absent/excess returns remain advisories", () => {
     const parsed = session([
       item({ product_name: "ลูกไหนแดง", quantity: 1, transaction_type: "คืน" }),
       item({ product_name: "อะโวคาโด", quantity: 1, transaction_type: "คืน" }),
@@ -462,19 +470,14 @@ describe("duplicate printed item numbers", () => {
     ]));
     const reply = buildBlockingValidationReply(result);
 
-    expect(result.blocking).toHaveLength(5);
-    expect(kinds(result.blocking)).toEqual([
-      "duplicate_item_number",
+    expect(kinds(result.blocking)).toEqual(["duplicate_item_number"]);
+    expect(kinds(result.advisories)).toEqual([
       "product_not_withdrawn",
       "product_not_withdrawn",
       "return_exceeds_withdrawal",
       "return_exceeds_withdrawal",
     ]);
     expect(reply).toContain("พบเลขข้อ 16 ซ้ำ 2 รายการ");
-    expect(reply).toContain("ลูกไหนแดง");
-    expect(reply).toContain("อะโวคาโด");
-    expect(reply).toContain("มะม่วงแก้วขมิ้น");
-    expect(reply).toContain("ไซมัส");
     expect(reply).not.toContain("แก้ข้อ 16");
   });
 });
@@ -715,16 +718,16 @@ describe("reviewed unit alias ปุก", () => {
   });
 });
 
-describe("product spelling variants are refused, never merged", () => {
-  // The three real Production pairs behind this phase. PR A deliberately does
-  // NOT alias them: only the operator knows whether a variant is a typo or a
-  // different good, so the reply hands them the withdrawal's exact spelling.
+describe("product spelling variants are preserved, never auto-merged", () => {
+  // The operator remains the authority on whether a near spelling is a typo
+  // or a different good. The return is kept as entered and the round spelling
+  // is surfaced as an advisory suggestion instead of blocking the whole close.
   const pairs: Array<[sent: string, withdrawn: string]> = [
     ["หัวไชเท้า", "หัวไชยเท้า"],
   ];
 
   for (const [sent, withdrawn] of pairs) {
-    it(`blocks ${sent} and surfaces ${withdrawn} to copy`, () => {
+    it(`advises on ${sent} and surfaces ${withdrawn} without merging`, () => {
       const result = bound(
         session([
           item({ product_name: sent, unit: "โล", quantity: 2, price_per_unit: 30, transaction_type: "คืน" }),
@@ -732,12 +735,12 @@ describe("product spelling variants are refused, never merged", () => {
         master([{ product_name: withdrawn, unit: "โล", quantity: 10, price_per_unit: 30 }]),
       );
 
-      expect(result.status).toBe("blocked");
-      const [exception] = result.blocking;
+      expect(result.status).toBe("clean");
+      expect(result.blocking).toEqual([]);
+      const [exception] = result.advisories;
       expect(exception.kind).toBe("product_not_withdrawn");
       expect(exception.kind === "product_not_withdrawn" && exception.suggestions)
         .toContain(withdrawn);
-      expect(buildBlockingValidationReply(result)).toContain(withdrawn);
     });
   }
 });

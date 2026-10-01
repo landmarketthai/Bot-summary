@@ -13,6 +13,7 @@ export type SettlementProduceValueStatus =
   | "complete"
   | "partial"
   | "blocked"
+  | "invalid"
   | "missing";
 
 export type ProduceComponentAvailability = "known" | "unknown";
@@ -49,6 +50,14 @@ export function produceComponentProvenance(
 ): ProduceComponentProvenance {
   if (status === "complete") return ALL_KNOWN;
   if (status === "missing") return ALL_UNKNOWN;
+  if (status === "invalid") {
+    return {
+      withdrawal: presence.เบิก ? "known" : "unknown",
+      goodReturn: presence.คืน ? "known" : "unknown",
+      damagedReturn: presence.คืนเสีย ? "known" : "unknown",
+      net: "unknown",
+    };
+  }
   const withdrawal = presence.เบิก ? "known" : "unknown";
   const goodReturn = presence.คืน ? "known" : "unknown";
   const damagedReturn = presence.คืนเสีย ? "known" : "unknown";

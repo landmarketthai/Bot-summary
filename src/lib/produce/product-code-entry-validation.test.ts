@@ -4,9 +4,8 @@
  * A code resolves to a canonical product name in the parser, so by the time
  * the entry gate sees an item there is no such thing as "a coded row". These
  * tests prove that in the direction that matters: a withdrawal keyed one way
- * and a return keyed the other must land on the same master cell, and every
- * existing refusal — price, unit, quantity invariant — must still fire when it
- * does.
+ * and a return keyed the other must land on the same master cell, while hard
+ * validation guards and non-blocking advisories behave identically either way.
  *
  * Each case drives real documents through the real parser rather than
  * hand-built item fixtures, because the resolution being tested happens inside
@@ -89,16 +88,13 @@ describe("CASE D — withdrawn and returned by the same code", () => {
     expect(result.status).toBe("clean");
   });
 
-  it("still refuses a product that was never withdrawn in this round", () => {
-    // The dictionary is not an allowlist, but the round still is: ม01 is a
-    // perfectly valid code for a product this round never took out.
+  it("preserves a product that was never withdrawn in this round and advises", () => {
     const round = roundOf(withdrawal("ม02 35 บาท", "8 โล"));
     const result = validate(goodReturn("ม01 50 บาท", "1 โล"), round);
 
-    expect(result.status).toBe("blocked");
-    expect(kinds(result.blocking)).toContain("product_not_withdrawn");
-    // And it names the product, not the code the operator typed.
-    expect(result.blocking[0]).toMatchObject({ productName: "กล้วยไข่" });
+    expect(result.status).toBe("clean");
+    expect(kinds(result.advisories)).toContain("product_not_withdrawn");
+    expect(result.advisories[0]).toMatchObject({ productName: "กล้วยไข่" });
   });
 });
 
@@ -148,41 +144,41 @@ describe("CASE F — unit mismatch through a code", () => {
   });
 });
 
-// ── CASE G — return may not exceed withdrawal ───────────────────────────────
+// ── CASE G — return excess is persisted but flagged ─────────────────────────
 
 describe("CASE G — return exceeds withdrawal", () => {
-  it("blocks returning 3 โล against a 2 โล withdrawal", () => {
+  it("advises when returning 3 โล against a 2 โล withdrawal", () => {
     const round = roundOf(withdrawal("ม01 50 บาท", "2 โล"));
     const result = validate(goodReturn("ม01 50 บาท", "3 โล"), round);
 
-    expect(result.status).toBe("blocked");
-    expect(kinds(result.blocking)).toContain("return_exceeds_withdrawal");
-    expect(result.blocking.find((e) => e.kind === "return_exceeds_withdrawal")).toMatchObject({
+    expect(result.status).toBe("clean");
+    expect(kinds(result.advisories)).toContain("return_exceeds_withdrawal");
+    expect(result.advisories.find((e) => e.kind === "return_exceeds_withdrawal")).toMatchObject({
       productName: "กล้วยไข่", withdrawnQuantity: 2, goodReturnQuantity: 3, excessQuantity: 1,
     });
   });
 
-  it("blocks it across the code/word boundary", () => {
+  it("advises across the code/word boundary", () => {
     const round = roundOf(withdrawal("กล้วยไข่ 50 บาท", "2 โล"));
     const result = validate(goodReturn("ม01 50 บาท", "3 โล"), round);
 
-    expect(result.status).toBe("blocked");
-    expect(kinds(result.blocking)).toContain("return_exceeds_withdrawal");
+    expect(result.status).toBe("clean");
+    expect(kinds(result.advisories)).toContain("return_exceeds_withdrawal");
   });
 });
 
-// ── CASE H — good + damaged may not exceed withdrawal ───────────────────────
+// ── CASE H — good + damaged excess is persisted but flagged ────────────────
 
 describe("CASE H — good return plus damaged exceeds withdrawal", () => {
-  it("blocks 4 โล good + 2 โล damaged against a 5 โล withdrawal", () => {
+  it("advises on 4 โล good + 2 โล damaged against a 5 โล withdrawal", () => {
     const round = roundOf(
       withdrawal("ม01 50 บาท", "5 โล"),
       goodReturn("ม01 50 บาท", "4 โล"),
     );
     const result = validate(damagedReturn("ม01 50 บาท", "2 โล"), round);
 
-    expect(result.status).toBe("blocked");
-    const excess = result.blocking.find((e) => e.kind === "return_exceeds_withdrawal");
+    expect(result.status).toBe("clean");
+    const excess = result.advisories.find((e) => e.kind === "return_exceeds_withdrawal");
     expect(excess).toMatchObject({
       productName: "กล้วยไข่",
       withdrawnQuantity: 5,
@@ -202,16 +198,15 @@ describe("CASE H — good return plus damaged exceeds withdrawal", () => {
     expect(result.status).toBe("clean");
   });
 
-  it("blocks a mixed-notation round the same way", () => {
-    // Withdrawal by code, good return by word, damaged return by code.
+  it("advises on a mixed-notation round the same way", () => {
     const round = roundOf(
       withdrawal("ม01 50 บาท", "5 โล"),
       goodReturn("กล้วยไข่ 50 บาท", "4 โล"),
     );
     const result = validate(damagedReturn("ม01 50 บาท", "2 โล"), round);
 
-    expect(result.status).toBe("blocked");
-    expect(kinds(result.blocking)).toContain("return_exceeds_withdrawal");
+    expect(result.status).toBe("clean");
+    expect(kinds(result.advisories)).toContain("return_exceeds_withdrawal");
   });
 });
 
@@ -222,7 +217,9 @@ describe("uncoded products go through the gate unchanged", () => {
     const round = roundOf(withdrawal("เสาวรส 50 บาท", "10 โล"));
 
     expect(validate(goodReturn("เสาวรส 50 บาท", "4 โล"), round).status).toBe("clean");
-    expect(validate(goodReturn("เสาวรส 50 บาท", "11 โล"), round).status).toBe("blocked");
+    const excess = validate(goodReturn("เสาวรส 50 บาท", "11 โล"), round);
+    expect(excess.status).toBe("clean");
+    expect(kinds(excess.advisories)).toContain("return_exceeds_withdrawal");
   });
 
   it("validates a product excluded from the dictionary normally", () => {
@@ -257,8 +254,7 @@ describe("code and word documents validate identically", () => {
 
     expect(coded.status).toBe(words.status);
     expect(kinds(coded.blocking)).toEqual(kinds(words.blocking));
-    // Identical content means an identical digest — the confirmation a human
-    // approves is bound to the data, not to how it was typed.
+    expect(kinds(coded.advisories)).toEqual(kinds(words.advisories));
     expect(coded.digest).toBe(words.digest);
   });
 });

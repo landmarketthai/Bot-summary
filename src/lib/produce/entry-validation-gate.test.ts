@@ -323,7 +323,12 @@ describe("round scoping", () => {
       session([item({ product_name: "อะโวคาโด", quantity: 4, transaction_type: "คืน" })]),
       "E1",
     );
-    expect(gate.decision).toBe("blocked");
+    expect(gate.decision).toBe("proceed");
+    expect(gate.result.advisories).toContainEqual(expect.objectContaining({
+      kind: "product_not_withdrawn",
+      productName: "อะโวคาโด",
+    }));
+    expect(db.masterQueries).toEqual([ROUND]);
   });
 
   it("skips the master read entirely for an unbound legacy session", async () => {
@@ -389,13 +394,17 @@ describe("finalize gate", () => {
     expect(db.reviews).toHaveLength(0);
   });
 
-  it("blocks an acknowledged session once its withdrawal is voided away", async () => {
+  it("keeps a measured return when its withdrawal later disappears, but flags it for reconciliation", async () => {
     const db = new FakeDb({ [ROUND]: withdrawal });
     // produce_transactions excludes voided sessions, so the master simply
-    // stops containing the withdrawal.
+    // stops containing the withdrawal. The measured return remains evidence;
+    // downstream financial integrity owns the reconciliation hold.
     db.masterRowOverride = [];
     const gate = await runProduceFinalizeGate(db.client(), REF, priceChange());
-    expect(gate.decision).toBe("blocked");
+    expect(gate.decision).toBe("proceed");
+    expect(gate.result.advisories).toContainEqual(expect.objectContaining({
+      kind: "product_not_withdrawn",
+    }));
   });
 });
 

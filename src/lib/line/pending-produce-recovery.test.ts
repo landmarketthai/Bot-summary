@@ -426,7 +426,7 @@ describe("recovered items still use ordinary validation", () => {
     expect(result.blocking.some((row) => row.kind === "unit_not_withdrawn")).toBe(true);
   });
 
-  it("blocks recovered return quantity that exceeds withdrawal", () => {
+  it("preserves recovered return quantity that exceeds withdrawal and advises", () => {
     const parsed = parseWeighSession([
       "ดำ-ราชพฤกษ์ ชั่งคืน 11/8/2569",
       "1.มังคุด45บาท",
@@ -444,7 +444,8 @@ describe("recovered items still use ordinary validation", () => {
         transaction_type: "เบิก",
       }],
     });
-    expect(result.blocking.some((row) => row.kind === "return_exceeds_withdrawal")).toBe(true);
+    expect(result.blocking).toEqual([]);
+    expect(result.advisories.some((row) => row.kind === "return_exceeds_withdrawal")).toBe(true);
   });
 
   it("lets แก้ข้อ N correct a recovered typo", () => {

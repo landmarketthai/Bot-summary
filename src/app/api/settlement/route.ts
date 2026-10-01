@@ -7,9 +7,11 @@ import {
   KNOWN_TX_TYPES,
   calculateSettlementTotals,
   summarizeProduceTransactionRows,
+  produceNetStatus,
 } from "@/lib/summary/transactions";
 import { submitSettlementEntryForSource } from "@/lib/settlement/submit-entry";
 import { loadSettlementProduceValueStatus } from "@/lib/settlement/produce-value-status";
+import { produceFinancialIntegrity } from "@/lib/settlement/produce-financial-integrity";
 
 function monthRange(month: string): { from: string; toExclusive: string } {
   const [y, m] = month.split("-").map(Number);
@@ -128,7 +130,7 @@ async function sendLineNotification(
   let lineTargets = 0;
   let lineError: string | null = null;
   try {
-    const { transactions, presence, sourceIds, effectiveRowCount } = await getSettlementContext(supabase, {
+    const { transactions, presence, sourceIds, effectiveRowCount, quantityIntegrity } = await getSettlementContext(supabase, {
       settlement_date: params.settlement_date,
       staff_name:      params.staff_name,
       market_name:     params.market_name,
@@ -140,7 +142,7 @@ async function sendLineNotification(
       expenses:       params.expenses,
       labor:          params.labor,
     });
-    const produceValueStatus = await loadSettlementProduceValueStatus(
+    let produceValueStatus = await loadSettlementProduceValueStatus(
       supabase,
       params.settlement_date,
       {
@@ -149,6 +151,12 @@ async function sendLineNotification(
       },
       effectiveRowCount,
     );
+    if (
+      quantityIntegrity === "returns_exceed_withdrawal"
+      || produceNetStatus(transactions) === "returns_exceed_withdrawal"
+    ) {
+      produceValueStatus = "invalid";
+    }
     const message = buildSettlementLineMessage({
       date:        params.settlement_date,
       staffName:   params.staff_name,
@@ -176,7 +184,7 @@ async function getSettlementContext(
   const { settlement_date, staff_name, market_name } = params;
   let query = supabase
     .from("produce_transactions")
-    .select("transaction_type, total_amount, market_name, raw_message_id")
+    .select("transaction_type, total_amount, market_name, raw_message_id, product_name, unit, quantity, price_per_unit")
     .eq("transaction_date", settlement_date)
     .in("transaction_type", KNOWN_TX_TYPES as unknown as string[]);
 
@@ -198,11 +206,19 @@ async function getSettlementContext(
     })),
   );
 
+  const quantityIntegrity = produceFinancialIntegrity(rows.map((row) => ({
+    product_name: row.product_name as string,
+    unit: row.unit as string | null,
+    quantity: row.quantity as number | null,
+    price_per_unit: row.price_per_unit as number | null,
+    transaction_type: row.transaction_type as string,
+  })));
+
   const rawMessageIds = Array.from(new Set(
     rows.map(row => row.raw_message_id as string | null).filter((id): id is string => Boolean(id)),
   ));
   if (rawMessageIds.length === 0) {
-    return { transactions, presence, sourceIds: [] as string[], effectiveRowCount };
+    return { transactions, presence, sourceIds: [] as string[], effectiveRowCount, quantityIntegrity };
   }
 
   const { data: rawRows, error: rawError } = await supabase
@@ -214,5 +230,5 @@ async function getSettlementContext(
   const sourceIds = Array.from(new Set(
     (rawRows ?? []).map(row => row.source_id as string | null).filter((id): id is string => Boolean(id)),
   ));
-  return { transactions, presence, sourceIds, effectiveRowCount };
+  return { transactions, presence, sourceIds, effectiveRowCount, quantityIntegrity };
 }

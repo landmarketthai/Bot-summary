@@ -16,6 +16,7 @@ import {
   emptyTransactionTotals,
   KNOWN_TX_TYPES,
   summarizeProduceTransactionRows,
+  produceNetStatus,
   type ProduceBucketPresence,
 } from "@/lib/summary/transactions";
 import { displayMarketName } from "@/lib/market";
@@ -23,6 +24,7 @@ import { logger } from "@/lib/logger";
 import {
   loadSettlementProduceValueStatus,
 } from "@/lib/settlement/produce-value-status";
+import { produceFinancialIntegrity } from "@/lib/settlement/produce-financial-integrity";
 
 type Supabase = SupabaseClient<Database>;
 type PushFn   = (to: string, text: string, retryKey?: string) => Promise<unknown>;
@@ -55,7 +57,7 @@ async function computeTransactionTotals(
 ) {
   let base = supabase
     .from("produce_transactions")
-    .select("transaction_type, total_amount, market_name")
+    .select("transaction_type, total_amount, market_name, product_name, unit, quantity, price_per_unit")
     .eq("transaction_date", date);
   if (accountabilityRoundId !== undefined) {
     base = accountabilityRoundId === null
@@ -79,12 +81,22 @@ async function computeTransactionTotals(
     );
   });
 
-  return summarizeProduceTransactionRows(
+  const summary = summarizeProduceTransactionRows(
     rows.map((row) => ({
       transaction_type: row.transaction_type as string,
       total_amount: (row.total_amount as number) ?? 0,
     })),
   );
+  return {
+    ...summary,
+    quantityIntegrity: produceFinancialIntegrity(rows.map((row) => ({
+      product_name: row.product_name as string,
+      unit: row.unit as string | null,
+      quantity: row.quantity as number | null,
+      price_per_unit: row.price_per_unit as number | null,
+      transaction_type: row.transaction_type as string,
+    }))),
+  };
 }
 
 // ── Main export ───────────────────────────────────────────────────────────────
@@ -309,6 +321,7 @@ export async function tryFinalizeSettlement(
   let transactions = emptyTransactionTotals();
   let producePresence: ProduceBucketPresence = emptyProduceBucketPresence();
   let produceValueStatus: Awaited<ReturnType<ProduceStatusLoader>>;
+  let quantityIntegrity: ReturnType<typeof produceFinancialIntegrity> = "trusted";
   try {
     const produce = await computeTransactionTotals(
       supabase,
@@ -319,6 +332,7 @@ export async function tryFinalizeSettlement(
     );
     transactions = produce.totals;
     producePresence = produce.presence;
+    quantityIntegrity = produce.quantityIntegrity;
     produceValueStatus = await loadProduceStatus(
       supabase,
       businessDate,
@@ -337,6 +351,23 @@ export async function tryFinalizeSettlement(
       .eq("id", claimedRow.id);
     log.error("Produce value verification failed", { reason });
     return "failed";
+  }
+
+  if (
+    quantityIntegrity === "returns_exceed_withdrawal"
+    || produceNetStatus(transactions) === "returns_exceed_withdrawal"
+  ) {
+    const reason = "returns_exceed_withdrawal";
+    await supabase
+      .from("settlement_finalizations")
+      .update({ status: "failed", last_error: reason, updated_at: now })
+      .eq("id", claimedRow.id);
+    log.warn("final settlement held because Produce returns exceed withdrawal", {
+      withdrawal: transactions.เบิก,
+      goodReturn: transactions.คืน,
+      damagedReturn: transactions.คืนเสีย,
+    });
+    return "not_ready";
   }
 
   const settlement = calculateSettlementTotals({

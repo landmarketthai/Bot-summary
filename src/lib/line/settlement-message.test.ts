@@ -206,6 +206,34 @@ describe("buildSettlementLineMessage", () => {
     expect(result).not.toContain("ยอดเบิก: 0.00 บาท");
   });
 
+  it("INVALID return excess keeps measured buckets but hides dependent financial conclusions", () => {
+    const result = message({
+      transactions: { เบิก: 200, คืน: 180, คืนเสีย: 60, ยอดส่ง: -40 },
+      produceValueStatus: "invalid",
+      producePresence: ALL_PRESENT,
+      settlement: {
+        ยอดโอน: 10,
+        เงินสด: 20,
+        ค่าใช้จ่าย: 3,
+        ค่าแรง: 4,
+        ยอดขาย: 37,
+        เงินสดต้องส่งเจ๊: -57,
+        ขาดเกิน: 77,
+      },
+    });
+
+    expect(result).toContain("ยอดเบิก: 200.00 บาท ⚠️ ยังไม่ยืนยัน");
+    expect(result).toContain("ยอดชั่งคืน: 180.00 บาท ⚠️ ยังไม่ยืนยัน");
+    expect(result).toContain("ยอดคืนเสีย: 60.00 บาท ⚠️ ยังไม่ยืนยัน");
+    expect(result).toContain("ยอดขายสุทธิที่คำนวณได้: ⚠️ ยังยืนยันไม่ได้");
+    expect(result).toContain("ยอดคืนรวมมากกว่ายอดเบิก");
+    expect(result).toContain("ผลตรวจ: ⚠️ ยังยืนยันไม่ได้");
+    expect(result).toContain("เงินสดที่ควรเหลือส่งเจ๊: ⚠️ ยังยืนยันไม่ได้");
+    expect(result).not.toContain("ยอดขายสุทธิที่คำนวณได้: -40.00 บาท");
+    expect(result).not.toContain("เงินสดที่ควรเหลือส่งเจ๊: -57.00 บาท");
+    expect(result).not.toContain("ผลตรวจ: เกิน 77.00 บาท");
+  });
+
   it("missing overall status never fabricates zeroes from empty totals", () => {
     const result = message({
       transactions: { เบิก: 0, คืน: 0, คืนเสีย: 0, ยอดส่ง: 0 },

@@ -255,6 +255,7 @@ function textEvent(text: string, eventId: string, userId = "user-1"): LineMessag
 function build(db: PlainTextGateDatabase, replies: string[]) {
   return new WebhookService(db as never, {
     replyMessage: async (_token, text) => { replies.push(text); },
+    replyMessages: async (_token, texts) => { replies.push(...texts); },
   });
 }
 
@@ -317,7 +318,7 @@ describe("P4A on the plain-text close", () => {
     expect(String(db.pending.accumulated_text)).toContain("11/8/2569");
   });
 
-  it("blocks a return that exceeds what the round withdrew", async () => {
+  it("allows a measured return that exceeds withdrawal and leaves reconciliation to the financial guard", async () => {
     const db = new PlainTextGateDatabase(
       pendingRow([RETURN_HEADER, "1.มังคุด45บาท", "12โล"].join("\n")),
       master([{}]),
@@ -325,12 +326,11 @@ describe("P4A on the plain-text close", () => {
     const replies: string[] = [];
     await build(db, replies).processEvents([textEvent("จบรายการชั่งคืน", "close-3")], "dest");
 
-    expect(replies[0]).toContain("⛔");
-    expect(replies[0]).toContain("เกิน");
-    expect(db.pending.close_event_timestamp_ms).toBeNull();
+    expect(replies).toEqual([PRODUCE_CLOSE_PENDING_REPLY]);
+    expect(db.pending.close_line_event_id).toBe("close-3");
   });
 
-  it("cross-user binding reaches P4A and blocks a product absent from the withdrawal", async () => {
+  it("cross-user binding allows a known product absent from withdrawal as an advisory", async () => {
     const actor = "user-B";
     const db = new PlainTextGateDatabase(
       pendingRow([RETURN_HEADER, "1.ทุเรียน45บาท", "4โล"].join("\n"), actor),
@@ -342,13 +342,40 @@ describe("P4A on the plain-text close", () => {
       textEvent("จบรายการชั่งคืน", "close-cross-user", actor),
     ], "dest");
 
-    expect(replies[0]).not.toContain("ไม่พบรอบเบิกของรายการนี้");
-    expect(replies[0]).toContain("ทุเรียน");
-    expect(replies[0]).toContain("ไม่พบในรายการเบิกของรอบนี้");
-    expect(replies[0]).toContain("ชั่งคืน 1 รายการ: 180.00 บาท");
-    expect(replies[0]).toContain("ยังไม่บันทึก/ยังไม่ยืนยัน");
-    expect(db.pending.close_event_timestamp_ms).toBeNull();
+    expect(replies).toEqual([PRODUCE_CLOSE_PENDING_REPLY]);
+    expect(db.pending.close_line_event_id).toBe("close-cross-user");
     expect(db.tables.produce_transactions).toHaveLength(before);
+  });
+
+  it("stages good return lines and asks to fix only an unknown return identity", async () => {
+    const db = new PlainTextGateDatabase(
+      pendingRow([
+        RETURN_HEADER,
+        "1.มังคุด45บาท", "4โล",
+        "2.พักผ่อน20บาท", "4แพค",
+      ].join("\n")),
+      master([{}]),
+    );
+    const replies: string[] = [];
+    const service = build(db, replies);
+
+    await service.processEvents([textEvent("จบรายการชั่งคืน", "partial-close-1")], "dest");
+
+    expect(replies).toHaveLength(2);
+    expect(replies[0]).toContain("บันทึกรายการที่ตรวจผ่านแล้ว 1 รายการ");
+    expect(replies[0]).toContain("ยอดชั่งคืนที่ยืนยันแล้ว: 180.00 บาท");
+    expect(replies[1]).toContain("พักผ่อน");
+    expect(replies[1]).toContain("แก้ข้อ 2");
+    expect(db.pending.close_event_timestamp_ms).toBeNull();
+    expect(db.reviews).toHaveLength(0);
+    expect(db.pending.partial_capture).toBeTruthy();
+
+    // Repeating “จบรายการ” is NOT an override for an unknown return identity.
+    replies.length = 0;
+    await service.processEvents([textEvent("จบรายการชั่งคืน", "partial-close-2")], "dest");
+    expect(replies[1]).toContain("แก้ข้อ 2");
+    expect(db.pending.close_event_timestamp_ms).toBeNull();
+    expect(db.reviews).toHaveLength(0);
   });
 
   it("accepts a changed price on the first close without a review record", async () => {
@@ -607,8 +634,9 @@ describe("close gate completeness — recomputed from the live snapshot, not arr
     await build(db, replies).processEvents([textEvent("จบรายการเบิก", "close-race-persists")], "dest");
 
     expect(replies[0]).not.toBe(CLOSE_RACED_LATE_ITEM_REPLY);
-    expect(replies[0]).toContain("⛔");
-    expect(replies[0]).toContain("ขาดข้อ 15");
+    expect(replies[0]).toContain("บันทึกรายการที่ตรวจผ่านแล้ว 16 รายการ");
+    expect(replies[1]).toContain("⛔");
+    expect(replies[1]).toContain("ขาดข้อ 15");
     expect(db.pending.close_event_timestamp_ms).toBeNull();
   });
 

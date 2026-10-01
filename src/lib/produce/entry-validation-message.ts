@@ -176,20 +176,42 @@ function correctionGuidance(exceptions: ProduceValidationException[]): string[] 
   ];
 }
 
+function renderAdvisoryLine(advisory: ProduceValidationAdvisory): string {
+  switch (advisory.kind) {
+    case "price_not_withdrawn":
+      return `• ${advisory.productName} — เบิก ${advisory.withdrawnPrices.map(formatPrice).join(", ")} บาท/${advisory.unit} → ชั่งคืน ${formatPrice(advisory.enteredPrice)} บาท/${advisory.unit}`;
+    case "product_not_withdrawn": {
+      const suggestion = advisory.suggestions.length > 0
+        ? ` — ใกล้เคียง: ${advisory.suggestions.join(", ")}`
+        : "";
+      return `• ข้อ ${advisory.itemNumber} ${advisory.productName} — ไม่พบในรายการเบิกของรอบนี้${suggestion}`;
+    }
+    case "return_exceeds_withdrawal":
+      return `• ${advisory.productName} (${advisory.unit}) — เบิก ${formatQuantity(advisory.withdrawnQuantity)}, คืนดี ${formatQuantity(advisory.goodReturnQuantity)}, คืนเสีย ${formatQuantity(advisory.damagedQuantity)}, เกิน ${formatQuantity(advisory.excessQuantity)}`;
+  }
+}
+
 function renderPriceAdvisoryWarning(
   advisories: ProduceValidationAdvisory[],
   listedCount: number,
 ): string {
   const listed = advisories.slice(0, listedCount);
+  const priceOnly = advisories.every((advisory) => advisory.kind === "price_not_withdrawn");
   const lines = [
-    `⚠️ พบ ${advisories.length} รายการที่ราคาแตกต่างจากตอนเบิก`,
-    ...listed.map((advisory) =>
-      `• ${advisory.productName} — เบิก ${advisory.withdrawnPrices.map(formatPrice).join(", ")} บาท/${advisory.unit} → ชั่งคืน ${formatPrice(advisory.enteredPrice)} บาท/${advisory.unit}`
-    ),
+    priceOnly
+      ? `⚠️ พบ ${advisories.length} รายการที่ราคาแตกต่างจากตอนเบิก`
+      : `⚠️ พบ ${advisories.length} รายการที่ต้องตรวจสอบหลังบันทึก`,
+    ...listed.map(renderAdvisoryLine),
   ];
   const hidden = advisories.length - listed.length;
-  if (hidden > 0) lines.push(`…และอีก ${hidden} รายการที่ราคาแตกต่าง`);
-  lines.push("", "ระบบบันทึกตามราคาที่กรอกไว้แล้ว");
+  if (hidden > 0) {
+    lines.push(priceOnly
+      ? `…และอีก ${hidden} รายการที่ราคาแตกต่าง`
+      : `…และอีก ${hidden} รายการที่ต้องตรวจสอบ`);
+  }
+  lines.push("", priceOnly
+    ? "ระบบบันทึกตามราคาที่กรอกไว้แล้ว"
+    : "ระบบบันทึกข้อมูลชั่งคืนตามที่กรอกไว้แล้ว กรุณาตรวจรายการเบิกย้อนหลัง");
   return lines.join("\n");
 }
 

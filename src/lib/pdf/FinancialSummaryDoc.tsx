@@ -44,6 +44,7 @@ function enrichGroups(groups: GroupRow[], settlements: SettlementEntry[]) {
   return groups.map((g) => {
     const k   = `${g.date}||${g.time ?? ""}||${g.seller}||${g.market}`;
     const s   = map.get(k) ?? { transfer: 0, cash: 0, expenses: 0, labor: 0 };
+    const netTrusted = g.produceNetStatus !== "returns_exceed_withdrawal";
     const settlement = calculateSettlementTotals({
       ยอดส่ง: g.ยอดส่ง,
       money_transfer: s.transfer,
@@ -58,7 +59,7 @@ function enrichGroups(groups: GroupRow[], settlements: SettlementEntry[]) {
       ค่าใช้จ่าย: s.expenses,
       ค่าแรง: s.labor,
       ยอดขาย: settlement.ยอดขาย,
-      ขาดเกิน: settlement.ขาดเกิน,
+      ขาดเกิน: netTrusted ? settlement.ขาดเกิน : null,
     };
   });
 }
@@ -188,22 +189,24 @@ export function FinancialSummaryDoc({ month, groups, settlements }: FinancialSum
   // Grand totals
   let gเบิก = 0, gคืน = 0, gคืนเสีย = 0, gยอดส่ง = 0;
   let gโอน = 0, gสด = 0, gค่าใช้จ่าย = 0, gค่าแรง = 0, gยอดขาย = 0, gขาดเกิน = 0;
+  let untrustedNetCount = 0;
   for (const g of enriched) {
     gเบิก    += g.เบิก;
     gคืน     += g.คืน;
     gคืนเสีย += g.คืนเสีย;
-    gยอดส่ง  += g.ยอดส่ง;
+    if (g.produceNetStatus === "returns_exceed_withdrawal") untrustedNetCount += 1;
+    else gยอดส่ง += g.ยอดส่ง;
     gโอน     += g.ยอดโอน;
     gสด      += g.เงินสด;
     gค่าใช้จ่าย += g.ค่าใช้จ่าย;
     gค่าแรง += g.ค่าแรง;
     gยอดขาย  += g.ยอดขาย;
-    gขาดเกิน += g.ขาดเกิน;
+    if (g.ขาดเกิน !== null) gขาดเกิน += g.ขาดเกิน;
   }
 
   const footValues = [
     `รวม ${enriched.length} กลุ่ม`, "", "",
-    fmt(gเบิก), fmt(gคืน), fmt(gคืนเสีย), fmt(gยอดส่ง),
+    fmt(gเบิก), fmt(gคืน), fmt(gคืนเสีย), untrustedNetCount === 0 ? fmt(gยอดส่ง) : "ตรวจสอบ",
     fmt(gโอน), fmt(gสด), fmt(gค่าใช้จ่าย), fmt(gค่าแรง), fmt(gยอดขาย), fmt(gขาดเกิน),
   ];
 
@@ -241,7 +244,8 @@ export function FinancialSummaryDoc({ month, groups, settlements }: FinancialSum
             enriched.map((g, i) => {
               const vals = [
                 thaiDate(g.date), g.seller, g.market,
-                fmt(g.เบิก), fmt(g.คืน), fmt(g.คืนเสีย), fmt(g.ยอดส่ง),
+                fmt(g.เบิก), fmt(g.คืน), fmt(g.คืนเสีย),
+                g.produceNetStatus === "returns_exceed_withdrawal" ? "ตรวจสอบ" : fmt(g.ยอดส่ง),
                 fmt(g.ยอดโอน), fmt(g.เงินสด), fmt(g.ค่าใช้จ่าย), fmt(g.ค่าแรง), fmt(g.ยอดขาย),
               ];
               return (
@@ -256,8 +260,8 @@ export function FinancialSummaryDoc({ month, groups, settlements }: FinancialSum
                     }
                     // ขาด/เกิน column
                     return (
-                      <Text key={c.label} style={[S.td, { color: diffColor(g.ขาดเกิน), fontWeight: "bold" }]}>
-                        {g.ขาดเกิน > 0 ? "+" : ""}{fmt(g.ขาดเกิน)}
+                      <Text key={c.label} style={[S.td, { color: g.ขาดเกิน === null ? "#B45309" : diffColor(g.ขาดเกิน), fontWeight: "bold" }]}>
+                        {g.ขาดเกิน === null ? "ตรวจสอบ" : `${g.ขาดเกิน > 0 ? "+" : ""}${fmt(g.ขาดเกิน)}`}
                       </Text>
                     );
                   })}
@@ -270,8 +274,10 @@ export function FinancialSummaryDoc({ month, groups, settlements }: FinancialSum
           {enriched.length > 0 && (
             <View style={S.trFoot} wrap={false}>
               {COLS.map((c, ci) => (
-                <Text key={c.label} style={[S.tdFoot, ci === 0 ? S.tdLeft : {}, ci === 12 ? { color: diffColor(gขาดเกิน) } : {}]}>
-                  {ci === 12 ? (gขาดเกิน > 0 ? "+" : "") + fmt(gขาดเกิน) : footValues[ci]}
+                <Text key={c.label} style={[S.tdFoot, ci === 0 ? S.tdLeft : {}, ci === 12 ? { color: untrustedNetCount > 0 ? "#B45309" : diffColor(gขาดเกิน) } : {}]}>
+                  {ci === 12
+                    ? (untrustedNetCount > 0 ? "ตรวจสอบ" : (gขาดเกิน > 0 ? "+" : "") + fmt(gขาดเกิน))
+                    : footValues[ci]}
                 </Text>
               ))}
             </View>

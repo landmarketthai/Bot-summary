@@ -1082,6 +1082,8 @@ describe("RE.QUANTITY", () => {
     ["1แพ็ค",      1,    "แพ็ค"],
     ["1แพ็ก",      1,    "แพ็ก"],
     ["1เเพ็ค",     1,    "เเพ็ค"],
+    ["8 แพ็ต",     8,    "แพ็ต"],
+    ["16 pack",    16,   "pack"],
     ["0.8.ขีด",    0.8,  "ขีด"],
     ["0.2ขีด",     0.2,  "ขีด"],
     ["1ชิ้น",      1,    "ชิ้น"],
@@ -1334,6 +1336,46 @@ describe("RE.DATE_ONLY", () => {
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
+
+describe("30/9 return input resilience", () => {
+  it("normalizes pack typos and parses compact bundle shorthand", () => {
+    const parsed = parseWeighSession([
+      "พี่ดำ-พาซีโอ้ผัก ชั่งคืน 30/9/2569",
+      "1กระเทียมหัว30บาท",
+      "8 แพ็ต",
+      "2ฝรั่ง30บาท",
+      "16 pack",
+      "3ผักกาดสลัด3/20",
+      "15 หัว",
+      "4กวางตุ้งญี่ปุ่น4/20",
+      "11 หัว",
+      "จบรายการชั่งคืน",
+    ].join("\n"));
+
+    expect(parsed.parse_errors).toEqual([]);
+    expect(parsed.items).toHaveLength(4);
+    expect(parsed.items[0]).toMatchObject({ quantity: 8, unit: "แพค" });
+    expect(parsed.items[1]).toMatchObject({ quantity: 16, unit: "แพค" });
+    expect(parsed.items[2]).toMatchObject({
+      product_name: "ผักกาดสลัด",
+      quantity: 15,
+      unit: "หัว",
+      pricing_mode: "basis",
+      basis_quantity: 3,
+      basis_unit: "หัว",
+      basis_price: 20,
+    });
+    expect(parsed.items[3]).toMatchObject({
+      product_name: "กวางตุ้งญี่ปุ่น",
+      quantity: 11,
+      unit: "หัว",
+      pricing_mode: "basis",
+      basis_quantity: 4,
+      basis_unit: "หัว",
+      basis_price: 20,
+    });
+  });
+});
 
 describe("real-world session: mixed plain, basis, and conversion lines", () => {
   const SESSION = [

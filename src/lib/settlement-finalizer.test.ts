@@ -97,6 +97,7 @@ interface DbCfg {
   incompleteSessions?: Array<{ id: string; raw_message_id: string }>;
   incompleteSessionSourceMatch?: boolean;
   failedClosedPendingSessions?: Array<{ close_event_timestamp_ms: number }>;
+  produceRows?: Array<{ transaction_type: string; total_amount: number; market_name: string }>;
 }
 
 function makeDb(cfg: DbCfg = {}) {
@@ -261,7 +262,10 @@ function makeDb(cfg: DbCfg = {}) {
       }
 
       if (table === "produce_transactions") {
-        const chain = (): object => ({ eq: () => chain(), in: async () => ({ data: [], error: null }) });
+        const chain = (): object => ({
+          eq: () => chain(),
+          in: async () => ({ data: cfg.produceRows ?? [], error: null }),
+        });
         return { select: () => chain() };
       }
 
@@ -370,6 +374,22 @@ describe("tryFinalizeSettlement — readiness", () => {
   it("returns ambiguous when multiple settlement entries exist", async () => {
     const db = makeDb({ entries: [readyEntry, readyEntry] });
     expect(await tryFinalizeSettlement(db as never, "grp1", "2026-06-17", noopPush)).toBe("ambiguous");
+  });
+
+  it("holds final settlement when persisted returns exceed withdrawal", async () => {
+    const db = makeDb({
+      produceRows: [
+        { transaction_type: "เบิก", total_amount: 200, market_name: "ตลาด" },
+        { transaction_type: "คืน", total_amount: 180, market_name: "ตลาด" },
+        { transaction_type: "คืนเสีย", total_amount: 60, market_name: "ตลาด" },
+      ],
+    });
+    const pushed: string[] = [];
+    const result = await tryFinalizeSettlement(db as never, "grp1", "2026-06-17", async (_to, text) => {
+      pushed.push(text);
+    });
+    expect(result).toBe("not_ready");
+    expect(pushed).toHaveLength(0);
   });
 
   it("finalizes and pushes when all conditions are met", async () => {

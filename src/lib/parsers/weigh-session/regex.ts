@@ -7,6 +7,7 @@
 
 // Thai character class (letters + vowel signs + tone marks, all in U+0E00-U+0E7F)
 const TH = "\\u0E00-\\u0E7F";
+const UNIT = `${TH}A-Za-z`;
 const MARKET = `${TH}\\d\\sฯๆ().\\-/`;
 
 export const RE = {
@@ -37,7 +38,15 @@ export const RE = {
   // only one digit run before บาท, not two).
   // Captures: [1]=item_number, [2]=product_name, [3]=basis_quantity, [4]=basis_unit, [5]=basis_price
   ITEM_WITH_BASIS: new RegExp(
-    `^(\\d+)\\.?\\s*([${TH}][${TH}\\s]*?)(\\d+(?:\\.\\d+)?)\\.?\\s*([${TH}]+?)\\s*(\\d+(?:\\.\\d+)?)\\s*บาท\\s*$`,
+    `^(\\d+)\\.?\\s*([${TH}][${TH}\\s]*?)(\\d+(?:\\.\\d+)?)\\.?\\s*([${UNIT}]+?)\\s*(\\d+(?:\\.\\d+)?)\\s*บาท\\s*$`,
+  ),
+
+  // Compact shop shorthand with the basis unit omitted from the header:
+  //   "37ผักกาดสลัด3/20" → 3 of the quantity-line unit cost 20 baht.
+  // The following quantity line supplies the missing basis unit, e.g. 15หัว.
+  // Captures: [1]=item_number, [2]=product_name, [3]=basis_quantity, [4]=basis_price
+  ITEM_WITH_BASIS_SHORTHAND: new RegExp(
+    `^(\\d+)\\.?\\s*([${TH}][${TH}\\s]*?)(\\d+(?:\\.\\d+)?)\\s*/\\s*(\\d+(?:\\.\\d+)?)\\s*(?:บาท)?\\s*$`,
   ),
 
   // Item header split across lines: item number + product name, with no
@@ -66,7 +75,7 @@ export const RE = {
   // units are stored as text. "บาท" itself is excluded so a bare price line
   // never gets misread as a quantity line (see parser.ts).
   // Captures: [1]=amount, [2]=unit
-  QUANTITY: new RegExp(`^((?:\\d+(?:\\.\\d+)?|\\.\\d+))\\.?\\s*([${TH}]+)\\s*$`),
+  QUANTITY: new RegExp(`^((?:\\d+(?:\\.\\d+)?|\\.\\d+))\\.?\\s*([${UNIT}]+)\\s*$`),
 
   // Full-line date (anchored to avoid false matches inside item lines):
   //   "25/5/69"   → short Buddhist year 2569 → Gregorian 2026

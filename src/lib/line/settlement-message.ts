@@ -19,6 +19,8 @@ function fmt(n: number): string {
 const UNKNOWN_PRODUCE = "⚠️ ยังยืนยันไม่ได้";
 const UNCONFIRMED_MARK = " ⚠️ ยังไม่ยืนยัน";
 const UNCONFIRMED_FOOTER = "⚠️ ยอดจากรายการเบิก/คืนยังมีข้อมูลที่ต้องตรวจสอบ";
+const INVALID_NET_FOOTER = "⚠️ ยอดคืนรวมมากกว่ายอดเบิก — อาจมีรายการเบิกตกหล่น ต้องตรวจสอบก่อนสรุปการเงิน";
+const UNKNOWN_FINANCIAL = "⚠️ ยังยืนยันไม่ได้";
 
 export interface SettlementLineMessageInput {
   date: string;
@@ -35,7 +37,9 @@ export function buildSettlementLineMessage(input: SettlementLineMessageInput): s
   const market = displayMarketName(input.marketName, "");
   const title = market ? `${input.staffName} — ${market}` : input.staffName;
   const diff = input.settlement.ขาดเกิน;
-  const diffLine =
+  const diffLine = input.produceValueStatus === "invalid"
+    ? `ผลตรวจ: ${UNKNOWN_FINANCIAL}`
+    :
     diff === 0
       ? "ผลตรวจ: ยอดตรงกัน"
       : diff > 0
@@ -59,7 +63,9 @@ export function buildSettlementLineMessage(input: SettlementLineMessageInput): s
     `ค่าแรง: ${fmt(input.settlement.ค่าแรง)} บาท`,
     `ยอดขายจากรายการส่งเงิน: ${fmt(input.settlement.ยอดขาย)} บาท`,
     diffLine,
-    `เงินสดที่ควรเหลือส่งเจ๊: ${fmt(input.settlement.เงินสดต้องส่งเจ๊)} บาท`,
+    input.produceValueStatus === "invalid"
+      ? `เงินสดที่ควรเหลือส่งเจ๊: ${UNKNOWN_FINANCIAL}`
+      : `เงินสดที่ควรเหลือส่งเจ๊: ${fmt(input.settlement.เงินสดต้องส่งเจ๊)} บาท`,
   ];
 
   if (input.notes?.trim()) {
@@ -87,7 +93,9 @@ export function buildFinalSettlementMessage(input: FinalSettlementMessageInput):
   const s      = input.settlement;
   const r      = input.reconciliation;
 
-  const salesDiffLine =
+  const salesDiffLine = input.produceValueStatus === "invalid"
+    ? `ผลตรวจ: ${UNKNOWN_FINANCIAL}`
+    :
     s.ขาดเกิน === 0
       ? "ผลตรวจ: ยอดตรงกัน"
       : s.ขาดเกิน > 0
@@ -118,7 +126,9 @@ export function buildFinalSettlementMessage(input: FinalSettlementMessageInput):
     `ค่าแรง: ${fmt(s.ค่าแรง)} บาท`,
     `ยอดขายจากรายการส่งเงิน: ${fmt(s.ยอดขาย)} บาท`,
     salesDiffLine,
-    `เงินสดที่ควรเหลือส่งเจ๊: ${fmt(s.เงินสดต้องส่งเจ๊)} บาท`,
+    input.produceValueStatus === "invalid"
+      ? `เงินสดที่ควรเหลือส่งเจ๊: ${UNKNOWN_FINANCIAL}`
+      : `เงินสดที่ควรเหลือส่งเจ๊: ${fmt(s.เงินสดต้องส่งเจ๊)} บาท`,
     "",
     "— ตรวจสลิปโอน —",
     `ยอดสลิป AI: ${fmt(r.ai_verified_total)} บาท`,
@@ -168,5 +178,5 @@ function buildProduceValueLines(
 
 function unconfirmedProduceFooter(status: SettlementProduceValueStatus): string[] {
   if (status === "complete") return [];
-  return ["", UNCONFIRMED_FOOTER];
+  return ["", status === "invalid" ? INVALID_NET_FOOTER : UNCONFIRMED_FOOTER];
 }

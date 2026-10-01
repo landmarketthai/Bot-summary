@@ -14,8 +14,10 @@ import {
   calculateYodSong,
   emptyTransactionTotals,
   isKnownTransactionType,
+  produceNetStatus,
 } from "@/lib/summary/transactions";
 import { displayMarketName } from "@/lib/market";
+import { produceFinancialIntegrity } from "@/lib/settlement/produce-financial-integrity";
 
 // ── Date helpers ──────────────────────────────────────────────────────────────
 
@@ -37,10 +39,15 @@ type TxRow = {
   staff_name:       string;
   transaction_type: string;
   total_amount:     number | null;
+  product_name:     string;
+  unit:             string | null;
+  quantity:         number | null;
+  price_per_unit:   number | null;
 };
 
 function buildGroups(rows: TxRow[]): GroupRow[] {
   const map = new Map<string, GroupRow>();
+  const quantityRows = new Map<string, TxRow[]>();
 
   for (const r of rows) {
     if (!isKnownTransactionType(r.transaction_type)) continue;
@@ -50,6 +57,9 @@ function buildGroups(rows: TxRow[]): GroupRow[] {
     const market = displayMarketName(r.market_name, "ไม่ระบุ");
     const key    = `${date}||${time ?? ""}||${seller}||${market}`;
     const amt    = r.total_amount ?? 0;
+    const quantityGroup = quantityRows.get(key) ?? [];
+    quantityGroup.push(r);
+    quantityRows.set(key, quantityGroup);
 
     if (!map.has(key)) map.set(key, { date, time, seller, market, ...emptyTransactionTotals() });
     const g = map.get(key)!;
@@ -57,7 +67,15 @@ function buildGroups(rows: TxRow[]): GroupRow[] {
   }
 
   return Array.from(map.values())
-    .map((g) => ({ ...g, ยอดส่ง: calculateYodSong(g) }))
+    .map((g) => {
+      const key = `${g.date}||${g.time ?? ""}||${g.seller}||${g.market}`;
+      const quantityIntegrity = produceFinancialIntegrity(quantityRows.get(key) ?? []);
+      const integrity: GroupRow["produceNetStatus"] = quantityIntegrity === "returns_exceed_withdrawal"
+        || produceNetStatus(g) === "returns_exceed_withdrawal"
+        ? "returns_exceed_withdrawal"
+        : "trusted";
+      return { ...g, ยอดส่ง: calculateYodSong(g), produceNetStatus: integrity };
+    })
     .sort((a, b) =>
       a.date.localeCompare(b.date) ||
       (a.time ?? "").localeCompare(b.time ?? "") ||
@@ -83,7 +101,7 @@ export async function GET(req: NextRequest) {
   while (true) {
     const { data, error } = await supabase
       .from("produce_transactions")
-      .select("transaction_date, transaction_time, market_name, staff_name, transaction_type, total_amount")
+      .select("transaction_date, transaction_time, market_name, staff_name, transaction_type, total_amount, product_name, unit, quantity, price_per_unit")
       .gte("transaction_date", from)
       .lt("transaction_date",  toExclusive)
       .in("transaction_type",  KNOWN_TX_TYPES as unknown as string[])

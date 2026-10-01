@@ -166,10 +166,16 @@ import {
   confirmProduceSubunitReview,
   markProduceValidationReviewsPresented,
   deliveredPresentationDigests,
+  hasCorrectionRequiredReturnIdentity,
   isProduceReviewApproved,
   runProduceCloseGate,
 } from "@/lib/produce/entry-validation-gate";
 import { validateProduceEntry } from "@/lib/produce/entry-validation";
+import {
+  buildProducePartialCapture,
+  buildPartialCaptureReviewReply,
+  buildPartialCaptureSavedReply,
+} from "@/lib/produce/partial-capture";
 import {
   buildBlockingValidationReply,
   buildPlainTextReviewPresentationPages,
@@ -2651,7 +2657,44 @@ export class WebhookService {
   ): Promise<PlainTextCloseGateRefusal | null> {
     const document = `${pending.accumulated_text}\n${closeText}`;
     const parsed = parseWeighSession(document, bangkokToday());
-    if (getWeighSessionFinalizationErrors(parsed).length > 0) return null;
+    const finalizationErrors = getWeighSessionFinalizationErrors(parsed);
+    if (finalizationErrors.length > 0) {
+      // A malformed line no longer throws away every line that parsed cleanly.
+      // Stage the good subset durably, but keep it outside produce_items so a
+      // partial document can never leak into Settlement or financial reports.
+      const provisionalValidation = validateProduceEntry({
+        parsed,
+        roundRows: [],
+        // We do not have a trustworthy withdrawal master yet because parsing
+        // is incomplete. Treat absent withdrawals as advisory, but still make
+        // a non-Dictionary product identity review-required.
+        roundBound: true,
+      });
+      const capture = buildProducePartialCapture(
+        parsed,
+        provisionalValidation,
+        finalizationErrors,
+      );
+      const staged = await new PendingSessionService(this.supabase).savePartialCapture(
+        pending.session_key,
+        pending.session_generation,
+        pending.ingest_revision,
+        capture,
+      );
+      if (!staged) {
+        return { refusalText: CLOSE_RACED_LATE_ITEM_REPLY };
+      }
+      // Do not send a misleading “saved 0” summary when the only source line
+      // is malformed. Split success + review only when there is actually a
+      // clean subset worth acknowledging.
+      if (capture.acceptedCount === 0) {
+        return { refusalText: buildPartialCaptureReviewReply(capture) };
+      }
+      return {
+        refusalText: buildPartialCaptureSavedReply(capture),
+        refusalPages: [buildPartialCaptureReviewReply(capture)],
+      };
+    }
 
     try {
       const binding = await bindPlainTextRound(
@@ -2711,10 +2754,93 @@ export class WebhookService {
           });
           return { refusalText: CLOSE_RACED_LATE_ITEM_REPLY };
         }
-        // Not confirmable: no presentation to prove.
-        return { refusalText: buildBlockingValidationReply(decision.result, undefined, parsed) };
+        // Not confirmable: no presentation to prove. Keep every clean line in
+        // the durable staging snapshot and send the correction detail as its
+        // own LINE message, so one bad row no longer makes the operator resend
+        // the good rows.
+        let capture = buildProducePartialCapture(parsed, decision.result, []);
+        const staging = new PendingSessionService(this.supabase);
+        let staged = await staging.savePartialCapture(
+          pending.session_key,
+          pending.session_generation,
+          pending.ingest_revision,
+          capture,
+        );
+        let blockerReply = buildBlockingValidationReply(decision.result, undefined, parsed);
+
+        // A real numbering gap can remain real even when another line lands
+        // during validation. In that case the revision fence above correctly
+        // rejects our stale snapshot, but answering only “data arrived while
+        // closing” would hide the still-actionable missing number. Re-read once,
+        // re-parse the current document, and persist the fresh gap snapshot.
+        if (
+          !staged
+          && decision.result.blocking.some((exception) => exception.kind === "item_number_gap")
+        ) {
+          const current = await staging.lookup(pending.session_key);
+          const row = current.session;
+          if (
+            row
+            && row.session_generation === pending.session_generation
+            && !row.terminalized
+            && (row.ingest_revision ?? 0) > (pending.ingest_revision ?? 0)
+          ) {
+            const freshParsed = parseWeighSession(
+              `${row.accumulated_text}\n${closeText}`,
+              bangkokToday(),
+            );
+            const freshValidation = validateProduceEntry({
+              parsed: freshParsed,
+              roundRows: [],
+              roundBound: false,
+            });
+            if (freshValidation.blocking.some((exception) => exception.kind === "item_number_gap")) {
+              capture = buildProducePartialCapture(
+                freshParsed,
+                freshValidation,
+                getWeighSessionFinalizationErrors(freshParsed),
+              );
+              staged = await staging.savePartialCapture(
+                row.session_key,
+                row.session_generation,
+                row.ingest_revision,
+                capture,
+              );
+              blockerReply = buildBlockingValidationReply(
+                freshValidation,
+                undefined,
+                freshParsed,
+              );
+            }
+          }
+        }
+
+        if (!staged) return { refusalText: CLOSE_RACED_LATE_ITEM_REPLY };
+        if (capture.acceptedCount === 0) {
+          return { refusalText: blockerReply };
+        }
+        return {
+          refusalText: buildPartialCaptureSavedReply(capture),
+          refusalPages: [blockerReply],
+        };
       }
       if (decision.decision === "review_presented") {
+        if (hasCorrectionRequiredReturnIdentity(decision.result)) {
+          const capture = buildProducePartialCapture(parsed, decision.result, []);
+          const staged = await new PendingSessionService(this.supabase).savePartialCapture(
+            pending.session_key,
+            pending.session_generation,
+            pending.ingest_revision,
+            capture,
+          );
+          if (!staged) return { refusalText: CLOSE_RACED_LATE_ITEM_REPLY };
+          const correction = buildPartialCaptureReviewReply(capture);
+          if (capture.acceptedCount === 0) return { refusalText: correction };
+          return {
+            refusalText: buildPartialCaptureSavedReply(capture),
+            refusalPages: [correction],
+          };
+        }
         // Render first, then authorize only what the rendering shows. The set
         // is paginated rather than capped, so a session with more exceptions
         // than fit in one message still has a finite path to confirmation.
@@ -2722,15 +2848,31 @@ export class WebhookService {
           decision.result,
           closeText,
         );
+        const capture = buildProducePartialCapture(parsed, decision.result, []);
+        const staged = await new PendingSessionService(this.supabase).savePartialCapture(
+          pending.session_key,
+          pending.session_generation,
+          pending.ingest_revision,
+          capture,
+        );
+        if (!staged) return { refusalText: CLOSE_RACED_LATE_ITEM_REPLY };
+        const reviewPresentation = {
+          digests: deliveredPresentationDigests(
+            gateRef, decision.result, pages, complete, parsed,
+          ),
+          sessionGeneration: pending.session_generation,
+        };
+        if (capture.acceptedCount === 0) {
+          return {
+            refusalText: pages[0].text,
+            refusalPages: pages.slice(1).map((page) => page.text),
+            reviewPresentation,
+          };
+        }
         return {
-          refusalText: pages[0].text,
-          refusalPages: pages.slice(1).map((page) => page.text),
-          reviewPresentation: {
-            digests: deliveredPresentationDigests(
-              gateRef, decision.result, pages, complete, parsed,
-            ),
-            sessionGeneration: pending.session_generation,
-          },
+          refusalText: buildPartialCaptureSavedReply(capture),
+          refusalPages: pages.map((page) => page.text),
+          reviewPresentation,
         };
       }
       return null;
