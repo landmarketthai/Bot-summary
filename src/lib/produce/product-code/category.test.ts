@@ -316,10 +316,17 @@ describe("2026-09-30 vegetable market products classify as ผัก", () => {
     }
   });
 
-  test("ambiguous names are not guessed into any category", () => {
-    for (const name of ["ลูกพลุน", "องุ่นมีเม็ด", "ลูกไหนดำแดง"]) {
+  test("Sep 24 / Oct 1 approved fruit names classify only through their exact dictionary rows", () => {
+    const cases = [
+      ["ลูกพลุน", "ม98"],
+      ["องุ่นมีเม็ด", "ม95"],
+      ["ลูกไหนดำแดง", "ม97"],
+    ] as const;
+
+    for (const [name, code] of cases) {
       expect(normalizeProductName(name)).toBe(name);
-      expect(dictionaryCategoryFor(name)).toBe(UNCATEGORIZED_CATEGORY_ID);
+      expect(dictionaryCategoryFor(name)).toBe("ม");
+      expect(PRODUCT_CODE_ENTRIES.find((entry) => entry.canonicalName === name)?.code).toBe(code);
     }
   });
 });
