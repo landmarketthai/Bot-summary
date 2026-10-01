@@ -76,6 +76,25 @@ function collectText(node: React.ReactNode): string {
   return "";
 }
 
+type PdfRenderCallback = (context: { pageNumber: number; totalPages: number }) => React.ReactNode;
+
+function collectRenderCallbacks(node: React.ReactNode): PdfRenderCallback[] {
+  if (node == null || typeof node === "boolean" || typeof node === "string" || typeof node === "number") return [];
+  if (Array.isArray(node)) return node.flatMap(collectRenderCallbacks);
+  if (!React.isValidElement(node)) return [];
+
+  const element = node as React.ReactElement<Record<string, unknown>>;
+  if (typeof element.type === "function") {
+    return collectRenderCallbacks((element.type as (props: Record<string, unknown>) => React.ReactNode)(element.props));
+  }
+
+  const props = element.props as { children?: React.ReactNode; render?: PdfRenderCallback };
+  return [
+    ...(typeof props.render === "function" ? [props.render] : []),
+    ...collectRenderCallbacks(props.children),
+  ];
+}
+
 describe("Morning Brief A4 PDF", () => {
   test("uses deterministic date-based PDF and reference paths", () => {
     expect(morningBriefPdfFilename("2026-09-19")).toBe("morning-brief-2026-09-19.pdf");
@@ -139,7 +158,7 @@ describe("Morning Brief A4 PDF", () => {
     expect(total).toBeGreaterThan(market);
   });
 
-  test("renders all fixed categories in order and keeps house-only products visible", () => {
+  test("renders only non-empty categories in order and keeps house-only products visible", () => {
     const categoryReport: MorningBriefReport = {
       ...report,
       houseStock: {
@@ -156,7 +175,6 @@ describe("Morning Brief A4 PDF", () => {
     const text = collectText(MorningBriefA4Doc({ report: categoryReport, generatedAt: new Date("2026-09-20T08:00:00+07:00") }));
     const headings = [
       "หมวดผลไม้ - 19 กันยายน 2569",
-      "หมวดทุเรียน - 19 กันยายน 2569",
       "หมวดผัก - 19 กันยายน 2569",
       "หมวดของแห้ง - 19 กันยายน 2569",
       "หมวดยังไม่ได้จัดหมวดหมู่ - 19 กันยายน 2569",
@@ -164,9 +182,80 @@ describe("Morning Brief A4 PDF", () => {
     const positions = headings.map((heading) => text.indexOf(heading));
     expect(positions.every((position) => position >= 0)).toBe(true);
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
+    expect(text).not.toContain("หมวดทุเรียน");
+    expect(text).not.toContain("ยังไม่มีข้อมูลสินค้า");
     expect(text.indexOf("เห็ดนางฟ้า")).toBeGreaterThan(text.indexOf("หมวดผัก"));
     expect(text.indexOf("ปลาทู")).toBeGreaterThan(text.indexOf("หมวดของแห้ง"));
     expect(text.indexOf("สินค้าใหม่")).toBeGreaterThan(text.indexOf("หมวดยังไม่ได้จัดหมวดหมู่"));
+  });
+
+  test("skips a category with no rows", () => {
+    const text = collectText(MorningBriefA4Doc({ report, generatedAt: new Date("2026-09-20T08:00:00+07:00") }));
+    expect(text).toContain("หมวดผลไม้ - 19 กันยายน 2569");
+    expect(text).not.toContain("หมวดทุเรียน");
+    expect(text).not.toContain("ยังไม่มีข้อมูลสินค้า");
+  });
+
+  test("skips a category whose rows are all zero", () => {
+    const zeroOnlyReport: MorningBriefReport = {
+      ...report,
+      houseStock: {
+        status: "available",
+        groupCount: 1,
+        totalValueSatang: 0,
+        items: [
+          { productName: "ขนมจีน", category: "ของแห้ง", unit: "ถุง", quantity: 0, unitPriceSatang: 100, valueSatang: 0 },
+        ],
+      },
+    };
+    const text = collectText(MorningBriefA4Doc({ report: zeroOnlyReport, generatedAt: new Date("2026-09-20T08:00:00+07:00") }));
+    expect(text).not.toContain("หมวดของแห้ง");
+    expect(text).not.toContain("ขนมจีน");
+    expect(text).not.toContain("ยังไม่มีข้อมูลสินค้า");
+  });
+
+  test("keeps a category when at least one row has a positive quantity", () => {
+    const mixedReport: MorningBriefReport = {
+      ...report,
+      houseStock: {
+        status: "available",
+        groupCount: 2,
+        totalValueSatang: 200,
+        items: [
+          { productName: "ขนมจีน", category: "ของแห้ง", unit: "ถุง", quantity: 0, unitPriceSatang: 100, valueSatang: 0 },
+          { productName: "ปลาทู", category: "ของแห้ง", unit: "ตัว", quantity: 2, unitPriceSatang: 100, valueSatang: 200 },
+        ],
+      },
+    };
+    const text = collectText(MorningBriefA4Doc({ report: mixedReport, generatedAt: new Date("2026-09-20T08:00:00+07:00") }));
+    expect(text).toContain("หมวดของแห้ง - 19 กันยายน 2569");
+    expect(text).toContain("ขนมจีน");
+    expect(text).toContain("ปลาทู");
+  });
+
+  test("recalculates total pages and footer page numbers after skipped categories", async () => {
+    const zeroOnlyReport: MorningBriefReport = {
+      ...report,
+      houseStock: {
+        status: "available",
+        groupCount: 1,
+        totalValueSatang: 0,
+        items: [
+          { productName: "ขนมจีน", category: "ของแห้ง", unit: "ถุง", quantity: 0, unitPriceSatang: 100, valueSatang: 0 },
+        ],
+      },
+    };
+    const doc = MorningBriefA4Doc({ report: zeroOnlyReport, generatedAt: new Date("2026-09-20T08:00:00+07:00") });
+
+    registerFonts();
+    const buffer = await renderToBuffer(doc);
+    const totalPages = (buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length;
+    expect(totalPages).toBe(2);
+
+    const footerRenders = collectRenderCallbacks(doc);
+    expect(footerRenders).toHaveLength(totalPages);
+    expect(footerRenders[0]?.({ pageNumber: 1, totalPages })).toBe("หน้า 1/2");
+    expect(footerRenders.at(-1)?.({ pageNumber: totalPages, totalPages })).toBe("หน้า 2/2");
   });
 
   test("splits a long category after every 15 item rows", async () => {
@@ -201,7 +290,7 @@ describe("Morning Brief A4 PDF", () => {
     const buffer = await renderToBuffer(
       <MorningBriefA4Doc report={pagedReport} generatedAt={new Date("2026-09-20T08:00:00+07:00")} />,
     );
-    expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(8);
+    expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(4);
   });
 
   test("persists one upserted reference sidecar for the business date", async () => {
@@ -244,13 +333,13 @@ describe("Morning Brief A4 PDF", () => {
     expect(artifact.referencePath).toBe("2026-09-19/morning-brief-2026-09-19.ref.json");
   });
 
-  test("renders the fruit summary page followed by all five category pages", async () => {
+  test("renders the fruit summary page followed only by categories with real quantities", async () => {
     registerFonts();
     const buffer = await renderToBuffer(
       <MorningBriefA4Doc report={report} generatedAt={new Date("2026-09-19T08:00:00+07:00")} />,
     );
     expect(buffer.subarray(0, 4).toString("ascii")).toBe("%PDF");
     expect(buffer.length).toBeGreaterThan(5_000);
-    expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(6);
+    expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(2);
   });
 });

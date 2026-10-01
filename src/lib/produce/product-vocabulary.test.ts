@@ -667,12 +667,16 @@ describe("dictionary extension 20260908090000 — ม75–ม80 vocabulary ident
     expect(new Set(codes).size).toBe(codes.length);
   });
 
-  it("no shorter form reaches the new products through an alias", () => {
-    // A bare แอปเปิ้ล must keep meaning ม62, องุ่น must never resolve at all.
+  it("shorter forms stay unresolved while exact canonical เมล่อน resolves on its own code", () => {
+    // A bare แอปเปิ้ล must keep meaning ม62, and generic fragments still never
+    // inherit a more specific product identity through fuzzy matching.
     expect(approvedProductCode("แอปเปิ้ล")).toBe("ม62");
     expect(resolveApprovedProductName("แคระ")).toBeNull();
     expect(resolveApprovedProductName("องุ่น")).toBeNull();
-    expect(resolveApprovedProductName("เมล่อน")).toBeNull();
+    expect(resolveApprovedProductName("เมล่อน")).toEqual({
+      productCode: "ม94",
+      canonicalName: "เมล่อน",
+    });
   });
 
   it("องุ่นคินสัน is a confirmed typo of ม68 องุ่นคิมสัน, not a new identity", () => {

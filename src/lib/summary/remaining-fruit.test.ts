@@ -576,6 +576,33 @@ describe("PRODUCT_ALIASES — กล้วยน้ำหว้า spelling", ()
   });
 });
 
+describe("PRODUCT_ALIASES — Oct 1 user-confirmed Production spellings", () => {
+  const cases: Array<[string, string]> = [
+    ["กันจอง", "ก้านจอง"],
+    ["บอคโครี่", "บรอกโคลี"],
+    ["บ็อคเคอรี่", "บรอกโคลี"],
+    ["บ๊อคเคอรี่", "บรอกโคลี"],
+    ["ข้าวโพดออ่น", "ข้าวโพดอ่อน"],
+    ["มะเขือเทสเล็ก", "มะเขือเทศเล็ก"],
+    ["หัวไชยเท้า", "หัวไชเท้า"],
+    ["ถั่วพลู", "ถั่วพู"],
+    ["น้อยหน้า", "น้อยหน่า"],
+    ["แอปเปื้ล", "แอปเปิ้ล"],
+    ["สลัดคอตใบนิ่ม", "สลัดคอตนิ่ม"],
+    ["ลูกมะกรูด", "มะกรูด"],
+  ];
+
+  test.each(cases)("%s maps exactly to %s", (raw, canonical) => {
+    expect(normalizeProductName(raw)).toBe(canonical);
+  });
+
+  test("nearby names not explicitly approved remain distinct", () => {
+    for (const name of ["กระเจียบแพค", "น้ำเต้าลูกกลม", "น้ำเต้าลูกยาว", "มะระลูก", "ลูกพลุน"]) {
+      expect(normalizeProductName(name)).toBe(name);
+    }
+  });
+});
+
 describe("PRODUCT_ALIASES — อะโวคาโด spellings", () => {
   // Required by the alias map's own rule: every entry gets a regression test.
   // Added 2026-08-15 from the Production duplicate incident — แทน — ราชพฤก sent

@@ -257,6 +257,11 @@ function stockMatrixItems(report: MorningBriefReport): StockMatrixItem[] {
 
   return [...byKey.values()];
 }
+
+function hasRealStockQuantity(item: StockMatrixItem): boolean {
+  return (item.houseStockQuantity ?? 0) > 0 || item.marketStockQuantity > 0;
+}
+
 function stockQuantity(value: number | null | undefined, blankZero = false): string {
   if (value == null) return "-";
   if (blankZero && value === 0) return "";
@@ -341,6 +346,7 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
   const fruit = report.fruitFinancial;
   const marketTotals = fruit?.markets ?? [];
   const dateText = thaiNumericDate(report.businessDate);
+  const stockItems = stockMatrixItems(report);
 
   return <Document title={`Morning Fruit Brief ${report.businessDate}`}>
     <Page size="A4" style={S.page} wrap>
@@ -410,7 +416,9 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
     </Page>
 
     {STOCK_CATEGORIES.flatMap((category) => {
-      const categoryItems = stockMatrixItems(report).filter((item) => stockCategory(item.category) === category);
+      const categoryItems = stockItems.filter((item) => stockCategory(item.category) === category);
+      if (!categoryItems.some(hasRealStockQuantity)) return [];
+
       const chunks = categoryChunks(categoryItems);
       return chunks.map((items, index) => <Page key={`${category}-${index}`} size="A4" style={S.page} wrap>
         <View style={S.stockHeader}>

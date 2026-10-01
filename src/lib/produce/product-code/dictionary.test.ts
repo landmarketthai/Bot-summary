@@ -43,6 +43,22 @@ const SEP18_FRUIT_MIGRATION = join(
   HERE, "..", "..", "..", "..",
   "supabase", "migrations", "20260918150000_produce_product_dictionary_add_sep18_fruit.sql",
 );
+const OCT1_FRUIT_MIGRATION = join(
+  HERE, "..", "..", "..", "..",
+  "supabase", "migrations", "20261001041100_produce_product_dictionary_sync_sep24_fruit_and_add_luk_plun.sql",
+);
+const OCT1_VEGETABLE_MIGRATION = join(
+  HERE, "..", "..", "..", "..",
+  "supabase", "migrations", "20261001041200_produce_product_dictionary_sync_sep24_vegetables_and_add_oct1.sql",
+);
+const OCT1_DURIAN_MIGRATION = join(
+  HERE, "..", "..", "..", "..",
+  "supabase", "migrations", "20261001041300_produce_product_dictionary_sync_sep24_durian.sql",
+);
+const OCT1_MUSHROOM_MIGRATION = join(
+  HERE, "..", "..", "..", "..",
+  "supabase", "migrations", "20261001041400_produce_product_dictionary_add_hed_hom.sql",
+);
 const MARKET_VEGETABLE_SKUS_MIGRATION = join(
   HERE, "..", "..", "..", "..",
   "supabase", "migrations", "20260909030000_produce_product_dictionary_add_market_vegetable_skus.sql",
@@ -143,6 +159,22 @@ const APPLIED_MIGRATIONS: AppliedMigration[] = [
     file: SEP18_FRUIT_MIGRATION,
     insertAfterCode: "ม80",
   },
+  {
+    file: OCT1_FRUIT_MIGRATION,
+    insertAfterCode: "ม91",
+  },
+  {
+    file: OCT1_VEGETABLE_MIGRATION,
+    insertAfterCode: "ผ129",
+  },
+  {
+    file: OCT1_DURIAN_MIGRATION,
+    insertAfterCode: "ท26",
+  },
+  {
+    file: OCT1_MUSHROOM_MIGRATION,
+    insertAfterCode: "ห04",
+  },
 ];
 
 /**
@@ -184,11 +216,11 @@ const moduleRows = (): Row[] =>
   }));
 
 describe("the approved dictionary is the source of truth", () => {
-  it("carries exactly the 294 approved codes", () => {
-    expect(PRODUCT_CODE_COUNT).toBe(294);
-    expect(PRODUCT_CODE_ENABLED_COUNT).toBe(294);
-    expect(PRODUCT_CODE_ENTRIES).toHaveLength(294);
-    expect(csvRows()).toHaveLength(294);
+  it("carries exactly the 316 approved codes", () => {
+    expect(PRODUCT_CODE_COUNT).toBe(316);
+    expect(PRODUCT_CODE_ENABLED_COUNT).toBe(316);
+    expect(PRODUCT_CODE_ENTRIES).toHaveLength(316);
+    expect(csvRows()).toHaveLength(316);
   });
 
   it("matches the CSV row for row, in the approved order and numbering", () => {
@@ -211,7 +243,7 @@ describe("the approved dictionary is the source of truth", () => {
       counts.set(entry.categoryCode, (counts.get(entry.categoryCode) ?? 0) + 1);
     }
     expect(Object.fromEntries(counts)).toEqual({
-      ม: 91, ผ: 129, ป: 37, ท: 26, ห: 4, พ: 7,
+      ม: 98, ผ: 142, ป: 37, ท: 27, ห: 5, พ: 7,
     });
   });
 
@@ -245,7 +277,11 @@ describe("real mappings from the approved CSV resolve", () => {
     ["ท01", "ทุเรียน"],
     ["ท26", "ภูเขาไฟลูกค้าเคลม"],
     ["ห01", "เห็ดนางฟ้า"],
+    ["ม98", "ลูกพลุน"],
+    ["ผ142", "หน่อไม้ต้มแท่ง"],
+    ["ท27", "ทุเรียนแพค"],
     ["ห04", "เห็ดออรินจิ"],
+    ["ห05", "เห็ดหอม"],
     ["พ01", "ผลไม้กล่อง"],
     ["พ07", "มะระถุง"],
   ];
@@ -256,16 +292,16 @@ describe("real mappings from the approved CSV resolve", () => {
     });
   }
 
-  it("resolves codes past two digits — ผ runs to ผ129", () => {
+  it("resolves codes past two digits — ผ runs to ผ142", () => {
     expect(resolveProductCode("ผ100")).not.toBeNull();
-    expect(resolveProductCode("ผ129")).not.toBeNull();
+    expect(resolveProductCode("ผ142")).not.toBeNull();
   });
 });
 
 describe("unregistered codes do not resolve", () => {
-  // ม63-ม91 exist now, so ม92 — the code right past the new
-  // boundary — is the genuinely unissued example, not ม80 or ม91.
-  for (const code of ["ม99", "ม999", "ผ999", "ป99", "ท99", "ห99", "พ99", "ผ130", "ม92"]) {
+  // Use the first code immediately past each currently issued namespace where
+  // practical, plus distant examples, so future extensions fail loudly here.
+  for (const code of ["ม99", "ม999", "ผ143", "ผ999", "ป38", "ป99", "ท28", "ท99", "ห06", "ห99", "พ08", "พ99"]) {
     it(`${code} is unknown`, () => {
       expect(resolveProductCode(code)).toBeNull();
       expect(resolveItemLineProductCode(`${code} 50 บาท`)).toEqual({ kind: "unknown", code });
@@ -640,13 +676,13 @@ describe("dictionary extension 20260908090000 — ม75–ม80 (six distinct �
     }
   });
 
-  it("ม75–ม80 are the next unused codes — contiguous 1..80, no reuse", () => {
+  it("ม75–ม80 were issued contiguously with no reuse", () => {
     const mCodes = PRODUCT_CODE_ENTRIES
       .filter((e) => e.categoryCode === "ม")
       .map((e) => Number(e.code.slice(1)))
+      .filter((code) => code <= 80)
       .sort((a, b) => a - b);
-    expect(mCodes).toHaveLength(91);
-    expect(mCodes).toEqual(Array.from({ length: 91 }, (_, i) => i + 1));
+    expect(mCodes).toEqual(Array.from({ length: 80 }, (_, i) => i + 1));
   });
 
   it("no pre-existing code changed by this extension", () => {
@@ -683,7 +719,11 @@ describe("dictionary extension 20260918150000 — ม81-ม91 confirmed fruit id
   });
 
   it("keeps the ม namespace contiguous through ม91", () => {
-    const codes = PRODUCT_CODE_ENTRIES.filter((e) => e.categoryCode === "ม").map((e) => Number(e.code.slice(1))).sort((a,b) => a-b);
+    const codes = PRODUCT_CODE_ENTRIES
+      .filter((e) => e.categoryCode === "ม")
+      .map((e) => Number(e.code.slice(1)))
+      .filter((code) => code <= 91)
+      .sort((a,b) => a-b);
     expect(codes).toEqual(Array.from({ length: 91 }, (_, i) => i + 1));
   });
 });

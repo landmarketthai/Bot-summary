@@ -124,6 +124,22 @@ export const PRODUCT_ALIASES: Record<string, string> = {
 
   // 2026-09-21: confirmed spelling variant of dictionary product ม02.
   "กล้วยน้ำหว้า": "กล้วยน้ำว้า",
+
+  // 2026-10-01: user-confirmed exact aliases from Production audit.
+  // These are spelling/shop-floor variants of existing dictionary identities,
+  // not new SKUs. Keep exact-match only; never fuzzy-expand this list.
+  "กันจอง": "ก้านจอง",
+  "บอคโครี่": "บรอกโคลี",
+  "บ็อคเคอรี่": "บรอกโคลี",
+  "บ๊อคเคอรี่": "บรอกโคลี",
+  "ข้าวโพดออ่น": "ข้าวโพดอ่อน",
+  "มะเขือเทสเล็ก": "มะเขือเทศเล็ก",
+  "หัวไชยเท้า": "หัวไชเท้า",
+  "ถั่วพลู": "ถั่วพู",
+  "น้อยหน้า": "น้อยหน่า",
+  "แอปเปื้ล": "แอปเปิ้ล",
+  "สลัดคอตใบนิ่ม": "สลัดคอตนิ่ม",
+  "ลูกมะกรูด": "มะกรูด",
 };
 
 const KNOWN_PREFIX = "\u0E40\u0E1E\u0E34\u0E48\u0E21";
