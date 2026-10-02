@@ -1207,6 +1207,30 @@ describe("group routing — header sender differs from item sender", () => {
     }
   });
 
+  it("routes a baht-less bundled-price header from B into A's open session", async () => {
+    const db = new RecoveryDatabase();
+    const webhook = service(db);
+    await send(webhook, HEADER, 1_000, { userId: A, eventId: "a-header-basis" });
+    await send(webhook, "96.หัวปลีเก่า3ลูก20", 1_100, { userId: B, eventId: "b-basis-header" });
+    await send(webhook, "3ลูก", 1_150, { userId: B, eventId: "b-basis-quantity" });
+
+    expect(db.pending(KEY_B)).toBeUndefined();
+    expect(db.deferred()).toHaveLength(0);
+    expect(String(db.pending()?.accumulated_text)).toContain("96.หัวปลีเก่า3ลูก20");
+    expect(String(db.pending()?.accumulated_text)).toContain("3ลูก");
+    expect(parseWeighSession(String(db.pending()?.accumulated_text)).items).toContainEqual(
+      expect.objectContaining({
+        item_number: 96,
+        product_name: "หัวปลีเก่า",
+        basis_quantity: 3,
+        basis_unit: "ลูก",
+        basis_price: 20,
+        quantity: 3,
+        unit: "ลูก",
+      }),
+    );
+  });
+
   it("B's closer stamps the close boundary on A's generation, so finalization reads B's items", async () => {
     const db = new RecoveryDatabase();
     const webhook = service(db);

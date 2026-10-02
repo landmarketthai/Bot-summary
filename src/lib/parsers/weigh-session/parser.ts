@@ -616,6 +616,8 @@ export function parseWeighSession(
     closeCurrentPendingItem();
   }
 
+  const failedTargets = [...failedItemTargets.values()].flat();
+
   return {
     // Additional sessions must carry an explicit date — never fall back to
     // the event's business date (see ADDITIONAL_HEADER, which requires one).
@@ -628,6 +630,15 @@ export function parseWeighSession(
     declared_transaction_type: declaredTxType,
     items,
     parse_errors:     parseErrors,
+    ...(failedTargets.length > 0
+      ? {
+          failed_item_targets: failedTargets.map((target) => ({
+            item_number: target.itemNumber,
+            occurrence: target.occurrence,
+            parse_error: target.parseError,
+          })),
+        }
+      : {}),
     draft_item_actions: draftItemActions,
   };
 }

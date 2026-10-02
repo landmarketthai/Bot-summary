@@ -106,6 +106,16 @@ export interface WeighSession {
   declared_transaction_type: BaseTransactionType | null;
   items:            WeighSessionItem[];
   parse_errors:     string[];
+  /**
+   * Transient evidence for numbered source rows that failed before becoming
+   * items. The occurrence keeps duplicate selectors such as 52A/52B stable in
+   * operator review. Never persisted as business data.
+   */
+  failed_item_targets?: Array<{
+    item_number: number;
+    occurrence: number;
+    parse_error: string;
+  }>;
   /** Explicit same-draft edits found while replaying the raw document. */
   draft_item_actions?: DraftItemAction[];
 }

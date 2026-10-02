@@ -9,6 +9,8 @@ import type {
 export interface ProducePartialCaptureIssue {
   kind: "parse_error" | ProduceValidationException["kind"];
   itemNumber: number | null;
+  /** Specific duplicate occurrence when the parser retained that evidence. */
+  itemOccurrence?: number;
   detail: string;
 }
 
@@ -95,8 +97,8 @@ export function buildProducePartialCapture(
   validation: ProduceValidationResult,
   finalizationErrors: string[] = parsed.parse_errors,
 ): ProducePartialCapture {
-  const reviewItemNumbers = new Set<number>();
   const issues: ProducePartialCaptureIssue[] = [];
+  const failedTargets = [...(parsed.failed_item_targets ?? [])];
   const parseErrorItemNumbers = new Set(
     finalizationErrors.map(parseErrorItemNumber).filter((n): n is number => n !== null),
   );
@@ -110,7 +112,6 @@ export function buildProducePartialCapture(
       exception = { ...exception, missingItemNumbers: missing };
     }
     const itemNumber = exceptionItemNumber(exception);
-    if (itemNumber !== null) reviewItemNumbers.add(itemNumber);
     issues.push({
       kind: exception.kind,
       itemNumber,
@@ -122,16 +123,25 @@ export function buildProducePartialCapture(
   // Keep those as independent review issues so one malformed source line does
   // not erase the good lines that were already understood.
   for (const detail of finalizationErrors) {
-    const itemNumber = parseErrorItemNumber(detail);
-    if (itemNumber !== null) reviewItemNumbers.add(itemNumber);
-    issues.push({ kind: "parse_error", itemNumber, detail });
+    const targetIndex = failedTargets.findIndex((target) => target.parse_error === detail);
+    const failedTarget = targetIndex >= 0 ? failedTargets.splice(targetIndex, 1)[0]! : null;
+    const itemNumber = failedTarget?.item_number ?? parseErrorItemNumber(detail);
+    issues.push({
+      kind: "parse_error",
+      itemNumber,
+      ...(failedTarget ? { itemOccurrence: failedTarget.occurrence } : {}),
+      detail,
+    });
   }
 
   const items = parsed.items.map((item) => {
+    const occurrence = item.item_occurrence ?? 1;
     const issueKinds = issues
-      .filter((issue) => issue.itemNumber === item.item_number)
+      .filter((issue) =>
+        issue.itemNumber === item.item_number
+        && (issue.itemOccurrence === undefined || issue.itemOccurrence === occurrence))
       .map((issue) => issue.kind);
-    const status = reviewItemNumbers.has(item.item_number)
+    const status = issueKinds.length > 0
       ? "needs_review" as const
       : "accepted" as const;
     return { item, status, issueKinds };
@@ -256,18 +266,39 @@ function reviewStatusLabel(entry: ProducePartialCaptureItem): string {
   return "รอตรวจ";
 }
 
-/** "52A"/"52B" when several rows share a typed number, else just "52". */
-function itemSelector(item: WeighSessionItem, items: ProducePartialCaptureItem[]): string {
-  const shared = items.filter((entry) => entry.item.item_number === item.item_number).length > 1;
-  return shared
-    ? `${item.item_number}${occurrenceLetter(item.item_occurrence ?? 1)}`
-    : String(item.item_number);
+function knownOccurrences(capture: ProducePartialCapture, itemNumber: number): number[] {
+  const occurrences = [
+    ...capture.items
+      .filter((entry) => entry.item.item_number === itemNumber)
+      .map((entry) => entry.item.item_occurrence ?? 1),
+    ...capture.issues
+      .filter((issue) => issue.itemNumber === itemNumber && issue.itemOccurrence !== undefined)
+      .map((issue) => issue.itemOccurrence!),
+  ];
+  return [...new Set(occurrences)].sort((left, right) => left - right);
 }
 
-function itemSummaryLine(entry: ProducePartialCaptureItem, items: ProducePartialCaptureItem[]): string {
+function selectorForOccurrence(
+  itemNumber: number,
+  occurrence: number,
+  capture: ProducePartialCapture,
+): string {
+  const known = knownOccurrences(capture, itemNumber);
+  const letter = occurrenceLetter(occurrence);
+  return (occurrence > 1 || known.length > 1) && letter
+    ? `${itemNumber}${letter}`
+    : String(itemNumber);
+}
+
+/** "52A"/"52B" when duplicate occurrence evidence exists, else just "52". */
+function itemSelector(item: WeighSessionItem, capture: ProducePartialCapture): string {
+  return selectorForOccurrence(item.item_number, item.item_occurrence ?? 1, capture);
+}
+
+function itemSummaryLine(entry: ProducePartialCaptureItem, capture: ProducePartialCapture): string {
   const item = entry.item;
   const review = entry.status === "needs_review" ? ` ⚠️ ${reviewStatusLabel(entry)}` : "";
-  return `${itemSelector(item, items)}. ${item.product_name} ${formatCompactNumber(item.quantity)} ${item.unit} × ${linePriceText(item)} = ${lineTotalText(item)}${review}`;
+  return `${itemSelector(item, capture)}. ${item.product_name} ${formatCompactNumber(item.quantity)} ${item.unit} × ${linePriceText(item)} = ${lineTotalText(item)}${review}`;
 }
 
 export function buildPartialCaptureSavedReply(capture: ProducePartialCapture): string {
@@ -279,7 +310,7 @@ export function buildPartialCaptureSavedReply(capture: ProducePartialCapture): s
     `✅ รับ${label}แล้ว`,
     "",
     "รายการที่อ่านได้",
-    ...orderedItems.map((entry) => itemSummaryLine(entry, capture.items)),
+    ...orderedItems.map((entry) => itemSummaryLine(entry, capture)),
     "",
   ];
 
@@ -325,29 +356,69 @@ export function buildPartialCaptureReviewReply(capture: ProducePartialCapture): 
   const lines = [`⚠️ มี ${reviewItemCount} รายการที่ต้องแก้`, ""];
 
   for (const itemNumber of itemNumbers.slice(0, 10)) {
-    const entries = capture.items.filter((candidate) => candidate.item.item_number === itemNumber);
+    const allEntries = capture.items.filter((candidate) => candidate.item.item_number === itemNumber);
+    const reviewEntries = allEntries.filter((entry) => entry.status === "needs_review");
     const issues = capture.issues.filter((issue) => issue.itemNumber === itemNumber);
-    if (entries.length > 0) {
-      for (const entry of entries) {
+    const specificIssues = new Map<number, ProducePartialCaptureIssue[]>();
+    for (const issue of issues) {
+      if (issue.itemOccurrence === undefined) continue;
+      const group = specificIssues.get(issue.itemOccurrence) ?? [];
+      group.push(issue);
+      specificIssues.set(issue.itemOccurrence, group);
+    }
+
+    const renderedOccurrences = new Set<number>();
+    for (const [occurrence, occurrenceIssues] of [...specificIssues.entries()].sort((a, b) => a[0] - b[0])) {
+      const selector = selectorForOccurrence(itemNumber, occurrence, capture);
+      const entry = allEntries.find((candidate) => (candidate.item.item_occurrence ?? 1) === occurrence);
+      lines.push(`ข้อ ${selector}`);
+      if (entry) {
         lines.push(
-          `ข้อ ${itemSelector(entry.item, capture.items)}`,
           `${entry.item.product_name} ${linePriceText(entry.item)}`,
           `${formatCompactNumber(entry.item.quantity)} ${entry.item.unit}`,
         );
+      } else {
+        const source = occurrenceIssues
+          .map(readableParseIssue)
+          .find((detail) => detail !== issueDetailForUser(occurrenceIssues[0]!));
+        if (source) lines.push(source);
       }
-    } else {
-      lines.push(`ข้อ ${itemNumber}`);
-      const source = issues.map(readableParseIssue).find((detail) => detail !== issueDetailForUser(issues[0]!));
-      if (source) lines.push(source);
+      for (const detail of [...new Set(occurrenceIssues.map(issueDetailForUser))]) lines.push(detail);
+      lines.push("");
+      renderedOccurrences.add(occurrence);
     }
-    for (const detail of [...new Set(issues.map(issueDetailForUser))]) {
-      lines.push(detail);
+
+    for (const entry of reviewEntries) {
+      const occurrence = entry.item.item_occurrence ?? 1;
+      if (renderedOccurrences.has(occurrence)) continue;
+      lines.push(
+        `ข้อ ${itemSelector(entry.item, capture)}`,
+        `${entry.item.product_name} ${linePriceText(entry.item)}`,
+        `${formatCompactNumber(entry.item.quantity)} ${entry.item.unit}`,
+      );
+      renderedOccurrences.add(occurrence);
     }
-    if (entries.length > 1) {
-      const selectors = entries.map((entry) => itemSelector(entry.item, capture.items));
-      lines.push(`ระบุข้อด้วยตัวอักษร เช่น “แก้ข้อ ${selectors[0]}” หรือ “ลบข้อ ${selectors.at(-1)}”`);
+
+    const wildcardIssues = issues.filter((issue) => issue.itemOccurrence === undefined);
+    if (wildcardIssues.length > 0) {
+      if (reviewEntries.length === 0 && specificIssues.size === 0) {
+        lines.push(`ข้อ ${itemNumber}`);
+        const source = wildcardIssues
+          .map(readableParseIssue)
+          .find((detail) => detail !== issueDetailForUser(wildcardIssues[0]!));
+        if (source) lines.push(source);
+      }
+      for (const detail of [...new Set(wildcardIssues.map(issueDetailForUser))]) lines.push(detail);
+      lines.push("");
+    } else if (reviewEntries.some((entry) => !specificIssues.has(entry.item.item_occurrence ?? 1))) {
+      lines.push("");
     }
-    lines.push("");
+
+    const selectors = knownOccurrences(capture, itemNumber)
+      .map((occurrence) => selectorForOccurrence(itemNumber, occurrence, capture));
+    if (selectors.length > 1 && reviewEntries.length + specificIssues.size > 1) {
+      lines.push(`ระบุข้อด้วยตัวอักษร เช่น “แก้ข้อ ${selectors[0]}” หรือ “ลบข้อ ${selectors.at(-1)}”`, "");
+    }
   }
 
   for (const issue of unnumbered.slice(0, Math.max(0, 10 - itemNumbers.length))) {
@@ -360,8 +431,15 @@ export function buildPartialCaptureReviewReply(capture: ProducePartialCapture): 
 
   if (itemNumbers.length > 0) {
     const firstNumber = itemNumbers[0];
-    const firstEntry = capture.items.find((entry) => entry.item.item_number === firstNumber);
-    const first = firstEntry ? itemSelector(firstEntry.item, capture.items) : String(firstNumber);
+    const firstSpecificIssue = capture.issues.find((issue) =>
+      issue.itemNumber === firstNumber && issue.itemOccurrence !== undefined);
+    const firstEntry = capture.items.find((entry) =>
+      entry.item.item_number === firstNumber && entry.status === "needs_review");
+    const first = firstSpecificIssue?.itemOccurrence !== undefined
+      ? selectorForOccurrence(firstNumber, firstSpecificIssue.itemOccurrence, capture)
+      : firstEntry
+        ? itemSelector(firstEntry.item, capture)
+        : String(firstNumber);
     lines.push(
       "วิธีแก้",
       `พิมพ์ “แก้ข้อ ${first}” แล้วส่งเฉพาะข้อนั้นที่ถูกต้องใหม่`,

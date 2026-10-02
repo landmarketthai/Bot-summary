@@ -604,6 +604,7 @@ function hasItemLine(text: string): boolean {
     const line = rawLine.trim();
     return RE.ITEM.test(line)
       || RE.ITEM_WITH_BASIS.test(line)
+      || RE.ITEM_WITH_BASIS_NO_BAHT.test(line)
       || RE.ITEM_NAME_ONLY.test(line)
       || RE.PRICE_ONLY.test(line)
       || RE.QUANTITY.test(line);

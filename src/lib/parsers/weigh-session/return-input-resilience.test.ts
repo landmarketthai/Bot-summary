@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { validateProduceEntry } from "@/lib/produce/entry-validation";
 import {
   buildPartialCaptureReviewReply,
+  buildPartialCaptureSavedReply,
   buildProducePartialCapture,
 } from "@/lib/produce/partial-capture";
 import { getWeighSessionFinalizationErrors, parseWeighSession } from "./parser";
@@ -166,5 +167,39 @@ describe("duplicate item number occurrence selectors", () => {
     expect(reply).toContain("52.หอมแดง20บาท");
     expect(staged.items.filter((entry) => entry.item.item_number !== 52).every((entry) => entry.status === "accepted"))
       .toBe(true);
+  });
+
+  it("keeps selectors actionable when 52A fails parsing but 52B parses", () => {
+    const source = [
+      "52.ผักบุ้ง10บาท", "16บาท",
+      "52.คะน้า15บาท", "4กำ",
+    ];
+    const { parsed, capture: staged } = capture(returnDocument(...source));
+    expect(parsed.items).toContainEqual(expect.objectContaining({
+      item_number: 52,
+      item_occurrence: 2,
+      product_name: "คะน้า",
+      quantity: 4,
+      unit: "กำ",
+    }));
+
+    const saved = buildPartialCaptureSavedReply(staged);
+    const reply = buildPartialCaptureReviewReply(staged);
+    expect(saved).toContain("52B. คะน้า");
+    expect(reply).toContain("ข้อ 52A");
+    expect(reply).toContain("แก้ข้อ 52A");
+    expect(reply).not.toContain("พิมพ์ “แก้ข้อ 52”");
+    expect(staged.items.find((entry) => entry.item.item_occurrence === 2)?.status).toBe("accepted");
+
+    const corrected = parseWeighSession(returnDocument(
+      ...source,
+      "แก้ข้อ 52A", "52.ผักบุ้ง10บาท", "3กำ",
+    ));
+    expect(corrected.parse_errors).toEqual([]);
+    expect(corrected.items.filter((item) => item.item_number === 52))
+      .toEqual([
+        expect.objectContaining({ product_name: "คะน้า", quantity: 4, item_occurrence: 2 }),
+        expect.objectContaining({ product_name: "ผักบุ้ง", quantity: 3 }),
+      ]);
   });
 });
