@@ -25,7 +25,7 @@ import type {
   BaseTransactionType,
 } from "./types";
 import type { WeighSessionSeed } from "./seed";
-import { parseDraftItemCommandLine } from "./draft-item-command";
+import { occurrenceLetter, parseDraftItemCommandLine } from "./draft-item-command";
 import {
   baseMainTransactionType,
   mainCloserCompatibility,
@@ -92,13 +92,18 @@ export function parseWeighSession(
     section: string;
     transactionType: TransactionType;
     parseError: string;
+    occurrence: number;
   };
+  // Rows created per typed item_number, in source order. Feeds item_occurrence
+  // (52A/52B selectors); counts only grow, so a removal never relabels a row.
+  const occurrenceCounts = new Map<number, number>();
+  const nextOccurrence = (itemNumber: number) => (occurrenceCounts.get(itemNumber) ?? 0) + 1;
   const failedItemTargets = new Map<number, FailedItemTarget[]>();
   let activeCorrection: {
     action: DraftItemAction;
     targetIndex: number | null;
     targetItem: WeighSessionItem | null;
-    targetContext: Pick<FailedItemTarget, "section" | "transactionType"> | null;
+    targetContext: Pick<FailedItemTarget, "section" | "transactionType" | "occurrence"> | null;
     failedParseError: string | null;
   } | null = null;
 
@@ -109,7 +114,9 @@ export function parseWeighSession(
     transactionType = currentTxType,
   ) => {
     const targets = failedItemTargets.get(itemNumber) ?? [];
-    targets.push({ itemNumber, section, transactionType, parseError });
+    const occurrence = nextOccurrence(itemNumber);
+    occurrenceCounts.set(itemNumber, occurrence);
+    targets.push({ itemNumber, section, transactionType, parseError, occurrence });
     failedItemTargets.set(itemNumber, targets);
   };
 
@@ -133,7 +140,7 @@ export function parseWeighSession(
     ) {
       activeCorrection.action.status = "invalid_replacement";
       activeCorrection.action.detail = detail;
-      parseErrors.push(`แก้ข้อ ${activeCorrection.action.item_number} ไม่สำเร็จ: ${detail}`);
+      parseErrors.push(`แก้ข้อ ${actionSelector(activeCorrection.action)} ไม่สำเร็จ: ${detail}`);
     }
     activeCorrection = null;
   };
@@ -145,7 +152,9 @@ export function parseWeighSession(
 
   const commitParsedItem = (item: WeighSessionItem) => {
     if (!activeCorrection) {
-      pushOrMergeItem(items, item);
+      const occurrence = nextOccurrence(item.item_number);
+      const numbered = occurrence > 1 ? { ...item, item_occurrence: occurrence } : item;
+      if (pushOrMergeItem(items, numbered)) occurrenceCounts.set(item.item_number, occurrence);
       return;
     }
 
@@ -186,6 +195,9 @@ export function parseWeighSession(
       transaction_type:
         correction.targetItem?.transaction_type ?? correction.targetContext!.transactionType,
     };
+    const occurrence = correction.targetItem?.item_occurrence ?? correction.targetContext?.occurrence;
+    if (occurrence !== undefined && occurrence > 1) replacement.item_occurrence = occurrence;
+    else delete replacement.item_occurrence;
     if (correction.targetIndex !== null) {
       items[correction.targetIndex] = replacement;
     } else {
@@ -266,8 +278,13 @@ export function parseWeighSession(
 
       const matches = items
         .map((item, index) => ({ item, index }))
-        .filter(({ item }) => item.item_number === draftCommand.itemNumber);
-      const failedMatches = failedItemTargets.get(draftCommand.itemNumber) ?? [];
+        .filter(({ item }) => item.item_number === draftCommand.itemNumber)
+        .filter(({ item }) =>
+          draftCommand.occurrence === undefined
+          || (item.item_occurrence ?? 1) === draftCommand.occurrence);
+      const failedMatches = (failedItemTargets.get(draftCommand.itemNumber) ?? [])
+        .filter((target) =>
+          draftCommand.occurrence === undefined || target.occurrence === draftCommand.occurrence);
       const matchCount = matches.length + failedMatches.length;
       const failedTarget = matches.length === 0 && failedMatches.length === 1
         ? failedMatches[0]
@@ -284,12 +301,25 @@ export function parseWeighSession(
         item_number: draftCommand.itemNumber,
         status,
         match_count: matchCount,
+        ...(draftCommand.occurrence !== undefined
+          ? { occurrence: occurrenceLetter(draftCommand.occurrence) }
+          : {}),
+        ...(matchCount > 1
+          ? {
+              selectors: [
+                ...matches.map(({ item }) => item.item_occurrence ?? 1),
+                ...failedMatches.map((target) => target.occurrence),
+              ]
+                .sort((a, b) => a - b)
+                .map((occurrence) => `${draftCommand.itemNumber}${occurrenceLetter(occurrence)}`),
+            }
+          : {}),
         ...(matches.length === 1 ? { previous_item: { ...matches[0].item } } : {}),
       };
       draftItemActions.push(action);
 
       if (matchCount === 0) {
-        parseErrors.push(`ไม่พบข้อ ${draftCommand.itemNumber} ในรายการที่กำลังกรอก`);
+        parseErrors.push(`ไม่พบข้อ ${actionSelector(action)} ในรายการที่กำลังกรอก`);
       } else if (matchCount > 1) {
         parseErrors.push(`เลขข้อ ${draftCommand.itemNumber} ซ้ำ จึงระบุรายการที่จะแก้ไม่ได้`);
       }
@@ -303,7 +333,11 @@ export function parseWeighSession(
           targetIndex: matches.length === 1 && matchCount === 1 ? matches[0].index : null,
           targetItem: matches.length === 1 && matchCount === 1 ? { ...matches[0].item } : null,
           targetContext: failedTarget
-            ? { section: failedTarget.section, transactionType: failedTarget.transactionType }
+            ? {
+                section: failedTarget.section,
+                transactionType: failedTarget.transactionType,
+                occurrence: failedTarget.occurrence,
+              }
             : null,
           failedParseError: failedTarget?.parseError ?? null,
         };
@@ -478,6 +512,18 @@ export function parseWeighSession(
         pendingItemLines.push(line);
         continue;
       }
+      // A second price where the quantity belongs ("89.ใบชะพูล10บาท" then
+      // "16บาท") is this item's unreadable quantity — never a new item #16
+      // named "บาท". One issue on the pending item, raw lines kept as evidence.
+      if (priceOnly && pendingItem?.product_name && pendingItem.price_per_unit !== undefined) {
+        const detail = `item #${pendingItem.item_number} ${pendingItem.product_name} quantity/unit unclear: `
+          + `"${[...pendingItemLines, line].join(" ")}"`;
+        if (!activeCorrection) registerFailedItemTarget(pendingItem.item_number!, detail);
+        recordItemParseError(detail);
+        pendingItem = null;
+        pendingItemLines = [];
+        continue;
+      }
 
       // Product Code resolution — the narrowest boundary that exists: the line
       // is already past the quantity and price-continuation branches, so what
@@ -565,7 +611,7 @@ export function parseWeighSession(
       ? "รอจำนวนและหน่วยของรายการใหม่"
       : "รอรายการใหม่";
     activeCorrection.action.detail = detail;
-    parseErrors.push(`แก้ข้อ ${activeCorrection.action.item_number}: ${detail}`);
+    parseErrors.push(`แก้ข้อ ${actionSelector(activeCorrection.action)}: ${detail}`);
   } else if (!activeCorrection) {
     closeCurrentPendingItem();
   }
@@ -739,12 +785,17 @@ function finalize(
   };
 }
 
-function pushOrMergeItem(items: WeighSessionItem[], item: WeighSessionItem): void {
+function actionSelector(action: DraftItemAction): string {
+  return `${action.item_number}${action.occurrence ?? ""}`;
+}
+
+/** True when a new row was appended (vs merged into an existing one). */
+function pushOrMergeItem(items: WeighSessionItem[], item: WeighSessionItem): boolean {
   const existingIndex = findMergeCandidateIndex(items, item);
 
   if (existingIndex === -1) {
     items.push(item);
-    return;
+    return true;
   }
 
   if (hasValidQuantity(item)) {
@@ -754,13 +805,16 @@ function pushOrMergeItem(items: WeighSessionItem[], item: WeighSessionItem): voi
       // The kept number's provenance travels with it; the incoming line's
       // flag describes a number that is being discarded here.
       item_number_explicit: items[existingIndex].item_number_explicit,
+      item_occurrence: items[existingIndex].item_occurrence,
       section: items[existingIndex].section,
       transaction_type: items[existingIndex].transaction_type,
     };
-    return;
+    if (items[existingIndex].item_occurrence === undefined) delete items[existingIndex].item_occurrence;
+    return false;
   }
 
   // Avoid appending repeated zero/null placeholders for the same product+price.
+  return false;
 }
 
 /**
@@ -784,7 +838,17 @@ function parseItemLine(
   // a plain "<product>NNบาท" line (e.g. "102.ฝักกระเจียบ20บาท", which starts
   // with the unit word ฝัก) only has one digit run before บาท and so never
   // matches here.
-  const withBasis = normalizedContent.match(RE.ITEM_WITH_BASIS);
+  // The บาท-less form ("96.หัวปลีเก่า3ลูก20") is only unambiguous when the
+  // token between the two numbers is a known unit and the name is not itself
+  // a unit; otherwise it stays unrecognized (fail closed).
+  const bahtlessBasis = normalizedContent.match(RE.ITEM_WITH_BASIS_NO_BAHT);
+  const withBasis = normalizedContent.match(RE.ITEM_WITH_BASIS)
+    ?? (bahtlessBasis
+      && isKnownUnit(bahtlessBasis[4])
+      && !isKnownUnit(bahtlessBasis[2].trim())
+      && parseFloat(bahtlessBasis[5]) > 0
+      ? bahtlessBasis
+      : null);
   if (withBasis) {
     const resolved = resolveUnitQuantity(parseFloat(withBasis[3]), withBasis[4]);
     if (!Number.isFinite(resolved.quantity) || resolved.quantity <= 0) return null; // fail closed: zero/invalid basis quantity

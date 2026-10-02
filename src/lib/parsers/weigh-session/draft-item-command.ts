@@ -3,26 +3,43 @@ import type { DraftItemAction, WeighSession } from "./types";
 export type DraftItemCommand = {
   kind: "correct" | "remove";
   itemNumber: number;
+  /** 1-based occurrence picked by a selector letter ("52B" → 2). */
+  occurrence?: number;
 };
 
 export type SubunitConfirmCommand = { itemNumber: number };
 
-const CORRECT_ITEM = /^แก้ข้อ\s*(\d+)\s*$/;
-const REMOVE_ITEM = /^ลบข้อ\s*(\d+)\s*$/;
+const CORRECT_ITEM = /^แก้ข้อ\s*(\d+)\s*([A-Za-z])?\s*$/;
+const REMOVE_ITEM = /^ลบข้อ\s*(\d+)\s*([A-Za-z])?\s*$/;
 const CONFIRM_SUBUNIT = /^ยืนยันข้อ\s*(\d+)\s*$/;
+
+/** "A" for the first row sharing a number, "B" for the second… */
+export function occurrenceLetter(occurrence: number): string {
+  // ponytail: A–Z only; a 27th duplicate of one number stays unaddressable (fail closed).
+  return occurrence >= 1 && occurrence <= 26 ? String.fromCharCode(64 + occurrence) : "";
+}
 
 export function parseSubunitConfirmCommandLine(text: string): SubunitConfirmCommand | null {
   const match = text.trim().match(CONFIRM_SUBUNIT);
   return match ? { itemNumber: Number(match[1]) } : null;
 }
 
+function toCommand(kind: DraftItemCommand["kind"], match: RegExpMatchArray): DraftItemCommand {
+  const letter = match[2]?.toUpperCase();
+  return {
+    kind,
+    itemNumber: Number(match[1]),
+    ...(letter ? { occurrence: letter.charCodeAt(0) - 64 } : {}),
+  };
+}
+
 /** Exact control grammar. Ordinary repeated item numbers keep legacy meaning. */
 export function parseDraftItemCommandLine(text: string): DraftItemCommand | null {
   const correct = text.trim().match(CORRECT_ITEM);
-  if (correct) return { kind: "correct", itemNumber: Number(correct[1]) };
+  if (correct) return toCommand("correct", correct);
 
   const remove = text.trim().match(REMOVE_ITEM);
-  if (remove) return { kind: "remove", itemNumber: Number(remove[1]) };
+  if (remove) return toCommand("remove", remove);
 
   return null;
 }
@@ -43,7 +60,7 @@ export function latestDraftItemAction(session: WeighSession): DraftItemAction | 
 
 /** Operator copy shared by plain-text and guided capture acknowledgements. */
 export function buildDraftItemActionReply(action: DraftItemAction): string {
-  const item = `ข้อ ${action.item_number}`;
+  const item = `ข้อ ${action.item_number}${action.occurrence ?? ""}`;
 
   if (action.status === "awaiting_replacement") {
     return [
@@ -63,9 +80,16 @@ export function buildDraftItemActionReply(action: DraftItemAction): string {
   }
 
   if (action.status === "ambiguous_target") {
+    const selectors = action.selectors ?? [];
+    const verb = action.kind === "remove" ? "ลบข้อ" : "แก้ข้อ";
     return [
       `⚠️ พบเลข${item} ซ้ำ ${action.match_count} รายการ`,
-      "กรุณาแก้เลขข้อให้ไม่ซ้ำก่อน",
+      ...(selectors.length > 1
+        ? [
+            `ระบุรายการด้วยตัวอักษรต่อท้าย: ${selectors.join(", ")}`,
+            `เช่น “${verb} ${selectors[0]}”`,
+          ]
+        : ["กรุณาแก้เลขข้อให้ไม่ซ้ำก่อน"]),
       "รายการอื่นยังอยู่ครบ ไม่ต้องยกเลิก",
     ].join("\n");
   }
@@ -75,7 +99,7 @@ export function buildDraftItemActionReply(action: DraftItemAction): string {
       `⚠️ ยังแก้${item}ไม่ได้`,
       action.detail ?? "รายการใหม่ยังไม่ครบหรืออ่านไม่ได้",
       "รายการเดิมยังไม่เปลี่ยนแปลง",
-      `ส่ง “แก้ข้อ ${action.item_number}” แล้วส่งรายการใหม่อีกครั้ง`,
+      `ส่ง “แก้${item}” แล้วส่งรายการใหม่อีกครั้ง`,
     ].join("\n");
   }
 

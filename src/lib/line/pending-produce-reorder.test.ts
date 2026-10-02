@@ -52,3 +52,26 @@ describe("processExpiredPendingProduceEvents", () => {
     expect(destinations).toEqual(["group-source"]);
   });
 });
+
+describe("processExpiredPendingProduceEvents — one push per episode", () => {
+  it("pushes once for several expired messages of the same session key", async () => {
+    const supabase = {
+      rpc: async () => ({
+        data: [
+          event({ line_event_id: "evt-1" }),
+          event({ line_event_id: "evt-2", line_timestamp_ms: 2_000 }),
+          event({ line_event_id: "evt-3", line_timestamp_ms: 3_000 }),
+        ],
+        error: null,
+      }),
+    };
+    const texts: string[] = [];
+    const result = await processExpiredPendingProduceEvents(
+      supabase as never,
+      async (_to, text) => { texts.push(text); },
+    );
+    expect(result).toEqual({ claimed: 3, replied: 1, replyErrors: 0 });
+    expect(texts).toHaveLength(1);
+    expect(texts[0]).toContain("พบ 3 ข้อความ");
+  });
+});

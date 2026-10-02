@@ -23,6 +23,10 @@ export interface DraftItemAction {
   item_number: number;
   status: DraftItemActionStatus;
   match_count: number;
+  /** Occurrence selector letter typed with the number ("แก้ข้อ 52B" → "B"). */
+  occurrence?: string;
+  /** For ambiguous_target: the selectors that address each match ("52A"). */
+  selectors?: string[];
   previous_item?: WeighSessionItem;
   replacement_item?: WeighSessionItem;
   detail?: string;
@@ -78,6 +82,12 @@ export interface WeighSessionItem {
    * blocking a legitimate free-form draft.
    */
   item_number_explicit?: boolean;
+  /**
+   * Transient, never persisted: 1-based source order of this row among rows
+   * sharing its typed item_number. Absent means 1. Lets a duplicate "52" be
+   * addressed as 52A/52B while item_number itself stays 52.
+   */
+  item_occurrence?: number;
 }
 
 export interface WeighSession {

@@ -43,6 +43,7 @@ export async function processExpiredPendingProduceEvents(
     countByKey.set(event.session_key, (countByKey.get(event.session_key) ?? 0) + 1);
   }
 
+  const pushedKeys = new Set<string>();
   for (const event of events) {
     logger.warn("deferred Produce item rejected after reorder window", {
       action: event.status,
@@ -60,6 +61,10 @@ export async function processExpiredPendingProduceEvents(
       ageMs: Date.parse(event.resolved_at) - Date.parse(event.received_at),
       rawText: event.raw_text,
     });
+    // One push per session key per sweep: a claimed burst is one episode, so
+    // announcing each message again (with a growing count) is noise, not news.
+    if (pushedKeys.has(event.session_key)) continue;
+    pushedKeys.add(event.session_key);
     try {
       await push(
         event.source_id,

@@ -43,6 +43,15 @@ export const RE = {
     `^(\\d+)\\.?\\s*([${TH}][${TH}\\s]*?)(\\d+(?:\\.\\d+)?)\\.?\\s*([${UNIT}]+?)\\s*(\\d+(?:\\.\\d+)?)\\s*บาท\\s*$`,
   ),
 
+  // Same bundled basis with the trailing บาท omitted:
+  //   "96.หัวปลีเก่า3ลูก20" → item 96, basis 3 ลูก / 20 บาท
+  // Only trusted when the unit token is a known unit (checked in parser.ts);
+  // anything else stays an unrecognized line.
+  // Captures: [1]=item_number, [2]=product_name, [3]=basis_quantity, [4]=basis_unit, [5]=basis_price
+  ITEM_WITH_BASIS_NO_BAHT: new RegExp(
+    `^(\\d+)\\.?\\s*([${TH}][${TH}\\s]*?)(\\d+(?:\\.\\d+)?)\\.?\\s*([${UNIT}]+?)\\s*(\\d+(?:\\.\\d+)?)\\s*$`,
+  ),
+
   // Compact shop shorthand with the basis unit omitted from the header:
   //   "37ผักกาดสลัด3/20" → 3 of the quantity-line unit cost 20 baht.
   // The following quantity line supplies the missing basis unit, e.g. 15หัว.

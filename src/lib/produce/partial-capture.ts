@@ -1,4 +1,5 @@
 import type { WeighSession, WeighSessionItem } from "@/lib/parsers/weigh-session/types";
+import { occurrenceLetter } from "@/lib/parsers/weigh-session/draft-item-command";
 import { exactLineTotalScaled, scaledToBaht } from "./exact-line-total";
 import type {
   ProduceValidationException,
@@ -96,8 +97,18 @@ export function buildProducePartialCapture(
 ): ProducePartialCapture {
   const reviewItemNumbers = new Set<number>();
   const issues: ProducePartialCaptureIssue[] = [];
+  const parseErrorItemNumbers = new Set(
+    finalizationErrors.map(parseErrorItemNumber).filter((n): n is number => n !== null),
+  );
 
-  for (const exception of [...validation.blocking, ...validation.reviews]) {
+  for (let exception of [...validation.blocking, ...validation.reviews]) {
+    // A number missing only because its own source line failed to parse is
+    // already reported by that parse error; one source line, one issue.
+    if (exception.kind === "item_number_gap") {
+      const missing = exception.missingItemNumbers.filter((n) => !parseErrorItemNumbers.has(n));
+      if (missing.length === 0) continue;
+      exception = { ...exception, missingItemNumbers: missing };
+    }
     const itemNumber = exceptionItemNumber(exception);
     if (itemNumber !== null) reviewItemNumbers.add(itemNumber);
     issues.push({
@@ -245,10 +256,18 @@ function reviewStatusLabel(entry: ProducePartialCaptureItem): string {
   return "รอตรวจ";
 }
 
-function itemSummaryLine(entry: ProducePartialCaptureItem): string {
+/** "52A"/"52B" when several rows share a typed number, else just "52". */
+function itemSelector(item: WeighSessionItem, items: ProducePartialCaptureItem[]): string {
+  const shared = items.filter((entry) => entry.item.item_number === item.item_number).length > 1;
+  return shared
+    ? `${item.item_number}${occurrenceLetter(item.item_occurrence ?? 1)}`
+    : String(item.item_number);
+}
+
+function itemSummaryLine(entry: ProducePartialCaptureItem, items: ProducePartialCaptureItem[]): string {
   const item = entry.item;
   const review = entry.status === "needs_review" ? ` ⚠️ ${reviewStatusLabel(entry)}` : "";
-  return `${item.item_number}. ${item.product_name} ${formatCompactNumber(item.quantity)} ${item.unit} × ${linePriceText(item)} = ${lineTotalText(item)}${review}`;
+  return `${itemSelector(item, items)}. ${item.product_name} ${formatCompactNumber(item.quantity)} ${item.unit} × ${linePriceText(item)} = ${lineTotalText(item)}${review}`;
 }
 
 export function buildPartialCaptureSavedReply(capture: ProducePartialCapture): string {
@@ -260,7 +279,7 @@ export function buildPartialCaptureSavedReply(capture: ProducePartialCapture): s
     `✅ รับ${label}แล้ว`,
     "",
     "รายการที่อ่านได้",
-    ...orderedItems.map(itemSummaryLine),
+    ...orderedItems.map((entry) => itemSummaryLine(entry, capture.items)),
     "",
   ];
 
@@ -306,20 +325,27 @@ export function buildPartialCaptureReviewReply(capture: ProducePartialCapture): 
   const lines = [`⚠️ มี ${reviewItemCount} รายการที่ต้องแก้`, ""];
 
   for (const itemNumber of itemNumbers.slice(0, 10)) {
-    const entry = capture.items.find((candidate) => candidate.item.item_number === itemNumber);
+    const entries = capture.items.filter((candidate) => candidate.item.item_number === itemNumber);
     const issues = capture.issues.filter((issue) => issue.itemNumber === itemNumber);
-    lines.push(`ข้อ ${itemNumber}`);
-    if (entry) {
-      lines.push(
-        `${entry.item.product_name} ${linePriceText(entry.item)}`,
-        `${formatCompactNumber(entry.item.quantity)} ${entry.item.unit}`,
-      );
+    if (entries.length > 0) {
+      for (const entry of entries) {
+        lines.push(
+          `ข้อ ${itemSelector(entry.item, capture.items)}`,
+          `${entry.item.product_name} ${linePriceText(entry.item)}`,
+          `${formatCompactNumber(entry.item.quantity)} ${entry.item.unit}`,
+        );
+      }
     } else {
+      lines.push(`ข้อ ${itemNumber}`);
       const source = issues.map(readableParseIssue).find((detail) => detail !== issueDetailForUser(issues[0]!));
       if (source) lines.push(source);
     }
     for (const detail of [...new Set(issues.map(issueDetailForUser))]) {
       lines.push(detail);
+    }
+    if (entries.length > 1) {
+      const selectors = entries.map((entry) => itemSelector(entry.item, capture.items));
+      lines.push(`ระบุข้อด้วยตัวอักษร เช่น “แก้ข้อ ${selectors[0]}” หรือ “ลบข้อ ${selectors.at(-1)}”`);
     }
     lines.push("");
   }
@@ -333,14 +359,16 @@ export function buildPartialCaptureReviewReply(capture: ProducePartialCapture): 
   }
 
   if (itemNumbers.length > 0) {
-    const first = itemNumbers[0];
+    const firstNumber = itemNumbers[0];
+    const firstEntry = capture.items.find((entry) => entry.item.item_number === firstNumber);
+    const first = firstEntry ? itemSelector(firstEntry.item, capture.items) : String(firstNumber);
     lines.push(
       "วิธีแก้",
       `พิมพ์ “แก้ข้อ ${first}” แล้วส่งเฉพาะข้อนั้นที่ถูกต้องใหม่`,
       "",
       "ตัวอย่าง",
       `แก้ข้อ ${first}`,
-      `${first}.หอมแดง20บาท`,
+      `${firstNumber}.หอมแดง20บาท`,
       "4แพค",
       "",
       `ถ้าข้อ ${first} ไม่ต้องใช้ ให้พิมพ์ “ลบข้อ ${first}”`,

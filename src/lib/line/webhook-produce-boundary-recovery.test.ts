@@ -14,8 +14,9 @@ import {
   RECOVER_REFUSED_NO_HEADER_REPLY,
   RECOVER_REFUSED_UNKEYED_REPLY,
 } from "@/lib/line/pending-produce-recovery";
-import { PendingSessionService } from "@/lib/line/pending-session-service";
-import { WebhookService } from "@/lib/line/webhook-service";
+import { finalizePendingGeneration } from "@/lib/line/pending-session-finalizer";
+import { PendingSessionService, type PendingSession } from "@/lib/line/pending-session-service";
+import { GROUP_PRODUCE_SESSION_AMBIGUOUS_REPLY, WebhookService } from "@/lib/line/webhook-service";
 import { getRuntimeEnvironment } from "@/lib/runtime-environment";
 import type { LineMessageEvent } from "@/lib/line/types";
 
@@ -179,6 +180,7 @@ class RecoveryDatabase {
   generationSequence = 0;
   appendFailAfter: number | null = null;
   appendCalls = 0;
+  rpcCalls: Array<{ name: string; args: Row }> = [];
 
   rows(table: string): Row[] {
     const existing = this.tables.get(table);
@@ -330,6 +332,18 @@ class RecoveryDatabase {
   }
 
   rpc = async (name: string, args: Row) => {
+    this.rpcCalls.push({ name, args });
+    if (name === "cancel_active_pending_produce_draft") {
+      const pending = this.pending(String(args.p_session_key));
+      if (!pending || pending.terminalized) {
+        return { data: { cancelled: false, reason: "no_active_draft" }, error: null };
+      }
+      pending.terminalized = true;
+      return { data: { cancelled: true, reason: "cancelled" }, error: null };
+    }
+    if (name === "try_finalize_pending_generation") {
+      return { data: { status: "finalized", session_id: "produce-1", notification_id: "notify-1" }, error: null };
+    }
     if (name === "bind_plain_text_accountability_round") {
       return { data: { outcome: "no_round" }, error: null };
     }
@@ -719,8 +733,10 @@ describe("before-opener Produce recovery", () => {
     for (let n = 1; n <= 12; n += 1) {
       await send(webhook, itemMessage(n), n * 10);
     }
-    expect(replies.at(-1)).toContain("พบ 12 ข้อความที่ยังไม่ถูกบันทึก");
-    expect(replies.at(-1)).toContain(RECOVER_LATEST_COMMAND);
+    // One warning for the burst, not a growing count on every message.
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toContain("ยังไม่ถูกบันทึก");
+    expect(replies[0]).toContain(RECOVER_LATEST_COMMAND);
 
     await send(webhook, HEADER, 1_000);
     expect(replies.at(-1)).toContain("เปิดหัวรายการแล้ว");
@@ -760,8 +776,9 @@ describe("after-close Produce recovery", () => {
     expect(db.rows("pending_session_ingest")).toHaveLength(ingestAfterClose);
     expect(db.recoverable()).toHaveLength(16);
     expect(db.recoverable().every((row) => row.status === "rejected_after_close")).toBe(true);
-    expect(replies.at(-1)).toContain("พบ 16 ข้อความที่ยังไม่ถูกบันทึก");
-    expect(replies.at(-1)).toContain("หลังปิดรอบก่อนแล้ว");
+    const warnings = replies.filter((text) => text.includes("ยังไม่ถูกบันทึก"));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("หลังปิดรอบก่อนแล้ว");
   });
 
   it("replays the 16 retained messages into a new header once the previous generation is terminalized", async () => {
@@ -1151,5 +1168,218 @@ describe("PendingSessionService recovery helpers", () => {
       .listRecoverableDeferredEvents(SESSION_KEY);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.line_event_id).toBe("rejected_before_opener-2");
+  });
+});
+
+describe("group routing — header sender differs from item sender", () => {
+  const A = "user-1";
+  const B = "user-2";
+  const C = "user-3";
+  const KEY_B = "group:group-1:user:user-2";
+  const KEY_C = "group:group-1:user:user-3";
+
+  it("incident 2026-10-01: B's items join A's only open session, keep B as audit identity, and finalize with it", async () => {
+    const db = new RecoveryDatabase();
+    const replies: string[] = [];
+    const webhook = service(db, replies);
+    await send(webhook, HEADER, 1_000, { userId: A, eventId: "a-header" });
+    for (let n = 1; n <= 9; n += 1) {
+      await send(webhook, itemMessage(n), 1_000 + n * 10, { userId: B, eventId: `b-item-${n}` });
+    }
+
+    const generation = db.pending()?.session_generation;
+    expect(db.pending(KEY_B)).toBeUndefined();
+    expect(db.deferred()).toHaveLength(0);
+    expect(replies.some((text) => text.includes("ยังไม่ถูกบันทึก"))).toBe(false);
+    expect(parsedItemCount(db)).toBe(9);
+    // Owner, key and generation are A's; the events themselves stay B's.
+    expect(db.pending()?.line_user_id).toBe(A);
+    for (let n = 1; n <= 9; n += 1) {
+      expect(db.rows("pending_session_ingest")).toContainEqual(expect.objectContaining({
+        session_key: SESSION_KEY,
+        session_generation: generation,
+        line_event_id: `b-item-${n}`,
+      }));
+      expect(db.rows("raw_messages")).toContainEqual(expect.objectContaining({
+        line_event_id: `b-item-${n}`,
+        user_id: B,
+      }));
+    }
+  });
+
+  it("B's closer stamps the close boundary on A's generation, so finalization reads B's items", async () => {
+    const db = new RecoveryDatabase();
+    const webhook = service(db);
+    await send(webhook, RETURN_HEADER, 1_000, { userId: A });
+    const generation = db.pending()?.session_generation;
+    await send(webhook, itemMessage(1), 1_100, { userId: B, eventId: "b-item" });
+    await send(webhook, "จบรายการชั่งคืน", 1_200, { userId: B, eventId: "b-close" });
+    expect(db.pending()?.close_event_timestamp_ms).toBe(1_200);
+    expect(db.pending()?.close_line_event_id).toBe("b-close");
+    expect(db.pending()?.session_generation).toBe(generation);
+    // The finalizer rebuilds from this generation's ingest ledger.
+    expect(db.rows("pending_session_ingest")
+      .filter((row) => row.session_generation === generation)
+      .map((row) => row.line_event_id)).toContain("b-item");
+    expect(db.pending(KEY_B)).toBeUndefined();
+  });
+
+  it("A opens, B sends items and the closer, and the finalized document carries B's items", async () => {
+    const db = new RecoveryDatabase();
+    const webhook = service(db);
+    await send(webhook, RETURN_HEADER, 1_000, { userId: A, eventId: "a-open" });
+    await send(webhook, itemMessage(1), 1_100, { userId: B, eventId: "b-item-1" });
+    await send(webhook, itemMessage(2), 1_150, { userId: B, eventId: "b-item-2" });
+    await send(webhook, "จบรายการชั่งคืน", 1_200, { userId: B, eventId: "b-close" });
+
+    const snapshot = db.pending() as unknown as PendingSession;
+    const result = await finalizePendingGeneration(db as never, snapshot, async () => ({}));
+
+    expect(result.status).toBe("finalized");
+    const call = db.rpcCalls.find((entry) => entry.name === "try_finalize_pending_generation")!;
+    const session = call.args.p_session as Row;
+    expect(session.validation_errors).toEqual([]);
+    expect((call.args.p_items as Row[]).map((item) => [item.item_number, item.product_name]))
+      .toEqual([[1, PRODUCTS[0]], [2, PRODUCTS[1]]]);
+    // Finalized under A's key and generation, closed by B's own raw message.
+    expect(call.args.p_session_key).toBe(SESSION_KEY);
+    expect(call.args.p_expected_generation).toBe(snapshot.session_generation);
+    expect(call.args.p_expected_line_user_id).toBe(A);
+    expect(db.rows("raw_messages")).toContainEqual(expect.objectContaining({
+      line_event_id: "b-close",
+      user_id: B,
+    }));
+  });
+
+  it("B's ยกเลิกรายการ does not cancel A's open draft; A's own cancel still does", async () => {
+    const db = new RecoveryDatabase();
+    const webhook = service(db);
+    await send(webhook, HEADER, 1_000, { userId: A });
+    await send(webhook, itemMessage(1), 1_100, { userId: B });
+    const generation = db.pending()?.session_generation;
+    const ownerText = String(db.pending()?.accumulated_text);
+
+    await send(webhook, "ยกเลิกรายการ", 1_200, { userId: B, eventId: "b-cancel" });
+
+    expect(db.rpcCalls.some((entry) => entry.name === "cancel_active_pending_produce_draft")).toBe(false);
+    expect(db.pending()?.terminalized).toBe(false);
+    expect(db.pending()?.session_generation).toBe(generation);
+    expect(String(db.pending()?.accumulated_text)).toBe(ownerText);
+    expect(db.pending(KEY_B)).toBeUndefined();
+
+    await send(webhook, "ยกเลิกรายการ", 1_300, { userId: A, eventId: "a-cancel" });
+
+    expect(db.rpcCalls.filter((entry) => entry.name === "cancel_active_pending_produce_draft"))
+      .toEqual([expect.objectContaining({
+        args: expect.objectContaining({ p_session_key: SESSION_KEY, p_line_event_id: "a-cancel" }),
+      })]);
+    expect(db.pending()?.terminalized).toBe(true);
+  });
+
+  it("routes the real คืนเสีย mixed-label header's items from another sender", async () => {
+    const db = new RecoveryDatabase();
+    const webhook = service(db);
+    await send(webhook, "ขวัญ-พาซีโอ้ผัก คืนเสีย 1/10/2569", 1_000, { userId: A });
+    await send(webhook, itemMessage(1), 1_100, { userId: B });
+    expect(db.pending(KEY_B)).toBeUndefined();
+    expect(String(db.pending()?.accumulated_text)).toContain(itemMessage(1));
+  });
+
+  it("attaches to neither session and replies once when two sessions are open", async () => {
+    const db = new RecoveryDatabase();
+    const replies: string[] = [];
+    const webhook = service(db, replies);
+    await send(webhook, HEADER, 1_000, { userId: A });
+    await send(webhook, "แดง-ราชพฤกษ์ เบิก 30/06/2569", 1_001, { userId: C });
+    const before = [String(db.pending()?.accumulated_text), String(db.pending(KEY_C)?.accumulated_text)];
+    const repliesBefore = replies.length;
+
+    await send(webhook, itemMessage(1), 1_100, { userId: B, eventId: "b-ambiguous" });
+
+    expect(replies.slice(repliesBefore)).toEqual([GROUP_PRODUCE_SESSION_AMBIGUOUS_REPLY]);
+    expect([String(db.pending()?.accumulated_text), String(db.pending(KEY_C)?.accumulated_text)]).toEqual(before);
+    expect(db.pending(KEY_B)).toBeUndefined();
+    expect(db.deferred()).toHaveLength(0);
+    expect(db.rows("raw_messages")).toContainEqual(expect.objectContaining({
+      line_event_id: "b-ambiguous",
+      user_id: B,
+    }));
+  });
+
+  it("the caller's own open session always wins over another sender's", async () => {
+    const db = new RecoveryDatabase();
+    const webhook = service(db);
+    await send(webhook, HEADER, 1_000, { userId: A });
+    await send(webhook, "แดง-ราชพฤกษ์ เบิก 30/06/2569", 1_001, { userId: B });
+    await send(webhook, itemMessage(1), 1_100, { userId: B });
+    expect(String(db.pending(KEY_B)?.accumulated_text)).toContain(itemMessage(1));
+    expect(String(db.pending()?.accumulated_text)).not.toContain(itemMessage(1));
+  });
+
+  it("never routes a header or ordinary chat into another sender's session", async () => {
+    const db = new RecoveryDatabase();
+    const webhook = service(db);
+    await send(webhook, HEADER, 1_000, { userId: A });
+    const ownerText = String(db.pending()?.accumulated_text);
+    await send(webhook, "สวัสดีครับ", 1_050, { userId: B });
+    expect(String(db.pending()?.accumulated_text)).toBe(ownerText);
+
+    await send(webhook, "แดง-ราชพฤกษ์ เบิก 30/06/2569", 1_100, { userId: B });
+    expect(String(db.pending()?.accumulated_text)).toBe(ownerText);
+    expect(db.pending(KEY_B)?.line_user_id).toBe(B);
+  });
+
+  it("does not borrow a closed session — the late item stays on the existing orphan path", async () => {
+    const db = new RecoveryDatabase();
+    const webhook = service(db);
+    await send(webhook, HEADER, 1_000, { userId: A });
+    await send(webhook, itemMessage(1), 1_100, { userId: A });
+    await send(webhook, "จบรายการเบิก", 1_200, { userId: A });
+    const closedText = String(db.pending()?.accumulated_text);
+    await send(webhook, itemMessage(2), 1_300, { userId: B, eventId: "b-late" });
+    expect(String(db.pending()?.accumulated_text)).toBe(closedText);
+    expect(db.deferred()).toContainEqual(expect.objectContaining({
+      line_event_id: "b-late",
+      session_key: KEY_B,
+      line_user_id: B,
+    }));
+  });
+
+  it("does not borrow a legacy session without a ledger opener (its rebuild is owner-scoped)", async () => {
+    const db = new RecoveryDatabase();
+    const webhook = service(db);
+    await send(webhook, HEADER, 1_000, { userId: A });
+    db.pending()!.plain_text_opened_line_event_id = null;
+    const ownerText = String(db.pending()?.accumulated_text);
+    await send(webhook, itemMessage(1), 1_100, { userId: B, eventId: "b-legacy" });
+    expect(String(db.pending()?.accumulated_text)).toBe(ownerText);
+    expect(db.deferred()).toContainEqual(expect.objectContaining({
+      line_event_id: "b-legacy",
+      session_key: KEY_B,
+    }));
+  });
+});
+
+describe("orphan warning de-duplication", () => {
+  it("warns once for a no-header burst and keeps every message as evidence", async () => {
+    const db = new RecoveryDatabase();
+    const replies: string[] = [];
+    const webhook = service(db, replies);
+    for (let n = 1; n <= 9; n += 1) {
+      await send(webhook, itemMessage(n), n * 10);
+    }
+    expect(replies.filter((text) => text.includes("ยังไม่ถูกบันทึก"))).toHaveLength(1);
+    expect(db.recoverable()).toHaveLength(9);
+  });
+
+  it("warns again for a burst after a 30-minute gap", async () => {
+    const db = new RecoveryDatabase();
+    const replies: string[] = [];
+    const webhook = service(db, replies);
+    await send(webhook, itemMessage(1), 10);
+    await send(webhook, itemMessage(2), 20);
+    await send(webhook, itemMessage(3), 20 + 31 * 60 * 1000);
+    expect(replies.filter((text) => text.includes("ยังไม่ถูกบันทึก"))).toHaveLength(2);
+    expect(db.recoverable()).toHaveLength(3);
   });
 });

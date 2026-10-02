@@ -236,6 +236,11 @@ export interface ClaimFinalizeResult {
   session?:        PendingSession;
 }
 
+export type GroupProduceSessionResolution =
+  | { kind: "none" }
+  | { kind: "unique"; session: PendingSession }
+  | { kind: "ambiguous"; count: number };
+
 export interface PendingSessionLookup {
   session: PendingSession | null;
   reason: "found" | "no_row" | "terminalized" | "db_error";
@@ -317,6 +322,53 @@ export class PendingSessionService {
       return { session: null, reason: "terminalized" };
     }
     return result;
+  }
+
+  /**
+   * Group-level routing for a sender who has no active session of their own.
+   *
+   * In a LINE group the person who sends the header is not always the person
+   * who sends the items. Session keys stay per-sender (durable identity and
+   * audit); this only discovers which OTHER sender's session the message may
+   * be routed to. Every live, unexpired sibling counts as a candidate, so a
+   * structured, closing or foreign-environment session still makes the group
+   * ambiguous — but only an open plain-text capture session can be borrowed.
+   * Never guesses: two candidates is "ambiguous", not "pick one".
+   */
+  async resolveGroupProduceSession(
+    sourceType: string,
+    sourceId: string,
+    callerSessionKey: string,
+  ): Promise<GroupProduceSessionResolution> {
+    if (sourceType !== "group" && sourceType !== "room") return { kind: "none" };
+    // ponytail: unindexed source_id scan; pending_sessions holds one row per sender key, add an index if it grows.
+    const { data, error } = await this.supabase
+      .from("pending_sessions")
+      .select("*")
+      .eq("source_id", sourceId)
+      .eq("terminalized", false);
+    if (error) throw new Error(`group Produce session lookup failed: ${error.message}`);
+    const prefix = `${sourceType}:${sourceId}:user:`;
+    const live = ((data ?? []) as PendingSession[]).filter((row) =>
+      row.session_key.startsWith(prefix)
+      && row.session_key !== callerSessionKey
+      && !this.isExpired(row),
+    );
+    if (live.length > 1) return { kind: "ambiguous", count: live.length };
+    const only = live[0];
+    if (
+      !only
+      || only.entry_origin != null
+      // Without an opener in the ingest ledger the finalizer falls back to a
+      // raw-message rebuild scoped to the owner's user_id, which would drop
+      // the borrower's items. Only ledger-backed sessions may be shared.
+      || only.plain_text_opened_line_event_id == null
+      || only.close_event_timestamp_ms != null
+      || (only.runtime_environment != null && only.runtime_environment !== getRuntimeEnvironment())
+    ) {
+      return { kind: "none" };
+    }
+    return { kind: "unique", session: only };
   }
 
   async openPlainTextGeneration(

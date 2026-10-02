@@ -195,6 +195,37 @@ export function selectRecoveryBundle(
   return { kind: "one", bundle: bundles[0]! };
 }
 
+// One unresolved episode warns once. A sliding 30-minute gap (the pending
+// inactivity timeout) separates a new burst from the one already announced.
+const REJECTED_WARNING_QUIET_MS = 30 * 60 * 1000;
+
+function warningEpisodeKey(event: RecoverableDeferredEvent): string {
+  // waiting rows become rejected_orphan in the sweep; both are the same
+  // no-session episode and must not re-announce across that transition.
+  if (event.status === "waiting" || event.status === "rejected_orphan") return "orphan";
+  return durableRecoveryBundleKey(event) ?? `event:${event.line_event_id}`;
+}
+
+/**
+ * True when an earlier unresolved message of the same episode already warned.
+ * Evidence is unaffected — this only decides whether to reply again. An event
+ * missing from `events` is never treated as a repeat (fail towards warning).
+ */
+export function isRepeatRejectedWarning(
+  events: RecoverableDeferredEvent[],
+  lineEventId: string,
+): boolean {
+  const current = events.find((event) => event.line_event_id === lineEventId);
+  if (!current) return false;
+  const key = warningEpisodeKey(current);
+  return events.some((other) =>
+    other !== current
+    && warningEpisodeKey(other) === key
+    && compareDeferredEvents(other, current) < 0
+    && current.line_timestamp_ms - other.line_timestamp_ms <= REJECTED_WARNING_QUIET_MS,
+  );
+}
+
 function recoveryReason(status: RecoverableDeferredStatus): RecoveryReason {
   if (status === "rejected_after_close") return "after_close";
   if (status === "rejected_orphan") return "orphan";

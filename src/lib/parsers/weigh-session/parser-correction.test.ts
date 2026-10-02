@@ -152,7 +152,8 @@ describe("explicit same-draft item correction", () => {
     expect(action?.status).toBe("ambiguous_target");
     expect(buildDraftItemActionReply(action!)).toBe([
       "⚠️ พบเลขข้อ 17 ซ้ำ 2 รายการ",
-      "กรุณาแก้เลขข้อให้ไม่ซ้ำก่อน",
+      "ระบุรายการด้วยตัวอักษรต่อท้าย: 17A, 17B",
+      "เช่น “แก้ข้อ 17A”",
       "รายการอื่นยังอยู่ครบ ไม่ต้องยกเลิก",
     ].join("\n"));
   });

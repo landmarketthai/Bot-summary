@@ -70,9 +70,11 @@ import {
   incompleteCloserReply,
   isExactRecoverLatestCommand,
   isIncompleteProduceCloser,
+  isRepeatRejectedWarning,
   loadRecoverableSelection,
   recoverCommandReply,
   recoverLatestRejectedBundle,
+  selectRecoveryBundle,
   type RecoveryReason,
 } from "@/lib/line/pending-produce-recovery";
 import type { StructuredPendingSession } from "@/lib/line/produce-session-commands";
@@ -349,13 +351,26 @@ const PRODUCE_ENTRY_GATE_UNAVAILABLE_REPLY = [
 const PRODUCE_CLOSE_PENDING_REPLY =
   "รับจบรายการแล้ว กำลังตรวจสอบรายการที่ยังส่งมาไม่ถึง กรุณารอสักครู่";
 
+export const GROUP_PRODUCE_SESSION_AMBIGUOUS_REPLY = [
+  "⛔ ยังไม่บันทึกข้อความนี้",
+  "ในกลุ่มนี้มีหัวรายการเปิดอยู่มากกว่า 1 รายการ จึงไม่เลือกให้",
+  "กรุณาให้ผู้เปิดหัวรายการส่งรายการเอง หรือเปิดหัวรายการของตัวเองก่อน",
+].join("\n");
+
+/**
+ * Null when an earlier message of the same unresolved episode already
+ * warned — every message is still persisted, it just is not re-announced.
+ */
 async function rejectedBundleNotice(
   service: PendingSessionService,
   sessionKey: string,
   fallback: RecoveryReason,
-): Promise<string> {
+  lineEventId: string,
+): Promise<string | null> {
   try {
-    const selection = await loadRecoverableSelection(service, sessionKey);
+    const events = await service.listRecoverableDeferredEvents(sessionKey);
+    if (isRepeatRejectedWarning(events, lineEventId)) return null;
+    const selection = selectRecoveryBundle(events);
     if (selection.kind === "one") {
       return boundaryRejectReply(selection.bundle.events.length, selection.bundle.reason);
     }
@@ -668,6 +683,25 @@ export function isProduceOrderingEvent(event: LineEvent): boolean {
     || isExactRecoverLatestCommand(text)
     || isIncompleteProduceCloser(text)
     || findDraftItemCommand(text) !== null;
+}
+
+/**
+ * Produce traffic that may follow another sender's open session in the same
+ * group: items, corrections and closers. Cancel, recovery, finalized-session
+ * replacement and subunit confirmation stay owner-only — a non-owner's
+ * "ยกเลิกรายการ" must never discard someone else's draft — and ordinary chat
+ * is never appended to someone else's document.
+ */
+function isGroupRoutableProduceText(
+  text: string,
+  normalizedText: string,
+  isDraftItemCommand: boolean,
+): boolean {
+  if (isExactCancelActiveDraftCommand(text)) return false;
+  return hasItemLine(normalizedText)
+    || hasSessionEnd(normalizedText)
+    || isDraftItemCommand
+    || isIncompleteProduceCloser(text);
 }
 
 /**
@@ -1196,11 +1230,11 @@ export class WebhookService {
       });
       return { eventId, eventType: event.type, status: "saved", parsed: false };
     }
-    const sessionKey = pendingSessionKey;
+    let sessionKey = pendingSessionKey;
 
     const pendingService = new PendingSessionService(this.supabase);
     const lookup = await pendingService.lookupActive(sessionKey);
-    const pending = lookup.session;
+    let pending = lookup.session;
     const expired = pending ? pendingService.isExpired(pending) : false;
     log.info("pending session lookup completed", {
       sessionKey,
@@ -1221,6 +1255,54 @@ export class WebhookService {
         parsed: false,
         error: lookup.error ?? "pending session lookup failed",
       };
+    }
+
+    // ── 4.0a. Group routing: header sender ≠ item sender ──────────────────────
+    //
+    // The caller's own session always wins (resolved above). Only when they
+    // have none, and the message is Produce traffic that carries no header,
+    // may it go to another sender's session in the same group — and only when
+    // exactly one live candidate exists. The session row, its generation fence
+    // and its owner stay untouched; the incoming event keeps its own
+    // line_user_id / raw_message / line_event_id as audit evidence. A header is
+    // never routed: it always opens the sender's own session.
+    if (
+      !pending
+      && findProduceSessionHeader(normalizedText) === null
+      && isGroupRoutableProduceText(text, normalizedText, draftItemCommand !== null)
+    ) {
+      let routed;
+      try {
+        routed = await pendingService.resolveGroupProduceSession(
+          msgEvent.source.type,
+          sourceId,
+          sessionKey,
+        );
+      } catch (routeError) {
+        const errorMessage = routeError instanceof Error ? routeError.message : String(routeError);
+        log.error("group Produce session routing failed", { sessionKey, error: errorMessage });
+        return { eventId, eventType: event.type, status: "error", parsed: false, error: errorMessage };
+      }
+      if (routed.kind === "ambiguous") {
+        log.warn("group Produce message refused — more than one active session", {
+          sessionKey,
+          candidateCount: routed.count,
+          lineEventId: eventId,
+        });
+        if (replyToken) await replyMessage(replyToken, GROUP_PRODUCE_SESSION_AMBIGUOUS_REPLY);
+        return { eventId, eventType: event.type, status: "saved", parsed: false };
+      }
+      if (routed.kind === "unique") {
+        log.info("group Produce message routed to the group's only active session", {
+          callerSessionKey: sessionKey,
+          sessionKey: routed.session.session_key,
+          sessionGeneration: routed.session.session_generation,
+          lineUserId,
+          lineEventId: eventId,
+        });
+        sessionKey = routed.session.session_key;
+        pending = routed.session;
+      }
     }
 
     if (pending) {
@@ -1670,16 +1752,15 @@ export class WebhookService {
             || reordered.action === "rejected_orphan"
             || reordered.action === "deferred"
           ) {
-            if (replyToken) {
-              await replyMessage(
-                replyToken,
-                await rejectedBundleNotice(
+            const notice = replyToken
+              ? await rejectedBundleNotice(
                   pendingService,
                   sessionKey,
                   deferredRejectReason(reordered.action),
-                ),
-              );
-            }
+                  eventId,
+                )
+              : null;
+            if (replyToken && notice) await replyMessage(replyToken, notice);
           } else if (draftItemCommand && reordered.session && replyToken) {
             const action = latestDraftItemAction(
               parseWeighSession(reordered.session.accumulated_text, bangkokToday()),
@@ -1802,10 +1883,13 @@ export class WebhookService {
             }
             if (replyToken) {
               try {
-                await replyMessage(
-                  replyToken,
-                  await rejectedBundleNotice(pendingService, sessionKey, "after_close"),
+                const notice = await rejectedBundleNotice(
+                  pendingService,
+                  sessionKey,
+                  "after_close",
+                  eventId,
                 );
+                if (notice) await replyMessage(replyToken, notice);
               } catch (replyError) {
                 log.error("after-boundary rejection reply failed", {
                   error: String(replyError),
@@ -2177,14 +2261,13 @@ export class WebhookService {
         });
         if (reordered.action !== "admitted"
             && reordered.action !== "reconciled" && replyToken) {
-          await replyMessage(
-            replyToken,
-            await rejectedBundleNotice(
-              pendingService,
-              sessionKey,
-              deferredRejectReason(reordered.action),
-            ),
+          const notice = await rejectedBundleNotice(
+            pendingService,
+            sessionKey,
+            deferredRejectReason(reordered.action),
+            eventId,
           );
+          if (notice) await replyMessage(replyToken, notice);
         }
         return { eventId, eventType: event.type, status: "saved", parsed: false };
       } catch (error) {
