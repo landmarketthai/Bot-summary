@@ -220,6 +220,21 @@ const priceChange = (price = 120) =>
     item({ product_name: "อะโวคาโด", quantity: 4, price_per_unit: price, transaction_type: "คืน" }),
   ]);
 
+/** A basis-priced line entered in กรัม: the one remaining review_required kind. */
+const riskySubunit = (enteredQuantity = 300) =>
+  session([
+    item({
+      product_name: "องุ่น",
+      pricing_mode: "basis",
+      basis_quantity: 1,
+      basis_unit: "โล",
+      basis_price: 100,
+      entered_quantity: enteredQuantity,
+      entered_unit: "กรัม",
+      quantity: enteredQuantity / 1000,
+    }),
+  ]);
+
 describe("close gate", () => {
   it("lets a clean round through without writing a review", async () => {
     const db = new FakeDb({ [ROUND]: withdrawal });
@@ -256,38 +271,46 @@ describe("close gate", () => {
     expect(db.reviews).toHaveLength(0);
   });
 
+  // Unknown product names are advisory now (Production 2026-10-03), so the
+  // remaining review_required kind — a risky subunit conversion — carries the
+  // review lifecycle: present once, require its own confirmation, never let a
+  // duplicate delivery or a bare second close stand in for that confirmation.
   it("treats a duplicate delivery of the presenting event as a duplicate, not an acknowledgement", async () => {
     const db = new FakeDb({ [ROUND]: withdrawal });
-    await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal(), "E1");
-    const replay = await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal(), "E1");
+    await runProduceCloseGate(db.client(), REF, riskySubunit(), "E1");
+    const replay = await runProduceCloseGate(db.client(), REF, riskySubunit(), "E1");
 
     expect(replay.decision).toBe("review_presented");
-    expect(db.reviews).toHaveLength(1);
-    expect(db.reviews[0].confirmed_at).toBeNull();
+    const rowsAfterFirst = db.reviews.length;
+    expect(rowsAfterFirst).toBeGreaterThan(0);
+    await runProduceCloseGate(db.client(), REF, riskySubunit(), "E1");
+    expect(db.reviews).toHaveLength(rowsAfterFirst);
+    expect(db.reviews.every((row) => row.confirmed_at === null)).toBe(true);
   });
 
   it("is idempotent when the acknowledging event is delivered twice", async () => {
     const db = new FakeDb({ [ROUND]: withdrawal });
-    await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal(), "E1");
-    await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal(), "E2");
-    const confirmedAt = db.reviews[0].confirmed_at;
+    await runProduceCloseGate(db.client(), REF, riskySubunit(), "E1");
+    expect(await confirmProduceSubunitReview(db.client(), REF, riskySubunit(), 1, "C1")).toBe("confirmed");
+    const first = await runProduceCloseGate(db.client(), REF, riskySubunit(), "E2");
+    expect(first.decision).toBe("proceed");
+    const snapshot = db.reviews.map((row) => ({ ...row }));
 
-    const replay = await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal(), "E2");
+    const replay = await runProduceCloseGate(db.client(), REF, riskySubunit(), "E2");
     expect(replay.decision).toBe("proceed");
-    expect(db.reviews).toHaveLength(1);
-    expect(db.reviews[0].confirmed_at).toBe(confirmedAt);
-    expect(db.reviews[0].confirmed_line_event_id).toBe("E2");
+    expect(db.reviews).toEqual(snapshot);
   });
 
   it("does not let an acknowledgement carry over to changed content", async () => {
     const db = new FakeDb({ [ROUND]: [] });
-    await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal(), "E1");
-    await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal(), "E2");
+    await runProduceCloseGate(db.client(), REF, riskySubunit(), "E1");
+    await confirmProduceSubunitReview(db.client(), REF, riskySubunit(), 1, "C1");
+    const rowsBefore = db.reviews.length;
 
-    const changed = await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal("อินมผรัม"), "E3");
+    const changed = await runProduceCloseGate(db.client(), REF, riskySubunit(400), "E3");
     expect(changed.decision).toBe("review_presented");
-    expect(db.reviews).toHaveLength(2);
-    expect(db.reviews[1].confirmed_at).toBeNull();
+    expect(db.reviews.length).toBeGreaterThan(rowsBefore);
+    expect(db.reviews.slice(rowsBefore).every((row) => row.confirmed_at === null)).toBe(true);
   });
 
   it("never writes the entered price back to the withdrawal price", async () => {
@@ -364,7 +387,7 @@ describe("fail closed", () => {
   it("refuses to record a review with no identifiable data-entry actor", async () => {
     const db = new FakeDb({ [ROUND]: withdrawal });
     await expect(
-      runProduceCloseGate(db.client(), { ...REF, lineUserId: null }, suspiciousWithdrawal(), "E1"),
+      runProduceCloseGate(db.client(), { ...REF, lineUserId: null }, riskySubunit(), "E1"),
     ).rejects.toBeInstanceOf(ProduceValidationGateError);
   });
 });
@@ -378,12 +401,14 @@ describe("finalize gate", () => {
     expect(db.reviews).toHaveLength(0);
   });
 
-  it("lets an acknowledged session finalize", async () => {
+  it("holds an unconfirmed risky subunit, then lets the confirmed session finalize", async () => {
     const db = new FakeDb({ [ROUND]: [] });
-    await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal(), "E1");
-    await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal(), "E2");
+    await runProduceCloseGate(db.client(), REF, riskySubunit(), "E1");
+    expect((await runProduceFinalizeGate(db.client(), REF, riskySubunit())).decision)
+      .toBe("review_presented");
 
-    const gate = await runProduceFinalizeGate(db.client(), REF, suspiciousWithdrawal());
+    await confirmProduceSubunitReview(db.client(), REF, riskySubunit(), 1, "C1");
+    const gate = await runProduceFinalizeGate(db.client(), REF, riskySubunit());
     expect(gate.decision).toBe("proceed");
   });
 
@@ -415,71 +440,60 @@ const suspiciousWithdrawal = (name = "มะม่วงเขียวรกต
   session([item({ product_name: name, transaction_type: "เบิก", quantity: 8 })]);
 
 describe("unknown product vocabulary", () => {
-  it("presents the review instead of finalizing, and persists nothing", async () => {
+  it("proceeds on the first close and keeps the entered name as an advisory", async () => {
     const db = new FakeDb({ [ROUND]: [] });
-    const gate = await runProduceCloseGate(
-      db.client(),
-      REF,
-      suspiciousWithdrawal(),
-      "E1",
-    );
+    const parsed = suspiciousWithdrawal();
+    const gate = await runProduceCloseGate(db.client(), REF, parsed, "E1");
 
-    expect(gate.decision).toBe("review_presented");
-    expect(gate.result.reviews.map((exception) => exception.kind)).toEqual([
-      "unknown_product_vocabulary",
-    ]);
-    expect(db.reviews).toHaveLength(1);
-    expect(db.reviews[0].confirmed_at).toBeNull();
+    expect(gate.decision).toBe("proceed");
+    expect(gate.result.status).toBe("clean");
+    expect(gate.result.reviews).toEqual([]);
+    expect(gate.result.advisories).toContainEqual(expect.objectContaining({
+      kind: "unknown_product_vocabulary",
+      severity: "advisory",
+      productName: "มะม่วงเขียวรกต",
+    }));
+    expect(parsed.items[0].product_name).toBe("มะม่วงเขียวรกต");
+    expect(db.reviews).toHaveLength(0);
   });
 
-  it("proceeds once the operator confirms it is a genuinely new product", async () => {
+  it("does not require a second close for a genuinely new product", async () => {
     const db = new FakeDb({ [ROUND]: [] });
     const newProduct = suspiciousWithdrawal("ฝรั่งสายพันธุ์ใหม่");
 
-    expect((await runProduceCloseGate(db.client(), REF, newProduct, "E1")).decision)
-      .toBe("review_presented");
-    const second = await runProduceCloseGate(db.client(), REF, newProduct, "E2");
+    const gate = await runProduceCloseGate(db.client(), REF, newProduct, "E1");
 
-    expect(second.decision).toBe("proceed");
-    // Confirmation acknowledges the name; it never registers or rewrites it.
+    expect(gate.decision).toBe("proceed");
+    expect(gate.result.advisories).toContainEqual(expect.objectContaining({
+      kind: "unknown_product_vocabulary",
+      productName: "ฝรั่งสายพันธุ์ใหม่",
+    }));
     expect(newProduct.items[0].product_name).toBe("ฝรั่งสายพันธุ์ใหม่");
-    expect(db.reviews).toHaveLength(1);
+    expect(db.reviews).toHaveLength(0);
   });
 
-  it("does not carry a confirmation over to a corrected document", async () => {
+  it("drops the advisory once the operator corrects to an approved spelling", async () => {
     const db = new FakeDb({ [ROUND]: [] });
-    await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal(), "E1");
-    await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal(), "E2");
-
-    // The operator fixes the spelling. Different content, different digest.
     const corrected = suspiciousWithdrawal("มะม่วงเขียวมรกต");
     const gate = await runProduceFinalizeGate(db.client(), REF, corrected);
     expect(gate.decision).toBe("proceed");
     expect(gate.result.status).toBe("clean");
+    expect(gate.result.advisories.map((entry) => entry.kind))
+      .not.toContain("unknown_product_vocabulary");
   });
 
-  it("does not let a confirmation survive a straggler item", async () => {
-    const db = new FakeDb({ [ROUND]: [] });
-    await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal(), "E1");
-    await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal(), "E2");
-
-    const withStraggler = session([
-      item({ product_name: "มะม่วงเขียวรกต", transaction_type: "เบิก", quantity: 8 }),
-      item({ product_name: "องุ่นดำ", transaction_type: "เบิก", quantity: 2 }),
-    ]);
-    const gate = await runProduceFinalizeGate(db.client(), REF, withStraggler);
-    expect(gate.decision).toBe("review_presented");
-  });
-
-  it("holds the whole document, not the offending line", async () => {
+  it("keeps multiple unknown names as advisories without holding the document", async () => {
     const db = new FakeDb({ [ROUND]: [] });
     const mixed = session([
-      item({ product_name: "องุ่นดำ", transaction_type: "เบิก", quantity: 2 }),
+      item({ product_name: "มะม่วงเขียวรกต", transaction_type: "เบิก", quantity: 2 }),
       item({ product_name: "อินมผรัม", transaction_type: "เบิก", quantity: 3 }),
     ]);
     const gate = await runProduceCloseGate(db.client(), REF, mixed, "E1");
-    expect(gate.decision).toBe("review_presented");
-    expect(gate.result.status).toBe("review_required");
+    expect(gate.decision).toBe("proceed");
+    expect(gate.result.status).toBe("clean");
+    expect(gate.result.advisories.filter((entry) => entry.kind === "unknown_product_vocabulary"))
+      .toHaveLength(2);
+    expect(db.reviews).toHaveLength(0);
   });
 });
 

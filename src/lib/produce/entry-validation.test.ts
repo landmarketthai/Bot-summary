@@ -327,7 +327,10 @@ describe("price change", () => {
       master([{ product_name: "ส้ม", quantity: 5, price_per_unit: null }]),
     );
     expect(result.status).toBe("clean");
-    expect(result.advisories).toEqual([]);
+    expect(result.reviews).toEqual([]);
+    // “ส้ม” is outside the reviewed Dictionary, so the only advisory is the
+    // name check — never a price difference against a price that was not set.
+    expect(kinds(result.advisories)).toEqual(["unknown_product_vocabulary"]);
   });
 
   it("reports both Production price differences as advisories", () => {
@@ -533,16 +536,21 @@ describe("validation digest", () => {
     expect(after.digest).not.toBe(before.digest);
   });
 
-  it("does not depend on exception ordering", () => {
+  it("does not depend on review ordering", () => {
     const parsed = priced(120);
-    const forward = computeValidationDigest(parsed, [], [
-      { kind: "unknown_product_vocabulary", severity: "review_required", itemNumber: 1, productName: "a", suggestions: [] },
-      { kind: "unknown_product_vocabulary", severity: "review_required", itemNumber: 2, productName: "b", suggestions: [] },
-    ]);
-    const reversed = computeValidationDigest(parsed, [], [
-      { kind: "unknown_product_vocabulary", severity: "review_required", itemNumber: 2, productName: "b", suggestions: [] },
-      { kind: "unknown_product_vocabulary", severity: "review_required", itemNumber: 1, productName: "a", suggestions: [] },
-    ]);
+    const one = {
+      kind: "subunit_confirmation" as const,
+      severity: "review_required" as const,
+      itemNumber: 1,
+      productName: "a",
+      enteredQuantity: 7,
+      enteredUnit: "ขีด" as const,
+      canonicalQuantity: 0.7,
+      canonicalUnit: "โล",
+    };
+    const two = { ...one, itemNumber: 2, productName: "b" };
+    const forward = computeValidationDigest(parsed, [], [one, two]);
+    const reversed = computeValidationDigest(parsed, [], [two, one]);
     expect(forward).toBe(reversed);
   });
 });

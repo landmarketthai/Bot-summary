@@ -47,6 +47,10 @@ export interface ProducePartialCapture {
   acceptedAmount: number | null;
 }
 
+function normalizedName(name: string): string {
+  return name.normalize("NFC").replace(/\s+/g, " ").trim();
+}
+
 function exceptionItemNumber(exception: ProduceValidationException): number | null {
   return "itemNumber" in exception ? exception.itemNumber : null;
 }
@@ -103,7 +107,35 @@ export function buildProducePartialCapture(
     finalizationErrors.map(parseErrorItemNumber).filter((n): n is number => n !== null),
   );
 
-  for (let exception of [...validation.blocking, ...validation.reviews]) {
+  // unknown_product_vocabulary is an advisory (Production 2026-10-03): the line
+  // is kept and finalized, but it still needs a human to vouch for the spelling,
+  // so it is surfaced here as a ⚠️ รอตรวจชื่อสินค้า review marker. Other
+  // advisories (price/quantity reconciliation) are deliberately NOT review
+  // markers — they are post-save notices, not lines awaiting a correction.
+  //
+  // Validation reports one advisory per distinct spelling, at its first item.
+  // Every line carrying that spelling is equally unchecked, so each one gets
+  // its own marker — otherwise a repeated unknown name would be counted in
+  // "ยอดที่ตรวจแล้ว".
+  const pendingNameChecks = validation.advisories.flatMap((advisory) => {
+    if (advisory.kind !== "unknown_product_vocabulary") return [];
+    const names = new Set(
+      parsed.items
+        .filter((item) => item.item_number === advisory.itemNumber)
+        .map((item) => normalizedName(item.product_name)),
+    );
+    names.add(normalizedName(advisory.productName));
+    const itemNumbers = [...new Set(
+      parsed.items
+        .filter((item) => names.has(normalizedName(item.product_name)))
+        .map((item) => item.item_number),
+    )];
+    if (!itemNumbers.includes(advisory.itemNumber)) itemNumbers.push(advisory.itemNumber);
+    return itemNumbers
+      .sort((left, right) => left - right)
+      .map((itemNumber) => ({ ...advisory, itemNumber }));
+  });
+  for (let exception of [...validation.blocking, ...validation.reviews, ...pendingNameChecks]) {
     // A number missing only because its own source line failed to parse is
     // already reported by that parse error; one source line, one issue.
     if (exception.kind === "item_number_gap") {
@@ -301,16 +333,38 @@ function itemSummaryLine(entry: ProducePartialCaptureItem, capture: ProduceParti
   return `${itemSelector(item, capture)}. ${item.product_name} ${formatCompactNumber(item.quantity)} ${item.unit} × ${linePriceText(item)} = ${lineTotalText(item)}${review}`;
 }
 
-export function buildPartialCaptureSavedReply(capture: ProducePartialCapture): string {
+export interface PartialCaptureSavedReplyOptions {
+  /**
+   * "review_only" lists just the lines awaiting review, for a round too long
+   * to list in full within one LINE push. Totals are always printed in full.
+   */
+  listing?: "all" | "review_only";
+  /** Cap on listed lines; the remainder is counted, never silently dropped. */
+  maxListedLines?: number;
+}
+
+export function buildPartialCaptureSavedReply(
+  capture: ProducePartialCapture,
+  options: PartialCaptureSavedReplyOptions = {},
+): string {
   const label = captureLabel(capture.items);
-  const orderedItems = [...capture.items].sort(
-    (left, right) => left.item.item_number - right.item.item_number,
-  );
+  const reviewOnly = options.listing === "review_only";
+  const orderedItems = [...capture.items]
+    .sort((left, right) => left.item.item_number - right.item.item_number)
+    .filter((entry) => !reviewOnly || entry.status === "needs_review");
+  const listedItems = options.maxListedLines === undefined
+    ? orderedItems
+    : orderedItems.slice(0, Math.max(0, options.maxListedLines));
+  const hiddenCount = orderedItems.length - listedItems.length;
   const lines = [
     `✅ รับ${label}แล้ว`,
     "",
-    "รายการที่อ่านได้",
-    ...orderedItems.map((entry) => itemSummaryLine(entry, capture)),
+    reviewOnly ? "รายการที่รอตรวจ" : "รายการที่อ่านได้",
+    ...listedItems.map((entry) => itemSummaryLine(entry, capture)),
+    ...(hiddenCount > 0 ? [`…และอีก ${hiddenCount} รายการ`] : []),
+    ...(reviewOnly && capture.acceptedCount > 0
+      ? [`(อีก ${capture.acceptedCount} รายการตรวจแล้ว ไม่แสดงรายละเอียด)`]
+      : []),
     "",
   ];
 
@@ -336,6 +390,29 @@ export function buildPartialCaptureSavedReply(capture: ProducePartialCapture): s
   return lines.join("\n");
 }
 
+/**
+ * The saved-lines receipt, shortened only as far as `fits` requires: every
+ * line first, then only the lines awaiting review, then a capped review list.
+ * The money totals and the review count are printed in every variant, so a
+ * long round can lose line detail but never its totals.
+ */
+export function buildPartialCaptureSavedReplyWithin(
+  capture: ProducePartialCapture,
+  fits: (reply: string) => boolean,
+): string {
+  const variants: PartialCaptureSavedReplyOptions[] = [
+    { listing: "all" },
+    { listing: "review_only" },
+    ...[50, 20, 10, 0].map((maxListedLines) => ({ listing: "review_only" as const, maxListedLines })),
+  ];
+  let reply = "";
+  for (const options of variants) {
+    reply = buildPartialCaptureSavedReply(capture, options);
+    if (fits(reply)) return reply;
+  }
+  return reply;
+}
+
 function readableParseIssue(issue: ProducePartialCaptureIssue): string {
   const quoted = issue.detail.match(/"([^"]+)"/)?.[1];
   if (quoted) return quoted;
@@ -347,18 +424,33 @@ function issueDetailForUser(issue: ProducePartialCaptureIssue): string {
   return issue.detail;
 }
 
+/**
+ * An unknown name is advisory: it is marked ⚠️ in the saved receipt, but it is
+ * not something the operator must fix before closing, so it is never listed
+ * here — where it could also crowd a real parse error out of the top ten.
+ */
+function isCorrectionIssue(issue: ProducePartialCaptureIssue): boolean {
+  return issue.kind !== "unknown_product_vocabulary";
+}
+
+function needsCorrection(entry: ProducePartialCaptureItem): boolean {
+  return entry.status === "needs_review"
+    && entry.issueKinds.some((kind) => kind !== "unknown_product_vocabulary");
+}
+
 export function buildPartialCaptureReviewReply(capture: ProducePartialCapture): string {
+  const issuesToFix = capture.issues.filter(isCorrectionIssue);
   const itemNumbers = [...new Set(
-    capture.issues.flatMap((issue) => issue.itemNumber === null ? [] : [issue.itemNumber]),
+    issuesToFix.flatMap((issue) => issue.itemNumber === null ? [] : [issue.itemNumber]),
   )];
-  const unnumbered = capture.issues.filter((issue) => issue.itemNumber === null);
+  const unnumbered = issuesToFix.filter((issue) => issue.itemNumber === null);
   const reviewItemCount = itemNumbers.length + unnumbered.length;
   const lines = [`⚠️ มี ${reviewItemCount} รายการที่ต้องแก้`, ""];
 
   for (const itemNumber of itemNumbers.slice(0, 10)) {
     const allEntries = capture.items.filter((candidate) => candidate.item.item_number === itemNumber);
-    const reviewEntries = allEntries.filter((entry) => entry.status === "needs_review");
-    const issues = capture.issues.filter((issue) => issue.itemNumber === itemNumber);
+    const reviewEntries = allEntries.filter((entry) => needsCorrection(entry));
+    const issues = issuesToFix.filter((issue) => issue.itemNumber === itemNumber);
     const specificIssues = new Map<number, ProducePartialCaptureIssue[]>();
     for (const issue of issues) {
       if (issue.itemOccurrence === undefined) continue;
@@ -431,10 +523,10 @@ export function buildPartialCaptureReviewReply(capture: ProducePartialCapture): 
 
   if (itemNumbers.length > 0) {
     const firstNumber = itemNumbers[0];
-    const firstSpecificIssue = capture.issues.find((issue) =>
+    const firstSpecificIssue = issuesToFix.find((issue) =>
       issue.itemNumber === firstNumber && issue.itemOccurrence !== undefined);
     const firstEntry = capture.items.find((entry) =>
-      entry.item.item_number === firstNumber && entry.status === "needs_review");
+      entry.item.item_number === firstNumber && needsCorrection(entry));
     const first = firstSpecificIssue?.itemOccurrence !== undefined
       ? selectorForOccurrence(firstNumber, firstSpecificIssue.itemOccurrence, capture)
       : firstEntry

@@ -52,9 +52,15 @@ import { bindPlainTextRound } from "@/lib/produce/plain-text-round-binding";
 import {
   buildBlockingValidationReply,
   buildPriceAdvisoryNotification,
+  buildPriceAdvisoryWarning,
   buildPlainTextReviewPresentationPages,
   buildUnconfirmedReviewReply,
 } from "@/lib/produce/entry-validation-message";
+import {
+  buildProducePartialCapture,
+  buildPartialCaptureSavedReplyWithin,
+} from "@/lib/produce/partial-capture";
+import { fitsProduceNotification } from "@/lib/line/produce-notification-delivery";
 import type {
   ProduceValidationAdvisory,
   ProduceValidationResult,
@@ -430,6 +436,34 @@ export async function holdAndPresentFinalizerReview(
   };
 }
 
+/**
+ * The success receipt for a document that finalized with names still awaiting
+ * a human check: every readable line (pending names marked), the readable /
+ * checked / review totals, then any other post-save advisories.
+ */
+export function buildPendingNameCheckNotification(
+  persistedParsed: WeighSession,
+  advisories: ProduceValidationAdvisory[],
+  correctionNotice = "",
+): string {
+  const capture = buildProducePartialCapture(
+    persistedParsed,
+    { status: "clean", blocking: [], reviews: [], advisories, digest: "" },
+    [],
+  );
+  const otherAdvisories = advisories.filter(
+    (advisory) => advisory.kind !== "unknown_product_vocabulary",
+  );
+  const tail = otherAdvisories.length > 0
+    ? `${correctionNotice}\n\n${buildPriceAdvisoryWarning(otherAdvisories)}`
+    : correctionNotice;
+  const receipt = buildPartialCaptureSavedReplyWithin(
+    capture,
+    (reply) => fitsProduceNotification(`${reply}${tail}`),
+  );
+  return `${receipt}${tail}`;
+}
+
 export async function finalizePendingGeneration(
   supabase: Supabase,
   snapshot: PendingSession,
@@ -718,10 +752,23 @@ export async function finalizePendingGeneration(
         ...(hiddenCorrections > 0 ? [`…และอีก ${hiddenCorrections} รายการ`] : []),
       ].join("\n")
     : "";
-  const notificationPayload = buildPriceAdvisoryNotification(
-    `${notificationBase}${correctionNotice}`,
-    entryGateAdvisories,
-  );
+  // A withdrawal booked under an unrecognised name finalizes — the data is
+  // recorded — but the operator still has to vouch for the spelling. The
+  // success notification is then the "received, with lines awaiting a name
+  // check" receipt (Production 2026-10-03): every readable line, each pending
+  // name marked ⚠️ รอตรวจชื่อสินค้า, the readable/checked/review totals, and a
+  // "รายการอื่นเก็บไว้แล้ว ไม่ต้องส่งใหม่" footer. The notification worker
+  // splits it into up to five LINE messages in one push; a round too long even
+  // for that lists fewer lines, never fewer totals. Price / unmatched-return
+  // advisories still follow, exactly as they would without a name check.
+  const pendingNameCheck = validationErrors.length === 0 && !isAdditional
+    && entryGateAdvisories.some((advisory) => advisory.kind === "unknown_product_vocabulary");
+  const notificationPayload = pendingNameCheck
+    ? buildPendingNameCheckNotification(persistedParsed, entryGateAdvisories, correctionNotice)
+    : buildPriceAdvisoryNotification(
+        `${notificationBase}${correctionNotice}`,
+        entryGateAdvisories,
+      );
 
   const transactionTypes = [...new Set(
     parsed.items.map((item) => item.transaction_type),

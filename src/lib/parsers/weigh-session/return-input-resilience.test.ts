@@ -76,10 +76,15 @@ describe("price typed where the quantity belongs", () => {
     expect(parsed.parse_errors).toEqual([
       'item #89 ใบชะพูล quantity/unit unclear: "89.ใบชะพูล10บาท 16บาท"',
     ]);
-    expect(staged.issues).toHaveLength(1);
-    expect(staged.issues[0]).toMatchObject({ kind: "parse_error", itemNumber: 89 });
+    // ผักชี / ผักบุ้ง are outside the reviewed Dictionary: advisory name
+    // markers only. The one thing to correct is item 89.
+    const corrections = staged.issues.filter((issue) => issue.kind !== "unknown_product_vocabulary");
+    expect(corrections).toHaveLength(1);
+    expect(corrections[0]).toMatchObject({ kind: "parse_error", itemNumber: 89 });
     expect(staged.issues.some((issue) => issue.itemNumber === 16)).toBe(false);
-    expect(buildPartialCaptureReviewReply(staged)).toContain("89.ใบชะพูล10บาท 16บาท");
+    const reply = buildPartialCaptureReviewReply(staged);
+    expect(reply).toContain("⚠️ มี 1 รายการที่ต้องแก้");
+    expect(reply).toContain("89.ใบชะพูล10บาท 16บาท");
   });
 
   it("lets แก้ข้อ 89 supply the missing row without resending good rows", () => {
@@ -165,8 +170,13 @@ describe("duplicate item number occurrence selectors", () => {
     expect(reply).toContain("ข้อ 52B\nคะน้า");
     expect(reply).toContain("แก้ข้อ 52A");
     expect(reply).toContain("52.หอมแดง20บาท");
-    expect(staged.items.filter((entry) => entry.item.item_number !== 52).every((entry) => entry.status === "accepted"))
+    // The duplicate never spills onto 51/53; at most they carry an advisory
+    // name marker (ผักชี is outside the reviewed Dictionary).
+    expect(staged.items
+      .filter((entry) => entry.item.item_number !== 52)
+      .every((entry) => entry.issueKinds.every((kind) => kind === "unknown_product_vocabulary")))
       .toBe(true);
+    expect(staged.items.find((entry) => entry.item.item_number === 53)?.status).toBe("accepted");
   });
 
   it("keeps selectors actionable when 52A fails parsing but 52B parses", () => {
@@ -189,7 +199,10 @@ describe("duplicate item number occurrence selectors", () => {
     expect(reply).toContain("ข้อ 52A");
     expect(reply).toContain("แก้ข้อ 52A");
     expect(reply).not.toContain("พิมพ์ “แก้ข้อ 52”");
-    expect(staged.items.find((entry) => entry.item.item_occurrence === 2)?.status).toBe("accepted");
+    // 52A's parse error never taints 52B; คะน้า only carries the advisory
+    // name marker (outside the reviewed Dictionary).
+    expect(staged.items.find((entry) => entry.item.item_occurrence === 2)?.issueKinds)
+      .toEqual(["unknown_product_vocabulary"]);
 
     const corrected = parseWeighSession(returnDocument(
       ...source,

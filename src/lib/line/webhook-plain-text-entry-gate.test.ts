@@ -252,12 +252,35 @@ function textEvent(text: string, eventId: string, userId = "user-1"): LineMessag
   } as unknown as LineMessageEvent;
 }
 
-function build(db: PlainTextGateDatabase, replies: string[]) {
+interface Transport {
+  pushes: Array<{ to: string; texts: string[] }>;
+  replyFails?: boolean;
+  pushFails?: boolean;
+}
+
+function build(db: PlainTextGateDatabase, replies: string[], transport: Transport = { pushes: [] }) {
   return new WebhookService(db as never, {
-    replyMessage: async (_token, text) => { replies.push(text); },
-    replyMessages: async (_token, texts) => { replies.push(...texts); },
+    replyMessage: async (_token, text) => {
+      if (transport.replyFails) throw new Error("LINE reply 400 Invalid reply token");
+      replies.push(text);
+    },
+    replyMessages: async (_token, texts) => {
+      if (transport.replyFails) throw new Error("LINE reply 400 Invalid reply token");
+      replies.push(...texts);
+    },
+    pushMessages: async (to, texts) => {
+      if (transport.pushFails) throw new Error("LINE push 500");
+      transport.pushes.push({ to, texts });
+    },
   });
 }
+
+/** A basis-priced line entered in ขีด: the remaining review_required kind. */
+const RISKY_SUBUNIT_WITHDRAWAL = [
+  "ดำ-ราชพฤกษ์ เบิก 11/8/2569",
+  "1.เงาะ30ขีด100บาท",
+  "15.4โล",
+].join("\n");
 
 const RETURN_HEADER = "ดำ-ราชพฤกษ์ ชั่งคืน 11/8/2569";
 
@@ -347,7 +370,7 @@ describe("P4A on the plain-text close", () => {
     expect(db.tables.produce_transactions).toHaveLength(before);
   });
 
-  it("stages good return lines and asks to fix only an unknown return identity", async () => {
+  it("closes an unknown return identity on the FIRST close, as an advisory", async () => {
     const db = new PlainTextGateDatabase(
       pendingRow([
         RETURN_HEADER,
@@ -357,36 +380,19 @@ describe("P4A on the plain-text close", () => {
       master([{}]),
     );
     const replies: string[] = [];
-    const service = build(db, replies);
+    const transport: Transport = { pushes: [] };
 
-    await service.processEvents([textEvent("จบรายการชั่งคืน", "partial-close-1")], "dest");
+    await build(db, replies, transport)
+      .processEvents([textEvent("จบรายการชั่งคืน", "partial-close-1")], "dest");
 
-    expect(replies).toHaveLength(2);
-    expect(replies[0]).toContain("✅ รับรายการชั่งคืนแล้ว");
-    expect(replies[0]).toContain("1. มังคุด 4 โล × 45 บาท = 180.00 บาท");
-    expect(replies[0]).toContain("2. พักผ่อน 4 แพค × 20 บาท = 80.00 บาท ⚠️ รอตรวจชื่อสินค้า");
-    expect(replies[0]).toContain("ยอดจากรายการที่อ่านได้ทั้งหมด: 260.00 บาท");
-    expect(replies[0]).toContain("ยอดที่ตรวจแล้ว: 180.00 บาท");
-    expect(replies[0]).toContain("⚠️ รอตรวจ: 80.00 บาท (1 รายการ)");
-    expect(replies[0]).toContain("ยอดขาด-เกินจะสรุปหลังแก้รายการที่รอตรวจเรียบร้อย");
-    expect(replies[0]).not.toContain("Settlement");
-    expect(replies[0]).not.toContain("Final");
-    expect(replies[1]).toContain("⚠️ มี 1 รายการที่ต้องแก้");
-    expect(replies[1]).toContain("พักผ่อน");
-    expect(replies[1]).toContain("แก้ข้อ 2");
-    expect(replies[1]).toContain("ลบข้อ 2");
-    expect(replies[1]).toContain("ตัวอย่างกรณีมีหลายข้อ");
-    expect(replies[1]).not.toContain("Dictionary");
-    expect(db.pending.close_event_timestamp_ms).toBeNull();
+    // No correction prompt, no review row, no second close: the close boundary
+    // is written now and the finalizer records the name exactly as typed.
+    expect(replies).toEqual([PRODUCE_CLOSE_PENDING_REPLY]);
+    expect(db.pending.close_line_event_id).toBe("partial-close-1");
+    expect(db.pending.close_event_timestamp_ms).not.toBeNull();
     expect(db.reviews).toHaveLength(0);
-    expect(db.pending.partial_capture).toBeTruthy();
-
-    // Repeating “จบรายการ” is NOT an override for an unknown return identity.
-    replies.length = 0;
-    await service.processEvents([textEvent("จบรายการชั่งคืน", "partial-close-2")], "dest");
-    expect(replies[1]).toContain("แก้ข้อ 2");
-    expect(db.pending.close_event_timestamp_ms).toBeNull();
-    expect(db.reviews).toHaveLength(0);
+    expect(db.closeRefusals).toEqual([]);
+    expect(transport.pushes).toEqual([]);
   });
 
   it("accepts a changed price on the first close without a review record", async () => {
@@ -457,7 +463,7 @@ describe("P4A on the plain-text close", () => {
     expect(db.closeRefusals).toEqual([]);
   });
 
-  it("shows the exact close CTA, then finalizes the unchanged name on second close", async () => {
+  it("closes an unknown withdrawal name on the first close without a review row", async () => {
     const db = new PlainTextGateDatabase(
       pendingRow([
         "ดำ-ราชพฤกษ์ เบิก 11/8/2569",
@@ -467,97 +473,176 @@ describe("P4A on the plain-text close", () => {
       [],
     );
     const replies: string[] = [];
-    const service = build(db, replies);
+    await build(db, replies).processEvents([textEvent("จบรายการเบิก", "first-close")], "dest");
 
-    await service.processEvents([textEvent("จบรายการเบิก", "review-close-1")], "dest");
+    expect(replies).toEqual([PRODUCE_CLOSE_PENDING_REPLY]);
+    expect(db.pending.close_line_event_id).toBe("first-close");
+    expect(db.reviews).toHaveLength(0);
+  });
 
-    expect(replies.at(-1)).toContain("✅ ถ้าชื่อนี้ถูกต้องและต้องการบันทึกตามที่พิมพ์");
-    expect(replies.at(-1)).toContain("ส่ง “จบรายการเบิก” อีกครั้ง");
-    expect(replies.at(-1)).toContain("ส่ง “แก้ข้อ 4”");
+  it("closes 116 readable lines with 25 unknown names on the first close", async () => {
+    const lines = ["ดำ-ราชพฤกษ์ เบิก 11/8/2569"];
+    for (let number = 1; number <= 116; number += 1) {
+      const name = number % 4 === 0 && number <= 100 ? `สินค้าทดลองไม่มีในระบบ${number}` : "มังคุด";
+      lines.push(`${number}.${name}45บาท`, "2โล");
+    }
+    const db = new PlainTextGateDatabase(pendingRow(lines.join("\n")), []);
+    const replies: string[] = [];
+    await build(db, replies).processEvents([textEvent("จบรายการเบิก", "close-116")], "dest");
+
+    expect(replies).toEqual([PRODUCE_CLOSE_PENDING_REPLY]);
+    expect(db.pending.close_line_event_id).toBe("close-116");
+    expect(db.reviews).toHaveLength(0);
+    expect(db.closeRefusals).toEqual([]);
+  });
+
+  it("presents a risky subunit for confirmation instead of closing", async () => {
+    const db = new PlainTextGateDatabase(pendingRow(RISKY_SUBUNIT_WITHDRAWAL), []);
+    const replies: string[] = [];
+    await build(db, replies).processEvents([textEvent("จบรายการเบิก", "review-close-1")], "dest");
+
+    expect(replies.at(-1)).toContain("“ยืนยันข้อ 1”");
+    expect(replies.at(-1)).toContain("30 ขีด");
     expect(db.pending.close_line_event_id).toBeNull();
-    expect(db.reviews).toHaveLength(1);
-    expect(db.reviews[0]?.confirmed_at).toBeNull();
-    expect(db.reviews[0]?.presented_delivered_at).not.toBeNull();
-    expect(db.reviews[0]?.presented_line_event_id).toBe("review-close-1");
+    expect(db.reviews.length).toBeGreaterThan(0);
+    expect(db.reviews.every((review) => review.confirmed_at === null)).toBe(true);
+    expect(db.reviews.every((review) => review.presented_delivered_at !== null)).toBe(true);
+    expect(db.reviews.every((review) => review.presented_line_event_id === "review-close-1")).toBe(true);
     expect(db.pending.accumulated_text).not.toContain("จบรายการเบิก");
-
-    await service.processEvents([textEvent("จบรายการเบิก", "review-close-2")], "dest");
-
-    expect(replies.at(-1)).toBe(PRODUCE_CLOSE_PENDING_REPLY);
-    expect(db.pending.close_line_event_id).toBe("review-close-2");
-    expect(db.reviews[0]?.confirmed_at).not.toBeNull();
   });
 
   it("keeps the review identity stable when the first close event is redelivered", async () => {
-    const original = [
-      "ดำ-ราชพฤกษ์ เบิก 11/8/2569",
-      "4.มะม่วง20บาท",
-      "1โล",
-    ].join("\n");
-    const db = new PlainTextGateDatabase(pendingRow(original), []);
+    const db = new PlainTextGateDatabase(pendingRow(RISKY_SUBUNIT_WITHDRAWAL), []);
     const replies: string[] = [];
     const service = build(db, replies);
 
     await service.processEvents([textEvent("จบรายการเบิก", "duplicate-close")], "dest");
-    const digest = db.reviews[0]?.digest;
+    const digests = db.reviews.map((review) => review.digest);
+    expect(digests.length).toBeGreaterThan(0);
     await service.processEvents([textEvent("จบรายการเบิก", "duplicate-close")], "dest");
 
-    expect(db.pending.accumulated_text).toBe(original);
-    expect(db.reviews.map((review) => review.digest)).toEqual([digest]);
-    expect(db.reviews[0]?.confirmed_at).toBeNull();
-
-    await service.processEvents([textEvent("จบรายการเบิก", "distinct-close")], "dest");
-    expect(db.reviews[0]?.confirmed_at).not.toBeNull();
-    expect(db.pending.close_line_event_id).toBe("distinct-close");
+    expect(db.pending.accumulated_text).toBe(RISKY_SUBUNIT_WITHDRAWAL);
+    expect(db.reviews.map((review) => review.digest)).toEqual(digests);
+    expect(db.reviews.every((review) => review.confirmed_at === null)).toBe(true);
+    expect(db.pending.close_line_event_id).toBeNull();
   });
 
   it("recovers from a failed delivery stamp without growing review rows", async () => {
-    const original = [
-      "ดำ-ราชพฤกษ์ เบิก 11/8/2569",
-      "4.มะม่วง20บาท",
-      "1โล",
-    ].join("\n");
-    const db = new PlainTextGateDatabase(pendingRow(original), []);
+    const db = new PlainTextGateDatabase(pendingRow(RISKY_SUBUNIT_WITHDRAWAL), []);
     db.presentationError = "temporary database failure";
     const replies: string[] = [];
     const service = build(db, replies);
 
     await service.processEvents([textEvent("จบรายการเบิก", "failed-stamp")], "dest");
-    expect(db.reviews).toHaveLength(1);
-    expect(db.reviews[0]?.presented_delivered_at).toBeNull();
+    const rows = db.reviews.length;
+    expect(rows).toBeGreaterThan(0);
+    expect(db.reviews.every((review) => review.presented_delivered_at === null)).toBe(true);
 
     db.presentationError = null;
     await service.processEvents([textEvent("จบรายการเบิก", "re-present")], "dest");
-    expect(db.reviews).toHaveLength(1);
-    expect(db.reviews[0]?.presented_delivered_at).not.toBeNull();
-    expect(db.reviews[0]?.presented_line_event_id).toBe("re-present");
-    expect(db.reviews[0]?.confirmed_at).toBeNull();
-
-    await service.processEvents([textEvent("จบรายการเบิก", "confirm-after-recovery")], "dest");
-    expect(db.reviews[0]?.confirmed_at).not.toBeNull();
-    expect(db.pending.close_line_event_id).toBe("confirm-after-recovery");
+    expect(db.reviews).toHaveLength(rows);
+    expect(db.reviews.every((review) => review.presented_delivered_at !== null)).toBe(true);
+    expect(db.reviews.every((review) => review.presented_line_event_id === "re-present")).toBe(true);
+    expect(db.reviews.every((review) => review.confirmed_at === null)).toBe(true);
+    expect(db.pending.close_line_event_id).toBeNull();
   });
 
   it("invalidates a delivered review when the Produce document changes", async () => {
-    const db = new PlainTextGateDatabase(pendingRow([
-      "ดำ-ราชพฤกษ์ เบิก 11/8/2569",
-      "4.มะม่วง20บาท",
-      "1โล",
-    ].join("\n")), []);
+    const db = new PlainTextGateDatabase(pendingRow(RISKY_SUBUNIT_WITHDRAWAL), []);
     const replies: string[] = [];
     const service = build(db, replies);
 
     await service.processEvents([textEvent("จบรายการเบิก", "before-change")], "dest");
-    const oldDigest = db.reviews[0]!.digest;
-    db.pending.accumulated_text = `${db.pending.accumulated_text}\n5.ฝรั่ง30บาท\n1โล`;
+    const oldDigests = new Set(db.reviews.map((review) => review.digest));
+    const rows = db.reviews.length;
+    db.pending.accumulated_text = `${db.pending.accumulated_text}\n2.ฝรั่ง30บาท\n1โล`;
     db.pending.ingest_revision = 1;
 
     await service.processEvents([textEvent("จบรายการเบิก", "after-change")], "dest");
-    expect(db.reviews).toHaveLength(2);
-    expect(db.reviews[1]?.digest).not.toBe(oldDigest);
-    expect(db.reviews[0]?.confirmed_at).toBeNull();
-    expect(db.reviews[1]?.confirmed_at).toBeNull();
+    expect(db.reviews.length).toBeGreaterThan(rows);
+    expect(db.reviews.slice(rows).every((review) => !oldDigests.has(review.digest))).toBe(true);
+    expect(db.reviews.every((review) => review.confirmed_at === null)).toBe(true);
     expect(db.pending.close_event_timestamp_ms).toBeNull();
+  });
+});
+
+describe("a refused close is never silent when the reply token fails", () => {
+  it("pushes a blocked refusal when the reply fails", async () => {
+    const db = new PlainTextGateDatabase(
+      pendingRow([RETURN_HEADER, "1.มังคุด45บาท", "4โลก"].join("\n")),
+      master([{}]),
+    );
+    const replies: string[] = [];
+    const transport: Transport = { pushes: [], replyFails: true };
+    await build(db, replies, transport)
+      .processEvents([textEvent("จบรายการชั่งคืน", "blocked-push")], "dest");
+
+    expect(replies).toEqual([]);
+    expect(transport.pushes).toHaveLength(1);
+    expect(transport.pushes[0]!.to).toBe("group-1");
+    expect(transport.pushes[0]!.texts.join("\n")).toContain("⛔");
+    expect(transport.pushes[0]!.texts.join("\n")).toContain("โลก");
+    expect(db.pending.close_event_timestamp_ms).toBeNull();
+  });
+
+  it("does not push when the reply succeeds", async () => {
+    const db = new PlainTextGateDatabase(
+      pendingRow([RETURN_HEADER, "1.มังคุด45บาท", "4โลก"].join("\n")),
+      master([{}]),
+    );
+    const replies: string[] = [];
+    const transport: Transport = { pushes: [] };
+    await build(db, replies, transport)
+      .processEvents([textEvent("จบรายการชั่งคืน", "blocked-reply")], "dest");
+
+    expect(replies[0]).toContain("⛔");
+    expect(transport.pushes).toEqual([]);
+  });
+
+  it("stamps review delivery after a successful push fallback", async () => {
+    const db = new PlainTextGateDatabase(pendingRow(RISKY_SUBUNIT_WITHDRAWAL), []);
+    const transport: Transport = { pushes: [], replyFails: true };
+    await build(db, [], transport)
+      .processEvents([textEvent("จบรายการเบิก", "review-push")], "dest");
+
+    expect(transport.pushes).toHaveLength(1);
+    expect(transport.pushes[0]!.texts.join("\n")).toContain("“ยืนยันข้อ 1”");
+    expect(db.reviews.length).toBeGreaterThan(0);
+    expect(db.reviews.every((review) => review.presented_delivered_at !== null)).toBe(true);
+    expect(db.reviews.every((review) => review.presented_line_event_id === "review-push")).toBe(true);
+  });
+
+  it("writes no delivery proof when reply and push both fail", async () => {
+    const db = new PlainTextGateDatabase(pendingRow(RISKY_SUBUNIT_WITHDRAWAL), []);
+    const transport: Transport = { pushes: [], replyFails: true, pushFails: true };
+    await build(db, [], transport)
+      .processEvents([textEvent("จบรายการเบิก", "review-lost")], "dest");
+
+    expect(db.reviews.length).toBeGreaterThan(0);
+    expect(db.reviews.every((review) => review.presented_delivered_at === null)).toBe(true);
+    expect(db.reviews.every((review) => review.confirmed_at === null)).toBe(true);
+    expect(db.pending.close_event_timestamp_ms).toBeNull();
+  });
+
+  it("keeps a long blocked round's refusal within LINE's per-message limit", async () => {
+    const lines = [RETURN_HEADER];
+    // 200 lines: the full saved-lines receipt alone would exceed 5,000 code
+    // points, which LINE rejects outright — reply and push fallback alike.
+    for (let number = 1; number <= 200; number += 1) {
+      lines.push(`${number}.มังคุด45บาท`, number === 200 ? "4โลก" : "1โล");
+    }
+    const db = new PlainTextGateDatabase(pendingRow(lines.join("\n")), master([{ quantity: 500 }]));
+    const replies: string[] = [];
+    await build(db, replies).processEvents([textEvent("จบรายการชั่งคืน", "blocked-200")], "dest");
+
+    expect(replies.length).toBeGreaterThan(0);
+    expect(replies.length).toBeLessThanOrEqual(5);
+    for (const reply of replies) expect([...reply].length).toBeLessThanOrEqual(5000);
+    expect(replies.join("\n")).toContain("⛔");
+    // Compacted to the lines awaiting review; totals survive.
+    expect(replies[0]).toContain("รายการที่รอตรวจ");
+    expect(replies[0]).toContain("200. มังคุด 4 โลก");
+    expect(replies[0]).toContain("ยอดจากรายการที่อ่านได้ทั้งหมด: 9,135.00 บาท");
   });
 });
 

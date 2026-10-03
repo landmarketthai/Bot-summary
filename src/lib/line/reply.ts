@@ -3,7 +3,11 @@ import { formatThaiDate } from "@/lib/date";
 import type { WeighSession, WeighSessionItem } from "@/lib/parsers/weigh-session/types";
 import { ADDITIONAL_TYPE_LABEL } from "@/lib/parsers/weigh-session/parser";
 import { produceCategoryTotals, resolveProduceCategory } from "@/lib/summary/produce-category-totals";
-import { LINE_MESSAGE_MAX_CODE_POINTS, countCodePoints } from "@/lib/summary/line-chunking";
+import {
+  LINE_MESSAGE_MAX_CODE_POINTS,
+  LINE_TEXT_MESSAGE_HARD_MAX_CODE_POINTS,
+  countCodePoints,
+} from "@/lib/summary/line-chunking";
 import { exactLineTotalScaled, scaledToBaht } from "@/lib/produce/exact-line-total";
 import type { TransactionBucket } from "@/lib/summary/transactions";
 
@@ -139,7 +143,28 @@ export function parseRetryAfterMs(
 //   { status: "delivered" }       — HTTP 2xx, message delivered now
 //   { status: "already_accepted" } — HTTP 409 + retryKey, idempotent re-send
 // Throws on any other non-2xx status or network error.
-export async function pushLineMessage(to: string, text: string, retryKey?: string): Promise<PushResult> {
+export async function pushLineMessages(
+  to: string,
+  texts: string[],
+  retryKey?: string,
+): Promise<PushResult> {
+  if (texts.length < 1 || texts.length > 5) {
+    throw new LinePushError(
+      `LINE push allows 1–5 messages, got ${texts.length}`,
+      400,
+      false,
+    );
+  }
+  for (const text of texts) {
+    if (countCodePoints(text) > LINE_TEXT_MESSAGE_HARD_MAX_CODE_POINTS) {
+      throw new LinePushError(
+        `LINE push text exceeds ${LINE_TEXT_MESSAGE_HARD_MAX_CODE_POINTS} code points`,
+        400,
+        false,
+      );
+    }
+  }
+
   const headers: Record<string, string> = {
     Authorization: `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`,
     "Content-Type": "application/json",
@@ -153,13 +178,14 @@ export async function pushLineMessage(to: string, text: string, retryKey?: strin
       headers,
       body: JSON.stringify({
         to,
-        messages: [{ type: "text", text }],
+        messages: texts.map((text) => ({ type: "text", text })),
       }),
     });
   } catch {
     logger.error("LINE API request failed", {
       operation: "push",
       category: "network_error",
+      messageCount: texts.length,
     });
     throw new LinePushError("LINE push network error", null, true);
   }
@@ -175,6 +201,7 @@ export async function pushLineMessage(to: string, text: string, retryKey?: strin
     logger.warn("LINE push 409 — already accepted (retry key match)", {
       operation: "push",
       retryKey,
+      messageCount: texts.length,
     });
     return { status: "already_accepted" };
   }
@@ -186,6 +213,7 @@ export async function pushLineMessage(to: string, text: string, retryKey?: strin
     status: res.status,
     category: lineHttpErrorCategory(res.status),
     retryAfterMs,
+    messageCount: texts.length,
   });
   throw new LinePushError(
     `LINE push HTTP ${res.status}`,
@@ -193,6 +221,14 @@ export async function pushLineMessage(to: string, text: string, retryKey?: strin
     retryable,
     retryAfterMs,
   );
+}
+
+export async function pushLineMessage(
+  to: string,
+  text: string,
+  retryKey?: string,
+): Promise<PushResult> {
+  return pushLineMessages(to, [text], retryKey);
 }
 
 function lineHttpErrorCategory(status: number): string {

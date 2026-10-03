@@ -186,6 +186,12 @@ function renderAdvisoryLine(advisory: ProduceValidationAdvisory): string {
         : "";
       return `• ข้อ ${advisory.itemNumber} ${advisory.productName} — ไม่พบในรายการเบิกของรอบนี้${suggestion}`;
     }
+    case "unknown_product_vocabulary": {
+      const suggestion = advisory.suggestions.length > 0
+        ? ` — ชื่อใกล้เคียง: ${advisory.suggestions.map((candidate) => candidate.canonicalName).join(", ")}`
+        : "";
+      return `• ข้อ ${advisory.itemNumber} ${advisory.productName} — รอตรวจชื่อสินค้า${suggestion}`;
+    }
     case "return_exceeds_withdrawal":
       return `• ${advisory.productName} (${advisory.unit}) — เบิก ${formatQuantity(advisory.withdrawnQuantity)}, คืนดี ${formatQuantity(advisory.goodReturnQuantity)}, คืนเสีย ${formatQuantity(advisory.damagedQuantity)}, เกิน ${formatQuantity(advisory.excessQuantity)}`;
   }
@@ -197,10 +203,13 @@ function renderPriceAdvisoryWarning(
 ): string {
   const listed = advisories.slice(0, listedCount);
   const priceOnly = advisories.every((advisory) => advisory.kind === "price_not_withdrawn");
+  const namesOnly = advisories.every((advisory) => advisory.kind === "unknown_product_vocabulary");
   const lines = [
     priceOnly
       ? `⚠️ พบ ${advisories.length} รายการที่ราคาแตกต่างจากตอนเบิก`
-      : `⚠️ พบ ${advisories.length} รายการที่ต้องตรวจสอบหลังบันทึก`,
+      : namesOnly
+        ? `⚠️ พบ ${advisories.length} ชื่อสินค้าที่รอตรวจ`
+        : `⚠️ พบ ${advisories.length} รายการที่ต้องตรวจสอบหลังบันทึก`,
     ...listed.map(renderAdvisoryLine),
   ];
   const hidden = advisories.length - listed.length;
@@ -211,7 +220,9 @@ function renderPriceAdvisoryWarning(
   }
   lines.push("", priceOnly
     ? "ระบบบันทึกตามราคาที่กรอกไว้แล้ว"
-    : "ระบบบันทึกข้อมูลชั่งคืนตามที่กรอกไว้แล้ว กรุณาตรวจรายการเบิกย้อนหลัง");
+    : namesOnly
+      ? "ระบบบันทึกตามชื่อที่พิมพ์ไว้แล้ว ไม่ต้องส่งใหม่"
+      : "ระบบบันทึกข้อมูลชั่งคืนตามที่กรอกไว้แล้ว กรุณาตรวจรายการเบิกย้อนหลัง");
   return lines.join("\n");
 }
 

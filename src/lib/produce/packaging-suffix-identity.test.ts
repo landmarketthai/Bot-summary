@@ -70,7 +70,7 @@ function withdrawal(productName: string, unit = BOX, quantity = 3): RoundMasterR
 }
 
 function vocabularyNames(result: ProduceValidationResult): string[] {
-  return result.reviews
+  return result.advisories
     .filter((entry) => entry.kind === "unknown_product_vocabulary")
     .map((entry) => entry.productName);
 }
@@ -240,8 +240,8 @@ describe("raw operator evidence is never rewritten", () => {
 
   it("reports the operator's own spelling when a box name IS unknown", () => {
     const result = validate(session([item({ product_name: "สินค้าใหม่กล่อง" })]));
-    const review = result.reviews.find((entry) => entry.kind === "unknown_product_vocabulary");
-    expect(review && review.kind === "unknown_product_vocabulary" && review.productName)
+    const advisory = result.advisories.find((entry) => entry.kind === "unknown_product_vocabulary");
+    expect(advisory && advisory.kind === "unknown_product_vocabulary" && advisory.productName)
       .toBe("สินค้าใหม่กล่อง");
   });
 });
