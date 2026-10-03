@@ -1,18 +1,25 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import type { WeighSession, WeighSessionItem } from "@/lib/parsers/weigh-session/types";
+import { validateProduceEntry } from "@/lib/produce/entry-validation";
 import {
   LinePushError,
 } from "./reply";
 import {
+  fitsProduceNotification,
   notificationRetryDelayMs,
   processDueProduceNotifications,
   resendProduceNotification,
+  splitProduceNotificationPayload,
   type ProduceNotificationRecord,
 } from "./produce-notification-delivery";
+import { buildPendingNameCheckNotification } from "./pending-session-finalizer";
 
 const originalVercelEnv = process.env.VERCEL_ENV;
+const originalFetch = globalThis.fetch;
 afterEach(() => {
   if (originalVercelEnv === undefined) delete process.env.VERCEL_ENV;
   else process.env.VERCEL_ENV = originalVercelEnv;
+  globalThis.fetch = originalFetch;
 });
 
 const NOW = new Date("2026-07-03T00:00:00.000Z");
@@ -534,5 +541,203 @@ describe("notification claim RPC overload disambiguation (0062)", () => {
       "SELECT * FROM public.claim_due_produce_notifications(p_environment => 'production', p_limit => p_limit);",
     );
     expect(wrapper).not.toContain("p_environment text");
+  });
+});
+
+// ── Long receipts: one push, up to five LINE messages, one retry key ─────────
+
+function withdrawalItem(itemNumber: number, productName: string): WeighSessionItem {
+  return {
+    item_number: itemNumber,
+    item_number_explicit: true,
+    product_name: productName,
+    price_per_unit: 45,
+    quantity: 2,
+    unit: "โล",
+    section: "main",
+    transaction_type: "เบิก",
+    pricing_mode: "unit",
+    basis_quantity: null,
+    basis_unit: null,
+    basis_price: null,
+  };
+}
+
+/** The P0 shape: 116 readable withdrawal lines, 25 of them unknown names. */
+function longRoundPayload(): string {
+  const parsed: WeighSession = {
+    date: "2026-10-03",
+    staff_name: "ดำ",
+    sender_name: null,
+    transaction_time: "18:00",
+    session_title: "ราชพฤกษ์",
+    session_kind: "main",
+    declared_transaction_type: null,
+    parse_errors: [],
+    items: Array.from({ length: 116 }, (_, index) => {
+      const number = index + 1;
+      return withdrawalItem(
+        number,
+        number % 4 === 0 && number <= 100 ? `สินค้าทดลองไม่มีในระบบ${number}` : "มังคุด",
+      );
+    }),
+  };
+  const validation = validateProduceEntry({ parsed, roundRows: [], roundBound: true });
+  expect(validation.status).toBe("clean");
+  return buildPendingNameCheckNotification(parsed, validation.advisories);
+}
+
+interface CapturedPush {
+  retryKey: string | null;
+  texts: string[];
+}
+
+function captureLinePush(statuses: number[]): CapturedPush[] {
+  const captured: CapturedPush[] = [];
+  globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+    const headers = init?.headers as Record<string, string>;
+    const body = JSON.parse(String(init?.body)) as { messages: Array<{ text: string }> };
+    captured.push({
+      retryKey: headers["X-Line-Retry-Key"] ?? null,
+      texts: body.messages.map((message) => message.text),
+    });
+    const status = statuses.shift() ?? 200;
+    return new Response("{}", {
+      status,
+      headers: status === 429 ? { "Retry-After": "12" } : {},
+    });
+  }) as unknown as typeof fetch;
+  return captured;
+}
+
+describe("long produce notification payloads", () => {
+  it("builds the 116-line / 25-unknown receipt with every line, 25 markers and final totals", () => {
+    const payload = longRoundPayload();
+    expect(payload.match(/⚠️ รอตรวจชื่อสินค้า/g)).toHaveLength(25);
+    expect(payload).toContain("116. มังคุด 2 โล × 45 บาท = 90.00 บาท");
+    expect(payload).toContain("ยอดจากรายการที่อ่านได้ทั้งหมด: 10,440.00 บาท");
+    expect(payload).toContain("ยอดที่ตรวจแล้ว: 8,190.00 บาท");
+    expect(payload).toContain("⚠️ รอตรวจ: 2,250.00 บาท (25 รายการ)");
+    expect([...payload].length).toBeGreaterThan(5000);
+    expect(fitsProduceNotification(payload)).toBe(true);
+  });
+
+  it("splits a long saved summary without truncation and keeps the totals", () => {
+    const payload = longRoundPayload();
+    const chunks = splitProduceNotificationPayload(payload);
+
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.length).toBeLessThanOrEqual(5);
+    for (const chunk of chunks) expect([...chunk].length).toBeLessThanOrEqual(4000);
+    // Lossless: only the split boundaries' whitespace differs.
+    expect(chunks.join("").replace(/\s+/g, "")).toBe(payload.replace(/\s+/g, ""));
+    for (let number = 1; number <= 116; number += 1) {
+      expect(chunks.some((chunk) => chunk.includes(`\n${number}. `) || chunk.startsWith(`${number}. `)))
+        .toBe(true);
+    }
+    expect(chunks.at(-1)).toContain("รายการอื่นเก็บไว้แล้ว ไม่ต้องส่งใหม่");
+    expect(chunks.join("\n")).toContain("ยอดจากรายการที่อ่านได้ทั้งหมด: 10,440.00 บาท");
+  });
+
+  it("delivers every chunk in ONE push request under the row's retry key", async () => {
+    const payload = longRoundPayload();
+    const row = notification({ notification_payload: payload });
+    const client = makeDueClient([[row]]);
+    const captured = captureLinePush([200]);
+
+    const result = await processDueProduceNotifications(client as never, undefined, 25, NOW);
+
+    expect(result).toMatchObject({ claimed: 1, sent: 1, errors: 0 });
+    expect(captured).toHaveLength(1);
+    expect(captured[0]!.retryKey).toBe(row.line_retry_key);
+    expect(captured[0]!.texts).toEqual(splitProduceNotificationPayload(payload));
+  });
+
+  it("transport retry re-sends the same chunks with the same retry key", async () => {
+    const payload = longRoundPayload();
+    const first = notification({ notification_payload: payload });
+    const second = notification({
+      notification_payload: payload,
+      notification_attempt_count: 2,
+      notification_cycle_attempt_count: 2,
+    });
+    const client = makeDueClient([[first], [second]]);
+    const captured = captureLinePush([429, 200]);
+
+    const firstRun = await processDueProduceNotifications(client as never, undefined, 25, NOW);
+    const secondRun = await processDueProduceNotifications(
+      client as never,
+      undefined,
+      25,
+      new Date(NOW.getTime() + 12_000),
+    );
+
+    expect(firstRun.retryScheduled).toBe(1);
+    expect(secondRun.sent).toBe(1);
+    expect(captured.map((push) => push.retryKey)).toEqual([first.line_retry_key, first.line_retry_key]);
+    expect(captured[1]!.texts).toEqual(captured[0]!.texts);
+  });
+
+  it("an explicit resend pushes under the fresh key returned by requeue_produce_notification", async () => {
+    const payload = longRoundPayload();
+    const original = notification({ notification_payload: payload });
+    const requeued = notification({
+      notification_payload: payload,
+      line_retry_key: "60000000-0000-4000-8000-000000000006",
+      resend_count: 1,
+    });
+    const client = {
+      rpc: async (name: string) => {
+        if (name === "requeue_produce_notification") return { data: [requeued], error: null };
+        if (name === "complete_produce_notification_attempt") return { data: true, error: null };
+        throw new Error(`unexpected RPC ${name}`);
+      },
+    };
+    const captured = captureLinePush([200]);
+
+    expect(await resendProduceNotification(client as never, original.produce_session_id, undefined, NOW))
+      .toBe("sent");
+    expect(captured).toHaveLength(1);
+    expect(captured[0]!.retryKey).toBe(requeued.line_retry_key);
+    expect(captured[0]!.retryKey).not.toBe(original.line_retry_key);
+    expect(captured[0]!.texts).toEqual(splitProduceNotificationPayload(payload));
+  });
+
+  it("fails permanently, without a LINE call, if a payload cannot fit five messages", async () => {
+    const oversized = Array.from({ length: 6 }, (_, index) => `${index}`.repeat(3_900)).join("\n\n");
+    expect(fitsProduceNotification(oversized)).toBe(false);
+    const client = makeDueClient([[notification({ notification_payload: oversized })]]);
+    const captured = captureLinePush([200]);
+
+    const result = await processDueProduceNotifications(client as never, undefined, 25, NOW);
+
+    expect(captured).toHaveLength(0);
+    expect(result.sent).toBe(0);
+    expect(client.calls.at(-1)).toMatchObject({
+      name: "complete_produce_notification_attempt",
+      args: { p_status: "failed", p_retryable: false },
+    });
+  });
+});
+
+describe("retry key migration contract", () => {
+  const migrationPath = new URL(
+    "../../../supabase/migrations/0034_produce_notification_delivery.sql",
+    import.meta.url,
+  );
+
+  function functionBody(sql: string, name: string): string {
+    const start = sql.indexOf(`CREATE OR REPLACE FUNCTION public.${name}`);
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = sql.indexOf("$$;", start);
+    return sql.slice(start, end);
+  }
+
+  it("rotates line_retry_key only in requeue_produce_notification", async () => {
+    const sql = await Bun.file(migrationPath).text();
+    expect(functionBody(sql, "requeue_produce_notification"))
+      .toContain("line_retry_key = gen_random_uuid()");
+    expect(functionBody(sql, "claim_due_produce_notifications")).not.toContain("line_retry_key =");
+    expect(functionBody(sql, "complete_produce_notification_attempt")).not.toContain("line_retry_key =");
   });
 });

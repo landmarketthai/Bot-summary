@@ -1,6 +1,11 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { logger } from "@/lib/logger";
-import { LinePushError, pushLineMessage } from "@/lib/line/reply";
+import { LinePushError, pushLineMessages } from "@/lib/line/reply";
+import {
+  LINE_MESSAGE_MAX_CODE_POINTS,
+  LINE_REPLY_MAX_MESSAGES,
+  chunkBlocks,
+} from "@/lib/summary/line-chunking";
 import { getRuntimeEnvironment } from "@/lib/runtime-environment";
 
 const MAX_CYCLE_ATTEMPTS = 5;
@@ -64,8 +69,35 @@ interface ClassifiedPushError {
   retryAfterMs: number | null;
 }
 
+function chunkProduceNotificationPayload(text: string): string[] {
+  return chunkBlocks(text.split("\n\n"), LINE_MESSAGE_MAX_CODE_POINTS);
+}
+
+/** Whether `text` can be delivered as one push of at most five LINE messages. */
+export function fitsProduceNotification(text: string): boolean {
+  return chunkProduceNotificationPayload(text).length <= LINE_REPLY_MAX_MESSAGES;
+}
+
+/**
+ * One stored notification → up to five LINE text messages in ONE push request,
+ * so a single retry key covers the whole delivery. Too long to fit is a
+ * permanent (non-retryable) failure; payload builders size themselves with
+ * fitsProduceNotification so this is not reached in practice.
+ */
+export function splitProduceNotificationPayload(text: string): string[] {
+  const chunks = chunkProduceNotificationPayload(text);
+  if (chunks.length > LINE_REPLY_MAX_MESSAGES) {
+    throw new LinePushError(
+      `produce notification needs ${chunks.length} LINE messages; max is ${LINE_REPLY_MAX_MESSAGES}`,
+      400,
+      false,
+    );
+  }
+  return chunks;
+}
+
 const defaultPush: NotificationPush = (to, text, retryKey) =>
-  pushLineMessage(to, text, retryKey);
+  pushLineMessages(to, splitProduceNotificationPayload(text), retryKey);
 
 export function notificationRetryDelayMs(
   cycleAttemptCount: number,

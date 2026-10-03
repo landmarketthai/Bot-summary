@@ -16,6 +16,7 @@ import {
   replyLineMessage,
   replyLineMessages,
   replyLineApiMessages,
+  pushLineMessages,
   buildWeighSessionSummary,
   type LineApiMessage,
 } from "@/lib/line/reply";
@@ -168,7 +169,6 @@ import {
   confirmProduceSubunitReview,
   markProduceValidationReviewsPresented,
   deliveredPresentationDigests,
-  hasCorrectionRequiredReturnIdentity,
   isProduceReviewApproved,
   runProduceCloseGate,
 } from "@/lib/produce/entry-validation-gate";
@@ -176,12 +176,18 @@ import { validateProduceEntry } from "@/lib/produce/entry-validation";
 import {
   buildProducePartialCapture,
   buildPartialCaptureReviewReply,
-  buildPartialCaptureSavedReply,
+  buildPartialCaptureSavedReplyWithin,
+  type ProducePartialCapture,
 } from "@/lib/produce/partial-capture";
 import {
+  REVIEW_PRESENTATION_MAX_MESSAGES,
   buildBlockingValidationReply,
   buildPlainTextReviewPresentationPages,
 } from "@/lib/produce/entry-validation-message";
+import {
+  LINE_TEXT_MESSAGE_HARD_MAX_CODE_POINTS,
+  countCodePoints,
+} from "@/lib/summary/line-chunking";
 import {
   CANCEL_ACTIVE_DRAFT_NONE_REPLY,
   CANCEL_ACTIVE_DRAFT_REFUSED_REPLY,
@@ -232,6 +238,7 @@ type EventReceipt = {
 };
 type ReplyLineMessage = (replyToken: string, text: string) => Promise<void>;
 type ReplyLineMessages = (replyToken: string, texts: string[]) => Promise<void>;
+type PushLineMessages = (to: string, texts: string[], retryKey?: string) => Promise<unknown>;
 type ReplyLineApiMessages = (
   replyToken: string,
   messages: LineApiMessage[],
@@ -314,6 +321,18 @@ interface PlainTextCloseGateRefusal {
 
 const CLOSE_RACED_LATE_ITEM_REPLY =
   "มีรายการส่งเข้ามาเพิ่มพอดีตอนปิดรอบ ระบบยังไม่ได้ปิดรอบ รายการทั้งหมดยังอยู่ครบ กรุณาพิมพ์ปิดรอบอีกครั้ง";
+
+/**
+ * The saved-lines receipt that rides in front of a close-gate refusal. It is
+ * one LINE text message, so a long round lists only what fits; an oversized
+ * message would make LINE reject the whole refusal, reply and push alike.
+ */
+function fittedSavedReply(capture: ProducePartialCapture): string {
+  return buildPartialCaptureSavedReplyWithin(
+    capture,
+    (reply) => countCodePoints(reply) <= LINE_TEXT_MESSAGE_HARD_MAX_CODE_POINTS,
+  );
+}
 
 function buildPhysicalInventoryItemParseFailureReply(sequence: number | null): string {
   return [
@@ -548,6 +567,7 @@ interface WebhookServiceDependencies {
   >;
   replyMessage?: ReplyLineMessage;
   replyMessages?: ReplyLineMessages;
+  pushMessages?: PushLineMessages;
   replyApiMessages?: ReplyLineApiMessages;
   guidedMenuHandler?: GuidedMenuUxHandler;
   guidedJourneyService?: GuidedJourneyService;
@@ -742,6 +762,16 @@ export class WebhookService {
   >;
   private replyMessage: ReplyLineMessage;
   private replyMessages: ReplyLineMessages;
+  /**
+   * The real LINE reply transport. The ordered-queue drain temporarily swaps
+   * replyMessage/replyMessages for capturing stubs that always "succeed" and
+   * only send after the event completes; a close-gate refusal must instead
+   * learn whether the operator actually received it before stamping review
+   * delivery proof, so it uses these directly.
+   */
+  private readonly transportReplyMessage: ReplyLineMessage;
+  private readonly transportReplyMessages: ReplyLineMessages;
+  private pushMessages: PushLineMessages;
   private replyApiMessages: ReplyLineApiMessages;
   private readonly guidedMenuHandler: GuidedMenuUxHandler;
   private readonly guidedJourney: GuidedJourneyService;
@@ -772,6 +802,9 @@ export class WebhookService {
       dependencies.quotedSlipAmountCorrectionService ?? new QuotedSlipAmountCorrectionService(supabase);
     this.replyMessage = dependencies.replyMessage ?? replyLineMessage;
     this.replyMessages = dependencies.replyMessages ?? replyLineMessages;
+    this.transportReplyMessage = this.replyMessage;
+    this.transportReplyMessages = this.replyMessages;
+    this.pushMessages = dependencies.pushMessages ?? pushLineMessages;
     this.replyApiMessages = dependencies.replyApiMessages ?? replyLineApiMessages;
     this.guidedMenuHandler =
       dependencies.guidedMenuHandler ?? new GuidedMenuUxHandler(supabase);
@@ -911,7 +944,6 @@ export class WebhookService {
     eventCount: number,
     existingRawMessageId?: string,
     replyMessage: ReplyLineMessage = this.replyMessage,
-    replyMessages: ReplyLineMessages = this.replyMessages,
     replyApiMessages: ReplyLineApiMessages = this.replyApiMessages,
   ): Promise<WebhookProcessResult> {
     const eventId = event.webhookEventId;
@@ -1969,73 +2001,73 @@ export class WebhookService {
               error: markError instanceof Error ? markError.message : String(markError),
             });
           }
+          const texts = [
+            closeGateRefusal.refusalText,
+            ...(closeGateRefusal.refusalPages ?? []),
+          ];
+          let delivered = false;
           if (replyToken) {
-            let delivered = false;
             try {
-              // One reply carries every page, so delivery is all-or-nothing:
-              // the operator either sees the whole presentation or none of it.
-              const texts = [
-                closeGateRefusal.refusalText,
-                ...(closeGateRefusal.refusalPages ?? []),
-              ];
-              if (texts.length > 1) await replyMessages(replyToken, texts);
-              else await replyMessage(replyToken, texts[0]);
+              // Prefer the event-scoped reply while the token is still valid.
+              // If a queued close reaches us after LINE expires the token, the
+              // push fallback below makes the refusal visible instead of silent.
+              // Always the real transport, never the ordered-queue capture: a
+              // captured reply has not reached anyone yet, so it cannot be
+              // the evidence that stamps review delivery below.
+              if (texts.length > 1) await this.transportReplyMessages(replyToken, texts);
+              else await this.transportReplyMessage(replyToken, texts[0]);
               delivered = true;
             } catch (replyError) {
-              log.error("produce entry gate refusal reply failed", {
+              log.warn("produce entry gate refusal reply failed; falling back to push", {
                 error: String(replyError),
               });
             }
+          }
+          if (!delivered) {
+            try {
+              await this.pushMessages(sourceId, texts);
+              delivered = true;
+            } catch (pushError) {
+              log.error("produce entry gate refusal push fallback failed", {
+                sourceId,
+                error: String(pushError),
+              });
+            }
+          }
 
-            // Delivery proof is written ONLY here, after the reply actually
-            // succeeded. Recording the review earlier proved nothing: this
-            // reply is a separate network call that is caught and logged, so a
-            // failed one must leave the review unconfirmable and force a
-            // re-presentation rather than letting the next close approve
-            // financial content nobody saw.
-            //
-            // eventId becomes the row's presenting identity, taking over from
-            // whichever event recorded it. Without that, a duplicate delivery
-            // of THIS close would look like a distinct later event and
-            // self-confirm a review shown exactly once.
-            if (delivered && closeGateRefusal.reviewPresentation) {
-              const { digests, sessionGeneration } = closeGateRefusal.reviewPresentation;
-              try {
-                // One message, one all-or-nothing mark: the whole review plus
-                // every risky-subunit row it rendered. #109 confirms those item
-                // digests individually, so leaving them unmarked would make
-                // "ยืนยันข้อ N" answer not_presented for something the operator
-                // is looking at.
-                const presented = await markProduceValidationReviewsPresented(
-                  this.supabase,
-                  {
-                    sessionKey: sessionKey,
-                    sessionGeneration,
-                    accountabilityRoundId: null,
-                    businessDate: null,
-                    marketLabel: null,
-                    staffLabel: null,
-                    lineUserId: pending.line_user_id,
-                  },
-                  digests,
-                  eventId,
-                );
-                if (presented.status !== "presented") {
-                  // The operator saw it, but the database cannot prove it.
-                  // Fail safe: it stays unconfirmable and is shown again.
-                  log.warn("review presentation could not be proven", {
-                    sessionKey,
-                    sessionGeneration,
-                    presented,
-                  });
-                }
-              } catch (markError) {
-                log.error("review presentation stamp failed", {
+          // Delivery proof is written only after either reply or push really
+          // succeeds. A failed transport leaves the review unconfirmable and
+          // therefore safe to present again on the next close.
+          if (delivered && closeGateRefusal.reviewPresentation) {
+            const { digests, sessionGeneration } = closeGateRefusal.reviewPresentation;
+            try {
+              const presented = await markProduceValidationReviewsPresented(
+                this.supabase,
+                {
+                  sessionKey: sessionKey,
+                  sessionGeneration,
+                  accountabilityRoundId: null,
+                  businessDate: null,
+                  marketLabel: null,
+                  staffLabel: null,
+                  lineUserId: pending.line_user_id,
+                },
+                digests,
+                eventId,
+              );
+              if (presented.status !== "presented") {
+                log.warn("review presentation could not be proven", {
                   sessionKey,
                   sessionGeneration,
-                  error: markError instanceof Error ? markError.message : String(markError),
+                  presented,
                 });
               }
+            } catch (markError) {
+              log.error("review presentation stamp failed", {
+                sessionKey,
+                sessionGeneration,
+                error: markError instanceof Error ? markError.message : String(markError),
+              });
             }
           }
           return { eventId, eventType: event.type, status: "saved", parsed: false };
@@ -2775,7 +2807,7 @@ export class WebhookService {
         return { refusalText: buildPartialCaptureReviewReply(capture) };
       }
       return {
-        refusalText: buildPartialCaptureSavedReply(capture),
+        refusalText: fittedSavedReply(capture),
         refusalPages: [buildPartialCaptureReviewReply(capture)],
       };
     }
@@ -2904,27 +2936,11 @@ export class WebhookService {
           return { refusalText: blockerReply };
         }
         return {
-          refusalText: buildPartialCaptureSavedReply(capture),
+          refusalText: fittedSavedReply(capture),
           refusalPages: [blockerReply],
         };
       }
       if (decision.decision === "review_presented") {
-        if (hasCorrectionRequiredReturnIdentity(decision.result)) {
-          const capture = buildProducePartialCapture(parsed, decision.result, []);
-          const staged = await new PendingSessionService(this.supabase).savePartialCapture(
-            pending.session_key,
-            pending.session_generation,
-            pending.ingest_revision,
-            capture,
-          );
-          if (!staged) return { refusalText: CLOSE_RACED_LATE_ITEM_REPLY };
-          const correction = buildPartialCaptureReviewReply(capture);
-          if (capture.acceptedCount === 0) return { refusalText: correction };
-          return {
-            refusalText: buildPartialCaptureSavedReply(capture),
-            refusalPages: [correction],
-          };
-        }
         // Render first, then authorize only what the rendering shows. The set
         // is paginated rather than capped, so a session with more exceptions
         // than fit in one message still has a finite path to confirmation.
@@ -2946,7 +2962,10 @@ export class WebhookService {
           ),
           sessionGeneration: pending.session_generation,
         };
-        if (capture.acceptedCount === 0) {
+        // LINE carries at most five messages per reply/push. A presentation
+        // that already needs all five drops the saved-lines receipt rather
+        // than making the whole refusal undeliverable.
+        if (capture.acceptedCount === 0 || pages.length >= REVIEW_PRESENTATION_MAX_MESSAGES) {
           return {
             refusalText: pages[0].text,
             refusalPages: pages.slice(1).map((page) => page.text),
@@ -2954,7 +2973,7 @@ export class WebhookService {
           };
         }
         return {
-          refusalText: buildPartialCaptureSavedReply(capture),
+          refusalText: fittedSavedReply(capture),
           refusalPages: pages.map((page) => page.text),
           reviewPresentation,
         };
@@ -4791,7 +4810,6 @@ export class WebhookService {
             1,
             claim.raw_message_id,
             captureText,
-            captureTexts,
             captureApi,
           )
           : {

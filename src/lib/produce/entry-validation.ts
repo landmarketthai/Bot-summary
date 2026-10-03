@@ -119,10 +119,16 @@ export type ProduceValidationException =
    * dictionary spelling. Distinct from product_not_withdrawn: that one is a
    * RETURN that does not match an existing withdrawal master; this one is the
    * withdrawal master itself being created under a suspicious name.
+   *
+   * Advisory, not a hard blocker (Production 2026-10-03): the measured line
+   * parses — name, price, quantity and unit are all present — so it is kept
+   * exactly as entered and the session finalizes. The operator is told which
+   * lines still need a human to vouch for the spelling (⚠️ รอตรวจชื่อสินค้า);
+   * nothing is guessed and no ambiguous alias is ever substituted.
    */
   | {
       kind: "unknown_product_vocabulary";
-      severity: "review_required";
+      severity: "advisory";
       itemNumber: number;
       productName: string;
       suggestions: ProductVocabularySuggestion[];
@@ -389,12 +395,12 @@ export function validateProduceEntry(input: ProduceValidationInput): ProduceVali
       .map((exception) => exception.itemNumber),
   );
 
-  // ── 1b. Product vocabulary on withdrawals. A return gets an additional
-  // vocabulary review only when it ALSO fails to match the round master (§2).
-  // That distinction keeps a real round product usable even when the global
-  // Dictionary is temporarily behind, while a stray name such as “พักผ่อน”
-  // cannot silently become a new return identity.
-  reviews.push(...vocabularyExceptions(parsed));
+  // ── 1b. Product vocabulary on every parseable line. An unknown spelling is
+  // kept exactly as entered and surfaced as an advisory (⚠️ รอตรวจชื่อสินค้า)
+  // — never a blocker and never silently normalized. Returns may also carry a
+  // product_not_withdrawn advisory from §2; that is a separate reconciliation
+  // fact, while this marker tells the operator the name itself needs review.
+  advisories.push(...vocabularyExceptions(parsed));
   reviews.push(...subunitExceptions(parsed));
 
   // ── 2. Identity and price of every return line, against the master.
@@ -417,19 +423,11 @@ export function validateProduceEntry(input: ProduceValidationInput): ProduceVali
       const withdrawnUnits = master.unitsByProduct.get(product);
 
       if (!withdrawnUnits) {
-        // A missing withdrawal is not enough to reject a measured return. But
-        // when the name is ALSO outside the reviewed Dictionary there is no
-        // trusted identity at all; park only this line for human correction.
-        const reviewedIdentity = canonicalProduceProductIdentity(item.product_name, item.unit);
-        if (!isApprovedProductName(reviewedIdentity)) {
-          reviews.push({
-            kind: "unknown_product_vocabulary",
-            severity: "review_required",
-            itemNumber: item.item_number,
-            productName: item.product_name,
-            suggestions: suggestDictionaryProducts(item.product_name),
-          });
-        }
+        // A missing withdrawal is not enough to reject a measured return: the
+        // line is kept as entered and flagged as an advisory. The unmatched
+        // name alone no longer parks the line for mandatory correction — a
+        // return such as “พักผ่อน” is surfaced, not silently waved through, but
+        // it never blocks the close.
         advisories.push({
           kind: "product_not_withdrawn",
           severity: "advisory",
@@ -526,17 +524,17 @@ function subunitExceptions(parsed: WeighSession): ProduceValidationReview[] {
 }
 
 /**
- * Withdrawal lines whose product name is not an approved dictionary spelling.
+ * Parseable lines whose product name is not an approved dictionary spelling.
  *
  * One exception per distinct name, at its first item number: the operator has
- * one spelling to fix, not one per line that carries it. Ordered by item
- * number so the reply is deterministic.
+ * one spelling to review, not one per line that carries it. This applies to
+ * withdrawals and returns alike; identity is advisory while numeric integrity
+ * remains independently validated.
  */
-function vocabularyExceptions(parsed: WeighSession): ProduceValidationReview[] {
+function vocabularyExceptions(parsed: WeighSession): ProduceValidationAdvisory[] {
   const seen = new Set<string>();
-  const exceptions: ProduceValidationReview[] = [];
+  const exceptions: ProduceValidationAdvisory[] = [];
   for (const item of [...parsed.items].sort((a, b) => a.item_number - b.item_number)) {
-    if (baseTransactionType(item.transaction_type) !== "เบิก") continue;
     const name = item.product_name.normalize("NFC").replace(/\s+/g, " ").trim();
     if (!name || seen.has(name)) continue;
     seen.add(name);
@@ -546,7 +544,7 @@ function vocabularyExceptions(parsed: WeighSession): ProduceValidationReview[] {
     if (isApprovedProductName(canonicalProduceProductIdentity(name, item.unit))) continue;
     exceptions.push({
       kind: "unknown_product_vocabulary",
-      severity: "review_required",
+      severity: "advisory",
       itemNumber: item.item_number,
       productName: item.product_name,
       suggestions: suggestDictionaryProducts(name),

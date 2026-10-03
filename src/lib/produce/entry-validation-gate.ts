@@ -260,28 +260,6 @@ export type ProduceCloseGateDecision =
   | { decision: "review_presented"; result: ProduceValidationResult };
 
 /**
- * A return line whose product identity is BOTH absent from the round master and
- * outside the reviewed Dictionary is not something a second “จบรายการ” may
- * approve. The measured quantity is retained in the draft, but the operator
- * must correct that line (for example “พักผ่อน” -> the intended product).
- *
- * Withdrawal vocabulary reviews keep their existing explicit-confirmation
- * path so genuinely new products can still be introduced intentionally.
- */
-export function hasCorrectionRequiredReturnIdentity(
-  result: ProduceValidationResult,
-): boolean {
-  const missingReturnItems = new Set(
-    result.advisories
-      .filter((entry) => entry.kind === "product_not_withdrawn")
-      .map((entry) => entry.itemNumber),
-  );
-  return result.reviews.some((review) =>
-    review.kind === "unknown_product_vocabulary"
-    && missingReturnItems.has(review.itemNumber));
-}
-
-/**
  * Whether a blocking verdict could have been fabricated by a late/out-of-order
  * straggler for the SAME generation.
  *
@@ -325,11 +303,6 @@ export async function runProduceCloseGate(
   const { result, reviewConfirmed } = await evaluateProduceEntryGate(supabase, ref, parsed);
   if (result.status === "blocked") return { decision: "blocked", result };
   if (result.status === "clean") return { decision: "proceed", result };
-  // Unknown RETURN identities must be corrected, not waved through by pressing
-  // the same close command again. Do not even create a confirmable review row.
-  if (hasCorrectionRequiredReturnIdentity(result)) {
-    return { decision: "review_presented", result };
-  }
   if (reviewConfirmed) return { decision: "proceed", result };
 
   const recorded = await recordProduceValidationReview(supabase, ref, result, lineEventId, parsed);
@@ -384,9 +357,6 @@ export async function runProduceFinalizeGate(
   const { result, reviewConfirmed } = await evaluateProduceEntryGate(supabase, ref, parsed);
   if (result.status === "blocked") return { decision: "blocked", result };
   if (result.status === "clean") return { decision: "proceed", result };
-  if (hasCorrectionRequiredReturnIdentity(result)) {
-    return { decision: "review_presented", result };
-  }
   if (reviewConfirmed) return { decision: "proceed", result };
   return { decision: "review_presented", result };
 }
