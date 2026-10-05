@@ -25,6 +25,7 @@
     "test:pg:pending-lifecycle": "bun test src/lib/produce/migration-pending-lifecycle-recovery.pg.test.ts",
     "test:pg:pending-inactivity": "bun test src/lib/produce/migration-pending-inactivity-lifecycle.pg.test.ts",
     "test:pg:cancel-active-draft": "bun test src/lib/produce/migration-cancel-active-draft.pg.test.ts",
+    "test:pg:generation-scoped-ledger": "bun test src/lib/line/migration-generation-scoped-ledger.pg.test.ts",
     "test:pg:notification-boundary-lockdown": "bun test src/lib/line/migration-produce-notification-boundary-lockdown.pg.test.ts",
     "test:pg:legacy-anon-surface-lockdown": "bun test src/lib/line/migration-legacy-anon-surface-lockdown.pg.test.ts",
     "test:pg:money-parity": "bun test src/lib/produce/exact-line-total.pg.test.ts",

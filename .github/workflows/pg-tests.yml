@@ -532,6 +532,12 @@ jobs:
       REQUIRE_CLOSE_VALIDATION_RACE_POSTGRES: "1"
       REQUIRE_MARKET_IDENTITY_GUARD_POSTGRES: "1"
       REQUIRE_FINGERPRINT_COMPATIBILITY_POSTGRES: "1"
+      # Whether deleting one generation's ledger rows can cascade across every
+      # other generation of the same session_key is decided entirely by the
+      # composite-FK ownership this migration installs, and only a real server
+      # can prove the cascade boundary. An unreachable database is a HARD
+      # FAILURE of this job, never a green skip.
+      REQUIRE_GENERATION_LEDGER_POSTGRES: "1"
       PGHOST: localhost
       PGUSER: postgres
       PGPASSWORD: postgres
@@ -573,6 +579,12 @@ jobs:
       # reuses retire_empty_round_of_generation, so it runs beside them.
       - name: Cancel active produce draft real-PostgreSQL suite
         run: bun run test:pg:cancel-active-draft
+      # Generation-scoped ledger ownership: proves a targeted generation
+      # rollback no longer cascades across other generations of the same
+      # session_key, that forward-apply loses zero rows and creates zero
+      # orphans, and that the migration is idempotent.
+      - name: Generation-scoped pending ledger real-PostgreSQL suite
+        run: bun run test:pg:generation-scoped-ledger
       # Both migrations reissue a function PR A installs, so PR A's own proofs
       # are the regression guard that the reissue did not revert it.
       - name: PR A market identity guard regression suite
