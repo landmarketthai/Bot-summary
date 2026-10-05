@@ -264,6 +264,12 @@ const RAW: ReadonlyArray<readonly [string, string, string, string, boolean]> = [
   ["ผ140","ผ","ผัก / สมุนไพร / เครื่องประกอบอาหาร","พริกลาว",true],
   ["ผ141","ผ","ผัก / สมุนไพร / เครื่องประกอบอาหาร","หน่อไม้ต้มเปลือก",true],
   ["ผ142","ผ","ผัก / สมุนไพร / เครื่องประกอบอาหาร","หน่อไม้ต้มแท่ง",true],
+  ["ผ143","ผ","ผัก / สมุนไพร / เครื่องประกอบอาหาร","ผักโป้ยเล่ง",true],
+  ["ผ144","ผ","ผัก / สมุนไพร / เครื่องประกอบอาหาร","สลัดคอตใบแข็ง",true],
+  ["ผ145","ผ","ผัก / สมุนไพร / เครื่องประกอบอาหาร","ลูกมะอึก",true],
+  ["ผ146","ผ","ผัก / สมุนไพร / เครื่องประกอบอาหาร","หน่อไม้ต้มเหลืองกลม",true],
+  ["ผ147","ผ","ผัก / สมุนไพร / เครื่องประกอบอาหาร","หน่อไม้ต้มเหลืองซอย",true],
+  ["ผ148","ผ","ผัก / สมุนไพร / เครื่องประกอบอาหาร","ใบกะเพราแดง",true],
   ["ป01","ป","ปลา / อาหารแห้ง / ของแห้ง","กะปิ",true],
   ["ป02","ป","ปลา / อาหารแห้ง / ของแห้ง","กุ้งแห้ง",true],
   ["ป03","ป","ปลา / อาหารแห้ง / ของแห้ง","ขนมจีน",true],
@@ -333,6 +339,7 @@ const RAW: ReadonlyArray<readonly [string, string, string, string, boolean]> = [
   ["ห03","ห","เห็ด","เห็ดหูหนู",true],
   ["ห04","ห","เห็ด","เห็ดออรินจิ",true],
   ["ห05","ห","เห็ด","เห็ดหอม",true],
+  ["ห06","ห","เห็ด","เห็ดเข็มทอง",true],
   ["พ01","พ","รายการพิเศษ","ผลไม้กล่อง",true],
   ["พ02","พ","รายการพิเศษ","ขนุนแพ็ค",true],
   ["พ03","พ","รายการพิเศษ","ส้มโอแพ็ค",true],
@@ -348,7 +355,7 @@ export const PRODUCT_CODE_ENTRIES: ReadonlyArray<ProductCodeEntry> = RAW.map(
 );
 
 /** Every row in the approved dictionary, retired ones included. */
-export const PRODUCT_CODE_COUNT = 316;
+export const PRODUCT_CODE_COUNT = 323;
 
 /** Rows that currently resolve. Equal to PRODUCT_CODE_COUNT until one retires. */
-export const PRODUCT_CODE_ENABLED_COUNT = 316;
+export const PRODUCT_CODE_ENABLED_COUNT = 323;

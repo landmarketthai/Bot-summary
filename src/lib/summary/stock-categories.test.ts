@@ -98,12 +98,13 @@ describe("stockCategoryFor", () => {
     for (const [a, b] of [
       ["มะเขือเทสเลก", "มะเขือเทสเล็ก"],
       ["หอมแขกเลก", "หอมแขกเล็ก"],
-      ["ผักกาดลุ้ย", "ผักกาดลู้ย"],
       ["กระเพา", "กระเพาแดง"],
     ] as Array<[string, string]>) {
       expect(stockCategoryFor(a)).toBe(stockCategoryFor(b));
       expect(normalizeProductName(a)).not.toBe(normalizeProductName(b));
     }
+    // 2026-10-05: ผักกาดลู้ย is a confirmed exact typo (same unit หัว, same price).
+    expect(normalizeProductName("ผักกาดลู้ย")).toBe("ผักกาดลุ้ย");
   });
 
   test("non-produce items are left uncategorized rather than forced into ผัก", () => {

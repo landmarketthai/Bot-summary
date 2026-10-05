@@ -722,9 +722,22 @@ describe("product spelling variants are preserved, never auto-merged", () => {
   // The operator remains the authority on whether a near spelling is a typo
   // or a different good. The return is kept as entered and the round spelling
   // is surfaced as an advisory suggestion instead of blocking the whole close.
+  // หัวไชยเท้า used to be the example here; it became a confirmed exact alias
+  // of หัวไชเท้า on 2026-10-01, so it now folds instead (asserted below).
   const pairs: Array<[sent: string, withdrawn: string]> = [
-    ["หัวไชเท้า", "หัวไชยเท้า"],
+    ["มะเขือเทศใหญ่", "มะเขือเทสใหย่"],
   ];
+
+  it("a confirmed exact alias (หัวไชยเท้า → หัวไชเท้า) matches instead of advising", () => {
+    const result = bound(
+      session([
+        item({ product_name: "หัวไชเท้า", unit: "โล", quantity: 2, price_per_unit: 30, transaction_type: "คืน" }),
+      ]),
+      master([{ product_name: "หัวไชยเท้า", unit: "โล", quantity: 10, price_per_unit: 30 }]),
+    );
+    expect(result.status).toBe("clean");
+    expect(result.advisories).toEqual([]);
+  });
 
   for (const [sent, withdrawn] of pairs) {
     it(`advises on ${sent} and surfaces ${withdrawn} without merging`, () => {
