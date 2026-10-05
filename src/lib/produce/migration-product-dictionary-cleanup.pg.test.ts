@@ -184,21 +184,20 @@ describe.skipIf(!pgAvailable)("Produce Product Dictionary Cleanup on PostgreSQL 
     // beforeAll applies the base seed + this cleanup migration and
     // deliberately does not apply 20260824090000 or any migration after it.
     // PRODUCT_CODE_ENTRIES is the full current approved set, so codes owned
-    // by later dictionary migrations (ม72–ม91, ผ119–ผ129, ป37) are excluded
-    // from this comparison. The unscoped, full-table equality against
-    // PRODUCT_CODE_ENTRIES is proven in migration-product-code-dictionary.pg.test.ts,
-    // which composes every migration in order.
-    const CODES_FROM_LATER_MIGRATIONS = new Set([
-      ...Array.from({ length: 20 }, (_, i) => `ม${72 + i}`),
-      ...Array.from({ length: 11 }, (_, i) => `ผ${119 + i}`),
-      "ป37",
-    ]);
+    // by later dictionary migrations (anything past the last code this state
+    // holds in each namespace) are excluded from this comparison. The
+    // unscoped, full-table equality against PRODUCT_CODE_ENTRIES is proven in
+    // migration-product-code-dictionary.pg.test.ts, which composes every
+    // migration in order.
+    const LAST_CODE_IN_THIS_STATE: Record<string, number> = { ม: 71, ผ: 118, ป: 36, ท: 26, ห: 4, พ: 7 };
+    const isFromLaterMigration = (code: string) =>
+      Number(code.slice(1)) > LAST_CODE_IN_THIS_STATE[code[0]];
     const actual = JSON.parse(await scalar(
       "SELECT jsonb_object_agg(product_code, canonical_name)::text FROM public.produce_product_codes",
     )) as Record<string, string>;
     const expected = Object.fromEntries(
       PRODUCT_CODE_ENTRIES
-        .filter((e) => !CODES_FROM_LATER_MIGRATIONS.has(e.code))
+        .filter((e) => !isFromLaterMigration(e.code))
         .map((e) => [e.code, e.canonicalName]),
     );
     expect(actual).toEqual(expected);
