@@ -8,7 +8,7 @@ function createFetchMock(handler: FetchMockHandler): typeof fetch {
 }
 
 describe("OpenAiSlipExtractor", () => {
-  it("sends private bytes as an inline image and parses structured output", async () => {
+  it.each(["test-model", "gpt-6-luna"])("%s sends private bytes as an inline image and parses structured output", async (model) => {
     const requests: Array<{ url: string; init: RequestInit }> = [];
     const fetchImpl = createFetchMock(async (url, init) => {
       requests.push({ url: String(url), init: init ?? {} });
@@ -33,7 +33,7 @@ describe("OpenAiSlipExtractor", () => {
         }],
       }), { status: 200 });
     });
-    const extractor = new OpenAiSlipExtractor("test-key", "test-model", fetchImpl);
+    const extractor = new OpenAiSlipExtractor("test-key", model, fetchImpl);
 
     const result = await extractor.extract({
       bytes: new Uint8Array([1, 2, 3]),
@@ -46,10 +46,12 @@ describe("OpenAiSlipExtractor", () => {
 
     const body = JSON.parse(String(requests[0].init.body)) as {
       model: string;
+      reasoning?: { effort: string };
       store: boolean;
       input: Array<{ content: Array<{ type: string; image_url?: string }> }>;
     };
-    expect(body.model).toBe("test-model");
+    expect(body.model).toBe(model);
+    expect(body.reasoning).toEqual(model === "gpt-6-luna" ? { effort: "none" } : undefined);
     expect(body.store).toBe(false);
     expect(body.input[0].content[1].image_url).toBe("data:image/jpeg;base64,AQID");
   });

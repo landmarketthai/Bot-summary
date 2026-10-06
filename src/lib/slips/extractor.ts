@@ -6,7 +6,7 @@ import {
 import { logger } from "@/lib/logger";
 
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
-const DEFAULT_MODEL = "gpt-4o-mini";
+const DEFAULT_MODEL = "gpt-6-luna";
 const PROVIDER = "openai";
 
 // Retryable status codes and the delay to wait before the second attempt.
@@ -195,6 +195,7 @@ function sleep(ms: number): Promise<void> {
 function buildRequestBody(model: string, input: SlipExtractionInput): string {
   return JSON.stringify({
     model,
+    reasoning: model === "gpt-6-luna" ? { effort: "none" } : undefined,
     input: [{
       role: "user",
       content: [
