@@ -191,10 +191,16 @@ import {
 } from "@/lib/produce/cancel-active-draft";
 import { getRuntimeEnvironment } from "@/lib/runtime-environment";
 import { answerWithReadonlyTools } from "@/lib/ai/readonly-analyst";
-import { isWhiteSheetReaderEnabled, resolveWhiteSheetReadMode, whiteSheetReadCommand, PREVIEW_TTL_MS } from "@/lib/white-sheet-reader/mode";
 import {
-  readWhiteSheetImage, PREVIEW_START_REPLY, PREVIEW_CONSUMED_REPLY, PREVIEW_RETRY_REPLY,
+  isReadableWhiteSheetImage, isWhiteSheetApproval, isWhiteSheetReaderEnabled, resolveWhiteSheetSession,
+  whiteSheetReadCommand, whiteSheetSessionMayBeActive, PREVIEW_TTL_MS,
+} from "@/lib/white-sheet-reader/mode";
+import {
+  readWhiteSheetBase, applyWhiteSheetCorrection, PREVIEW_START_REPLY, PREVIEW_RESTART_REPLY,
+  PREVIEW_PENDING_REVIEW_REPLY, PREVIEW_END_REPLY, PREVIEW_END_REFUSED_REPLY,
+  PREVIEW_RETRY_REPLY, CORRECTION_RETRY_REPLY,
 } from "@/lib/white-sheet-reader/reader";
+import { readAndRecordSheet, reviewApproval, reviewCorrectionTurn } from "@/lib/white-sheet-reader/review-flow";
 import {
   BOT_SUMMARY_NOT_AVAILABLE_REPLY,
   BOT_SUMMARY_TEMPORARY_ERROR_REPLY,
@@ -575,8 +581,9 @@ interface WebhookServiceDependencies {
   botSummaryAnalystEnabled?: boolean;
   botSummaryAnalystSourceAllowed?: BotSummaryAnalystSourceAllowed;
   whiteSheetReaderEnabled?: boolean;
-  whiteSheetImageReader?: typeof readWhiteSheetImage;
-  whiteSheetReadModeResolver?: typeof resolveWhiteSheetReadMode;
+  whiteSheetBaseReader?: typeof readWhiteSheetBase;
+  whiteSheetCorrectionApplier?: typeof applyWhiteSheetCorrection;
+  whiteSheetSessionResolver?: typeof resolveWhiteSheetSession;
 }
 
 export interface WebhookProcessResult {
@@ -775,8 +782,9 @@ export class WebhookService {
   private readonly botSummaryAnalystEnabled: boolean;
   private readonly botSummaryAnalystSourceAllowed: BotSummaryAnalystSourceAllowed;
   private readonly whiteSheetReaderEnabled: boolean;
-  private readonly whiteSheetImageReader: typeof readWhiteSheetImage;
-  private readonly whiteSheetReadModeResolver: typeof resolveWhiteSheetReadMode;
+  private readonly whiteSheetBaseReader: typeof readWhiteSheetBase;
+  private readonly whiteSheetCorrectionApplier: typeof applyWhiteSheetCorrection;
+  private readonly whiteSheetSessionResolver: typeof resolveWhiteSheetSession;
   private orderedQueueAvailable: boolean | null = null;
 
   constructor(
@@ -839,8 +847,9 @@ export class WebhookService {
     this.botSummaryAnalystAnswerer =
       dependencies.botSummaryAnalystAnswerer
       ?? (async (question) => (await answerWithReadonlyTools(this.supabase, question)).answer);
-    this.whiteSheetImageReader = dependencies.whiteSheetImageReader ?? readWhiteSheetImage;
-    this.whiteSheetReadModeResolver = dependencies.whiteSheetReadModeResolver ?? resolveWhiteSheetReadMode;
+    this.whiteSheetBaseReader = dependencies.whiteSheetBaseReader ?? readWhiteSheetBase;
+    this.whiteSheetCorrectionApplier = dependencies.whiteSheetCorrectionApplier ?? applyWhiteSheetCorrection;
+    this.whiteSheetSessionResolver = dependencies.whiteSheetSessionResolver ?? resolveWhiteSheetSession;
   }
 
   async processEvents(
@@ -1010,11 +1019,14 @@ export class WebhookService {
         && getUserId(msgEvent.source) && this.botSummaryAnalystSourceAllowed(getSourceId(msgEvent.source))) {
         let texts: string[] | null = null;
         try {
-          const mode = await this.whiteSheetReadModeResolver(this.supabase, msgEvent, rawMessageId, destination);
-          if (mode === "read") {
-            texts = message.contentProvider.type === "line" && (!message.imageSet || message.imageSet.total === 1)
-              ? await this.whiteSheetImageReader(message.id) : [PREVIEW_RETRY_REPLY];
-          } else if (mode === "consumed") texts = [PREVIEW_CONSUMED_REPLY];
+          const { state } = await this.whiteSheetSessionResolver(this.supabase, msgEvent, rawMessageId, destination);
+          if (state === "awaiting_image" || state === "approved_waiting_next_image") {
+            texts = isReadableWhiteSheetImage(message as LineImageMessage)
+              ? await readAndRecordSheet(
+                this.supabase, { destination, sourceId: getSourceId(msgEvent.source), userId: getUserId(msgEvent.source)! },
+                rawMessageId, message.id, { readBase: this.whiteSheetBaseReader },
+              ) : [PREVIEW_RETRY_REPLY];
+          } else if (state === "reviewing") texts = [PREVIEW_PENDING_REVIEW_REPLY];
         } catch {
           // Uncertain preview ownership must never fall into a writing OCR/slip path.
           texts = [PREVIEW_RETRY_REPLY];
@@ -1066,7 +1078,8 @@ export class WebhookService {
       if (replyToken) {
         if (!this.botSummaryAnalystEnabled || !sourceAllowed) {
           await replyMessage(replyToken, BOT_SUMMARY_NOT_AVAILABLE_REPLY);
-        } else if (whiteSheetReadCommand(message as LineTextMessage, destination)) {
+        } else if (whiteSheetReadCommand(message as LineTextMessage, destination)
+          && (whiteSheetReadCommand(message as LineTextMessage, destination) !== "end" || this.whiteSheetReaderEnabled)) {
           const command = whiteSheetReadCommand(message as LineTextMessage, destination);
           if (!this.whiteSheetReaderEnabled) {
             await replyMessage(replyToken, BOT_SUMMARY_NOT_AVAILABLE_REPLY);
@@ -1074,11 +1087,22 @@ export class WebhookService {
             await replyMessage(replyToken, BOT_SUMMARY_NOT_AVAILABLE_REPLY);
           } else if (command === "cancel") {
             await replyMessage(replyToken, "ยกเลิกโหมดอ่านใบขาวแล้วครับ");
+          } else if (command === "end") {
+            // A sheet under review is never silently discarded.
+            let reviewing = true;
+            try {
+              reviewing = (await this.whiteSheetSessionResolver(this.supabase, msgEvent, rawMessageId, destination)).state === "reviewing";
+            } catch { /* unknown state: refuse rather than discard */ }
+            await replyMessage(replyToken, reviewing ? PREVIEW_END_REFUSED_REPLY : PREVIEW_END_REPLY);
           } else if (!Number.isFinite(event.timestamp) || Date.now() < event.timestamp
             || Date.now() - event.timestamp >= PREVIEW_TTL_MS) {
             await replyMessage(replyToken, PREVIEW_RETRY_REPLY);
           } else {
-            await replyMessage(replyToken, PREVIEW_START_REPLY);
+            let restarted = false;
+            try {
+              restarted = (await this.whiteSheetSessionResolver(this.supabase, msgEvent, rawMessageId, destination)).state === "reviewing";
+            } catch { /* the session is re-derived from history; the plain start reply is safe */ }
+            await replyMessage(replyToken, restarted ? PREVIEW_RESTART_REPLY : PREVIEW_START_REPLY);
           }
         } else if (!botSummaryQuestion) {
           await replyMessage(replyToken, BOT_SUMMARY_USAGE_REPLY);
@@ -1095,6 +1119,40 @@ export class WebhookService {
         }
       }
       return { eventId, eventType: event.type, status: "saved", parsed: true };
+    }
+
+    // ── 3.0w. White Sheet review ownership ──────────────────────────────────
+    // While THIS user has a sheet under review in THIS group, every plain text of
+    // theirs is a correction or the approval. It is answered here and never reaches
+    // the produce, slip, white-sheet-note or any other legacy parser.
+    if (this.botSummaryAnalystEnabled && this.whiteSheetReaderEnabled && msgEvent.source.type === "group"
+      && lineUserId && this.botSummaryAnalystSourceAllowed(sourceId)) {
+      let session: Awaited<ReturnType<typeof resolveWhiteSheetSession>> | null = null;
+      let reviewReplies: string[] | null = null;
+      try {
+        session = await this.whiteSheetSessionResolver(this.supabase, msgEvent, rawMessageId, destination);
+      } catch {
+        // Ownership unknown: a queued text may belong to a review, so never guess.
+        reviewReplies = [CORRECTION_RETRY_REPLY];
+      }
+      if (session?.state === "reviewing" && session.sheet) {
+        const messageText = (message as LineTextMessage).text;
+        const reviewScope = { destination, sourceId, userId: lineUserId };
+        reviewReplies = await (isWhiteSheetApproval(messageText)
+          ? reviewApproval(this.supabase, reviewScope, session.sheet.imageRawId, rawMessageId)
+          : reviewCorrectionTurn(
+            this.supabase, reviewScope, session.sheet.imageRawId, rawMessageId,
+            messageText, { applyCorrection: this.whiteSheetCorrectionApplier },
+          )).catch(() => [CORRECTION_RETRY_REPLY]);
+      }
+      if (reviewReplies) {
+        await this.markRawMessageProcessed(rawMessageId, log);
+        if (replyToken) {
+          if (reviewReplies.length === 1) await replyMessage(replyToken, reviewReplies[0]);
+          else await replyMessages(replyToken, reviewReplies);
+        }
+        return { eventId, eventType: event.type, status: "saved", parsed: false };
+      }
     }
 
     const quotedSlipResult = await this.tryProcessQuotedSlipAmountCorrection(
@@ -4934,6 +4992,22 @@ export class WebhookService {
       || isWhiteSheetNoteFieldShaped(text);
   }
 
+  /**
+   * A group text from a user who started white-sheet reading must be queued so it is
+   * ordered against that user's images and approvals. A superset is harmless: the
+   * session resolver decides ownership when the queued event is processed.
+   */
+  private async mayOwnWhiteSheetSession(event: LineEvent, destination: string): Promise<boolean> {
+    if (!this.botSummaryAnalystEnabled || !this.whiteSheetReaderEnabled
+      || event.type !== "message" || event.message.type !== "text" || event.source.type !== "group"
+      || !getUserId(event.source) || !this.botSummaryAnalystSourceAllowed(getSourceId(event.source))) return false;
+    try {
+      return await whiteSheetSessionMayBeActive(this.supabase, event, destination);
+    } catch {
+      return true;
+    }
+  }
+
   private async saveRawMessage(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     event: any,
@@ -4949,6 +5023,7 @@ export class WebhookService {
       || (event.type === "message" && message?.type === "image")
       || (event.type === "message" && message?.type === "text"
         && whiteSheetReadCommand(message as LineTextMessage, destination) !== null)
+      || await this.mayOwnWhiteSheetSession(event as LineEvent, destination)
     ) && this.orderedQueueAvailable !== false) {
       let data: unknown;
       let error: { code?: string; message: string } | null = null;

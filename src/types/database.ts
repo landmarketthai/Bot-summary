@@ -237,6 +237,37 @@ export interface Database {
         Relationships: [];
       };
 
+      white_sheet_review_turns: {
+        Row: {
+          raw_message_id:        string;
+          turn_seq:              number;
+          destination:           string;
+          source_id:             string;
+          user_id:               string;
+          sheet_image_raw_id:    string;
+          parent_raw_message_id: string | null;
+          kind:                  "base" | "turn" | "approval";
+          outcome:               "applied" | "failed" | "unavailable";
+          snapshot:              Json | null;
+          created_at:            string;
+        };
+        Insert: {
+          raw_message_id:        string;
+          turn_seq?:             never;
+          destination:           string;
+          source_id:             string;
+          user_id:               string;
+          sheet_image_raw_id:    string;
+          parent_raw_message_id?: string | null;
+          kind:                  "base" | "turn" | "approval";
+          outcome:               "applied" | "failed" | "unavailable";
+          snapshot?:             Json | null;
+          created_at?:           string;
+        };
+        Update: Record<string, never>;
+        Relationships: [];
+      };
+
       produce_sessions: {
         Row: {
           id:                      string;

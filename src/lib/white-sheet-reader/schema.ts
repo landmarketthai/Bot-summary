@@ -60,7 +60,7 @@ export const WHITE_SHEET_PREVIEW_JSON_SCHEMA = {
   type: "object", additionalProperties: false, properties, required: Object.keys(properties),
 };
 
-type Schema = {
+export type Schema = {
   type: string | string[]; properties?: Record<string, Schema>; required?: string[];
   additionalProperties?: boolean; items?: Schema; enum?: string[];
   minimum?: number; maximum?: number; minLength?: number; maxLength?: number;
@@ -68,7 +68,7 @@ type Schema = {
 };
 
 // Validate the same bounded schema sent to OpenAI; no permissive coercions.
-function validate(value: unknown, schema: Schema): void {
+export function validate(value: unknown, schema: Schema): void {
   const type = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
   if (![schema.type].flat().includes(type)) throw new Error("Invalid preview field type");
   if (value === null) return;

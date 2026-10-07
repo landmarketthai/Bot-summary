@@ -2,6 +2,10 @@ import { createOpenAIResponse, extractOpenAIOutputText, type OpenAIAnalystOption
 import { downloadLineMessageContent, type LineMessageContent } from "@/lib/line/content";
 import { chunkBlocks, LINE_MESSAGE_MAX_CODE_POINTS } from "@/lib/summary/line-chunking";
 import {
+  applyCorrectionPatch, CorrectionUnavailableError,
+  extractCorrectionPatch, isEmptyCorrectionPatch, type CorrectionPatch,
+} from "./correction";
+import {
   FIELD_LABELS, MONEY_FIELDS, READ_CONFIDENCE, WHITE_SHEET_PREVIEW_JSON_SCHEMA,
   parseWhiteSheetPreview, type WhiteSheetPreview,
 } from "./schema";
@@ -9,8 +13,16 @@ import {
 export const PREVIEW_DISCLAIMER = "ข้อมูลนี้ยังไม่ได้บันทึกลงระบบ เป็นเพียงผลอ่านจากภาพครับ";
 export const PREVIEW_RETRY_REPLY = "ตอนนี้อ่านใบขาวจากรูปนี้ไม่สำเร็จครับ ลองถ่ายให้เห็นทั้งแผ่นและชัดขึ้น แล้วพิมพ์ @Botsummary อ่านใบขาว ก่อนส่งรูปใหม่ได้เลย\n\n" + PREVIEW_DISCLAIMER;
 export const PREVIEW_UNKNOWN_REPLY = "ยังยืนยันไม่ได้ว่ารูปนี้เป็นใบขาวครับ ลองถ่ายให้เห็นแบบฟอร์มทั้งแผ่นแล้วส่งใหม่ได้เลย\n\n" + PREVIEW_DISCLAIMER;
-export const PREVIEW_START_REPLY = "เปิดโหมดอ่านใบขาวแล้วครับ\nส่งรูปใบขาวมา 1 รูปได้เลย ภายใน 10 นาที\nระบบจะอ่านให้ตรวจสอบก่อน และยังไม่บันทึกลงระบบ\nถ้าจะส่งสลิปหรือรูปอื่น พิมพ์ @Botsummary ยกเลิกอ่านใบขาว ก่อนครับ";
-export const PREVIEW_CONSUMED_REPLY = "โหมดนี้อ่านได้ครั้งละ 1 รูปครับ พิมพ์ @Botsummary อ่านใบขาว ก่อนส่งรูปใหม่ หรือ @Botsummary ยกเลิกอ่านใบขาว เพื่อกลับโหมดปกติ\n\n" + PREVIEW_DISCLAIMER;
+export const PREVIEW_START_REPLY = "เปิดโหมดอ่านใบขาวแล้วครับ\nส่งรูปใบขาวมาทีละ 1 ใบได้เลย ระบบจะอ่านให้ตรวจสอบก่อน และยังไม่บันทึกลงระบบ\nแก้ข้อมูลด้วยการพิมพ์ปกติได้ แล้วพิมพ์ \"ผ่าน\" เพื่อไปใบถัดไป\nถ้าจะส่งสลิปหรือรูปอื่น พิมพ์ @Botsummary จบใบขาว หรือ @Botsummary ยกเลิกอ่านใบขาว ก่อนครับ";
+export const PREVIEW_RESTART_REPLY = "เริ่มอ่านใบขาวใหม่แล้วครับ ข้ามใบที่รอตรวจก่อนหน้านี้\nส่งรูปใบขาวมาทีละ 1 ใบได้เลย";
+export const PREVIEW_PENDING_REVIEW_REPLY = "ยังมีใบขาวใบปัจจุบันที่รอตรวจครับ\nแก้ข้อมูลหรือพิมพ์ \"ผ่าน\" ก่อน แล้วค่อยส่งใบถัดไปได้เลย";
+export const PREVIEW_APPROVED_REPLY = "ใบนี้ผ่านแล้ว ✅\nส่งใบถัดไปได้เลย";
+export const PREVIEW_END_REPLY = "ปิดโหมดอ่านใบขาวแล้วครับ ส่งรูปอื่นได้ตามปกติ";
+export const PREVIEW_END_REFUSED_REPLY = "ยังมีใบขาวที่รอตรวจอยู่ครับ\nพิมพ์ \"ผ่าน\" ก่อน หรือพิมพ์ @Botsummary ยกเลิกอ่านใบขาว เพื่อยกเลิกใบนี้";
+export const CORRECTION_CAPTURE_FAILED_REPLY = "ยังจับข้อมูลที่แก้ไม่ได้ครับ ลองพิมพ์ใหม่แบบภาษาปกติได้เลย\nเช่น:\nวันที่ 6 ตุลาคม\nขวัญ+จ๋า\nค่าแรง 300";
+export const CORRECTION_RETRY_REPLY = "ตอนนี้อ่านข้อความที่แก้ไม่สำเร็จครับ ใบที่รอตรวจยังอยู่เหมือนเดิม ลองส่งข้อความอีกครั้งได้เลย\n\n" + PREVIEW_DISCLAIMER;
+export const PREVIEW_REVIEW_PROMPT = "ถ้าถูกต้องพิมพ์ \"ผ่าน\" ครับ หรือพิมพ์ข้อมูลที่ต้องแก้ได้เลย เช่น ค่าแรง 300";
+export const PREVIEW_CORRECTED_PROMPT = "ตรวจอีกครั้ง ถ้าถูกแล้วพิมพ์ \"ผ่าน\" ครับ";
 export const PREVIEW_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
 export const WHITE_SHEET_VISION_PROMPT = `
@@ -86,10 +98,11 @@ function reviewLabel(path: string): string {
   return path === "expenses" ? "ค่าใช้จ่าย" : FIELD_LABELS[path as keyof typeof FIELD_LABELS];
 }
 
-export function renderWhiteSheetPreview(input: unknown): string[] {
+/** "review" = first read inside a review session; "corrected" = after the user's corrections. */
+export function renderWhiteSheetPreview(input: unknown, mode?: "review" | "corrected"): string[] {
   const preview = parseWhiteSheetPreview(input);
   if (preview.documentType !== "white_sheet" || preview.overallConfidence < READ_CONFIDENCE) return [PREVIEW_UNKNOWN_REPLY];
-  if (!preview.market && !preview.dateRaw && !preview.sellerNames.length
+  if (mode !== "corrected" && !preview.market && !preview.dateRaw && !preview.sellerNames.length
     && MONEY_FIELDS.every((key) => preview[key] === null) && !preview.expenses.length) return [PREVIEW_RETRY_REPLY];
   const uncertain = new Set(preview.lowConfidenceFields);
   const show = (key: string, value: string | number | null): string => {
@@ -104,7 +117,7 @@ export function renderWhiteSheetPreview(input: unknown): string[] {
     .reduce((text, [key, label]) => text.replaceAll(key, label), note));
   const reviews = [...new Set(preview.lowConfidenceFields.map((path) => `${reviewLabel(path)} อ่านไม่ชัด`)), ...notes];
   return chunkBlocks([
-    "อ่านใบขาวแล้ว (รอตรวจ)",
+    mode === "corrected" ? "แก้ผลอ่านใบขาวแล้ว (รอตรวจ)" : "อ่านใบขาวแล้ว (รอตรวจ)",
     [`ตลาด: ${show("market", preview.market)}`, `วันที่: ${date}`,
       `คนขาย: ${show("sellerNames", preview.sellerNames.length ? preview.sellerNames.join(" + ") : null)}`].join("\n"),
     MONEY_FIELDS.map((key) => `${FIELD_LABELS[key]}: ${show(key, preview[key])}`).join("\n"),
@@ -112,23 +125,80 @@ export function renderWhiteSheetPreview(input: unknown): string[] {
       `${i + 1}. ${show(`expenses[${i}].labelRaw`, expense.labelRaw)} — ${show(`expenses[${i}].amountBaht`, expense.amountBaht)}`).join("\n")
       : show("expenses", null)),
     ...(reviews.length ? ["จุดที่ควรตรวจ:\n" + reviews.map((note) => `- ${note}`).join("\n")] : []),
+    ...(mode === "review" ? [PREVIEW_REVIEW_PROMPT] : mode === "corrected" ? [PREVIEW_CORRECTED_PROMPT] : []),
     PREVIEW_DISCLAIMER,
   ], LINE_MESSAGE_MAX_CODE_POINTS);
 }
 
-export async function readWhiteSheetImage(
+export const MISSING_REVIEW_BASE_REPLY = "ข้อมูลใบนี้สำหรับตรวจต่อไม่ครบครับ พิมพ์ @Botsummary อ่านใบขาว แล้วส่งรูปนี้ใหม่อีกครั้ง";
+/** "ผ่าน" lost the snapshot to a concurrent correction: not approved, the user re-checks and approves again. */
+export const APPROVAL_RETRY_REPLY = "ใบนี้ยังไม่ผ่านครับ มีการแก้ข้อมูลเข้ามาพร้อมกัน\nตรวจผลล่าสุดอีกครั้ง แล้วพิมพ์ \"ผ่าน\" ใหม่ได้เลย";
+
+/**
+ * Outcome of the one and only Vision read of a sheet. "applied" carries the exact validated
+ * preview that was rendered: it becomes the base every later correction starts from.
+ */
+export type WhiteSheetBaseRead =
+  | { outcome: "applied"; snapshot: WhiteSheetPreview; replies: string[] }
+  | { outcome: "failed" | "unavailable"; replies: string[] };
+
+export async function readWhiteSheetBase(
   messageId: string,
   download: (id: string) => Promise<LineMessageContent> = (id) => downloadLineMessageContent(id, undefined, {
     maxBytes: PREVIEW_MAX_IMAGE_BYTES, timeoutMs: 10_000,
   }),
   extract: (content: LineMessageContent) => Promise<unknown> = extractWhiteSheetPreview,
-): Promise<string[]> {
+): Promise<WhiteSheetBaseRead> {
   try {
     const content = await download(messageId);
     validatePreviewImage(content);
-    return renderWhiteSheetPreview(await extract(content));
+    const snapshot = parseWhiteSheetPreview(await extract(content));
+    const replies = renderWhiteSheetPreview(snapshot, "review");
+    // Not a white sheet, or nothing readable: shown to the user, but never a base to correct.
+    if (replies.length === 1 && (replies[0] === PREVIEW_UNKNOWN_REPLY || replies[0] === PREVIEW_RETRY_REPLY)) {
+      return { outcome: "failed", replies };
+    }
+    return { outcome: "applied", snapshot, replies };
   } catch {
     // No image bytes, extracted values, credentials or provider response logged.
-    return [PREVIEW_RETRY_REPLY];
+    return { outcome: "unavailable", replies: [PREVIEW_RETRY_REPLY] };
+  }
+}
+
+export async function readWhiteSheetImage(
+  messageId: string,
+  download?: (id: string) => Promise<LineMessageContent>,
+  extract?: (content: LineMessageContent) => Promise<unknown>,
+): Promise<string[]> {
+  return (await readWhiteSheetBase(messageId, download, extract)).replies;
+}
+
+export type WhiteSheetCorrectionResult =
+  | { outcome: "applied"; snapshot: WhiteSheetPreview; replies: string[] }
+  | { outcome: "failed" | "unavailable"; replies: string[] };
+
+/**
+ * Evaluates ONE correction message against the previous applied snapshot. Never reads the
+ * image and never looks at earlier messages. "failed" = the model gave nothing usable or the
+ * patch cannot be applied; "unavailable" = provider outage or timeout.
+ */
+export async function applyWhiteSheetCorrection(
+  base: WhiteSheetPreview, text: string,
+  extractPatch: (text: string) => Promise<CorrectionPatch> = extractCorrectionPatch,
+): Promise<WhiteSheetCorrectionResult> {
+  let patch: CorrectionPatch;
+  try {
+    patch = await extractPatch(text);
+  } catch (error) {
+    return error instanceof CorrectionUnavailableError
+      ? { outcome: "unavailable", replies: [CORRECTION_RETRY_REPLY] }
+      : { outcome: "failed", replies: [CORRECTION_CAPTURE_FAILED_REPLY] };
+  }
+  if (isEmptyCorrectionPatch(patch)) return { outcome: "failed", replies: [CORRECTION_CAPTURE_FAILED_REPLY] };
+  try {
+    const snapshot = applyCorrectionPatch(base, patch);
+    return { outcome: "applied", snapshot, replies: renderWhiteSheetPreview(snapshot, "corrected") };
+  } catch {
+    return { outcome: "failed", replies: [CORRECTION_CAPTURE_FAILED_REPLY] };
   }
 }

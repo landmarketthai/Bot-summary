@@ -1,10 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Database } from "@/types/database";
 import type { LineMessageEvent } from "./types";
-import { FakeDatabase, type Row } from "@/lib/summary/test-fake-supabase";
-import { resolveWhiteSheetReadMode, PREVIEW_TTL_MS } from "@/lib/white-sheet-reader/mode";
-import { PREVIEW_START_REPLY, PREVIEW_CONSUMED_REPLY, PREVIEW_RETRY_REPLY, readWhiteSheetImage } from "@/lib/white-sheet-reader/reader";
+import { ReviewDatabase as PreviewDatabase } from "@/lib/white-sheet-reader/test-review-database";
+import type { WhiteSheetPreview } from "@/lib/white-sheet-reader/schema";
+import { resolveWhiteSheetSession, PREVIEW_TTL_MS } from "@/lib/white-sheet-reader/mode";
+import { PREVIEW_START_REPLY, PREVIEW_PENDING_REVIEW_REPLY, PREVIEW_RETRY_REPLY, readWhiteSheetBase, type WhiteSheetBaseRead } from "@/lib/white-sheet-reader/reader";
 import { WebhookService } from "./webhook-service";
 
 function event(id: string, text?: string, userId = "U1", timestamp = Date.now() - 1000): LineMessageEvent {
@@ -15,43 +14,11 @@ function event(id: string, text?: string, userId = "U1", timestamp = Date.now() 
       : { id, type: "text", quoteToken: id, text } };
 }
 
-class PreviewDatabase extends FakeDatabase {
-  readonly writes: string[] = [];
-  override noteWrite(table: string) { this.writes.push(table); super.noteWrite(table); }
-  override insert(table: string, payload: Row, mode: "select" | "insert" | "update" | "upsert" | "delete") {
-    this.writes.push(table);
-    return super.insert(table, payload, mode);
-  }
-  private queueRpc(name: string, args?: Row) {
-    this.rpcCalls.push(name);
-    if (name === "receive_line_webhook_event") {
-      const existing = this.rows("raw_messages").find((row) => row.line_event_id === args?.p_line_event_id);
-      if (existing) return Promise.resolve({ data: { raw_message_id: existing.id, duplicate: true }, error: null });
-      const row = this.insert("raw_messages", {
-        line_event_id: args?.p_line_event_id, destination: args?.p_destination,
-        source_type: args?.p_source_type, source_id: args?.p_source_id, user_id: args?.p_user_id,
-        message_id: args?.p_message_id, message_type: args?.p_message_type,
-        raw_text: args?.p_raw_text, payload: args?.p_payload,
-      }, "insert");
-      this.rows("line_webhook_event_queue").push({ raw_message_id: row.id, line_event_id: row.line_event_id,
-        source_id: row.source_id, receive_order: this.rows("line_webhook_event_queue").length + 1,
-        received_at: new Date().toISOString(), status: "pending", claim_token: "claim", queue_id: row.id });
-      return Promise.resolve({ data: { raw_message_id: row.id, duplicate: false }, error: null });
-    }
-    if (name === "claim_line_webhook_event") {
-      const row = this.rows("line_webhook_event_queue").find((row) => row.source_id === args?.p_source_id && row.status === "pending");
-      if (row) row.status = "processing";
-      return Promise.resolve({ data: row ?? null, error: null });
-    }
-    if (name === "complete_line_webhook_event") {
-      const row = this.rows("line_webhook_event_queue").find((row) => row.raw_message_id === args?.p_raw_message_id);
-      if (row) row.status = args?.p_status;
-      return Promise.resolve({ data: true, error: null });
-    }
-    throw new Error(`Unexpected business RPC: ${name}`);
-  }
-  client() { return { from: this.from.bind(this), rpc: this.queueRpc.bind(this) } as unknown as SupabaseClient<Database>; }
-}
+const SHEET: WhiteSheetPreview = {
+  documentType: "white_sheet", market: "พาซิโอ้ผัก", dateRaw: null, dateIso: null, sellerNames: [], salesAmountBaht: 7170,
+  transferAmountBaht: 865, cashSentAmountBaht: 1640, laborAmountBaht: null, remainingCashAmountBaht: null,
+  expenses: [], lowConfidenceFields: [], overallConfidence: 0.95, notes: [],
+};
 
 function setup(db = new PreviewDatabase(), allowed = true, enabled = true, readerEnabled = true) {
   const replies: string[] = [], images: string[] = [], asked: string[] = [];
@@ -60,7 +27,7 @@ function setup(db = new PreviewDatabase(), allowed = true, enabled = true, reade
     botSummaryAnalystEnabled: enabled, botSummaryAnalystSourceAllowed: () => allowed,
     whiteSheetReaderEnabled: readerEnabled,
     botSummaryAnalystAnswerer: async (question: string) => { asked.push(question); return "ยอดขายวันนี้"; },
-    whiteSheetImageReader: async (id: string) => { images.push(id); return ["preview"] ; },
+    whiteSheetBaseReader: async (id: string): Promise<WhiteSheetBaseRead> => { images.push(id); return { outcome: "applied", snapshot: SHEET, replies: ["preview"] }; },
     replyMessage: async (_token: string, text: string) => { replies.push(text); },
     slipSessionService: {
       findActiveSession: async () => { slipLookups++; return null; },
@@ -79,7 +46,7 @@ describe("@Botsummary read-white-sheet routing", () => {
     const s = setup();
     await s.service.processEvents([event("cmd", "@Botsummary อ่านใบขาว")], "Ubot");
     expect(s.replies).toEqual([PREVIEW_START_REPLY]); expect(s.asked).toEqual([]);
-    expect(s.db.writes.every((table) => table === "raw_messages")).toBe(true);
+    expect(s.db.writes.every((table) => table === "raw_messages" || table === "white_sheet_review_turns")).toBe(true);
   });
   it("reads one image across separate Vercel instances and persists no extracted data", async () => {
     const s = setup();
@@ -88,14 +55,14 @@ describe("@Botsummary read-white-sheet routing", () => {
     await instance.processEvents([event("img")], "Ubot");
     expect(s.images).toEqual(["img"]); expect(s.replies.at(-1)).toBe("preview");
     expect(s.slipLookups()).toBe(0); expect(s.asked).toEqual([]);
-    expect(s.db.writes.every((table) => table === "raw_messages")).toBe(true);
+    expect(s.db.writes.every((table) => table === "raw_messages" || table === "white_sheet_review_turns")).toBe(true);
     expect(s.db.rpcCalls.every((name) => /^(receive|claim|complete)_line_webhook_event$/u.test(name))).toBe(true);
     expect(s.db.rows("raw_messages").every((row) => !JSON.stringify(row).includes("preview"))).toBe(true);
   });
   it("handles command plus images in one payload in durable order, then blocks extra images", async () => {
     const s = setup();
     await s.service.processEvents([event("cmd", "@Botsummary อ่านใบขาว"), event("img1"), event("img2")], "Ubot");
-    expect(s.images).toEqual(["img1"]); expect(s.replies.at(-1)).toBe(PREVIEW_CONSUMED_REPLY);
+    expect(s.images).toEqual(["img1"]); expect(s.replies.at(-1)).toBe(PREVIEW_PENDING_REVIEW_REPLY);
     expect(s.slipLookups()).toBe(0);
   });
   it("does not repeat extraction on LINE redelivery", async () => {
@@ -135,7 +102,7 @@ describe("@Botsummary read-white-sheet routing", () => {
     });
     await service.processEvents([event("cmd", "@Botsummary อ่านใบขาว"), event("img")], "Ubot");
     expect(s.images).toEqual(["img"]);
-    expect(s.db.writes.every((table) => table === "raw_messages")).toBe(true);
+    expect(s.db.writes.every((table) => table === "raw_messages" || table === "white_sheet_review_turns")).toBe(true);
   });
   it("does not consume another user's image", async () => {
     const s = setup();
@@ -177,12 +144,12 @@ describe("@Botsummary read-white-sheet routing", () => {
     await s.service.processEvents([event("old", "@Botsummary อ่านใบขาว", "U1", Date.now() - PREVIEW_TTL_MS - 1), event("img")], "Ubot");
     expect(s.images).toEqual([]); expect(s.slipLookups()).toBe(1);
   });
-  it("a delayed older image fails closed instead of becoming slip/settlement input", async () => {
+  it("an image LINE-stamped before the start command is not the sheet, in claim order, even if received after it", async () => {
     const s = setup(); const now = Date.now();
     await s.service.processEvents([event("cmd", "@Botsummary อ่านใบขาว", "U1", now - 100),
       event("old-image", undefined, "U1", now - 200)], "Ubot");
-    expect(s.images).toEqual([]); expect(s.slipLookups()).toBe(0);
-    expect(s.replies.at(-1)).toBe(PREVIEW_RETRY_REPLY);
+    // The worker claims by (LINE timestamp, receive_order): the image precedes the command, so it is an ordinary image.
+    expect(s.images).toEqual([]); expect(s.slipLookups()).toBe(1);
   });
   it.each(["multi-image", "external"])("refuses %s without invoking extraction or any writing flow", async (kind) => {
     const s = setup(); const image = event("img");
@@ -194,23 +161,23 @@ describe("@Botsummary read-white-sheet routing", () => {
     expect(s.images).toEqual([]); expect(s.replies.at(-1)).toBe(PREVIEW_RETRY_REPLY); expect(s.slipLookups()).toBe(0);
   });
   it("contains reader failure without falling into slip/settlement writes", async () => {
-    const s = setup(); s.dependencies.whiteSheetImageReader = async () => { throw new Error("timeout"); };
+    const s = setup(); s.dependencies.whiteSheetBaseReader = async () => { throw new Error("timeout"); };
     const service = new WebhookService(s.db.client(), s.dependencies);
     await service.processEvents([event("cmd", "@Botsummary อ่านใบขาว"), event("img")], "Ubot");
     expect(s.replies.at(-1)).toBe(PREVIEW_RETRY_REPLY); expect(s.slipLookups()).toBe(0);
   });
   it("invalid model output returns retry through the real reader", async () => {
     const s = setup();
-    s.dependencies.whiteSheetImageReader = async (id) => readWhiteSheetImage(id,
+    s.dependencies.whiteSheetBaseReader = async (id) => readWhiteSheetBase(id,
       async () => ({ bytes: new Uint8Array([0xff, 0xd8, 0xff]), mimeType: "image/jpeg" }), async () => ({ invalid: true }));
     await new WebhookService(s.db.client(), s.dependencies).processEvents([event("cmd", "@Botsummary อ่านใบขาว"), event("img")], "Ubot");
     expect(s.replies.at(-1)).toBe(PREVIEW_RETRY_REPLY); expect(s.slipLookups()).toBe(0);
-    expect(s.db.writes.every((table) => table === "raw_messages")).toBe(true);
+    expect(s.db.writes.every((table) => table === "raw_messages" || table === "white_sheet_review_turns")).toBe(true);
   });
   it("fails closed on unavailable session context instead of invoking writing image handlers", async () => {
     const s = setup();
     const service = new WebhookService(s.db.client(), { ...s.dependencies,
-      whiteSheetReadModeResolver: async () => { throw new Error("DB unavailable"); } });
+      whiteSheetSessionResolver: async () => { throw new Error("DB unavailable"); } });
     await service.processEvents([event("img")], "Ubot");
     expect(s.replies).toEqual([PREVIEW_RETRY_REPLY]); expect(s.slipLookups()).toBe(0);
   });
@@ -225,10 +192,13 @@ describe("@Botsummary read-white-sheet routing", () => {
   it("fails closed on bounded history overflow", async () => {
     const s = setup();
     await s.service.processEvents([event("cmd", "@Botsummary อ่านใบขาว")], "Ubot");
-    for (let i = 0; i < 200; i++) s.db.rows("line_webhook_event_queue").push({
-      raw_message_id: `other-${i}`, source_id: "G1", receive_order: 1,
-      received_at: new Date().toISOString(), status: "processed",
-    });
+    for (let i = 0; i < 300; i++) {
+      s.db.rows("raw_messages").push({ id: `other-${i}`, destination: "Ubot", source_type: "group", source_id: "G1",
+        user_id: "U1", message_type: "text", raw_text: `chat ${i}`, is_processed: true,
+        payload: event(`other-${i}`, `chat ${i}`) });
+      s.db.rows("line_webhook_event_queue").push({ raw_message_id: `other-${i}`, source_id: "G1", receive_order: 1.5,
+        received_at: new Date().toISOString(), status: "processed" });
+    }
     await s.service.processEvents([event("img")], "Ubot");
     expect(s.replies.at(-1)).toBe(PREVIEW_RETRY_REPLY); expect(s.slipLookups()).toBe(0);
   });
@@ -236,9 +206,9 @@ describe("@Botsummary read-white-sheet routing", () => {
     const s = setup();
     await s.service.processEvents([event("cmd", "@Botsummary อ่านใบขาว"), event("img")], "Ubot");
     const image = event("img");
-    await expect(resolveWhiteSheetReadMode(s.db.client(), image, "raw-2", "otherBot")).rejects.toThrow();
-    await expect(resolveWhiteSheetReadMode(s.db.client(), image, "absent", "Ubot")).rejects.toThrow();
+    await expect(resolveWhiteSheetSession(s.db.client(), image, "raw-2", "otherBot")).rejects.toThrow();
+    await expect(resolveWhiteSheetSession(s.db.client(), image, "absent", "Ubot")).rejects.toThrow();
     image.source = { type: "group", groupId: "otherGroup", userId: "U1" };
-    await expect(resolveWhiteSheetReadMode(s.db.client(), image, "raw-2", "Ubot")).rejects.toThrow();
+    await expect(resolveWhiteSheetSession(s.db.client(), image, "raw-2", "Ubot")).rejects.toThrow();
   });
 });
