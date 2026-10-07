@@ -60,7 +60,7 @@ export function latestDraftItemAction(session: WeighSession): DraftItemAction | 
 
 /** Operator copy shared by plain-text and guided capture acknowledgements. */
 export function buildDraftItemActionReply(action: DraftItemAction): string {
-  const item = `ข้อ ${action.item_number}${action.occurrence ?? ""}`;
+  const item = `ข้อ ${action.item_number}`;
 
   if (action.status === "awaiting_replacement") {
     return [
@@ -80,16 +80,11 @@ export function buildDraftItemActionReply(action: DraftItemAction): string {
   }
 
   if (action.status === "ambiguous_target") {
-    const selectors = action.selectors ?? [];
-    const verb = action.kind === "remove" ? "ลบข้อ" : "แก้ข้อ";
+    // Only reachable for a typed number that repeats outside the shown
+    // (renumbered) list. Point at the shown numbers — never a letter suffix.
     return [
       `⚠️ พบเลข${item} ซ้ำ ${action.match_count} รายการ`,
-      ...(selectors.length > 1
-        ? [
-            `ระบุรายการด้วยตัวอักษรต่อท้าย: ${selectors.join(", ")}`,
-            `เช่น “${verb} ${selectors[0]}”`,
-          ]
-        : ["กรุณาแก้เลขข้อให้ไม่ซ้ำก่อน"]),
+      "ใช้เลขข้อตามรายการที่ระบบแสดงล่าสุด",
       "รายการอื่นยังอยู่ครบ ไม่ต้องยกเลิก",
     ].join("\n");
   }

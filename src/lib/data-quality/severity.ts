@@ -66,7 +66,19 @@ export type DataQualityCategory =
   /** LINE unsend of a House Stock close arrived after the session already
    *  finalized. The snapshot is never reopened/mutated automatically — a
    *  human must review whether the finalized count still reflects reality. */
-  | "house_stock_unsend_close_after_finalize";
+  | "house_stock_unsend_close_after_finalize"
+  // ── Produce reconciliation (pending-session-finalizer.ts, after persist) ──
+  // Non-blocking by policy ("calculate first, reconcile later"): the session
+  // is already saved with the submitted figures. Audit only, never a task for
+  // field staff, so every one of these stays ADVISORY.
+  /** Typed item numbers were duplicated/missing/out of order and renumbered. */
+  | "produce_item_renumbered"
+  /** A line was saved under a name outside the dictionary or this round's withdrawal. */
+  | "produce_unknown_product"
+  /** A return was saved in a unit the product was not withdrawn in. */
+  | "produce_unit_mismatch"
+  /** Good + damaged returns exceed the recorded withdrawal. */
+  | "produce_return_exceeds_withdrawal";
 
 const CATEGORY_SEVERITY: Record<DataQualityCategory, DataQualitySeverity> = {
   produce_no_return:                  "ACTION_REQUIRED",
@@ -82,6 +94,10 @@ const CATEGORY_SEVERITY: Record<DataQualityCategory, DataQualitySeverity> = {
   financial_evidence_incomplete:      "ACTION_REQUIRED",
   financial_settlement_mismatch:      "CRITICAL",
   house_stock_unsend_close_after_finalize: "ACTION_REQUIRED",
+  produce_item_renumbered:            "ADVISORY",
+  produce_unknown_product:            "ADVISORY",
+  produce_unit_mismatch:              "ADVISORY",
+  produce_return_exceeds_withdrawal:  "ADVISORY",
 };
 
 export const ALL_DATA_QUALITY_CATEGORIES: readonly DataQualityCategory[] =

@@ -96,7 +96,7 @@ describe("Morning Decision Brief", () => {
     expect(message).not.toContain("⚠️ ข้อมูลที่ต้องตรวจ");
   });
 
-  test("warns clearly when the daily พาซิโอ้ผัก market has no data", () => {
+  test("hides an empty vegetable money section regardless of market-name presence", () => {
     const missing = buildMorningBriefMessage(report({
       sales: { ...report().sales, vegetableMarketDataPresent: false },
     }));
@@ -104,9 +104,25 @@ describe("Morning Decision Brief", () => {
       sales: { ...report().sales, vegetableMarketDataPresent: true },
     }));
 
-    expect(missing).toContain("🥬 ยอดผัก\nไม่มีข้อมูลยอดผักในระบบ");
+    expect(missing).not.toContain("ผัก — ภาพรวมเงิน");
+    expect(missing).not.toContain("ไม่มีข้อมูลยอดผักในระบบ");
     expect(missing).not.toContain("ไม่สามารถตรวจสอบยอดผักได้");
     expect(present).not.toContain("ไม่มีข้อมูลยอดผักในระบบ");
+  });
+
+  test("shows pure section totals in order while overall sales include all sections", () => {
+    const financial = (sales: number) => ({ withdrawalValueSatang: sales * 10, salesValueSatang: sales,
+      goodReturnValueSatang: sales * 2, houseStockValueSatang: 0, readyValueSatang: sales * 2, markets: [] });
+    const message = buildMorningBriefMessage(report({
+      produceFinancial: { fruit: financial(100), vegetable: financial(200), other: financial(300) },
+      sales: { ...report().sales, totalSalesSatang: 600, excludedFromSalesCount: 0 },
+    }));
+    expect(message).toContain("ยอดขายรวม 6.00 บาท");
+    expect(message).toContain("ผลไม้ — ภาพรวมเงิน\nยอดขาย 1.00 บาท\nเบิก 10.00 บาท\nชั่งคืนดี 2.00 บาท");
+    expect(message).toContain("ผัก — ภาพรวมเงิน\nยอดขาย 2.00 บาท");
+    expect(message).toContain("อื่นๆ — ภาพรวมเงิน\nยอดขาย 3.00 บาท");
+    expect(message.indexOf("ผลไม้ — ภาพรวมเงิน")).toBeLessThan(message.indexOf("ผัก — ภาพรวมเงิน"));
+    expect(message.indexOf("ผัก — ภาพรวมเงิน")).toBeLessThan(message.indexOf("อื่นๆ — ภาพรวมเงิน"));
   });
 
   test("warns when no white sheet has been entered", () => {

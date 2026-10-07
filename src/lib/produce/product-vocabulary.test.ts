@@ -20,10 +20,9 @@ import {
 } from "./product-vocabulary";
 import {
   validateProduceEntry,
-  type ProduceValidationException,
+  type ProduceValidationReconciliation,
   type ProduceValidationResult,
 } from "./entry-validation";
-import { buildReviewValidationReply } from "./entry-validation-message";
 
 function item(overrides: Partial<WeighSessionItem> & { product_name: string }): WeighSessionItem {
   return {
@@ -64,12 +63,13 @@ function withdraw(...names: string[]): ProduceValidationResult {
 }
 
 type VocabularyException = Extract<
-  ProduceValidationException,
+  ProduceValidationReconciliation,
   { kind: "unknown_product_vocabulary" }
 >;
 
+/** Unknown withdrawal names are recorded for reconciliation, never asked about. */
 function vocabulary(result: ProduceValidationResult): VocabularyException[] {
-  return result.reviews.filter(
+  return result.reconciliation.filter(
     (exception): exception is VocabularyException =>
       exception.kind === "unknown_product_vocabulary",
   );
@@ -114,11 +114,10 @@ describe("approved vocabulary", () => {
 describe("Production 2026-08-15 withdrawal spellings", () => {
   it("CASE A — มะม่วงเขียวรกต (แทน / ราชพฤก) reviews and suggests ม31", () => {
     const result = withdraw("มะม่วงเขียวรกต");
-    expect(result.status).toBe("review_required");
+    expect(vocabulary(result)).not.toHaveLength(0);
     const [exception] = vocabulary(result);
     expect(exception).toMatchObject({
       kind: "unknown_product_vocabulary",
-      severity: "review_required",
       itemNumber: 1,
       productName: "มะม่วงเขียวรกต",
     });
@@ -135,12 +134,12 @@ describe("Production 2026-08-15 withdrawal spellings", () => {
       productCode: "ม31",
       canonicalName: "มะม่วงเขียวมรกต",
     });
-    expect(withdraw("เขียวมรกต").status).toBe("clean");
+    expect(vocabulary(withdraw("เขียวมรกต"))).toEqual([]);
   });
 
   it("CASE C — สับปรด suggests สับปะรด but stays unresolved without a canonical target", () => {
     expect(suggestedNames("สับปรด")[0]).toBe("สับปะรด");
-    expect(withdraw("สับปรด").status).toBe("review_required");
+    expect(vocabulary(withdraw("สับปรด"))).not.toHaveLength(0);
   });
 
   it("CASE D — ไชมัส resolves to ไซมัส (reviewed alias, after 20260818100000)", () => {
@@ -149,7 +148,7 @@ describe("Production 2026-08-15 withdrawal spellings", () => {
       productCode: "ม54",
       canonicalName: "ไซมัส",
     });
-    expect(withdraw("ไชมัส").status).toBe("clean");
+    expect(vocabulary(withdraw("ไชมัส"))).toEqual([]);
   });
 
   it("CASE D2 — องุ่นคินสัน resolves to ม68 องุ่นคิมสัน (reviewed one-char typo)", () => {
@@ -159,7 +158,7 @@ describe("Production 2026-08-15 withdrawal spellings", () => {
       productCode: "ม68",
       canonicalName: "องุ่นคิมสัน",
     });
-    expect(withdraw("องุ่นคินสัน").status).toBe("clean");
+    expect(vocabulary(withdraw("องุ่นคินสัน"))).toEqual([]);
   });
 
   it("CASE E — อินทผรัม suggests อินทผลัม", () => {
@@ -171,7 +170,7 @@ describe("Production 2026-08-15 withdrawal spellings", () => {
   });
 
   it("CASE G — the approved spelling มะม่วงเขียวมรกต is clean", () => {
-    expect(withdraw("มะม่วงเขียวมรกต").status).toBe("clean");
+    expect(vocabulary(withdraw("มะม่วงเขียวมรกต"))).toEqual([]);
   });
 
   it("CASE H — the code ม31 resolves to the canonical name and is clean", () => {
@@ -186,7 +185,7 @@ describe("Production 2026-08-15 withdrawal spellings", () => {
 
   it("CASE I — a genuinely new product reviews with no forced suggestion", () => {
     const result = withdraw("สินค้าใหม่ABC");
-    expect(result.status).toBe("review_required");
+    expect(vocabulary(result)).not.toHaveLength(0);
     expect(vocabulary(result)[0]).toMatchObject({
       productName: "สินค้าใหม่ABC",
       suggestions: [],
@@ -207,7 +206,7 @@ describe("Production 2026-08-15 withdrawal spellings", () => {
     );
     expect(parsed.parse_errors).toEqual([]);
     const result = validateProduceEntry({ parsed, roundRows: [], roundBound: true });
-    expect(result.status).toBe("review_required");
+    expect(vocabulary(result)).not.toHaveLength(0);
     expect(vocabulary(result)[0]).toMatchObject({
       productName: "ฝรั่งสายพันธุ์ใหม่",
       suggestions: [],
@@ -220,7 +219,7 @@ describe("Production 2026-08-15 withdrawal spellings", () => {
       canonicalName: "ปลาอินทรี",
       reason: "reviewed_typo",
     });
-    expect(withdraw("ปลาอินทรีย์").status).toBe("clean");
+    expect(vocabulary(withdraw("ปลาอินทรีย์"))).toEqual([]);
   });
 
   it("CASE K — หมึกกระตอย reaches ปลาหมึกกะตอย through the shared run, not a merge", () => {
@@ -239,7 +238,7 @@ describe("Production 2026-08-15 withdrawal spellings", () => {
       productCode: "ม59",
       canonicalName: "อะโวคาโด",
     });
-    expect(withdraw("อะโวคาโด้").status).toBe("clean");
+    expect(vocabulary(withdraw("อะโวคาโด้"))).toEqual([]);
   });
 });
 
@@ -286,37 +285,32 @@ describe("guard scope", () => {
     expect(vocabulary(result)).toHaveLength(1);
   });
 
-  it("reviews an unknown return identity while keeping the unmatched-return advisory separate", () => {
+  it("preserves an unknown return with an internal unmatched-product advisory", () => {
     const parsed = session([
       item({ product_name: "อินทผลัม", transaction_type: "เบิก", quantity: 5 }),
       item({ product_name: "อินมผรัม", transaction_type: "คืน", quantity: 1 }),
     ]);
     const result = validateProduceEntry({ parsed, roundRows: [], roundBound: true });
-    expect(vocabulary(result)).toHaveLength(1);
-    expect(vocabulary(result)[0]).toMatchObject({
-      kind: "unknown_product_vocabulary",
-      itemNumber: 2,
-      productName: "อินมผรัม",
-    });
-    // The same measured return is also preserved as unmatched round evidence.
-    expect(result.advisories.map((exception) => exception.kind)).toEqual([
-      "product_not_withdrawn",
-    ]);
-    expect(result.status).toBe("review_required");
+    expect(result.reviews).toEqual([]);
+    expect(result.reconciliation).toContainEqual(expect.objectContaining({
+      kind: "product_not_withdrawn", itemNumber: 2, productName: "อินมผรัม",
+    }));
+    expect(result.advisories).toEqual([]);
+    expect(result.status).toBe("clean");
   });
 
-  it("keeps unknown_product_vocabulary and product_not_withdrawn separate", () => {
+  it("keeps unknown withdrawal vocabulary and unmatched returns as internal evidence", () => {
     const parsed = session([
       item({ product_name: "อินมผรัม", transaction_type: "เบิก", quantity: 5 }),
       item({ product_name: "องุ่นดำ", transaction_type: "คืน", quantity: 1 }),
     ]);
     const result = validateProduceEntry({ parsed, roundRows: [], roundBound: true });
     expect(vocabulary(result)).toHaveLength(1);
-    expect(result.advisories.map((exception) => exception.kind)).toEqual([
-      "product_not_withdrawn",
+    expect(result.reconciliation.map((exception) => exception.kind)).toEqual([
+      "unknown_product_vocabulary", "product_not_withdrawn",
     ]);
-    // Blocking wins: an unresolvable return is not downgraded by a review.
-    expect(result.status).toBe("review_required");
+    expect(result.reviews).toEqual([]);
+    expect(result.status).toBe("clean");
   });
 
   it("reports one exception per distinct spelling, at its first item number", () => {
@@ -325,7 +319,7 @@ describe("guard scope", () => {
     expect(exceptions.map((exception) => exception.itemNumber)).toEqual([1, 4]);
   });
 
-  it("lists every suspicious name in one reply, ordered by item number", () => {
+  it("records every suspicious name, ordered by item number, without asking the operator", () => {
     // ไซมัส is ม54's approved spelling as of 20260818100000 and no longer
     // exercises the review path (CASE D above). "ฝรั่งสายพันธุ์ใหม่ของสวนลุงมี"
     // replaces it — a name proven genuinely absent from the dictionary with no
@@ -333,16 +327,12 @@ describe("guard scope", () => {
     const result = withdraw(
       "มะม่วงเขียวรกต", "มะม่วงเขียวมรกต", "ฝรั่งสายพันธุ์ใหม่ของสวนลุงมี", "สินค้าXYZ",
     );
-    expect(vocabulary(result)).toHaveLength(3);
-    const reply = buildReviewValidationReply(result);
-    expect(reply).toContain("⚠️ พบ 3 ชื่อสินค้าที่ต้องตรวจสอบ");
-    expect(reply.indexOf("มะม่วงเขียวรกต")).toBeLessThan(
-      reply.indexOf("ฝรั่งสายพันธุ์ใหม่ของสวนลุงมี"),
-    );
-    expect(reply).toContain("ม31 — มะม่วงเขียวมรกต");
-    expect(reply).toContain("ไม่พบชื่อใกล้เคียงในรายการมาตรฐาน");
-    expect(reply).toContain("✅ ถ้าชื่อเหล่านี้ถูกต้องและต้องการบันทึกตามที่พิมพ์");
-    expect(reply).toContain("✏️ ถ้าต้องการแก้ชื่อ");
+    expect(vocabulary(result).map((exception) => exception.productName)).toEqual([
+      "มะม่วงเขียวรกต", "ฝรั่งสายพันธุ์ใหม่ของสวนลุงมี", "สินค้าXYZ",
+    ]);
+    expect(vocabulary(result)[0].suggestions[0]).toEqual({ productCode: "ม31", canonicalName: "มะม่วงเขียวมรกต" });
+    expect(result.reviews).toEqual([]);
+    expect(result.status).toBe("clean");
   });
 });
 
@@ -365,14 +355,13 @@ describe("20260818100000 dictionary cleanup — ม54 correction and ม63–ม
     }
   });
 
-  it("still fails closed for a genuinely unknown product — review_required, not blocking", () => {
+  it("records a genuinely unknown product for reconciliation, never blocking", () => {
     const invented = "ผลไม้ที่ไม่มีจริงเลย";
     expect(isApprovedProductName(invented)).toBe(false);
     const result = withdraw(invented);
-    expect(result.status).toBe("review_required");
+    expect(vocabulary(result)).not.toHaveLength(0);
     expect(vocabulary(result)[0]).toMatchObject({
       kind: "unknown_product_vocabulary",
-      severity: "review_required",
       productName: invented,
     });
   });
@@ -437,7 +426,7 @@ describe("safe auto-correction from reviewed Production typos", () => {
   ])("%s auto-corrects exactly to %s / %s", (entered, canonicalName, productCode) => {
     expect(resolveSafeAutoCorrectProductName(entered)).toEqual({ productCode, canonicalName, reason: "reviewed_typo" });
     expect(canonicalProduceProductIdentity(entered, "โล")).toBe(canonicalName);
-    expect(withdraw(entered).status).toBe("clean");
+    expect(vocabulary(withdraw(entered))).toEqual([]);
   });
 
   it("keeps fuzzy or potentially distinct shop names under human review", () => {
@@ -456,7 +445,7 @@ describe("deterministic product-name aliases", () => {
   ])("%s resolves to canonical %s / %s without review", (alias, canonicalName, productCode) => {
     expect(resolveApprovedProductName(alias)).toEqual({ productCode, canonicalName });
     expect(approvedProductCode(alias)).toBe(approvedProductCode(canonicalName));
-    expect(withdraw(alias).status).toBe("clean");
+    expect(vocabulary(withdraw(alias))).toEqual([]);
   });
 
   it("keeps canonical spelling unchanged", () => {
@@ -468,8 +457,8 @@ describe("deterministic product-name aliases", () => {
 
   it("keeps ambiguous, unknown, and distinct mango products safe", () => {
     expect(resolveApprovedProductName("มะม่วง")).toBeNull();
-    expect(withdraw("มะม่วง").status).toBe("review_required");
-    expect(withdraw("สินค้าXYZ").status).toBe("review_required");
+    expect(vocabulary(withdraw("มะม่วง"))).not.toHaveLength(0);
+    expect(vocabulary(withdraw("สินค้าXYZ"))).not.toHaveLength(0);
     expect(resolveApprovedProductName("มะม่วงจิ้ว")).toEqual({
       productCode: "ม63",
       canonicalName: "มะม่วงจิ้ว",
@@ -517,7 +506,7 @@ describe("deterministic product-name aliases", () => {
     });
 
     const result = validateProduceEntry({ parsed, roundRows: [], roundBound: true });
-    expect(result.status).toBe("review_required");
+    expect(vocabulary(result)).not.toHaveLength(0);
     expect(vocabulary(result).map((exception) => exception.productName)).toEqual([
       "ผลไม้ต่างดาว",
       "มะม่วง",
@@ -532,15 +521,15 @@ describe("dictionary extension 20260827090000 — ม73 (มะม่วงฟ�
       productCode: "ม73",
       canonicalName: "มะม่วงฟ้าลั่น",
     });
-    expect(withdraw("มะม่วงฟ้าลั่น").status).toBe("clean");
+    expect(vocabulary(withdraw("มะม่วงฟ้าลั่น"))).toEqual([]);
     expect(vocabulary(withdraw("มะม่วงฟ้าลั่น"))).toEqual([]);
   });
 
   it("does not alias ฟ้าลั่น or มะม่วง into ม73", () => {
     expect(resolveApprovedProductName("ฟ้าลั่น")).toBeNull();
     expect(resolveApprovedProductName("มะม่วง")).toBeNull();
-    expect(withdraw("ฟ้าลั่น").status).toBe("review_required");
-    expect(withdraw("มะม่วง").status).toBe("review_required");
+    expect(vocabulary(withdraw("ฟ้าลั่น"))).not.toHaveLength(0);
+    expect(vocabulary(withdraw("มะม่วง"))).not.toHaveLength(0);
   });
 
   it("parses the compact scale form มะม่วงฟ้าลั่น50บาท / 5โล", () => {
@@ -651,7 +640,7 @@ describe("dictionary extension 20260908090000 — ม75–ม80 vocabulary ident
     expect(isApprovedProductName(name)).toBe(true);
     expect(approvedProductCode(name)).toBe(code);
     expect(resolveApprovedProductName(name)).toEqual({ productCode: code, canonicalName: name });
-    expect(withdraw(name).status).toBe("clean");
+    expect(vocabulary(withdraw(name))).toEqual([]);
   });
 
   it("no lookalike is folded into one of the new products", () => {
@@ -691,7 +680,7 @@ describe("dictionary extension 20260908090000 — ม75–ม80 vocabulary ident
       canonicalName: "องุ่นคิมสัน",
     });
     expect(approvedProductCode("องุ่นคินสัน")).toBe("ม68");
-    expect(withdraw("องุ่นคินสัน").status).toBe("clean");
+    expect(vocabulary(withdraw("องุ่นคินสัน"))).toEqual([]);
     // It resolves to an existing code, never mints a new one.
     expect(PRODUCT_CODE_ENTRIES.filter((e) => e.canonicalName === "องุ่นคินสัน")).toHaveLength(0);
   });
@@ -710,14 +699,14 @@ describe("dictionary extension 20260918150000 — ม81–ม91 vocabulary ident
     expect(isApprovedProductName(name)).toBe(true);
     expect(approvedProductCode(name)).toBe(code);
     expect(resolveApprovedProductName(name)).toEqual({ productCode: code, canonicalName: name });
-    expect(withdraw(name).status).toBe("clean");
+    expect(vocabulary(withdraw(name))).toEqual([]);
   });
 
   it("old-stock Siamus typos resolve to ม84, never normal ม54", () => {
     for (const typo of ["ไชมัสเก่า", "ไซทัสเก่า"]) {
       expect(resolveApprovedProductName(typo)).toEqual({ productCode: "ม84", canonicalName: "ไซมัสเก่า" });
       expect(approvedProductCode(typo)).toBe("ม84");
-      expect(withdraw(typo).status).toBe("clean");
+      expect(vocabulary(withdraw(typo))).toEqual([]);
     }
     expect(approvedProductCode("ไซมัส")).toBe("ม54");
   });

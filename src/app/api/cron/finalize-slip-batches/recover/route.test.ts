@@ -1,9 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { NextRequest } from "next/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { recoverSlipBatch, handleRecoverRequest } from "./route";
+import { recoverSlipBatch } from "@/lib/slips/batch-recovery";
+import { handleRecoverRequest } from "./handler";
+import * as route from "./route";
 import type { Database } from "@/types/database";
 import type { PushResult } from "@/lib/line/reply";
+
+it("exports only the supported recovery route handler and config", async () => {
+  expect(Object.keys(route).sort()).toEqual(["POST", "dynamic", "runtime"]);
+  const previousSecret = process.env.CRON_SECRET;
+  try {
+    process.env.CRON_SECRET = "test-secret";
+    const response = await route.POST(makeRequest({ batch_id: VALID_UUID }));
+    expect(response.status).toBe(401);
+  } finally {
+    if (previousSecret === undefined) delete process.env.CRON_SECRET;
+    else process.env.CRON_SECRET = previousSecret;
+  }
+});
 
 // ── Supabase stub ─────────────────────────────────────────────────────────────
 

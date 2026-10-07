@@ -158,6 +158,15 @@ const FRUIT: readonly string[] = [
   "กีวี",
   "บลูเบอร์รี่",
   "ทุเรียนเทศ",
+  // Production 2026-10-05/06 failed sessions (recovery dry run). Exact
+  // operator spellings, category only — never a rename. องุ่นคิมสัม is the
+  // observed misspelling of องุ่นคิมสัน; it is fruit either way.
+  "มะขามป้อม",
+  "กล้วยเล็บมือนาง",
+  "มะม่วงอาทู",
+  "แอปเปิ้ลเจ้าหญิง",
+  "ลูกพรุน",
+  "องุ่นคิมสัม",
 ];
 
 const VEGETABLE: readonly string[] = [
@@ -306,6 +315,35 @@ const VEGETABLE: readonly string[] = [
   "เหดแพค",
   "เห็ดแพครวม",
   "เหดออริจิ",
+  // Production 2026-10-05 พาซีโอ้ผัก failed sessions (recovery dry run).
+  // Exact operator spellings, category only — never a rename. แตงล้าน /
+  // ต้มหอม / โปรยเล้ง are observed misspellings of แตงร้าน / ต้นหอม /
+  // ปวยเล้ง and are vegetables either way. กันจอง, น้ำใบย่านาง, ปลาทูนึ่ง
+  // and ขนมจีน are deliberately NOT listed: they are not plain vegetables.
+  "พริกชี้ฟ้าแดง",
+  "พริกชี้ฟ้าเขียว",
+  "พริกลาว",
+  "พริกไทยอ่อน",
+  "มะอึก",
+  "ลูกมะกรูด",
+  "มะเขือราชินี",
+  "แตงล้าน",
+  "เห็ดเข็มทอง",
+  "กะหล่ำม่วง",
+  "สลัดคอตใบแข็ง",
+  "ผักสลัดคอตใบแข็ง",
+  "ผักกาดสลัดหอมหัวใหญ่",
+  "ใบกุยช่าย",
+  "ต้นหอมญี่ปุ่น",
+  "ต้มหอม",
+  "ผักปัง",
+  "กวางตุ้งดอก",
+  "ผักสาระแน",
+  "กระเพราขาว",
+  "ตั้งโอ้",
+  "โปรยเล้ง",
+  "ผักขมเล็ก",
+  "ใบยอ",
 ];
 
 function buildMap(): ReadonlyMap<string, StockCategory> {

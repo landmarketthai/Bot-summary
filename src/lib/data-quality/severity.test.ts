@@ -58,6 +58,10 @@ describe("severityForCategory", () => {
       financial_evidence_incomplete:      "ACTION_REQUIRED",
       financial_settlement_mismatch:      "CRITICAL",
       house_stock_unsend_close_after_finalize: "ACTION_REQUIRED",
+      produce_item_renumbered: "ADVISORY",
+      produce_unknown_product: "ADVISORY",
+      produce_unit_mismatch: "ADVISORY",
+      produce_return_exceeds_withdrawal: "ADVISORY",
     });
   });
 });

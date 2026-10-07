@@ -42,9 +42,6 @@ import {
 /** Quantities are numeric(10,3); prices numeric(10,2). Compare inside that grid. */
 const QUANTITY_EPSILON = 0.0005;
 
-/** Upper bound on the holes one gap blocker enumerates; see section 0b. */
-const MAX_REPORTED_ITEM_NUMBER_GAPS = 50;
-
 export type ProduceValidationSeverity = "blocking" | "review_required" | "advisory";
 
 export type ProduceValidationException =
@@ -58,24 +55,6 @@ export type ProduceValidationException =
       canonicalQuantity: number;
       canonicalUnit: string;
     }
-  /** A printed number must identify exactly one draft item before close. */
-  | {
-      kind: "duplicate_item_number";
-      severity: "blocking";
-      itemNumber: number;
-      matchCount: number;
-    }
-  /**
-   * The operator's own numbering skips a number inside its own range, so a
-   * whole priced line may have been dropped in transit. Never confirmable:
-   * a missing line has no content for a human to look at and approve, and
-   * "จบรายการ" must not be able to wave it through.
-   */
-  | {
-      kind: "item_number_gap";
-      severity: "blocking";
-      missingItemNumbers: number[];
-    }
   /** The unit is not part of the shop vocabulary at all ("โลก"). */
   | {
       kind: "unknown_unit";
@@ -84,48 +63,6 @@ export type ProduceValidationException =
       productName: string;
       unit: string;
       suggestion: string | null;
-    }
-  /** A known unit, but not one this product was withdrawn in. */
-  | {
-      kind: "unit_not_withdrawn";
-      severity: "blocking";
-      itemNumber: number;
-      productName: string;
-      unit: string;
-      withdrawnUnits: string[];
-    }
-  /** Nothing by this name was withdrawn in this round. Keep the real return and flag it. */
-  | {
-      kind: "product_not_withdrawn";
-      severity: "advisory";
-      itemNumber: number;
-      productName: string;
-      unit: string;
-      suggestions: string[];
-    }
-  /** Good + damaged returns exceed what was withdrawn. Preserve the measured return and flag it. */
-  | {
-      kind: "return_exceeds_withdrawal";
-      severity: "advisory";
-      productName: string;
-      unit: string;
-      withdrawnQuantity: number;
-      goodReturnQuantity: number;
-      damagedQuantity: number;
-      excessQuantity: number;
-    }
-  /**
-   * A withdrawal is about to mint a product identity that is not an approved
-   * dictionary spelling. Distinct from product_not_withdrawn: that one is a
-   * RETURN that does not match an existing withdrawal master; this one is the
-   * withdrawal master itself being created under a suspicious name.
-   */
-  | {
-      kind: "unknown_product_vocabulary";
-      severity: "review_required";
-      itemNumber: number;
-      productName: string;
-      suggestions: ProductVocabularySuggestion[];
     }
   /** An intentional price change is allowed and shown after a successful save. */
   | {
@@ -152,11 +89,56 @@ export type ProduceValidationAdvisory = Extract<
   { severity: "advisory" }
 >;
 
+/**
+ * Non-financial mismatches that never block, never ask the operator anything
+ * and are never shown in LINE. The amount is still quantity × entered price;
+ * these only tell reconciliation where the paperwork and the round disagree.
+ */
+export type ProduceValidationReconciliation =
+  /** A known unit, but not one this product was withdrawn in (แพค → ถุง). */
+  | {
+      kind: "unit_not_withdrawn";
+      itemNumber: number;
+      productName: string;
+      unit: string;
+      withdrawnUnits: string[];
+    }
+  /** Nothing by this name was withdrawn in this round. */
+  | {
+      kind: "product_not_withdrawn";
+      itemNumber: number;
+      productName: string;
+      unit: string;
+      suggestions: string[];
+    }
+  /** A withdrawal under a name that is not an approved dictionary spelling. */
+  | {
+      kind: "unknown_product_vocabulary";
+      itemNumber: number;
+      productName: string;
+      suggestions: ProductVocabularySuggestion[];
+    }
+  /**
+   * Good + damaged returns exceed the recorded withdrawal. Withdrawal data can
+   * be incomplete ("calculate first, reconcile later"), so the submitted
+   * return amounts stand and the excess is only recorded.
+   */
+  | {
+      kind: "return_exceeds_withdrawal";
+      productName: string;
+      unit: string;
+      withdrawnQuantity: number;
+      goodReturnQuantity: number;
+      damagedQuantity: number;
+      excessQuantity: number;
+    };
+
 export interface ProduceValidationResult {
   status: "clean" | "review_required" | "blocked";
   blocking: ProduceValidationBlocking[];
   reviews: ProduceValidationReview[];
   advisories: ProduceValidationAdvisory[];
+  reconciliation: ProduceValidationReconciliation[];
   /**
    * Immutable fingerprint of (session content + the exception set shown). A
    * confirmation is stored against it, so it can only ever approve the exact
@@ -308,65 +290,11 @@ export function validateProduceEntry(input: ProduceValidationInput): ProduceVali
   const blocking: ProduceValidationBlocking[] = [];
   const reviews: ProduceValidationReview[] = [];
   const advisories: ProduceValidationAdvisory[] = [];
+  const reconciliation: ProduceValidationReconciliation[] = [];
 
-  // ── 0. Printed item identity. The correction grammar deliberately targets
-  // one unique item_number (PR #81); allowing a duplicate-number draft to
-  // close would make the only safe correction/removal commands unusable.
-  const itemNumberCounts = new Map<number, number>();
-  for (const item of parsed.items) {
-    itemNumberCounts.set(item.item_number, (itemNumberCounts.get(item.item_number) ?? 0) + 1);
-  }
-  for (const [itemNumber, matchCount] of [...itemNumberCounts].sort((a, b) => a[0] - b[0])) {
-    if (matchCount > 1) {
-      blocking.push({
-        kind: "duplicate_item_number",
-        severity: "blocking",
-        itemNumber,
-        matchCount,
-      });
-    }
-  }
-
-  // ── 0b. Internal gaps in the operator's own numbering. A corrected list
-  // resent with one line accidentally dropped ("...4, 6, 7...") used to be
-  // accepted silently, taking a whole financial line with it.
-  //
-  // Only numbers the operator actually WROTE define the range: the parser
-  // synthesizes sequential numbers for unnumbered lines, and a free-form
-  // draft that was never numbered has no numbering to be missing from.
-  // Every item still OCCUPIES its number, synthesized or not, so an
-  // unnumbered line sitting between two numbered ones is not a hole.
-  const explicitNumbers = parsed.items
-    .filter((item) => item.item_number_explicit)
-    .map((item) => item.item_number);
-  if (explicitNumbers.length > 0) {
-    const occupied = new Set(parsed.items.map((item) => item.item_number));
-    // "ลบข้อ 5" is an accounted-for removal, not a silent disappearance —
-    // blocking it would make the removal grammar unusable on a numbered list.
-    const deliberatelyRemoved = new Set(
-      (parsed.draft_item_actions ?? [])
-        .filter((action) => action.kind === "remove" && action.status === "applied")
-        .map((action) => action.item_number),
-    );
-    const lowest = Math.min(...explicitNumbers);
-    const highest = Math.max(...explicitNumbers);
-    const missingItemNumbers: number[] = [];
-    for (let number = lowest + 1; number < highest; number += 1) {
-      if (occupied.has(number) || deliberatelyRemoved.has(number)) continue;
-      // A mistyped far-away number ("ข้อ 900" in a 7-line list) would other-
-      // wise enumerate hundreds of holes. Truncating only shortens the list
-      // the operator is shown; the block itself still stands.
-      if (missingItemNumbers.length >= MAX_REPORTED_ITEM_NUMBER_GAPS) break;
-      missingItemNumbers.push(number);
-    }
-    if (missingItemNumbers.length > 0) {
-      blocking.push({
-        kind: "item_number_gap",
-        severity: "blocking",
-        missingItemNumbers,
-      });
-    }
-  }
+  // Item numbering is not checked here: the parser renumbers duplicate,
+  // missing and out-of-order numbers (see renumberItems), so every item
+  // already has a unique, sequential number by the time it reaches the gate.
 
   // ── 1. Unit vocabulary. Applies to every item, withdrawal included: a
   // withdrawal booked in "โลก" poisons its own master cell.
@@ -389,12 +317,11 @@ export function validateProduceEntry(input: ProduceValidationInput): ProduceVali
       .map((exception) => exception.itemNumber),
   );
 
-  // ── 1b. Product vocabulary on withdrawals. A return gets an additional
-  // vocabulary review only when it ALSO fails to match the round master (§2).
-  // That distinction keeps a real round product usable even when the global
-  // Dictionary is temporarily behind, while a stray name such as “พักผ่อน”
-  // cannot silently become a new return identity.
-  reviews.push(...vocabularyExceptions(parsed));
+  // ── 1b. Product vocabulary, on withdrawals only. Recorded for
+  // reconciliation, never blocking: an unknown name with a complete quantity,
+  // unit and price is still a calculable line. Reviewed aliases have already
+  // normalized the confident cases (product-vocabulary.ts).
+  reconciliation.push(...vocabularyExceptions(parsed));
   reviews.push(...subunitExceptions(parsed));
 
   // ── 2. Identity and price of every return line, against the master.
@@ -417,22 +344,8 @@ export function validateProduceEntry(input: ProduceValidationInput): ProduceVali
       const withdrawnUnits = master.unitsByProduct.get(product);
 
       if (!withdrawnUnits) {
-        // A missing withdrawal is not enough to reject a measured return. But
-        // when the name is ALSO outside the reviewed Dictionary there is no
-        // trusted identity at all; park only this line for human correction.
-        const reviewedIdentity = canonicalProduceProductIdentity(item.product_name, item.unit);
-        if (!isApprovedProductName(reviewedIdentity)) {
-          reviews.push({
-            kind: "unknown_product_vocabulary",
-            severity: "review_required",
-            itemNumber: item.item_number,
-            productName: item.product_name,
-            suggestions: suggestDictionaryProducts(item.product_name),
-          });
-        }
-        advisories.push({
+        reconciliation.push({
           kind: "product_not_withdrawn",
-          severity: "advisory",
           itemNumber: item.item_number,
           productName: item.product_name,
           unit,
@@ -441,9 +354,8 @@ export function validateProduceEntry(input: ProduceValidationInput): ProduceVali
         continue;
       }
       if (!withdrawnUnits.has(unit)) {
-        blocking.push({
+        reconciliation.push({
           kind: "unit_not_withdrawn",
-          severity: "blocking",
           itemNumber: item.item_number,
           productName: item.product_name,
           unit,
@@ -471,6 +383,7 @@ export function validateProduceEntry(input: ProduceValidationInput): ProduceVali
     }
 
     // ── 3. The inventory invariant, per cell and across every price bucket.
+    // Recorded, never blocking: the recorded withdrawal may be incomplete.
     for (const cell of master.cells.values()) {
       const returned = cell.goodReturnQuantity + cell.damagedQuantity;
       if (returned <= cell.withdrawnQuantity + QUANTITY_EPSILON) continue;
@@ -478,9 +391,8 @@ export function validateProduceEntry(input: ProduceValidationInput): ProduceVali
       // product; adding "returned more than the zero you withdrew" on top of
       // that would be two exceptions for one mistake.
       if (!master.unitsByProduct.get(cell.productName)?.has(cell.unit)) continue;
-      advisories.push({
+      reconciliation.push({
         kind: "return_exceeds_withdrawal",
-        severity: "advisory",
         productName: cell.productName,
         unit: cell.unit,
         withdrawnQuantity: round3(cell.withdrawnQuantity),
@@ -497,7 +409,7 @@ export function validateProduceEntry(input: ProduceValidationInput): ProduceVali
     : reviews.length > 0
       ? "review_required"
       : "clean";
-  return { status, blocking, reviews, advisories, digest };
+  return { status, blocking, reviews, advisories, reconciliation, digest };
 }
 
 function subunitExceptions(parsed: WeighSession): ProduceValidationReview[] {
@@ -532,9 +444,9 @@ function subunitExceptions(parsed: WeighSession): ProduceValidationReview[] {
  * one spelling to fix, not one per line that carries it. Ordered by item
  * number so the reply is deterministic.
  */
-function vocabularyExceptions(parsed: WeighSession): ProduceValidationReview[] {
+function vocabularyExceptions(parsed: WeighSession): ProduceValidationReconciliation[] {
   const seen = new Set<string>();
-  const exceptions: ProduceValidationReview[] = [];
+  const exceptions: ProduceValidationReconciliation[] = [];
   for (const item of [...parsed.items].sort((a, b) => a.item_number - b.item_number)) {
     if (baseTransactionType(item.transaction_type) !== "เบิก") continue;
     const name = item.product_name.normalize("NFC").replace(/\s+/g, " ").trim();
@@ -546,7 +458,6 @@ function vocabularyExceptions(parsed: WeighSession): ProduceValidationReview[] {
     if (isApprovedProductName(canonicalProduceProductIdentity(name, item.unit))) continue;
     exceptions.push({
       kind: "unknown_product_vocabulary",
-      severity: "review_required",
       itemNumber: item.item_number,
       productName: item.product_name,
       suggestions: suggestDictionaryProducts(name),

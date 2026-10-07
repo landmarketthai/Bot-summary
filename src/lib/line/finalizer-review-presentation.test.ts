@@ -46,16 +46,19 @@ function snapshot(): PendingSession {
   } as unknown as PendingSession;
 }
 
-// A non-subunit confirmable review: #109 keeps its own granular semantics and
-// must not be batch-authorized by this protocol.
+// The only confirmable review left is a risky ขีด/กรัม subunit entry.
 const REVIEW_RESULT = {
   status: "review_required",
   digest: DIGEST,
   reviews: [{
-    kind: "unknown_product_vocabulary",
+    kind: "subunit_confirmation",
+    severity: "review_required",
     itemNumber: 1,
     productName: "ผลไม้ทดสอบเอ",
-    suggestions: [],
+    enteredQuantity: 2,
+    enteredUnit: "ขีด",
+    canonicalQuantity: 0.2,
+    canonicalUnit: "โล",
   }],
   blocking: [],
   advisories: [],
@@ -126,6 +129,8 @@ describe("finalizer review presentation protocol", () => {
     const { db, result } = await run({}, async (_to, text) => { pushes.push(text); return {}; });
 
     expect(db.calls).toEqual([
+      "record_produce_validation_review",
+      // The subunit review also records its own per-item row.
       "record_produce_validation_review",
       "hold_pending_validation_review",
       "mark_produce_validation_reviews_presented",

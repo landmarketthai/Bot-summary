@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { NextRequest } from "next/server";
-import { POST, webhookResponseStatus } from "./route";
+import { POST } from "./route";
+import * as route from "./route";
+import { webhookResponseStatus } from "@/lib/line/webhook-response";
 
 const originalSecret = process.env.LINE_CHANNEL_SECRET;
 
@@ -16,6 +18,10 @@ function postWebhook(headers: Record<string, string>, body = "{}"): NextRequest 
     body,
   });
 }
+
+it("exports only the supported webhook handler and config", () => {
+  expect(Object.keys(route).sort()).toEqual(["POST", "maxDuration", "runtime"]);
+});
 
 describe("webhook retry status", () => {
   it("returns 503 only when durable processing requests redelivery", () => {

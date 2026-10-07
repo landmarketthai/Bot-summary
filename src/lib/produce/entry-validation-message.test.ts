@@ -18,12 +18,16 @@ function review(
   itemNumber: number,
   productName: string,
 ): ProduceValidationReview {
+  // Risky subunit entry is the only confirmable review left.
   return {
-    kind: "unknown_product_vocabulary",
+    kind: "subunit_confirmation",
     severity: "review_required",
     itemNumber,
     productName,
-    suggestions: [{ productCode: "ม63", canonicalName: "มะม่วงจิ้ว" }],
+    enteredQuantity: 2,
+    enteredUnit: "ขีด",
+    canonicalQuantity: 0.2,
+    canonicalUnit: "โล",
   };
 }
 
@@ -33,11 +37,12 @@ function result(...reviews: ProduceValidationReview[]): ProduceValidationResult 
     blocking: [],
     reviews,
     advisories: [],
+    reconciliation: [],
     digest: "review-digest",
   };
 }
 
-describe("unknown-product review actions", () => {
+describe("review actions", () => {
   it("makes keep-and-save and correction choices explicit for one product", () => {
     const reply = buildPlainTextReviewValidationReply(
       result(review(4, "มะม่วง")),
@@ -47,8 +52,8 @@ describe("unknown-product review actions", () => {
     expect(reply).toContain("✅ ถ้าชื่อนี้ถูกต้องและต้องการบันทึกตามที่พิมพ์");
     expect(reply).toContain("ส่ง “จบรายการเบิก” อีกครั้ง");
     expect(reply).toContain("✏️ ถ้าต้องการแก้ชื่อ");
-    expect(reply).toContain("ส่ง “แก้ข้อ 4”");
-    expect(reply).toContain("แล้วส่งข้อ 4 ใหม่ พร้อมราคาและจำนวน");
+    expect(reply).toContain("ยืนยันทีละข้อ: “ยืนยันข้อ 4”");
+    expect(reply).toContain("ถ้าจะแก้ ให้ส่ง “แก้ข้อ <เลขข้อ>”");
     expect(reply).toEndWith("รายการอื่นยังอยู่ครบ ไม่ต้องเริ่มใหม่");
   });
 
@@ -86,7 +91,7 @@ describe("unknown-product review actions", () => {
     expect(reply).toContain("ข้อ 8 — ผลไม้แปด");
     expect(reply).toContain("ข้อ 20 — ผลไม้ยี่สิบ");
     expect(reply).toContain("✅ ถ้าชื่อเหล่านี้ถูกต้องและต้องการบันทึกตามที่พิมพ์");
-    expect(reply).toContain("ส่งคำสั่ง “แก้ข้อ <เลขข้อ>” ทีละข้อ");
+    expect(reply).toContain("ยืนยันทีละข้อ: “ยืนยันข้อ 1”, “ยืนยันข้อ 8”, “ยืนยันข้อ 20”");
   });
 
   it("truncates issue details before the required action block", () => {
@@ -113,12 +118,12 @@ describe("blocked document value preview", () => {
   const blocked: ProduceValidationResult = {
     status: "blocked",
     blocking: [{
-      kind: "unit_not_withdrawn",
+      kind: "unknown_unit",
       severity: "blocking",
       itemNumber: 1,
       productName: "หมอนทอง",
       unit: "ลูก",
-      withdrawnUnits: ["โล"],
+      suggestion: "โล",
 
 
 
@@ -126,6 +131,7 @@ describe("blocked document value preview", () => {
     }],
     reviews: [],
     advisories: [],
+    reconciliation: [],
     digest: "blocked-digest",
   };
 

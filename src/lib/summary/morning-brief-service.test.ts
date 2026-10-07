@@ -40,6 +40,8 @@ describe("loadMorningBriefReport", () => {
     });
     expect(report.houseStock).toEqual({ status: "missing" });
     expect(report.whiteSheetStatus).toBe("missing");
+    expect(report.produceFinancial).toEqual({});
+    expect(report.fruitFinancial).toBeUndefined();
   });
 
   test("treats a zero-baht white sheet as entered, not missing", async () => {
@@ -88,6 +90,24 @@ describe("loadMorningBriefReport", () => {
       totalValueSatang: 31_200,
       items: [{ productName: "มะม่วง", category: "ผลไม้", unit: "กก.", quantity: 2, unitPriceSatang: 15_600, valueSatang: 31_200 }],
     });
+  });
+
+  test("house-only sections are explicit and empty fruit is hidden", async () => {
+    const db = new FakeDatabase()
+      .seed("physical_inventory_snapshots", [snapshot("stock-sections")])
+      .seed("physical_inventory_items", ["เห็ดนางฟ้า", "หมอนทอง", "ปลาทู", "สินค้าใหม่"].map((name, index) => ({
+        snapshot_id: "stock-sections", item_ordinal: index + 1,
+        normalized_product: name, raw_product_description: name,
+        normalized_unit: "โล", raw_unit: "โล", quantity: 2,
+        unit_price_satang: 100, raw_text: name + " 2 โล 1 บาท", resolution_status: "AUTO_RESOLVED",
+      })));
+    const report = await loadMorningBriefReport(client(db), BUSINESS_DATE);
+    expect(Object.keys(report.produceFinancial!)).toEqual(["vegetable", "other"]);
+    expect(report.fruitFinancial).toBeUndefined();
+    expect(report.produceFinancial?.vegetable).toMatchObject({ houseStockValueSatang: 200, readyValueSatang: 200, markets: [] });
+    expect(report.produceFinancial?.other).toMatchObject({ houseStockValueSatang: 600, readyValueSatang: 600, markets: [] });
+    expect(report.houseStock.status === "available" && report.houseStock.items?.find((item) => item.productName === "เห็ดนางฟ้า")?.category)
+      .not.toBe("ไม่ระบุหมวด");
   });
 
   test("conflicting House Stock snapshots do not blank purchase or sales sections", async () => {

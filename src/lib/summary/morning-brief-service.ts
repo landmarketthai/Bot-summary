@@ -20,6 +20,8 @@ import {
   type MorningBriefWhiteSheetStatus,
 } from "@/lib/summary/morning-brief";
 
+import { PRODUCE_SECTIONS, produceSectionOf, type ProduceSection } from "@/lib/summary/produce-section";
+
 type Supabase = SupabaseClient<Database>;
 type HouseRow = Database["public"]["Tables"]["physical_inventory_items"]["Row"];
 
@@ -135,20 +137,21 @@ async function loadWhiteSheetStatus(
   }
 }
 
-function summarizeFruitFinancial(
+export function summarizeProduceFinancial(
   salesReport: Awaited<ReturnType<typeof loadSalesReport>>,
   houseStock: MorningBriefHouseStock,
+  section: ProduceSection,
 ) {
   const markets = salesReport.markets.flatMap((market) => {
-    const fruitRows = market.rows.filter(
-      (row) => morningBriefProductIdentity(row.productName, row.unit).category === "ผลไม้",
+    const sectionRows = market.rows.filter(
+      (row) => produceSectionOf(morningBriefProductIdentity(row.productName, row.unit).productName) === section,
     );
-    if (fruitRows.length === 0) return [];
+    if (sectionRows.length === 0) return [];
 
     let withdrawalValueSatang = 0;
     let salesValueSatang = 0;
     let goodReturnValueSatang = 0;
-    for (const row of fruitRows) {
+    for (const row of sectionRows) {
       const priceSatang = row.enteredPriceSatang ?? row.centralPriceSatang;
       if (priceSatang != null) {
         withdrawalValueSatang += quantityTimesSatang(row.withdrawnQuantity, priceSatang) ?? 0;
@@ -170,7 +173,7 @@ function summarizeFruitFinancial(
   const goodReturnValueSatang = markets.reduce((sum, market) => sum + market.goodReturnValueSatang, 0);
   const houseStockValueSatang = houseStock.status === "available"
     ? (houseStock.items ?? [])
-      .filter((item) => item.category === "ผลไม้")
+      .filter((item) => produceSectionOf(morningBriefProductIdentity(item.productName, item.unit).productName) === section)
       .reduce((sum, item) => sum + item.valueSatang, 0)
     : null;
 
@@ -196,11 +199,23 @@ export async function loadMorningBriefReport(
     loadWhiteSheetStatus(supabase, businessDate),
   ]);
 
+  const produceFinancial: NonNullable<MorningBriefReport["produceFinancial"]> = {};
+  for (const section of PRODUCE_SECTIONS) {
+    const summary = summarizeProduceFinancial(sales, houseStock, section);
+    // A section with neither sales rows nor actual house stock has no page or heading.
+    if (summary.markets.length > 0 || (summary.houseStockValueSatang ?? 0) !== 0
+      || (houseStock.status === "available" && (houseStock.items ?? []).some((item) =>
+        item.quantity > 0 && produceSectionOf(morningBriefProductIdentity(item.productName, item.unit).productName) === section))) {
+      produceFinancial[section] = summary;
+    }
+  }
+
   return {
     businessDate,
     purchasePlanning: summarizePurchasePlanning(purchasePlanning),
     sales: summarizeSales(sales),
-    fruitFinancial: summarizeFruitFinancial(sales, houseStock),
+    fruitFinancial: produceFinancial.fruit,
+    produceFinancial,
     houseStock,
     whiteSheetStatus,
     reconciliation,

@@ -70,7 +70,7 @@ function withdrawal(productName: string, unit = BOX, quantity = 3): RoundMasterR
 }
 
 function vocabularyNames(result: ProduceValidationResult): string[] {
-  return result.reviews
+  return result.reconciliation
     .filter((entry) => entry.kind === "unknown_product_vocabulary")
     .map((entry) => entry.productName);
 }
@@ -105,8 +105,8 @@ describe("the box-suffixed withdrawal that triggered a needless review", () => {
 
     const result = validate(parsed);
     expect(vocabularyNames(result)).toEqual([]);
-    // #114 lives here too: 1 and 8 are both written, so the gap still blocks.
-    expect(result.blocking.some((entry) => entry.kind === "item_number_gap")).toBe(true);
+    // 1 and 8 are renumbered to 1, 2; numbering never blocks.
+    expect(result.blocking).toEqual([]);
   });
 });
 
@@ -133,7 +133,7 @@ describe("registered products whose identity includes the word", () => {
       session([item({ product_name: "ผลไม้กล่อง", transaction_type: "คืน", quantity: 1 })]),
       [withdrawal("ทุเรียนกล่อง")],
     );
-    expect(result.advisories.map((entry) => entry.kind)).toContain("product_not_withdrawn");
+    expect(result.reconciliation.map((entry) => entry.kind)).toContain("product_not_withdrawn");
   });
 });
 
@@ -174,7 +174,7 @@ describe("withdrawal and return meet on one identity", () => {
       session([item({ product_name: "แอปเปิ้ล", transaction_type: "คืน", quantity: 1 })]),
       [withdrawal("แอปเปิ้ลกล่อง")],
     );
-    expect(result.advisories.map((entry) => entry.kind)).not.toContain("product_not_withdrawn");
+    expect(result.reconciliation.map((entry) => entry.kind)).not.toContain("product_not_withdrawn");
     expect(result.blocking.map((entry) => entry.kind)).not.toContain("unit_not_withdrawn");
   });
 
@@ -183,7 +183,7 @@ describe("withdrawal and return meet on one identity", () => {
       session([item({ product_name: "แอปเปิ้ลกล่อง", transaction_type: "คืน", quantity: 1 })]),
       [withdrawal("แอปเปิ้ล")],
     );
-    expect(result.advisories.map((entry) => entry.kind)).not.toContain("product_not_withdrawn");
+    expect(result.reconciliation.map((entry) => entry.kind)).not.toContain("product_not_withdrawn");
   });
 
   it("matches a damaged return the same way, in both directions", () => {
@@ -207,7 +207,7 @@ describe("withdrawal and return meet on one identity", () => {
       session([item({ product_name: "แอปเปิ้ล", transaction_type: "คืน", quantity: 4 })]),
       [withdrawal("แอปเปิ้ลกล่อง", BOX, 3)],
     );
-    expect(result.advisories.map((entry) => entry.kind)).toContain("return_exceeds_withdrawal");
+    expect(result.reconciliation.map((entry) => entry.kind)).toContain("return_exceeds_withdrawal");
   });
 
   it("keeps a unit mismatch visible rather than folding it away", () => {
@@ -217,7 +217,7 @@ describe("withdrawal and return meet on one identity", () => {
       session([item({ product_name: "แอปเปิ้ลกล่อง", transaction_type: "คืน", unit: "ลูก", quantity: 1 })]),
       [withdrawal("แอปเปิ้ล")],
     );
-    expect(result.advisories.map((entry) => entry.kind)).toContain("product_not_withdrawn");
+    expect(result.reconciliation.map((entry) => entry.kind)).toContain("product_not_withdrawn");
   });
 });
 
@@ -240,7 +240,7 @@ describe("raw operator evidence is never rewritten", () => {
 
   it("reports the operator's own spelling when a box name IS unknown", () => {
     const result = validate(session([item({ product_name: "สินค้าใหม่กล่อง" })]));
-    const review = result.reviews.find((entry) => entry.kind === "unknown_product_vocabulary");
+    const review = result.reconciliation.find((entry) => entry.kind === "unknown_product_vocabulary");
     expect(review && review.kind === "unknown_product_vocabulary" && review.productName)
       .toBe("สินค้าใหม่กล่อง");
   });
@@ -260,7 +260,7 @@ describe("products without the suffix are untouched", () => {
     }
   });
 
-  it("still reviews a suspicious near-miss spelling", () => {
+  it("still records a suspicious near-miss spelling", () => {
     const result = validate(session([item({ product_name: "มะม่วงเขียวรกต", unit: "โล" })]));
     expect(vocabularyNames(result)).toEqual(["มะม่วงเขียวรกต"]);
   });

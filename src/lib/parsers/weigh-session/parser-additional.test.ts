@@ -104,7 +104,7 @@ describe("additional-batch command grammar", () => {
       e.includes("section change not allowed"))).toBe(true);
   });
 
-  it("flags duplicate item numbers in an additional session", () => {
+  it("renumbers duplicate item numbers in an additional session instead of refusing it", () => {
     const parsed = parseWeighSession([
       "กี้-คลองเตย เบิกเพิ่ม 12/7/2569",
       "1.ทุเรียน100บาท",
@@ -113,8 +113,8 @@ describe("additional-batch command grammar", () => {
       "1โล",
       "จบรายการเบิกเพิ่ม",
     ].join("\n"));
-    expect(getWeighSessionFinalizationErrors(parsed).some((e) =>
-      e.includes("duplicate item number"))).toBe(true);
+    expect(getWeighSessionFinalizationErrors(parsed)).toEqual([]);
+    expect(parsed.items.map((i) => [i.item_number, i.original_item_number])).toEqual([[1, undefined], [2, 1]]);
   });
 
   it("never falls back to the event business date for an additional session", () => {

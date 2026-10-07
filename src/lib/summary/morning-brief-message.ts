@@ -11,6 +11,8 @@ import type {
   MorningBriefReport,
 } from "@/lib/summary/morning-brief";
 
+import { PRODUCE_SECTIONS, PRODUCE_SECTION_LABEL } from "@/lib/summary/produce-section";
+
 export const MORNING_BRIEF_TITLE = "🌅 สรุปเช้า";
 export const MORNING_BRIEF_OVERFLOW_NOTICE =
   "\n\nรายละเอียดเพิ่มเติมอยู่ใน PDF A4";
@@ -94,9 +96,17 @@ function buildSalesBlock(report: MorningBriefReport): string {
   return lines.join("\n");
 }
 
-function buildVegetableDataBlock(report: MorningBriefReport): string | null {
-  if (report.sales.vegetableMarketDataPresent !== false) return null;
-  return "🥬 ยอดผัก\nไม่มีข้อมูลยอดผักในระบบ";
+function buildProduceFinancialBlocks(report: MorningBriefReport): string[] {
+  return PRODUCE_SECTIONS.flatMap((section) => {
+    const financial = report.produceFinancial?.[section];
+    if (!financial) return [];
+    return [[
+      `${PRODUCE_SECTION_LABEL[section]} — ภาพรวมเงิน`,
+      `ยอดขาย ${satangToBahtText(financial.salesValueSatang)} บาท`,
+      `เบิก ${satangToBahtText(financial.withdrawalValueSatang)} บาท`,
+      `ชั่งคืนดี ${satangToBahtText(financial.goodReturnValueSatang)} บาท`,
+    ].join("\n")];
+  });
 }
 
 function buildWhiteSheetDataBlock(report: MorningBriefReport): string | null {
@@ -133,12 +143,11 @@ function buildHouseStockBlock(report: MorningBriefReport): string {
 }
 
 export function buildMorningBriefBlocks(report: MorningBriefReport): string[] {
-  const vegetableDataBlock = buildVegetableDataBlock(report);
   const whiteSheetDataBlock = buildWhiteSheetDataBlock(report);
   return [
     `${MORNING_BRIEF_TITLE} — ${formatThaiDate(report.businessDate)}`,
     buildSalesBlock(report),
-    ...(vegetableDataBlock ? [vegetableDataBlock] : []),
+    ...buildProduceFinancialBlocks(report),
     ...(whiteSheetDataBlock ? [whiteSheetDataBlock] : []),
     ...buildPurchaseBlocks(report),
     buildHouseStockBlock(report),

@@ -22,6 +22,10 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { SQL } from "bun";
+import { parseWeighSession } from "@/lib/parsers/weigh-session/parser";
+import { validateProduceEntry } from "@/lib/produce/entry-validation";
+import { buildProduceReconciliationIssues } from "@/lib/produce/reconciliation-issues";
+import { prepareAtomicUpsertPayload } from "./inbox";
 
 const ROOT = join(import.meta.dir, "..", "..", "..");
 const PGHOST = process.env.PGHOST ?? "localhost";
@@ -378,6 +382,40 @@ describe.skipIf(!pgAvailable)("data_quality_issues migration on PostgreSQL", () 
       `SELECT severity FROM public.data_quality_issues WHERE issue_key='${advisory.issue_key}'`,
     )).toBe("ADVISORY");
     expect(await scalar(runnerSql([], "2026-08-25T10:00:00Z"))).toBe("0");
+  });
+
+  test("Produce reconciliation issues persist as ADVISORY and a replay is idempotent", async () => {
+    const parsed = parseWeighSession([
+      "ดำ-ตลาด ชั่งคืน 6/10/2569",
+      "1.องุ่นแดง120บาท", "3ถุง",
+      "1.มังคุด60บาท", "2กิโล",
+    ].join("\n"), "2026-10-06");
+    const result = validateProduceEntry({
+      parsed,
+      roundBound: true,
+      roundRows: [
+        { product_name: "องุ่นแดง", unit: "แพค", quantity: 5, price_per_unit: 120, transaction_type: "เบิก" },
+        { product_name: "มังคุด", unit: "โล", quantity: 1, price_per_unit: 60, transaction_type: "เบิก" },
+      ],
+    });
+    const payload = prepareAtomicUpsertPayload(buildProduceReconciliationIssues({
+      produceSessionId: "ps-pg", pendingSessionKey: "key-pg", pendingSessionGeneration: "gen-pg",
+      accountabilityRoundId: null, parsed, reconciliation: result.reconciliation,
+    })) as unknown as RunnerCandidate[];
+    expect(payload).toHaveLength(3);
+
+    expect(await scalar(runnerSql(payload, "2026-10-06T10:00:00Z"))).toBe("3");
+    expect(await scalar(runnerSql(payload, "2026-10-06T11:00:00Z"))).toBe("3");
+    expect(await scalar(
+      "SELECT count(*) FROM public.data_quality_issues WHERE affected_refs ? 'produce_session:ps-pg'",
+    )).toBe("3");
+    expect(await scalar(
+      "SELECT string_agg(DISTINCT severity, ',') FROM public.data_quality_issues WHERE affected_refs ? 'produce_session:ps-pg'",
+    )).toBe("ADVISORY");
+    expect(await scalar(
+      "SELECT technical_context->>'raw_unit' FROM public.data_quality_issues "
+      + "WHERE category='produce_item_renumbered' AND affected_refs ? 'produce_session:ps-pg'",
+    )).toBe("กิโล");
   });
 
   test("a bad candidate rolls back the complete multi-candidate scan", async () => {

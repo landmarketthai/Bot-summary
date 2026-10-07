@@ -1,6 +1,7 @@
 import React from "react";
 import { describe, expect, test } from "bun:test";
 import { renderToBuffer } from "@react-pdf/renderer";
+import { PRODUCT_CODE_ENTRIES } from "@/lib/produce/product-code/dictionary";
 import { registerFonts } from "@/lib/pdf/fonts";
 import { MorningBriefA4Doc } from "@/lib/pdf/MorningBriefA4Doc";
 import type { MorningBriefReport } from "@/lib/summary/morning-brief";
@@ -96,6 +97,34 @@ function collectRenderCallbacks(node: React.ReactNode): PdfRenderCallback[] {
 }
 
 describe("Morning Brief A4 PDF", () => {
+  test("uses explicit section pages and canonical stock identity, classifying durian as fruit", async () => {
+    const empty = { count: 0, productNames: [], items: [] };
+    const summary = { withdrawalValueSatang: 200, salesValueSatang: 100, goodReturnValueSatang: 100,
+      houseStockValueSatang: 300, readyValueSatang: 400, markets: [] };
+    const mixed: MorningBriefReport = {
+      ...report, produceFinancial: { vegetable: summary, other: { ...summary, salesValueSatang: 900 } },
+      purchasePlanning: { strong: empty, surplus: empty, reduce: empty, unknown: empty },
+      houseStock: { status: "available", groupCount: 2, totalValueSatang: 600, items: [
+        { productName: "ใบกุยช่าย", category: "ไม่ระบุหมวด", unit: "แพค", quantity: 3, unitPriceSatang: 100, valueSatang: 300 },
+        { productName: "หมอนทอง", category: "ผลไม้", unit: "โล", quantity: 3, unitPriceSatang: 100, valueSatang: 300 },
+      ] },
+    };
+    const tree = MorningBriefA4Doc({ report: mixed, generatedAt: new Date("2026-10-07T08:00:00+07:00") });
+    const text = collectText(tree);
+    expect(text).toContain("สรุปผักคงเหลือเพื่อสั่งซื้อ");
+    expect(text).toContain("สรุปอื่นๆคงเหลือเพื่อสั่งซื้อ");
+    expect(text).toContain("หมวดผลไม้ -");
+    expect(text).toContain("หมวดผัก -");
+    expect(text).not.toContain("หมวดอื่นๆ -");
+    expect(text).not.toContain("ไม่ระบุหมวด");
+    expect(text.indexOf("หมอนทอง")).toBeGreaterThan(text.indexOf("หมวดผลไม้ -"));
+    expect(text.indexOf("หมอนทอง")).toBeLessThan(text.indexOf("หมวดผัก -"));
+    expect(text.indexOf("ใบกุยช่าย")).toBeGreaterThan(text.indexOf("หมวดผัก -"));
+    registerFonts();
+    const buffer = await renderToBuffer(tree);
+    expect(buffer.subarray(0, 4).toString()).toBe("%PDF");
+  });
+
   test("uses deterministic date-based PDF and reference paths", () => {
     expect(morningBriefPdfFilename("2026-09-19")).toBe("morning-brief-2026-09-19.pdf");
     expect(morningBriefPdfPath("2026-09-19")).toBe("2026-09-19/morning-brief-2026-09-19.pdf");
@@ -176,8 +205,7 @@ describe("Morning Brief A4 PDF", () => {
     const headings = [
       "หมวดผลไม้ - 19 กันยายน 2569",
       "หมวดผัก - 19 กันยายน 2569",
-      "หมวดของแห้ง - 19 กันยายน 2569",
-      "หมวดยังไม่ได้จัดหมวดหมู่ - 19 กันยายน 2569",
+      "หมวดอื่นๆ - 19 กันยายน 2569",
     ];
     const positions = headings.map((heading) => text.indexOf(heading));
     expect(positions.every((position) => position >= 0)).toBe(true);
@@ -185,8 +213,8 @@ describe("Morning Brief A4 PDF", () => {
     expect(text).not.toContain("หมวดทุเรียน");
     expect(text).not.toContain("ยังไม่มีข้อมูลสินค้า");
     expect(text.indexOf("เห็ดนางฟ้า")).toBeGreaterThan(text.indexOf("หมวดผัก"));
-    expect(text.indexOf("ปลาทู")).toBeGreaterThan(text.indexOf("หมวดของแห้ง"));
-    expect(text.indexOf("สินค้าใหม่")).toBeGreaterThan(text.indexOf("หมวดยังไม่ได้จัดหมวดหมู่"));
+    expect(text.indexOf("ปลาทู")).toBeGreaterThan(text.indexOf("หมวดอื่นๆ"));
+    expect(text.indexOf("สินค้าใหม่")).toBeGreaterThan(text.indexOf("หมวดอื่นๆ"));
   });
 
   test("skips a category with no rows", () => {
@@ -209,7 +237,7 @@ describe("Morning Brief A4 PDF", () => {
       },
     };
     const text = collectText(MorningBriefA4Doc({ report: zeroOnlyReport, generatedAt: new Date("2026-09-20T08:00:00+07:00") }));
-    expect(text).not.toContain("หมวดของแห้ง");
+    expect(text).not.toContain("หมวดอื่นๆ");
     expect(text).not.toContain("ขนมจีน");
     expect(text).not.toContain("ยังไม่มีข้อมูลสินค้า");
   });
@@ -228,7 +256,7 @@ describe("Morning Brief A4 PDF", () => {
       },
     };
     const text = collectText(MorningBriefA4Doc({ report: mixedReport, generatedAt: new Date("2026-09-20T08:00:00+07:00") }));
-    expect(text).toContain("หมวดของแห้ง - 19 กันยายน 2569");
+    expect(text).toContain("หมวดอื่นๆ - 19 กันยายน 2569");
     expect(text).toContain("ขนมจีน");
     expect(text).toContain("ปลาทู");
   });
@@ -260,7 +288,7 @@ describe("Morning Brief A4 PDF", () => {
 
   test("splits a long category after every 15 item rows", async () => {
     const items = Array.from({ length: 31 }, (_, index) => ({
-      productName: `ผลไม้ทดสอบ${index + 1}`,
+      productName: PRODUCT_CODE_ENTRIES.filter((entry) => entry.enabled && entry.category === "ผลไม้")[index]!.canonicalName,
       originalProductName: null,
       category: "ผลไม้",
       unit: "กก.",

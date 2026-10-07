@@ -627,7 +627,7 @@ describe("guided price advisories survive deferred finalization", () => {
     expect(countCodePoints(payload)).toBeLessThanOrEqual(5000);
   });
 
-  it("fails closed without produce writes when live master data adds a hard block", async () => {
+  it("still finalizes when live master data later shows the return above the withdrawal", async () => {
     const text = [GUIDED_PRICE_RETURN, "2.มังคุด45บาท", "35.2โล"].join("\n");
     const snapshot = guidedReturnSnapshot(text);
     const melon = {
@@ -652,17 +652,16 @@ describe("guided price advisories survive deferred finalization", () => {
     expect(closed.status).toBe("closed");
     if (closed.status !== "closed") return;
 
-    // A live master change after close must be caught by deferred revalidation.
+    // A live master change after close is reconciled later, never refused:
+    // the recorded withdrawal may be incomplete.
     mangosteen.quantity = 28.8;
     const finalized = await finalizePendingGeneration(db.asClient(), closed.session, async () => ({}));
-    expect(finalized.status).toBe("failed_closed");
+    expect(finalized.status).toBe("finalized");
 
     const call = db.rpcCalls.find((candidate) => candidate.name === "try_finalize_pending_generation");
     const errors = ((call?.args.p_session as Row | undefined)?.validation_errors ?? []) as string[];
-    expect(errors).toContain("return_exceeds_withdrawal");
-    expect(db.rows("produce_items")).toHaveLength(0);
-    expect(db.rows("produce_sessions")).toHaveLength(0);
-    expect(db.rows("produce_session_notifications")).toHaveLength(0);
+    expect(errors).toEqual([]);
+    expect(db.rows("produce_sessions")).toHaveLength(1);
   });
 
   it("fails closed when structured round identity is unexpectedly missing", async () => {

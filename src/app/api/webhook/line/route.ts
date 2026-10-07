@@ -1,18 +1,13 @@
 import { after, NextRequest, NextResponse } from "next/server";
 import { verifyLineSignature } from "@/lib/line/verify";
-import { WebhookService, type WebhookProcessResult } from "@/lib/line/webhook-service";
+import { WebhookService } from "@/lib/line/webhook-service";
+import { webhookResponseStatus } from "@/lib/line/webhook-response";
 import { createServiceClient } from "@/lib/supabase/server";
 import { logger } from "@/lib/logger";
 import type { LineWebhookBody } from "@/lib/line/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
-
-export function webhookResponseStatus(
-  results: Pick<WebhookProcessResult, "retryable">[],
-): number {
-  return results.some((result) => result.retryable === true) ? 503 : 200;
-}
 
 export async function POST(req: NextRequest) {
   // ── Signature verification ──────────────────────────────────────────────────

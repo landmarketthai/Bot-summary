@@ -301,7 +301,7 @@ describe("CASE N — a pasted coded document uses the PR #45 pipeline", () => {
     expect(call.p_raw_text).toContain("ม01");
   });
 
-  it("refuses a coded return whose unit was never withdrawn, persisting nothing", async () => {
+  it("finalizes a coded return in a unit that was never withdrawn, without a correction request", async () => {
     const db = new CodeDatabase(MASTER);
     await paste(db, CODED_RETURN_WRONG_UNIT);
 
@@ -310,21 +310,13 @@ describe("CASE N — a pasted coded document uses the PR #45 pipeline", () => {
       db as never, db.pending, async (_target, message) => { pushes.push(message); },
     );
 
-    expect(result.status).toBe("failed_closed");
-    expect(db.rows("produce_sessions")).toHaveLength(0);
+    expect(result.status).toBe("finalized");
+    expect(db.rows("produce_sessions")).toHaveLength(1);
 
     const payload = db.finalizeCalls[0].p_session as Row;
-    // The round WAS resolved — P4A is refusing, not the binding.
     expect(payload.accountability_round_id).toBe(ROUND);
-    expect(payload.validation_errors).toContain("unit_not_withdrawn");
-
-    const reply = pushes.at(-1) ?? "";
-    expect(reply).toContain("รายการอื่นยังอยู่ครบ");
-    expect(reply).toContain("ไม่ต้องยกเลิก");
-    expect(reply).toContain("ข้อ 1");
-    expect(reply).toContain("แก้ข้อ 1");
-    expect(reply).not.toContain("ระบบยังไม่ได้บันทึกอะไร");
-    expect(reply).not.toContain("ยกเลิกรายการ");
+    expect(payload.validation_errors).toEqual([]);
+    expect(pushes.join(" ")).not.toContain("แก้ข้อ");
   });
 
   it("matches a word-typed return against a code-typed withdrawal", async () => {

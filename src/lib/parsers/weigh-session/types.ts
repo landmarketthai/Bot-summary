@@ -83,11 +83,24 @@ export interface WeighSessionItem {
    */
   item_number_explicit?: boolean;
   /**
-   * Transient, never persisted: 1-based source order of this row among rows
-   * sharing its typed item_number. Absent means 1. Lets a duplicate "52" be
-   * addressed as 52A/52B while item_number itself stays 52.
+   * Parse-time only: 1-based source order among rows sharing a TYPED
+   * item_number. Used while replaying correction commands; stripped by
+   * renumberItems, so it never reaches validation, display or storage.
    */
   item_occurrence?: number;
+  /** Parse-time only: message-order slot shared with failed lines; stripped on output. */
+  source_seq?: number;
+  /**
+   * The number the operator typed, present only when renumbering changed it
+   * (duplicate, missing or out-of-order numbering). Transient audit evidence;
+   * the raw message keeps the same fact durably.
+   */
+  original_item_number?: number;
+  /**
+   * The unit text the operator typed, present only when it differs from the
+   * stored canonical unit ("กก." → "โล"). Transient audit evidence.
+   */
+  raw_unit?: string;
 }
 
 export interface WeighSession {

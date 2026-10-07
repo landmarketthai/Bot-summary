@@ -4,7 +4,6 @@ import { parseWeighSession } from "@/lib/parsers/weigh-session/parser";
 import {
   validateProduceEntry,
   computeValidationDigest,
-  type ProduceValidationException,
   type RoundMasterRow,
 } from "./entry-validation";
 import {
@@ -66,7 +65,7 @@ function bound(parsed: WeighSession, roundRows: RoundMasterRow[] = []) {
   return validateProduceEntry({ parsed, roundRows, roundBound: true });
 }
 
-function kinds(exceptions: ProduceValidationException[]): string[] {
+function kinds(exceptions: Array<{ kind: string }>): string[] {
   return exceptions.map((exception) => exception.kind);
 }
 
@@ -227,17 +226,18 @@ describe("product identity", () => {
     );
     expect(result.status).toBe("clean");
     expect(result.blocking).toEqual([]);
-    expect(kinds(result.advisories)).toEqual(["product_not_withdrawn"]);
+    expect(kinds(result.reconciliation)).toEqual(["product_not_withdrawn"]);
   });
 
-  it("blocks a known product returned in a unit it was never withdrawn in", () => {
+  it("records, never blocks, a known product returned in a unit it was never withdrawn in", () => {
     const result = bound(
       session([
         item({ product_name: "ทับทิม", unit: "กล่อง", quantity: 2, price_per_unit: 15, transaction_type: "คืน" }),
       ]),
       pomegranate,
     );
-    const [exception] = result.blocking;
+    expect(result.status).toBe("clean");
+    const [exception] = result.reconciliation;
     expect(exception.kind).toBe("unit_not_withdrawn");
     expect(exception.kind === "unit_not_withdrawn" && exception.withdrawnUnits).toEqual(["ลูก"]);
   });
@@ -249,7 +249,7 @@ describe("product identity", () => {
     );
     expect(result.status).toBe("clean");
     expect(result.blocking).toEqual([]);
-    expect(kinds(result.advisories)).toEqual(["product_not_withdrawn"]);
+    expect(kinds(result.reconciliation)).toEqual(["product_not_withdrawn"]);
   });
 
   it("leaves an unbound legacy session alone rather than guessing its round", () => {
@@ -364,12 +364,12 @@ describe("quantity invariant", () => {
 
     expect(result.status).toBe("clean");
     expect(result.blocking).toEqual([]);
-    const [exception] = result.advisories;
+    const [exception] = result.reconciliation;
     expect(exception.kind).toBe("return_exceeds_withdrawal");
     expect(exception.kind === "return_exceeds_withdrawal" && exception.excessQuantity).toBe(2);
   });
 
-  it("keeps price and excess-return findings together as advisories", () => {
+  it("keeps the price advisory and internal excess-return finding", () => {
     const result = bound(
       session([
         item({ product_name: "มังคุด", quantity: 35.2, price_per_unit: 50, transaction_type: "คืน" }),
@@ -379,10 +379,8 @@ describe("quantity invariant", () => {
 
     expect(result.status).toBe("clean");
     expect(result.blocking).toEqual([]);
-    expect(kinds(result.advisories)).toEqual(expect.arrayContaining([
-      "price_not_withdrawn",
-      "return_exceeds_withdrawal",
-    ]));
+    expect(kinds(result.advisories)).toEqual(["price_not_withdrawn"]);
+    expect(kinds(result.reconciliation)).toEqual(["return_exceeds_withdrawal"]);
   });
 
   it("aggregates across every price bucket instead of per bucket", () => {
@@ -405,7 +403,7 @@ describe("quantity invariant", () => {
       ]),
     );
     expect(result.blocking).toEqual([]);
-    expect(kinds(result.advisories)).toEqual(["return_exceeds_withdrawal"]);
+    expect(kinds(result.reconciliation)).toEqual(["return_exceeds_withdrawal"]);
   });
 
   it("counts an additional withdrawal batch towards the master", () => {
@@ -429,7 +427,9 @@ describe("quantity invariant", () => {
 });
 
 describe("duplicate printed item numbers", () => {
-  it("blocks an otherwise valid draft and never offers an ambiguous correction command", () => {
+  // The parser renumbers before the gate runs (see renumberItems); the gate
+  // itself no longer judges numbering.
+  it("does not block a draft for its numbering", () => {
     const parsed = session([
       item({ product_name: "องุ่นแดง", quantity: 1.8, transaction_type: "คืน" }),
       item({ product_name: "องุ่นไข่ปลา", quantity: 0.5, transaction_type: "คืน" }),
@@ -441,44 +441,31 @@ describe("duplicate printed item numbers", () => {
       { product_name: "องุ่นแดง", quantity: 2 },
       { product_name: "องุ่นไข่ปลา", quantity: 1 },
     ]));
-    const reply = buildBlockingValidationReply(result);
-
-    expect(result.blocking).toEqual([{
-      kind: "duplicate_item_number",
-      severity: "blocking",
-      itemNumber: 16,
-      matchCount: 2,
-    }]);
-    expect(reply).toContain("พบเลขข้อ 16 ซ้ำ 2 รายการ");
-    expect(reply).toContain("กรุณาแก้เลขข้อให้ไม่ซ้ำก่อน");
-    expect(reply).not.toContain("แก้ข้อ 16");
+    expect(result.status).toBe("clean");
   });
 
-  it("keeps duplicate numbering blocking while absent/excess returns remain advisories", () => {
+  it("allows duplicate numbering with internal absent/excess reconciliation", () => {
     const parsed = session([
       item({ product_name: "ลูกไหนแดง", quantity: 1, transaction_type: "คืน" }),
       item({ product_name: "อะโวคาโด", quantity: 1, transaction_type: "คืน" }),
       item({ product_name: "มะม่วงแก้วขมิ้น", quantity: 0.9, transaction_type: "คืน" }),
       item({ product_name: "ไซมัส", quantity: 15.1, transaction_type: "คืน" }),
     ]);
-    parsed.items[0]!.item_number = 16;
-    parsed.items[1]!.item_number = 16;
 
     const result = bound(parsed, master([
       { product_name: "มะม่วงแก้วขมิ้น", quantity: 0.09 },
       { product_name: "ไซมัส", quantity: 9 },
     ]));
-    const reply = buildBlockingValidationReply(result);
 
-    expect(kinds(result.blocking)).toEqual(["duplicate_item_number"]);
-    expect(kinds(result.advisories)).toEqual([
+    expect(result.status).toBe("clean");
+    expect(result.blocking).toEqual([]);
+    expect(kinds(result.reconciliation)).toEqual([
       "product_not_withdrawn",
       "product_not_withdrawn",
       "return_exceeds_withdrawal",
       "return_exceeds_withdrawal",
     ]);
-    expect(reply).toContain("พบเลขข้อ 16 ซ้ำ 2 รายการ");
-    expect(reply).not.toContain("แก้ข้อ 16");
+    expect(result.advisories).toEqual([]);
   });
 });
 
@@ -535,14 +522,14 @@ describe("validation digest", () => {
 
   it("does not depend on exception ordering", () => {
     const parsed = priced(120);
-    const forward = computeValidationDigest(parsed, [], [
-      { kind: "unknown_product_vocabulary", severity: "review_required", itemNumber: 1, productName: "a", suggestions: [] },
-      { kind: "unknown_product_vocabulary", severity: "review_required", itemNumber: 2, productName: "b", suggestions: [] },
-    ]);
-    const reversed = computeValidationDigest(parsed, [], [
-      { kind: "unknown_product_vocabulary", severity: "review_required", itemNumber: 2, productName: "b", suggestions: [] },
-      { kind: "unknown_product_vocabulary", severity: "review_required", itemNumber: 1, productName: "a", suggestions: [] },
-    ]);
+    const forward = computeValidationDigest(parsed, [
+      { kind: "unknown_unit", severity: "blocking", itemNumber: 1, productName: "a", unit: "x", suggestion: null },
+      { kind: "unknown_unit", severity: "blocking", itemNumber: 2, productName: "b", unit: "y", suggestion: null },
+    ], []);
+    const reversed = computeValidationDigest(parsed, [
+      { kind: "unknown_unit", severity: "blocking", itemNumber: 2, productName: "b", unit: "y", suggestion: null },
+      { kind: "unknown_unit", severity: "blocking", itemNumber: 1, productName: "a", unit: "x", suggestion: null },
+    ], []);
     expect(forward).toBe(reversed);
   });
 });
@@ -750,7 +737,7 @@ describe("product spelling variants are preserved, never auto-merged", () => {
 
       expect(result.status).toBe("clean");
       expect(result.blocking).toEqual([]);
-      const [exception] = result.advisories;
+      const [exception] = result.reconciliation;
       expect(exception.kind).toBe("product_not_withdrawn");
       expect(exception.kind === "product_not_withdrawn" && exception.suggestions)
         .toContain(withdrawn);

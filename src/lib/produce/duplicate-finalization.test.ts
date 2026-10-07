@@ -502,7 +502,7 @@ describe("what duplicate protection must not break", () => {
     expect(db.rows("produce_sessions")[1].accountability_round_id).toBe(roundId);
   });
 
-  it("CASE N — P4A still blocks a return that exceeds the withdrawal", async () => {
+  it("CASE N — a return above the withdrawal finalizes (reconciled later, never refused)", async () => {
     const db = new FakeDatabase();
     await finalize(db, db.addPending(WITHDRAWAL, {
       sourceId: "C-shared", lineUserId: "U-withdrawer",
@@ -512,8 +512,8 @@ describe("what duplicate protection must not break", () => {
       sourceId: "C-shared", lineUserId: "U-other-person",
     }));
 
-    expect(returned.result.status).toBe("failed_closed");
-    expect(db.rows("produce_sessions")).toHaveLength(1);
+    expect(returned.result.status).toBe("finalized");
+    expect(db.rows("produce_sessions")).toHaveLength(2);
   });
 });
 
