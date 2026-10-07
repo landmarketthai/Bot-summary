@@ -102,7 +102,9 @@ describe("explicit same-draft item correction", () => {
     ));
 
     expect(parsed.parse_errors).toEqual([]);
-    expect(parsed.items.map((row) => row.item_number)).toEqual([16, 18]);
+    // The remaining items are renumbered sequentially; 18 is kept as audit.
+    expect(parsed.items.map((row) => row.item_number)).toEqual([16, 17]);
+    expect(parsed.items[1].original_item_number).toBe(18);
     expect(latestDraftItemAction(parsed)).toMatchObject({
       kind: "remove",
       item_number: 17,
@@ -137,23 +139,54 @@ describe("explicit same-draft item correction", () => {
     expect(parsed.items.map((row) => row.quantity)).toEqual([2, 4]);
   });
 
-  it("refuses an ambiguous duplicate number and leaves both original items unchanged", () => {
+  it("targets the shown (renumbered) item when a typed number was duplicated", () => {
+    // Typed 17, 17 is shown back as 17, 18; "แก้ข้อ 18" reaches the second line.
     const parsed = parseWeighSession(document(
+      ...item(17, "มังคุด", 45, 2),
+      ...item(17, "ส้ม", 30, 3),
+      "แก้ข้อ 18",
+      ...item(18, "อะโวคาโด", 80, 4),
+    ));
+
+    expect(parsed.parse_errors).toEqual([]);
+    expect(parsed.items.map((row) => [row.item_number, row.product_name])).toEqual([
+      [17, "มังคุด"],
+      [18, "อะโวคาโด"],
+    ]);
+  });
+
+  it("falls back to a unique typed number outside the shown range", () => {
+    const parsed = parseWeighSession(document(
+      ...item(1, "มังคุด", 45, 2),
+      ...item(17, "ส้ม", 30, 3),
+      "แก้ข้อ 17",
+      ...item(17, "อะโวคาโด", 80, 4),
+    ));
+
+    expect(parsed.parse_errors).toEqual([]);
+    expect(parsed.items.map((row) => [row.item_number, row.product_name])).toEqual([
+      [1, "มังคุด"],
+      [2, "อะโวคาโด"],
+    ]);
+  });
+
+  it("refuses an ambiguous duplicate typed number and leaves both original items unchanged", () => {
+    const parsed = parseWeighSession(document(
+      ...item(1, "ฝรั่ง", 20, 1),
       ...item(17, "มังคุด", 45, 2),
       ...item(17, "ส้ม", 30, 3),
       "แก้ข้อ 17",
       ...item(17, "อะโวคาโด", 80, 4),
     ));
 
-    expect(parsed.items).toHaveLength(2);
-    expect(parsed.items.map((row) => row.product_name)).toEqual(["มังคุด", "ส้ม"]);
+    expect(parsed.items).toHaveLength(3);
+    expect(parsed.items.map((row) => row.product_name)).toEqual(["ฝรั่ง", "มังคุด", "ส้ม"]);
     expect(parsed.parse_errors.join("\n")).toContain("เลขข้อ 17 ซ้ำ");
     const action = latestDraftItemAction(parsed);
     expect(action?.status).toBe("ambiguous_target");
     expect(buildDraftItemActionReply(action!)).toBe([
       "⚠️ พบเลขข้อ 17 ซ้ำ 2 รายการ",
-      "ระบุรายการด้วยตัวอักษรต่อท้าย: 17A, 17B",
-      "เช่น “แก้ข้อ 17A”",
+      "ใช้เลขข้อตามรายการที่ระบบแสดงล่าสุด",
       "รายการอื่นยังอยู่ครบ ไม่ต้องยกเลิก",
     ].join("\n"));
   });
@@ -206,7 +239,7 @@ describe("explicit same-draft item correction", () => {
     ));
 
     expect(parsed.parse_errors).toEqual([]);
-    expect(parsed.items.map((row) => row.item_number)).toEqual([1, 3]);
+    expect(parsed.items.map((row) => row.item_number)).toEqual([1, 2]);
     expect(latestDraftItemAction(parsed)).toMatchObject({
       kind: "remove",
       item_number: 2,
@@ -388,7 +421,7 @@ describe("explicit same-draft item correction", () => {
     expect(parsed.parse_errors).toEqual([]);
     expect(parsed.items.map((row) => [row.item_number, row.product_name, row.quantity])).toEqual([
       [2, "หอมแดง", 4],
-      [5, "มะนาว", 3],
+      [3, "มะนาว", 3],
     ]);
     expect(parsed.draft_item_actions?.map((action) => [action.kind, action.item_number, action.status])).toEqual([
       ["correct", 2, "applied"],

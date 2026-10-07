@@ -21,23 +21,12 @@ import type {
 
 /** Beyond this the reply summarizes the remainder instead of listing it. */
 const MAX_LISTED_EXCEPTIONS = 10;
-/** One gap blocker can carry many numbers; the reply lists only the first few. */
-const MAX_LISTED_ITEM_NUMBERS = 10;
 const ADVISORY_SEPARATOR = "\n\n";
 const PRICE_ADVISORY_SUMMARY_TRUNCATED_NOTICE = "…สรุปรายการถูกย่อเพื่อแสดงคำเตือนราคา";
 const GENERIC_SUMMARY_TRUNCATED_NOTICE = "…สรุปรายการถูกย่อเนื่องจากข้อความยาวเกินกำหนด";
 
 function formatPrice(value: number): string {
   return Number.isInteger(value) ? value.toString() : value.toFixed(2);
-}
-
-/** Missing item numbers, kept short enough that a wide gap cannot bloat the reply. */
-function formatItemNumberList(numbers: number[]): string {
-  const listed = numbers.slice(0, MAX_LISTED_ITEM_NUMBERS);
-  const hidden = numbers.length - listed.length;
-  return hidden > 0
-    ? `${listed.join(", ")} และอีก ${hidden} ข้อ`
-    : listed.join(", ");
 }
 
 function describe(exception: ProduceValidationException): string[] {
@@ -49,56 +38,11 @@ function describe(exception: ProduceValidationException): string[] {
         `   ระบบแปลงเป็น: ${formatQuantity(exception.canonicalQuantity)} ${exception.canonicalUnit}`,
         `   กรุณาส่ง “ยืนยันข้อ ${exception.itemNumber}” หรือ “แก้ข้อ ${exception.itemNumber}”`,
       ];
-    case "duplicate_item_number":
-      return [
-        `พบเลขข้อ ${exception.itemNumber} ซ้ำ ${exception.matchCount} รายการ`,
-        "   กรุณาแก้เลขข้อให้ไม่ซ้ำก่อน",
-      ];
-    case "item_number_gap":
-      return [
-        "พบเลขข้อขาดในรายการ",
-        `   ขาดข้อ ${formatItemNumberList(exception.missingItemNumbers)}`,
-        "   กรุณาตรวจสอบและส่งรายการที่ขาดก่อน “จบรายการ”",
-      ];
     case "unknown_unit":
       return [
         `${exception.productName}`,
         `   หน่วยที่ส่ง: ${exception.unit} — ระบบไม่รู้จักหน่วยนี้`,
         ...(exception.suggestion ? [`   น่าจะเป็น: ${exception.suggestion}`] : []),
-      ];
-    case "unit_not_withdrawn":
-      return [
-        `${exception.productName}`,
-        `   หน่วยที่ส่ง: ${exception.unit}`,
-        `   หน่วยที่เบิก: ${exception.withdrawnUnits.join(", ")}`,
-      ];
-    case "product_not_withdrawn":
-      return [
-        `${exception.productName}`,
-        "   ไม่พบในรายการเบิกของรอบนี้",
-        ...(exception.suggestions.length > 0
-          ? [`   รายการใกล้เคียง: ${exception.suggestions.join(", ")}`]
-          : []),
-      ];
-    case "return_exceeds_withdrawal":
-      return [
-        `${exception.productName} (${exception.unit})`,
-        `   เบิก: ${formatQuantity(exception.withdrawnQuantity)}`,
-        `   คืนดี: ${formatQuantity(exception.goodReturnQuantity)}`,
-        `   คืนเสีย: ${formatQuantity(exception.damagedQuantity)}`,
-        `   เกิน: ${formatQuantity(exception.excessQuantity)}`,
-      ];
-    case "unknown_product_vocabulary":
-      return [
-        `${exception.productName}`,
-        ...(exception.suggestions.length > 0
-          ? [
-              "   ชื่อใกล้เคียง:",
-              ...exception.suggestions.map(
-                (candidate) => `   • ${candidate.productCode} — ${candidate.canonicalName}`,
-              ),
-            ]
-          : ["   ไม่พบชื่อใกล้เคียงในรายการมาตรฐาน"]),
       ];
     case "price_not_withdrawn":
       return [
@@ -128,90 +72,38 @@ function numberedBlocks(
 }
 
 function correctionGuidance(exceptions: ProduceValidationException[]): string[] {
-  const duplicateNumbers = new Set(
-    exceptions
-      .filter((exception) => exception.kind === "duplicate_item_number")
-      .map((exception) => exception.itemNumber),
-  );
   const itemNumbers = [...new Set(
-    exceptions.flatMap((exception) =>
-      "itemNumber" in exception && exception.kind !== "duplicate_item_number"
-        && !duplicateNumbers.has(exception.itemNumber)
-        ? [exception.itemNumber]
-        : []),
+    exceptions.flatMap((exception) => "itemNumber" in exception ? [exception.itemNumber] : []),
   )].slice(0, MAX_LISTED_EXCEPTIONS);
-  const lines = duplicateNumbers.size > 0
-    ? [
-        "เลขข้อที่ซ้ำใช้คำสั่ง “แก้ข้อ” หรือ “ลบข้อ” ไม่ได้ เพราะระบุเป้าหมายไม่ได้",
-        "กรุณาแก้เลขข้อให้ไม่ซ้ำก่อน",
-      ]
-    : [];
   if (itemNumbers.length === 1) {
-    return [...lines,
+    return [
       `ส่ง “แก้ข้อ ${itemNumbers[0]}”`,
       `แล้วส่งข้อ ${itemNumbers[0]} ที่ถูกต้องใหม่ พร้อมราคาและจำนวน`,
     ];
   }
-  if (itemNumbers.length > 1) {
-    return [...lines,
-      `แก้ทีละข้อ: ${itemNumbers.map((number) => `“แก้ข้อ ${number}”`).join(", ")}`,
-      "หลังแต่ละคำสั่ง ส่งรายการข้อนั้นใหม่พร้อมราคาและจำนวน",
-    ];
-  }
-  if (lines.length > 0) return lines;
-  // A gap names no existing item, so the "แก้ข้อ N" guidance above never
-  // fires for it — and telling the operator to fix an over-total would be
-  // the wrong instruction entirely.
-  const gap = exceptions.find((exception) => exception.kind === "item_number_gap");
-  if (gap) {
-    return [
-      `ส่งรายการข้อ ${formatItemNumberList(gap.missingItemNumbers)} พร้อมราคาและจำนวน`,
-      "หรือแก้เลขข้อให้ต่อเนื่องแล้วส่งใหม่",
-    ];
-  }
+  // Every remaining blocker names its item, so this is the multi-item case.
   return [
-    "ตรวจรายการเบิกว่าครบทั้งของยกมาที่รับไปขายจริงและเบิกเพิ่มหรือไม่",
-    "ถ้าลงเบิกแล้ว ให้เพิ่มเฉพาะส่วนที่ขาดเพื่อไม่ให้นับซ้ำ",
-    "ตรวจจำนวนคืนดีและคืนเสียกับเอกสารจริง แล้วปิดรายการอีกครั้ง",
+    `แก้ทีละข้อ: ${itemNumbers.map((number) => `“แก้ข้อ ${number}”`).join(", ")}`,
+    "หลังแต่ละคำสั่ง ส่งรายการข้อนั้นใหม่พร้อมราคาและจำนวน",
   ];
 }
 
-function renderAdvisoryLine(advisory: ProduceValidationAdvisory): string {
-  switch (advisory.kind) {
-    case "price_not_withdrawn":
-      return `• ${advisory.productName} — เบิก ${advisory.withdrawnPrices.map(formatPrice).join(", ")} บาท/${advisory.unit} → ชั่งคืน ${formatPrice(advisory.enteredPrice)} บาท/${advisory.unit}`;
-    case "product_not_withdrawn": {
-      const suggestion = advisory.suggestions.length > 0
-        ? ` — ใกล้เคียง: ${advisory.suggestions.join(", ")}`
-        : "";
-      return `• ข้อ ${advisory.itemNumber} ${advisory.productName} — ไม่พบในรายการเบิกของรอบนี้${suggestion}`;
-    }
-    case "return_exceeds_withdrawal":
-      return `• ${advisory.productName} (${advisory.unit}) — เบิก ${formatQuantity(advisory.withdrawnQuantity)}, คืนดี ${formatQuantity(advisory.goodReturnQuantity)}, คืนเสีย ${formatQuantity(advisory.damagedQuantity)}, เกิน ${formatQuantity(advisory.excessQuantity)}`;
-  }
-}
-
+// Only price differences are shown after save. Missing withdrawals, unit
+// mismatches and returns above the withdrawal are internal reconciliation
+// (data_quality_issues), never operator-facing.
 function renderPriceAdvisoryWarning(
   advisories: ProduceValidationAdvisory[],
   listedCount: number,
 ): string {
   const listed = advisories.slice(0, listedCount);
-  const priceOnly = advisories.every((advisory) => advisory.kind === "price_not_withdrawn");
   const lines = [
-    priceOnly
-      ? `⚠️ พบ ${advisories.length} รายการที่ราคาแตกต่างจากตอนเบิก`
-      : `⚠️ พบ ${advisories.length} รายการที่ต้องตรวจสอบหลังบันทึก`,
-    ...listed.map(renderAdvisoryLine),
+    `⚠️ พบ ${advisories.length} รายการที่ราคาแตกต่างจากตอนเบิก`,
+    ...listed.map((advisory) =>
+      `• ${advisory.productName} — เบิก ${advisory.withdrawnPrices.map(formatPrice).join(", ")} บาท/${advisory.unit} → ชั่งคืน ${formatPrice(advisory.enteredPrice)} บาท/${advisory.unit}`),
   ];
   const hidden = advisories.length - listed.length;
-  if (hidden > 0) {
-    lines.push(priceOnly
-      ? `…และอีก ${hidden} รายการที่ราคาแตกต่าง`
-      : `…และอีก ${hidden} รายการที่ต้องตรวจสอบ`);
-  }
-  lines.push("", priceOnly
-    ? "ระบบบันทึกตามราคาที่กรอกไว้แล้ว"
-    : "ระบบบันทึกข้อมูลชั่งคืนตามที่กรอกไว้แล้ว กรุณาตรวจรายการเบิกย้อนหลัง");
+  if (hidden > 0) lines.push(`…และอีก ${hidden} รายการที่ราคาแตกต่าง`);
+  lines.push("", "ระบบบันทึกตามราคาที่กรอกไว้แล้ว");
   return lines.join("\n");
 }
 

@@ -1,3 +1,5 @@
+import { upsertDataQualityIssuesAtomically } from "@/lib/data-quality/inbox";
+import { buildProduceReconciliationIssues } from "@/lib/produce/reconciliation-issues";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 import { bangkokBusinessDateNow } from "@/lib/business-date";
@@ -58,6 +60,7 @@ import {
 import type {
   ProduceValidationAdvisory,
   ProduceValidationResult,
+  ProduceValidationReconciliation,
 } from "@/lib/produce/entry-validation";
 import { getRuntimeEnvironment } from "@/lib/runtime-environment";
 
@@ -113,29 +116,14 @@ export function isTransientFinalizationReadError(error: unknown): boolean {
   ].some((needle) => message.includes(needle));
 }
 
-export function formatMissingItemNumbers(missing: number[]): string {
-  return missing.join(", ");
-}
-
-export function findMissingItemNumbers(
-  expectedCount: number,
-  observedItemNumbers: number[],
-): number[] {
-  const observed = new Set(observedItemNumbers);
-  return Array.from(
-    { length: Math.max(0, expectedCount) },
-    (_, index) => index + 1,
-  ).filter((itemNumber) => !observed.has(itemNumber));
-}
-
 export function buildMissingItemsMessage(
   missing: number[],
   failedClosed = false,
 ): string {
-  const numbers = formatMissingItemNumbers(missing);
+  // The RPC's missing array describes a row-count shortfall, never typed labels.
   return failedClosed
-    ? `หมดเวลารอและรายการยังไม่ครบ ขาดหมายเลข ${numbers} จึงไม่บันทึกรายการ`
-    : `ยังปิดรายการไม่ได้ ขาดหมายเลข ${numbers} ระบบจะรอรายการที่ส่งค้างอยู่`;
+    ? `หมดเวลารอและรายการยังไม่ครบ ยังขาด ${missing.length} รายการตามจำนวนที่แจ้งตอนปิด จึงไม่บันทึกรายการ`
+    : `ยังปิดรายการไม่ได้ ยังขาด ${missing.length} รายการตามจำนวนที่แจ้งตอนปิด ระบบจะรอรายการที่ส่งค้างอยู่`;
 }
 
 export function plainTextIngestDocument(
@@ -552,19 +540,6 @@ export async function finalizePendingGeneration(
     ...getWeighSessionFinalizationErrors(parsed),
   ];
 
-  // With an expected count, an additional batch must number its items exactly
-  // 1..N (the RPC checks for missing numbers; out-of-range ones are caught here,
-  // duplicates by getWeighSessionFinalizationErrors).
-  if (isAdditional && snapshot.expected_item_count != null) {
-    for (const item of parsed.items) {
-      if (item.item_number < 1 || item.item_number > snapshot.expected_item_count) {
-        validationErrors.push(
-          `item #${item.item_number} is outside the expected range 1..${snapshot.expected_item_count}`,
-        );
-      }
-    }
-  }
-
   // P4A completion: a plain-text session carries no typed open command, so this
   // is where it joins its accountability round — the last point before the gate
   // where the parsed seller, market and business date exist. Structured rows
@@ -573,6 +548,7 @@ export async function finalizePendingGeneration(
   let accountabilityRoundId = snapshot.accountability_round_id ?? null;
   let entryGateDetail: string | null = null;
   let entryGateAdvisories: ProduceValidationAdvisory[] = [];
+  let entryGateReconciliation: ProduceValidationReconciliation[] = [];
   if (validationErrors.length === 0 && !seed && !accountabilityRoundId) {
     const binding = await bindPlainTextRound(
       supabase,
@@ -649,6 +625,16 @@ export async function finalizePendingGeneration(
       validationErrors.push(...gate.errors);
       entryGateDetail = gate.detail;
       entryGateAdvisories = gate.advisories;
+      entryGateReconciliation = gate.reconciliation ?? [];
+      if (gate.reconciliation?.length) {
+        // Recorded, not raised: the amount is still quantity × entered price.
+        log.info("produce.reconciliation_flags", {
+          sessionKey: snapshot.session_key,
+          sessionGeneration: snapshot.session_generation,
+          accountabilityRoundId,
+          flags: gate.reconciliation,
+        });
+      }
     } catch (error) {
       if (!isTransientFinalizationReadError(error)) throw error;
       const gateError = error instanceof Error ? error.message : "entry validation failed";
@@ -675,6 +661,18 @@ export async function finalizePendingGeneration(
       }
       return { status: "pending", reason: "transient_reconstruction_error", next_attempt_at: deferred.nextAttemptAt };
     }
+  }
+
+  // Audit for parser renumbering: the typed numbers also stay in the raw message.
+  const renumbered = parsed.items
+    .filter((item) => item.original_item_number !== undefined)
+    .map((item) => ({ itemNumber: item.item_number, originalItemNumber: item.original_item_number }));
+  if (renumbered.length > 0) {
+    log.info("produce.items_renumbered", {
+      sessionKey: snapshot.session_key,
+      sessionGeneration: snapshot.session_generation,
+      renumbered,
+    });
   }
 
   const productNameCorrections: Array<{ itemNumber: number; from: string; to: string }> = [];
@@ -885,6 +883,30 @@ export async function finalizePendingGeneration(
   }
 
   if (result.status === "finalized") {
+    // Non-blocking reconciliation audit → Data Quality Inbox (ADVISORY, admin
+    // only). Best-effort like the calls below: the produce write already
+    // committed, and the issue key makes a retry or recovery replay idempotent.
+    if (result.session_id) {
+      const issues = buildProduceReconciliationIssues({
+        produceSessionId: result.session_id,
+        pendingSessionKey: snapshot.session_key,
+        pendingSessionGeneration: snapshot.session_generation,
+        accountabilityRoundId,
+        parsed: persistedParsed,
+        reconciliation: entryGateReconciliation,
+      });
+      if (issues.length > 0) {
+        try {
+          await upsertDataQualityIssuesAtomically(supabase, issues);
+        } catch (error) {
+          log.error("produce reconciliation issues could not be recorded", {
+            error: error instanceof Error ? error.message : String(error),
+            issues: issues.map((issue) => ({ category: issue.category, refs: issue.entityRefs })),
+          });
+        }
+      }
+    }
+
     // BR-01: seed central prices only after the authoritative RPC persisted
     // the withdrawal. Returns/damaged returns are skipped inside the helper.
     // Best-effort like daily summary — the produce write already committed.
@@ -1080,6 +1102,8 @@ async function runEntryGateForFinalization(
   errors: string[];
   detail: string | null;
   advisories: ProduceValidationAdvisory[];
+  /** Non-blocking mismatches for reconciliation; never shown to the operator. */
+  reconciliation?: ProduceValidationReconciliation[];
   reviewPresented: boolean;
   /** The exact exception set the review describes. Present only when
    *  reviewPresented — it is what the finalizer must persist and show. */
@@ -1133,6 +1157,7 @@ async function runEntryGateForFinalization(
     errors: [],
     detail: null,
     advisories: gate.result.advisories,
+    reconciliation: gate.result.reconciliation,
     reviewPresented: false,
     reviewResult: null,
   };

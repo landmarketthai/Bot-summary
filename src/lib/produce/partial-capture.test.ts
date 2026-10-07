@@ -44,7 +44,7 @@ function session(items: WeighSessionItem[], parseErrors: string[] = []): WeighSe
 }
 
 describe("Produce partial capture", () => {
-  it("stages good return lines while an unknown product waits for review", () => {
+  it("accepts every readable line including an unknown product without field correction", () => {
     const parsed = session([
       item(1, "มะนาว", 3, 20),
       item(2, "พักผ่อน", 4, 20),
@@ -59,52 +59,18 @@ describe("Produce partial capture", () => {
       roundBound: true,
     });
 
-    expect(validation.status).toBe("review_required");
-    expect(validation.reviews).toContainEqual(expect.objectContaining({
-      kind: "unknown_product_vocabulary",
-      itemNumber: 2,
-      productName: "พักผ่อน",
+    expect(validation.status).toBe("clean");
+    expect(validation.reviews).toEqual([]);
+    expect(validation.reconciliation).toContainEqual(expect.objectContaining({
+      kind: "product_not_withdrawn", itemNumber: 2, productName: "พักผ่อน",
     }));
-
     const capture = buildProducePartialCapture(parsed, validation, []);
-    expect(capture.acceptedCount).toBe(2);
+    expect(capture.acceptedCount).toBe(3);
+    expect(capture.acceptedAmount).toBe(240);
     expect(capture.readableAmount).toBe(240);
-    expect(capture.readableAmountCount).toBe(3);
-    expect(capture.uncalculatedAmountCount).toBe(0);
-    expect(capture.reviewReadableAmount).toBe(80);
-    expect(capture.reviewReadableCount).toBe(1);
-    expect(capture.acceptedAmount).toBe(160);
-    expect(capture.items.map((entry) => [entry.item.item_number, entry.status])).toEqual([
-      [1, "accepted"],
-      [2, "needs_review"],
-      [3, "accepted"],
-    ]);
-
-    const saved = buildPartialCaptureSavedReply(capture);
-    expect(saved).toContain("✅ รับรายการชั่งคืนแล้ว");
-    expect(saved).toContain("1. มะนาว 3 แพค × 20 บาท = 60.00 บาท");
-    expect(saved).toContain("2. พักผ่อน 4 แพค × 20 บาท = 80.00 บาท ⚠️ รอตรวจชื่อสินค้า");
-    expect(saved).toContain("3. หอมแดง 5 แพค × 20 บาท = 100.00 บาท");
-    expect(saved).toContain("ยอดจากรายการที่อ่านได้ทั้งหมด: 240.00 บาท");
-    expect(saved).toContain("ยอดที่ตรวจแล้ว: 160.00 บาท");
-    expect(saved).toContain("⚠️ รอตรวจ: 80.00 บาท (1 รายการ)");
-    expect(saved).toContain("ยอดขาด-เกินจะสรุปหลังแก้รายการที่รอตรวจเรียบร้อย");
-    expect(saved).not.toContain("Dictionary");
-    expect(saved).not.toContain("Settlement");
-    expect(saved).not.toContain("Final");
-
-    const review = buildPartialCaptureReviewReply(capture);
-    expect(review).toContain("⚠️ มี 1 รายการที่ต้องแก้");
-    expect(review).toContain("ข้อ 2");
-    expect(review).toContain("พักผ่อน 20 บาท");
-    expect(review).toContain("4 แพค");
-    expect(review).toContain("ไม่พบชื่อสินค้า “พักผ่อน”");
-    expect(review).toContain("แก้ข้อ 2");
-    expect(review).toContain("ลบข้อ 2");
-    expect(review).toContain("ตัวอย่างกรณีมีหลายข้อ");
-    expect(review).toContain("แก้ข้อ 5");
-    expect(review).toContain("ลบข้อ 8");
-    expect(review).not.toContain("Dictionary");
+    expect(capture.issues).toEqual([]);
+    expect(capture.items.every((entry) => entry.status === "accepted")).toBe(true);
+    expect(buildPartialCaptureSavedReply(capture)).not.toContain("แก้ข้อ");
   });
 
   it("keeps parsed good lines when a separate malformed source line cannot be parsed", () => {

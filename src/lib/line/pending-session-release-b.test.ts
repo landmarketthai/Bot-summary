@@ -1,9 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { PendingSessionService } from "./pending-session-service";
 import {
-  buildMissingItemsMessage,
-  findMissingItemNumbers,
-} from "./pending-session-finalizer";
+  buildMissingItemsMessage,} from "./pending-session-finalizer";
 import { parseExpectedItemCount } from "./webhook-service";
 
 const migrationPath = new URL(
@@ -20,16 +18,10 @@ describe("Release B close command and completeness protocol", () => {
     expect(parseExpectedItemCount("จบรายการเบิก")).toBeNull();
   });
 
-  it("reports exactly missing item numbers 9 through 13 for expected count 18", () => {
-    const observed = [
-      1, 2, 3, 4, 5, 6, 7, 8,
-      14, 15, 16, 17, 18,
-    ];
-    const missing = findMissingItemNumbers(18, observed);
-
-    expect(missing).toEqual([9, 10, 11, 12, 13]);
-    expect(buildMissingItemsMessage(missing))
-      .toContain("9, 10, 11, 12, 13");
+  it("reports only a count shortfall, never infers missing human labels", () => {
+    expect(buildMissingItemsMessage([14, 15, 16, 17, 18])).toContain("ยังขาด 5 รายการ");
+    expect(buildMissingItemsMessage([14, 15, 16, 17, 18])).not.toContain("หมายเลข");
+    expect(buildMissingItemsMessage([2], true)).toContain("ยังขาด 1 รายการ");
   });
 
   it("pins generation, sender, and ingest revision in the finalizer RPC call", async () => {

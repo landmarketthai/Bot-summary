@@ -1,7 +1,8 @@
 import React from "react";
 import { Document, Page, StyleSheet, Text, View } from "@react-pdf/renderer";
 import { formatThaiDate } from "@/lib/date";
-import type { MorningBriefReport } from "@/lib/summary/morning-brief";
+import { morningBriefProductIdentity, type MorningBriefReport, type MorningBriefFruitFinancialSummary } from "@/lib/summary/morning-brief";
+import { PRODUCE_SECTIONS, PRODUCE_SECTION_LABEL, produceSectionOf } from "@/lib/summary/produce-section";
 
 function bahtFromSatang(satang: number): string {
   return (satang / 100).toLocaleString("en-US", {
@@ -194,7 +195,7 @@ function MatrixCell({
   </View>;
 }
 
-const STOCK_CATEGORIES = ["ผลไม้", "ทุเรียน", "ผัก", "ของแห้ง", "ยังไม่ได้จัดหมวดหมู่"] as const;
+const STOCK_CATEGORIES = ["ผลไม้", "ผัก", "อื่นๆ"] as const;
 type StockPageCategory = typeof STOCK_CATEGORIES[number];
 
 type StockMatrixItem = {
@@ -206,12 +207,9 @@ type StockMatrixItem = {
   totalRemainingQuantity: number | null;
 };
 
-function stockCategory(category: string): StockPageCategory {
-  if (category === "ผลไม้") return "ผลไม้";
-  if (category === "ทุเรียน") return "ทุเรียน";
-  if (["ผัก / สมุนไพร / เครื่องประกอบอาหาร", "ผัก", "เห็ด"].includes(category)) return "ผัก";
-  if (["ปลา / อาหารแห้ง / ของแห้ง", "ปลา", "อาหารแห้ง", "ของแห้ง"].includes(category)) return "ของแห้ง";
-  return "ยังไม่ได้จัดหมวดหมู่";
+function stockCategory(item: StockMatrixItem): StockPageCategory {
+  const identity = morningBriefProductIdentity(item.productName, item.unit);
+  return PRODUCE_SECTION_LABEL[produceSectionOf(identity.productName)] as StockPageCategory;
 }
 
 function stockMatrixKey(productName: string, unit: string): string {
@@ -337,48 +335,45 @@ function DataFooter({ generatedText }: { generatedText: string }) {
   </View>;
 }
 
-export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBriefReport; generatedAt: Date }) {
-  const generatedText = new Intl.DateTimeFormat("th-TH", {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone: "Asia/Bangkok",
-  }).format(generatedAt);
-  const fruit = report.fruitFinancial;
-  const marketTotals = fruit?.markets ?? [];
-  const dateText = thaiNumericDate(report.businessDate);
-  const stockItems = stockMatrixItems(report);
-
-  return <Document title={`Morning Fruit Brief ${report.businessDate}`}>
+function FinancialSummaryPage({ financial, label, businessDate, generatedText }: {
+  financial: MorningBriefFruitFinancialSummary;
+  label: string;
+  businessDate: string;
+  generatedText: string;
+}) {
+  const marketTotals = financial.markets;
+  const dateText = thaiNumericDate(businessDate);
+  return (
     <Page size="A4" style={S.page} wrap>
       <View style={S.header}>
-        <Text style={S.title}>สรุปผลไม้คงเหลือเพื่อสั่งซื้อ - {formatThaiDate(report.businessDate)}</Text>
-        <Text style={S.subtitle}>Bot-summary | ข้อมูลวันที่ {dateText} | รายงานนี้แสดงเฉพาะผลไม้และรายการผลไม้ที่มีข้อมูลในระบบ ไม่รวมผัก</Text>
+        <Text style={S.title}>{`สรุป${label}คงเหลือเพื่อสั่งซื้อ - ${formatThaiDate(businessDate)}`}</Text>
+        <Text style={S.subtitle}>Bot-summary | ข้อมูลวันที่ {dateText} | หมวด{label}</Text>
       </View>
 
       <View style={S.kpiGrid}>
         <View style={S.kpi}><View style={S.kpiBox}>
-          <Text style={S.kpiLabel}>ยอดขายรวมเมื่อวาน</Text>
-          <Text style={S.kpiValue}>{fruit ? bahtFromSatang(fruit.salesValueSatang) : "-"}</Text>
+          <Text style={S.kpiLabel}>ยอดขายรวมเมื่อวาน ({label})</Text>
+          <Text style={S.kpiValue}>{financial ? bahtFromSatang(financial.salesValueSatang) : "-"}</Text>
           <Text style={S.kpiUnit}>บาท</Text>
         </View></View>
         <View style={S.kpi}><View style={S.kpiBox}>
-          <Text style={S.kpiLabel}>ผลไม้ที่เบิกออกไปขายเมื่อวาน</Text>
-          <Text style={S.kpiValue}>{fruit ? bahtFromSatang(fruit.withdrawalValueSatang) : "-"}</Text>
+          <Text style={S.kpiLabel}>{label}ที่เบิกออกไปขายเมื่อวาน</Text>
+          <Text style={S.kpiValue}>{financial ? bahtFromSatang(financial.withdrawalValueSatang) : "-"}</Text>
           <Text style={S.kpiUnit}>บาท</Text>
         </View></View>
         <View style={S.kpi}><View style={S.kpiBox}>
           <Text style={S.kpiLabel}>ของชั่งคืนดีจากตลาด</Text>
-          <Text style={S.kpiValue}>{fruit ? bahtFromSatang(fruit.goodReturnValueSatang) : "-"}</Text>
+          <Text style={S.kpiValue}>{financial ? bahtFromSatang(financial.goodReturnValueSatang) : "-"}</Text>
           <Text style={S.kpiUnit}>บาท</Text>
         </View></View>
         <View style={S.kpi}><View style={S.kpiBox}>
-          <Text style={S.kpiLabel}>Stock ผลไม้ที่บ้าน</Text>
-          <Text style={S.kpiValue}>{fruit?.houseStockValueSatang == null ? "-" : bahtFromSatang(fruit.houseStockValueSatang)}</Text>
+          <Text style={S.kpiLabel}>Stock {label}ที่บ้าน</Text>
+          <Text style={S.kpiValue}>{financial?.houseStockValueSatang == null ? "-" : bahtFromSatang(financial.houseStockValueSatang)}</Text>
           <Text style={S.kpiUnit}>บาท</Text>
         </View></View>
         <View style={S.kpi}><View style={S.kpiBox}>
           <Text style={S.kpiLabel}>คงเหลือพร้อมขาย</Text>
-          <Text style={S.kpiValue}>{fruit?.readyValueSatang == null ? "-" : bahtFromSatang(fruit.readyValueSatang)}</Text>
+          <Text style={S.kpiValue}>{financial?.readyValueSatang == null ? "-" : bahtFromSatang(financial.readyValueSatang)}</Text>
           <Text style={S.kpiUnit}>ชั่งคืนดีจากตลาด + Stock บ้าน</Text>
         </View></View>
       </View>
@@ -388,7 +383,7 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
         <Text style={S.explanationText}><Text style={{ fontWeight: "bold" }}>เบิกออกไปขาย</Text> คือมูลค่าสินค้าที่นำออกตลาดก่อนเริ่มขาย ส่วน <Text style={{ fontWeight: "bold" }}>คงเหลือพร้อมขาย</Text> คือของดีที่ชั่งคืนจากตลาดหลังขาย บวกกับของที่ยังอยู่บ้าน จึงอาจมีบางรายการที่คงเหลือน้อยกว่ายอดที่เบิกไปขาย</Text>
       </View>
 
-      <Text style={S.marketTitle}>สรุปผลไม้ตามตลาด</Text>
+      <Text style={S.marketTitle}>สรุป{label}ตามตลาด</Text>
       <View style={S.table}>
         <View style={S.tr} fixed>
           <MarketCell width="28%" tone="name" header>ตลาด</MarketCell>
@@ -404,19 +399,45 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
         </View>)}
         <View style={S.tr} wrap={false}>
           <MarketCell width="28%" tone="name" total>รวม</MarketCell>
-          <MarketCell width="24%" tone="withdrawal" total>{fruit ? bahtFromSatang(fruit.withdrawalValueSatang) : "-"}</MarketCell>
-          <MarketCell width="24%" tone="sales" total>{fruit ? bahtFromSatang(fruit.salesValueSatang) : "-"}</MarketCell>
-          <MarketCell width="24%" tone="return" total>{fruit ? bahtFromSatang(fruit.goodReturnValueSatang) : "-"}</MarketCell>
+          <MarketCell width="24%" tone="withdrawal" total>{financial ? bahtFromSatang(financial.withdrawalValueSatang) : "-"}</MarketCell>
+          <MarketCell width="24%" tone="sales" total>{financial ? bahtFromSatang(financial.salesValueSatang) : "-"}</MarketCell>
+          <MarketCell width="24%" tone="return" total>{financial ? bahtFromSatang(financial.goodReturnValueSatang) : "-"}</MarketCell>
         </View>
       </View>
       <View style={S.noteBox}>
-        <Text style={S.note}><Text style={{ fontWeight: "bold" }}>หมายเหตุ:</Text> รายงานฉบับนี้แสดงเฉพาะผลไม้ ไม่รวมผัก และใช้ข้อมูลจริงจากระบบของวันที่ {dateText}</Text>
+        <Text style={S.note}><Text style={{ fontWeight: "bold" }}>หมายเหตุ:</Text> รายงานส่วนนี้แสดงเฉพาะหมวด{label} และใช้ข้อมูลจริงจากระบบของวันที่ {dateText}</Text>
       </View>
       <DataFooter generatedText={generatedText} />
     </Page>
+  );
+}
+
+export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBriefReport; generatedAt: Date }) {
+  const generatedText = new Intl.DateTimeFormat("th-TH", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Asia/Bangkok",
+  }).format(generatedAt);
+  const financialBySection = report.produceFinancial ?? (report.fruitFinancial ? { fruit: report.fruitFinancial } : {});
+  const financialSections = PRODUCE_SECTIONS.flatMap((section) => {
+    const financial = financialBySection[section];
+    return financial ? [{ section, financial }] : [];
+  });
+  const stockItems = stockMatrixItems(report);
+
+  return <Document title={`Morning Brief ${report.businessDate}`}>
+    {financialSections.map(({ section, financial }) => <FinancialSummaryPage
+      key={section} financial={financial} label={PRODUCE_SECTION_LABEL[section]}
+      businessDate={report.businessDate} generatedText={generatedText}
+    />)}
+    {financialSections.length === 0 && !stockItems.some(hasRealStockQuantity) ? <Page size="A4" style={S.page}>
+      <Text style={S.title}>สรุปเช้า - {formatThaiDate(report.businessDate)}</Text>
+      <Text>ยังไม่มีข้อมูลสินค้าในระบบ</Text>
+      <DataFooter generatedText={generatedText} />
+    </Page> : null}
 
     {STOCK_CATEGORIES.flatMap((category) => {
-      const categoryItems = stockItems.filter((item) => stockCategory(item.category) === category);
+      const categoryItems = stockItems.filter((item) => stockCategory(item) === category);
       if (!categoryItems.some(hasRealStockQuantity)) return [];
 
       const chunks = categoryChunks(categoryItems);

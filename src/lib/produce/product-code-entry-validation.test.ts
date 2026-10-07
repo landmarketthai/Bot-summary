@@ -17,7 +17,6 @@ import type { WeighSession } from "@/lib/parsers/weigh-session/types";
 import {
   masterRowsFromSession,
   validateProduceEntry,
-  type ProduceValidationException,
   type RoundMasterRow,
 } from "./entry-validation";
 
@@ -52,7 +51,7 @@ function validate(parsed: WeighSession, roundRows: RoundMasterRow[]) {
   return validateProduceEntry({ parsed, roundRows, roundBound: true });
 }
 
-const kinds = (exceptions: ProduceValidationException[]) => exceptions.map((e) => e.kind);
+const kinds = (exceptions: Array<{ kind: string }>) => exceptions.map((e) => e.kind);
 
 // ── CASE B — code out, word back ────────────────────────────────────────────
 
@@ -93,8 +92,8 @@ describe("CASE D — withdrawn and returned by the same code", () => {
     const result = validate(goodReturn("ม01 50 บาท", "1 โล"), round);
 
     expect(result.status).toBe("clean");
-    expect(kinds(result.advisories)).toContain("product_not_withdrawn");
-    expect(result.advisories[0]).toMatchObject({ productName: "กล้วยไข่" });
+    expect(kinds(result.reconciliation)).toContain("product_not_withdrawn");
+    expect(result.reconciliation[0]).toMatchObject({ productName: "กล้วยไข่" });
   });
 });
 
@@ -121,16 +120,16 @@ describe("CASE E — price mismatch through a code", () => {
   });
 });
 
-// ── CASE F — unit mismatch stays fail-closed ────────────────────────────────
+// ── CASE F — unit mismatch is recorded, never converted or blocked ────────────────────────────────
 
 describe("CASE F — unit mismatch through a code", () => {
-  it("blocks a return booked in a unit the product was never withdrawn in", () => {
+  it("records a return booked in a unit the product was never withdrawn in", () => {
     const round = roundOf(withdrawal("ม01 50 บาท", "2 โล"));
     const result = validate(goodReturn("ม01 50 บาท", "2 กล่อง"), round);
 
-    expect(result.status).toBe("blocked");
-    expect(kinds(result.blocking)).toContain("unit_not_withdrawn");
-    expect(result.blocking[0]).toMatchObject({
+    expect(result.status).toBe("clean");
+    expect(kinds(result.reconciliation)).toContain("unit_not_withdrawn");
+    expect(result.reconciliation[0]).toMatchObject({
       productName: "กล้วยไข่", unit: "กล่อง", withdrawnUnits: ["โล"],
     });
   });
@@ -152,8 +151,8 @@ describe("CASE G — return exceeds withdrawal", () => {
     const result = validate(goodReturn("ม01 50 บาท", "3 โล"), round);
 
     expect(result.status).toBe("clean");
-    expect(kinds(result.advisories)).toContain("return_exceeds_withdrawal");
-    expect(result.advisories.find((e) => e.kind === "return_exceeds_withdrawal")).toMatchObject({
+    expect(kinds(result.reconciliation)).toContain("return_exceeds_withdrawal");
+    expect(result.reconciliation.find((e) => e.kind === "return_exceeds_withdrawal")).toMatchObject({
       productName: "กล้วยไข่", withdrawnQuantity: 2, goodReturnQuantity: 3, excessQuantity: 1,
     });
   });
@@ -163,7 +162,7 @@ describe("CASE G — return exceeds withdrawal", () => {
     const result = validate(goodReturn("ม01 50 บาท", "3 โล"), round);
 
     expect(result.status).toBe("clean");
-    expect(kinds(result.advisories)).toContain("return_exceeds_withdrawal");
+    expect(kinds(result.reconciliation)).toContain("return_exceeds_withdrawal");
   });
 });
 
@@ -178,7 +177,7 @@ describe("CASE H — good return plus damaged exceeds withdrawal", () => {
     const result = validate(damagedReturn("ม01 50 บาท", "2 โล"), round);
 
     expect(result.status).toBe("clean");
-    const excess = result.advisories.find((e) => e.kind === "return_exceeds_withdrawal");
+    const excess = result.reconciliation.find((e) => e.kind === "return_exceeds_withdrawal");
     expect(excess).toMatchObject({
       productName: "กล้วยไข่",
       withdrawnQuantity: 5,
@@ -206,7 +205,7 @@ describe("CASE H — good return plus damaged exceeds withdrawal", () => {
     const result = validate(damagedReturn("ม01 50 บาท", "2 โล"), round);
 
     expect(result.status).toBe("clean");
-    expect(kinds(result.advisories)).toContain("return_exceeds_withdrawal");
+    expect(kinds(result.reconciliation)).toContain("return_exceeds_withdrawal");
   });
 });
 
@@ -219,7 +218,7 @@ describe("uncoded products go through the gate unchanged", () => {
     expect(validate(goodReturn("เสาวรส 50 บาท", "4 โล"), round).status).toBe("clean");
     const excess = validate(goodReturn("เสาวรส 50 บาท", "11 โล"), round);
     expect(excess.status).toBe("clean");
-    expect(kinds(excess.advisories)).toContain("return_exceeds_withdrawal");
+    expect(kinds(excess.reconciliation)).toContain("return_exceeds_withdrawal");
   });
 
   it("validates a product excluded from the dictionary normally", () => {

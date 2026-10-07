@@ -426,19 +426,21 @@ describe("a pasted complete produce document cannot bypass P4A", () => {
     ]);
   });
 
-  it("keeps a price advisory visible while a quantity invariant blocks all persistence", async () => {
+  it("finalizes a return above the recorded withdrawal and keeps the price advisory visible", async () => {
+    // Calculate first, reconcile later: the withdrawal record may be incomplete.
     const db = new BypassDatabase(PRICE_AND_EXCESS_MASTER);
     await paste(db, RETURN_PRICE_AND_EXCESS);
 
     const result = await finalizePendingGeneration(db as never, db.pending, async () => {});
 
-    expect(result.status).toBe("failed_closed");
-    expect(db.rows("produce_sessions")).toHaveLength(0);
+    expect(result.status).toBe("finalized");
+    expect(db.rows("produce_sessions")).toHaveLength(1);
     const payload = db.finalizeCalls[0].p_session as Row;
-    expect(payload.validation_errors).toContain("return_exceeds_withdrawal");
+    expect(payload.validation_errors).toEqual([]);
+    expect(payload.notification_payload).toContain("ราคาแตกต่างจากตอนเบิก");
   });
 
-  it("refuses the unit mismatch that Production accepted, and persists nothing", async () => {
+  it("finalizes a return in a unit the product was not withdrawn in, without asking for a correction", async () => {
     const db = new BypassDatabase(MASTER);
     await paste(db, RETURN_WRONG_UNIT);
 
@@ -449,20 +451,12 @@ describe("a pasted complete produce document cannot bypass P4A", () => {
       async (_target, message) => { pushes.push(message); },
     );
 
-    expect(result.status).toBe("failed_closed");
-    expect(db.rows("produce_sessions")).toHaveLength(0);
+    expect(result.status).toBe("finalized");
+    expect(db.rows("produce_sessions")).toHaveLength(1);
 
     const payload = db.finalizeCalls[0].p_session as Row;
-    // The round WAS resolved — this is P4A refusing, not a binding failure.
     expect(payload.accountability_round_id).toBe(ROUND);
-    expect(payload.validation_errors).toContain("unit_not_withdrawn");
-
-    const reply = pushes.at(-1) ?? "";
-    expect(reply).toContain("รายการอื่นยังอยู่ครบ");
-    expect(reply).toContain("ไม่ต้องยกเลิก");
-    expect(reply).toContain("ข้อ 1");
-    expect(reply).toContain("แก้ข้อ 1");
-    expect(reply).not.toContain("ระบบยังไม่ได้บันทึกอะไร");
-    expect(reply).not.toContain("ยกเลิกรายการ");
+    expect(payload.validation_errors).toEqual([]);
+    expect(pushes.join(" ")).not.toContain("แก้ข้อ");
   });
 });

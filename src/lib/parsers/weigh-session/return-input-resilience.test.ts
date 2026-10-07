@@ -93,7 +93,7 @@ describe("price typed where the quantity belongs", () => {
   });
 });
 
-describe("duplicate item number occurrence selectors", () => {
+describe("normalized duplicate item addressing", () => {
   const duplicate = [
     "51.ผักชี20บาท", "2กำ",
     "52.ผักบุ้ง10บาท", "3กำ",
@@ -101,105 +101,57 @@ describe("duplicate item number occurrence selectors", () => {
     "53.ต้นหอม20บาท", "1กำ",
   ];
 
-  it("parses 52A/52B selectors, case-insensitive", () => {
-    expect(parseDraftItemCommandLine("แก้ข้อ 52A")).toEqual({ kind: "correct", itemNumber: 52, occurrence: 1 });
-    expect(parseDraftItemCommandLine("ลบข้อ52b")).toEqual({ kind: "remove", itemNumber: 52, occurrence: 2 });
+  it("plain แก้ข้อ addresses the normalized item without ambiguity", () => {
     expect(parseDraftItemCommandLine("แก้ข้อ 52")).toEqual({ kind: "correct", itemNumber: 52 });
-  });
-
-  it("keeps plain แก้ข้อ 52 fail-closed and names the selectors", () => {
-    const parsed = parseWeighSession(returnDocument(...duplicate, "แก้ข้อ 52"));
-    const action = latestDraftItemAction(parsed)!;
-    expect(action.status).toBe("ambiguous_target");
-    expect(action.selectors).toEqual(["52A", "52B"]);
-    expect(parsed.items).toHaveLength(4);
-    expect(buildDraftItemActionReply(action)).toContain("52A, 52B");
-  });
-
-  it("แก้ข้อ 52A replaces only the first 52, typed number preserved", () => {
-    const parsed = parseWeighSession(returnDocument(
-      ...duplicate, "แก้ข้อ 52A", "52.ผักบุ้ง10บาท", "5กำ",
-    ));
-    expect(latestDraftItemAction(parsed)).toMatchObject({ status: "applied", occurrence: "A" });
+    const parsed = parseWeighSession(returnDocument(...duplicate, "แก้ข้อ 52", "52.ผักบุ้ง10บาท", "5กำ"));
+    expect(latestDraftItemAction(parsed)?.status).toBe("applied");
     expect(parsed.items.map((row) => [row.item_number, row.product_name, row.quantity])).toEqual([
-      [51, "ผักชี", 2], [52, "ผักบุ้ง", 5], [52, "คะน้า", 4], [53, "ต้นหอม", 1],
+      [51, "ผักชี", 2], [52, "ผักบุ้ง", 5], [53, "คะน้า", 4], [54, "ต้นหอม", 1],
     ]);
+    expect(buildDraftItemActionReply(latestDraftItemAction(parsed)!)).not.toMatch(/52[A-Z]/);
   });
 
-  it("combined แก้ข้อ 52A + ลบข้อ 52B resolves the duplicate, good rows untouched", () => {
-    const before = parseWeighSession(returnDocument(...duplicate));
+  it("combined correction and deletion use the shown numbers", () => {
     const parsed = parseWeighSession(returnDocument(
-      ...duplicate, "ลบข้อ 52B", "แก้ข้อ 52A", "52.ผักบุ้ง10บาท", "5กำ",
+      ...duplicate, "ลบข้อ 53", "แก้ข้อ 52", "52.ผักบุ้ง10บาท", "5กำ",
     ));
     expect(parsed.parse_errors).toEqual([]);
-    expect(parsed.draft_item_actions?.map((action) => [action.kind, action.occurrence, action.status]))
-      .toEqual([["remove", "B", "applied"], ["correct", "A", "applied"]]);
+    expect(parsed.draft_item_actions?.map((action) => [action.kind, action.item_number, action.status]))
+      .toEqual([["remove", 53, "applied"], ["correct", 52, "applied"]]);
     expect(parsed.items.map((row) => [row.item_number, row.product_name, row.quantity])).toEqual([
       [51, "ผักชี", 2], [52, "ผักบุ้ง", 5], [53, "ต้นหอม", 1],
     ]);
-    expect(parsed.items.filter((row) => row.item_number !== 52))
-      .toEqual(before.items.filter((row) => row.item_number !== 52));
-    const validation = validateProduceEntry({ parsed, roundRows: [], roundBound: false });
-    expect(validation.blocking.some((exception) => exception.kind === "duplicate_item_number")).toBe(false);
   });
 
-  it("selectors stay stable after an earlier removal (ลบข้อ 52A then แก้ข้อ 52B)", () => {
-    const parsed = parseWeighSession(returnDocument(
-      ...duplicate, "ลบข้อ 52A", "แก้ข้อ 52B", "52.คะน้า15บาท", "6กำ",
-    ));
-    expect(parsed.items.map((row) => [row.item_number, row.product_name, row.quantity])).toEqual([
-      [51, "ผักชี", 2], [52, "คะน้า", 6], [53, "ต้นหอม", 1],
-    ]);
-  });
-
-  it("an unknown selector fails closed", () => {
-    const parsed = parseWeighSession(returnDocument(...duplicate, "ลบข้อ 52C"));
+  it("an unknown normalized or original number fails closed", () => {
+    const parsed = parseWeighSession(returnDocument(...duplicate, "ลบข้อ 99"));
     expect(latestDraftItemAction(parsed)?.status).toBe("target_not_found");
     expect(parsed.items).toHaveLength(4);
   });
 
-  it("review reply addresses each duplicate row as 52A/52B", () => {
-    const { capture: staged } = capture(returnDocument(...duplicate));
-    const reply = buildPartialCaptureReviewReply(staged);
-    expect(reply).toContain("ข้อ 52A\nผักบุ้ง");
-    expect(reply).toContain("ข้อ 52B\nคะน้า");
-    expect(reply).toContain("แก้ข้อ 52A");
-    expect(reply).toContain("52.หอมแดง20บาท");
-    expect(staged.items.filter((entry) => entry.item.item_number !== 52).every((entry) => entry.status === "accepted"))
-      .toBe(true);
+  it("duplicate numbering alone has no review or correction requirement", () => {
+    const { parsed, capture: staged } = capture(returnDocument(...duplicate));
+    expect(parsed.items.map((row) => row.item_number)).toEqual([51, 52, 53, 54]);
+    expect(staged.issues).toEqual([]);
+    expect(staged.items.every((entry) => entry.status === "accepted")).toBe(true);
+    expect(buildPartialCaptureSavedReply(staged)).not.toMatch(/52[A-Z]|แก้ข้อ/);
   });
 
-  it("keeps selectors actionable when 52A fails parsing but 52B parses", () => {
-    const source = [
-      "52.ผักบุ้ง10บาท", "16บาท",
-      "52.คะน้า15บาท", "4กำ",
-    ];
+  it("an unreadable first duplicate keeps its slot while the second stays accepted", () => {
+    const source = ["52.ผักบุ้ง10บาท", "16บาท", "52.คะน้า15บาท", "4กำ"];
     const { parsed, capture: staged } = capture(returnDocument(...source));
     expect(parsed.items).toContainEqual(expect.objectContaining({
-      item_number: 52,
-      item_occurrence: 2,
-      product_name: "คะน้า",
-      quantity: 4,
-      unit: "กำ",
+      item_number: 53, original_item_number: 52, product_name: "คะน้า", quantity: 4, unit: "กำ",
     }));
-
-    const saved = buildPartialCaptureSavedReply(staged);
     const reply = buildPartialCaptureReviewReply(staged);
-    expect(saved).toContain("52B. คะน้า");
-    expect(reply).toContain("ข้อ 52A");
-    expect(reply).toContain("แก้ข้อ 52A");
-    expect(reply).not.toContain("พิมพ์ “แก้ข้อ 52”");
-    expect(staged.items.find((entry) => entry.item.item_occurrence === 2)?.status).toBe("accepted");
-
-    const corrected = parseWeighSession(returnDocument(
-      ...source,
-      "แก้ข้อ 52A", "52.ผักบุ้ง10บาท", "3กำ",
-    ));
+    expect(buildPartialCaptureSavedReply(staged)).toContain("53. คะน้า");
+    expect(reply).toContain("แก้ข้อ 52");
+    expect(reply).not.toMatch(/52[A-Z]/);
+    expect(staged.items[0]?.status).toBe("accepted");
+    const corrected = parseWeighSession(returnDocument(...source,
+      "แก้ข้อ 52", "52.ผักบุ้ง10บาท", "3กำ"));
     expect(corrected.parse_errors).toEqual([]);
-    expect(corrected.items.filter((item) => item.item_number === 52))
-      .toEqual([
-        expect.objectContaining({ product_name: "คะน้า", quantity: 4, item_occurrence: 2 }),
-        expect.objectContaining({ product_name: "ผักบุ้ง", quantity: 3 }),
-      ]);
+    expect(corrected.items.map((item) => [item.item_number, item.product_name, item.quantity]))
+      .toEqual([[52, "ผักบุ้ง", 3], [53, "คะน้า", 4]]);
   });
 });

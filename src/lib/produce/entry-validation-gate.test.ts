@@ -220,6 +220,22 @@ const priceChange = (price = 120) =>
     item({ product_name: "อะโวคาโด", quantity: 4, price_per_unit: price, transaction_type: "คืน" }),
   ]);
 
+/**
+ * The only confirmable review left: a ขีด/กรัม price basis, where the
+ * conversion changes the amount. Unknown names and numbering never review.
+ */
+const riskyWithdrawal = (name = "องุ่น") =>
+  session([item({
+    product_name: name, pricing_mode: "basis", basis_quantity: 0.2, basis_unit: "โล",
+    basis_price: 20, entered_quantity: 2, entered_unit: "ขีด", quantity: 0.2,
+  })]);
+
+/** Present on E1, then confirm the single subunit item. */
+async function presentAndConfirm(db: FakeDb, parsed = riskyWithdrawal()) {
+  await runProduceCloseGate(db.client(), REF, parsed, "E1");
+  expect(await confirmProduceSubunitReview(db.client(), REF, parsed, 1, "C1")).toBe("confirmed");
+}
+
 describe("close gate", () => {
   it("lets a clean round through without writing a review", async () => {
     const db = new FakeDb({ [ROUND]: withdrawal });
@@ -257,34 +273,35 @@ describe("close gate", () => {
   });
 
   it("treats a duplicate delivery of the presenting event as a duplicate, not an acknowledgement", async () => {
-    const db = new FakeDb({ [ROUND]: withdrawal });
-    await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal(), "E1");
-    const replay = await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal(), "E1");
+    const db = new FakeDb({ [ROUND]: [] });
+    await runProduceCloseGate(db.client(), REF, riskyWithdrawal(), "E1");
+    const replay = await runProduceCloseGate(db.client(), REF, riskyWithdrawal(), "E1");
 
     expect(replay.decision).toBe("review_presented");
+    // One subunit review: its whole digest and item digest are the same row.
     expect(db.reviews).toHaveLength(1);
-    expect(db.reviews[0].confirmed_at).toBeNull();
+    expect(db.reviews.every((row) => row.confirmed_at === null)).toBe(true);
   });
 
   it("is idempotent when the acknowledging event is delivered twice", async () => {
-    const db = new FakeDb({ [ROUND]: withdrawal });
-    await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal(), "E1");
-    await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal(), "E2");
+    const db = new FakeDb({ [ROUND]: [] });
+    await presentAndConfirm(db);
+    expect((await runProduceCloseGate(db.client(), REF, riskyWithdrawal(), "E2")).decision).toBe("proceed");
     const confirmedAt = db.reviews[0].confirmed_at;
 
-    const replay = await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal(), "E2");
+    const replay = await runProduceCloseGate(db.client(), REF, riskyWithdrawal(), "E2");
     expect(replay.decision).toBe("proceed");
     expect(db.reviews).toHaveLength(1);
     expect(db.reviews[0].confirmed_at).toBe(confirmedAt);
-    expect(db.reviews[0].confirmed_line_event_id).toBe("E2");
+    expect(db.reviews[0].confirmed_line_event_id).toBe("C1");
   });
 
   it("does not let an acknowledgement carry over to changed content", async () => {
     const db = new FakeDb({ [ROUND]: [] });
-    await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal(), "E1");
-    await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal(), "E2");
+    await presentAndConfirm(db);
+    await runProduceCloseGate(db.client(), REF, riskyWithdrawal(), "E2");
 
-    const changed = await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal("อินมผรัม"), "E3");
+    const changed = await runProduceCloseGate(db.client(), REF, riskyWithdrawal("มะม่วง"), "E3");
     expect(changed.decision).toBe("review_presented");
     expect(db.reviews).toHaveLength(2);
     expect(db.reviews[1].confirmed_at).toBeNull();
@@ -324,7 +341,7 @@ describe("round scoping", () => {
       "E1",
     );
     expect(gate.decision).toBe("proceed");
-    expect(gate.result.advisories).toContainEqual(expect.objectContaining({
+    expect(gate.result.reconciliation).toContainEqual(expect.objectContaining({
       kind: "product_not_withdrawn",
       productName: "อะโวคาโด",
     }));
@@ -364,7 +381,7 @@ describe("fail closed", () => {
   it("refuses to record a review with no identifiable data-entry actor", async () => {
     const db = new FakeDb({ [ROUND]: withdrawal });
     await expect(
-      runProduceCloseGate(db.client(), { ...REF, lineUserId: null }, suspiciousWithdrawal(), "E1"),
+      runProduceCloseGate(db.client(), { ...REF, lineUserId: null }, riskyWithdrawal(), "E1"),
     ).rejects.toBeInstanceOf(ProduceValidationGateError);
   });
 });
@@ -380,10 +397,10 @@ describe("finalize gate", () => {
 
   it("lets an acknowledged session finalize", async () => {
     const db = new FakeDb({ [ROUND]: [] });
-    await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal(), "E1");
-    await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal(), "E2");
+    await presentAndConfirm(db);
+    await runProduceCloseGate(db.client(), REF, riskyWithdrawal(), "E2");
 
-    const gate = await runProduceFinalizeGate(db.client(), REF, suspiciousWithdrawal());
+    const gate = await runProduceFinalizeGate(db.client(), REF, riskyWithdrawal());
     expect(gate.decision).toBe("proceed");
   });
 
@@ -402,141 +419,39 @@ describe("finalize gate", () => {
     db.masterRowOverride = [];
     const gate = await runProduceFinalizeGate(db.client(), REF, priceChange());
     expect(gate.decision).toBe("proceed");
-    expect(gate.result.advisories).toContainEqual(expect.objectContaining({
+    expect(gate.result.reconciliation).toContainEqual(expect.objectContaining({
       kind: "product_not_withdrawn",
     }));
   });
 });
 
-// ── Product vocabulary guard at withdrawal intake ────────────────────────────
-
-/** A withdrawal whose product name is not an approved dictionary spelling. */
-const suspiciousWithdrawal = (name = "มะม่วงเขียวรกต") =>
-  session([item({ product_name: name, transaction_type: "เบิก", quantity: 8 })]);
-
-describe("unknown product vocabulary", () => {
-  it("presents the review instead of finalizing, and persists nothing", async () => {
+describe("non-financial issues never reach the review protocol", () => {
+  it("proceeds on the first press for an unknown withdrawal name and records no review", async () => {
     const db = new FakeDb({ [ROUND]: [] });
     const gate = await runProduceCloseGate(
       db.client(),
       REF,
-      suspiciousWithdrawal(),
+      session([item({ product_name: "ฝรั่งสายพันธุ์ใหม่", transaction_type: "เบิก", quantity: 8 })]),
       "E1",
     );
-
-    expect(gate.decision).toBe("review_presented");
-    expect(gate.result.reviews.map((exception) => exception.kind)).toEqual([
-      "unknown_product_vocabulary",
-    ]);
-    expect(db.reviews).toHaveLength(1);
-    expect(db.reviews[0].confirmed_at).toBeNull();
-  });
-
-  it("proceeds once the operator confirms it is a genuinely new product", async () => {
-    const db = new FakeDb({ [ROUND]: [] });
-    const newProduct = suspiciousWithdrawal("ฝรั่งสายพันธุ์ใหม่");
-
-    expect((await runProduceCloseGate(db.client(), REF, newProduct, "E1")).decision)
-      .toBe("review_presented");
-    const second = await runProduceCloseGate(db.client(), REF, newProduct, "E2");
-
-    expect(second.decision).toBe("proceed");
-    // Confirmation acknowledges the name; it never registers or rewrites it.
-    expect(newProduct.items[0].product_name).toBe("ฝรั่งสายพันธุ์ใหม่");
-    expect(db.reviews).toHaveLength(1);
-  });
-
-  it("does not carry a confirmation over to a corrected document", async () => {
-    const db = new FakeDb({ [ROUND]: [] });
-    await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal(), "E1");
-    await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal(), "E2");
-
-    // The operator fixes the spelling. Different content, different digest.
-    const corrected = suspiciousWithdrawal("มะม่วงเขียวมรกต");
-    const gate = await runProduceFinalizeGate(db.client(), REF, corrected);
     expect(gate.decision).toBe("proceed");
-    expect(gate.result.status).toBe("clean");
-  });
-
-  it("does not let a confirmation survive a straggler item", async () => {
-    const db = new FakeDb({ [ROUND]: [] });
-    await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal(), "E1");
-    await runProduceCloseGate(db.client(), REF, suspiciousWithdrawal(), "E2");
-
-    const withStraggler = session([
-      item({ product_name: "มะม่วงเขียวรกต", transaction_type: "เบิก", quantity: 8 }),
-      item({ product_name: "องุ่นดำ", transaction_type: "เบิก", quantity: 2 }),
-    ]);
-    const gate = await runProduceFinalizeGate(db.client(), REF, withStraggler);
-    expect(gate.decision).toBe("review_presented");
-  });
-
-  it("holds the whole document, not the offending line", async () => {
-    const db = new FakeDb({ [ROUND]: [] });
-    const mixed = session([
-      item({ product_name: "องุ่นดำ", transaction_type: "เบิก", quantity: 2 }),
-      item({ product_name: "อินมผรัม", transaction_type: "เบิก", quantity: 3 }),
-    ]);
-    const gate = await runProduceCloseGate(db.client(), REF, mixed, "E1");
-    expect(gate.decision).toBe("review_presented");
-    expect(gate.result.status).toBe("review_required");
-  });
-});
-
-// ── Internal item-number gaps cannot be closed or finalized ───────────────────
-//
-// The 2 SEP incident: a resent list skipped item #5 and closed anyway, taking
-// a whole priced line with it. Both gates check `status === "blocked"` before
-// any present/confirm path, so a gap can never reach the review flow — these
-// pin that ordering rather than trusting it.
-
-describe("item-number gap at the close boundary", () => {
-  const gapped = () => parseWeighSession(
-    [
-      "ดำ-ตลาด เบิก 2/9/69",
-      "1.องุ่นดำ100บาท", "10โล",
-      "2.อินมผรัม50บาท", "5โล",
-      "4.องุ่นดำ20บาท", "4โล",
-    ].join("\n"),
-    "2026-09-02",
-  );
-
-  it("refuses the close and records nothing to confirm later", async () => {
-    const db = new FakeDb({ [ROUND]: [] });
-    const gate = await runProduceCloseGate(db.client(), REF, gapped(), "E1");
-    expect(gate.decision).toBe("blocked");
-    expect(gate.result.blocking.map((entry) => entry.kind)).toContain("item_number_gap");
-    // Nothing was presented, so no digest exists for a second press to confirm.
+    expect(gate.result.reconciliation.map((entry) => entry.kind)).toEqual(["unknown_product_vocabulary"]);
     expect(db.reviews).toHaveLength(0);
   });
 
-  it("stays blocked on a second “จบรายการ” — the button cannot wave it through", async () => {
+  it("proceeds when the operator's numbering skipped a line", async () => {
     const db = new FakeDb({ [ROUND]: [] });
-    await runProduceCloseGate(db.client(), REF, gapped(), "E1");
-    const second = await runProduceCloseGate(db.client(), REF, gapped(), "E2");
-    expect(second.decision).toBe("blocked");
-    expect(db.reviews).toHaveLength(0);
-  });
-
-  it("refuses to finalize", async () => {
-    const db = new FakeDb({ [ROUND]: [] });
-    const gate = await runProduceFinalizeGate(db.client(), REF, gapped());
-    expect(gate.decision).toBe("blocked");
-  });
-
-  it("proceeds normally once the missing line is supplied", async () => {
-    const db = new FakeDb({ [ROUND]: [] });
-    const repaired = parseWeighSession(
+    const gapped = parseWeighSession(
       [
         "ดำ-ตลาด เบิก 2/9/69",
         "1.องุ่นดำ100บาท", "10โล",
         "2.อินมผรัม50บาท", "5โล",
-        "3.แอปเปิ้ล10บาท", "84ลูก",
         "4.องุ่นดำ20บาท", "4โล",
       ].join("\n"),
       "2026-09-02",
     );
-    const gate = await runProduceFinalizeGate(db.client(), REF, repaired);
-    expect(gate.result.blocking.map((entry) => entry.kind)).not.toContain("item_number_gap");
+    expect(gapped.items.map((entry) => entry.item_number)).toEqual([1, 2, 3]);
+    expect((await runProduceCloseGate(db.client(), REF, gapped, "E1")).decision).toBe("proceed");
+    expect((await runProduceFinalizeGate(db.client(), REF, gapped)).decision).toBe("proceed");
   });
 });

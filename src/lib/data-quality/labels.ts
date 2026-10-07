@@ -15,6 +15,10 @@ export const CATEGORY_LABEL_TH: Record<DataQualityCategory, string> = {
   financial_evidence_incomplete:     "หลักฐานการเงินไม่ครบ",
   financial_settlement_mismatch:     "ปิดยอดการเงินไม่ตรงกัน",
   house_stock_unsend_close_after_finalize: "ยกเลิกส่งคำสั่งจบสต๊อกหลังปิดรายการแล้ว",
+  produce_item_renumbered:           "จัดลำดับเลขข้อใหม่",
+  produce_unknown_product:           "สินค้านอกรายการมาตรฐาน/นอกรอบเบิก",
+  produce_unit_mismatch:             "หน่วยคืนไม่ตรงหน่วยเบิก",
+  produce_return_exceeds_withdrawal: "คืนเกินยอดเบิกที่บันทึก",
 };
 
 export const STATUS_LABEL_TH: Record<"OPEN" | "RESOLVED" | "IGNORED", string> = {

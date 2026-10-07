@@ -142,6 +142,7 @@ interface FinalizeOptions {
   replacementActorId?: string;
   replacementReason?: string;
   emptyItems?: boolean;
+  snapshotRevision?: number;
 }
 
 function finalizeSql(
@@ -166,7 +167,7 @@ function finalizeSql(
     session_date: parsed.date,
     session_title: parsed.session_title,
     transaction_types: [...new Set(items.map((i) => i.transaction_type))].sort().join(","),
-    session_kind: "main",
+    session_kind: parsed.session_kind,
     declared_transaction_type: parsed.declared_transaction_type,
     ingest_idempotency_key: `${sessionKey}:${generation}`,
     ingest_source: "line_webhook",
@@ -179,7 +180,7 @@ function finalizeSql(
   if (options.replacementReason) sessionPayload.replacement_reason = options.replacementReason;
 
   return `SELECT public.try_finalize_pending_generation(
-      ${q(sessionKey)}, ${q(generation)}::uuid, ${q(ACTOR)}, 1,
+      ${q(sessionKey)}, ${q(generation)}::uuid, ${q(ACTOR)}, ${options.snapshotRevision ?? 1},
       ${q(computeSessionHash(parsed))}, 'raw',
       ${q(JSON.stringify(sessionPayload))}::jsonb,
       ${q(JSON.stringify(items))}::jsonb,
@@ -223,12 +224,61 @@ describe.skipIf(!pgAvailable)("finalized Produce session replacement lifecycle o
     await apply(join(ROOT, "supabase", "migrations", "20260817080346_produce_withdrawal_containment_guard.sql"));
     await apply(join(ROOT, "supabase", "migrations", "20260817090858_produce_historical_withdrawal_containment.sql"));
     await apply(join(ROOT, "supabase", "migrations", "20260825092015_produce_finalized_session_replacement_lifecycle.sql"));
+    await apply(join(ROOT, "supabase", "migrations", "20261007060911_produce_nonblocking_item_count.sql"));
   }, 120_000);
 
   afterAll(async () => {
     if (!databaseCreated) return;
     await psql(["-d", "postgres", "-c", `DROP DATABASE IF EXISTS ${DATABASE}`], "postgres");
   }, 60_000);
+
+  test("declared count accepts an additional 10,11,12,12,13,14 list as six rows", async () => {
+    const parsed = parseWeighSession([
+      "กี้-ตลาดเพิ่ม เบิกเพิ่ม 24/8/2569",
+      ...[10, 11, 12, 12, 13, 14].flatMap(number => [number + ".มังคุด45บาท", "2โล"]),
+      "จบรายการเบิกเพิ่ม 6 รายการ",
+    ].join("\n"));
+    const pending = await seedPending();
+    await scalar(`UPDATE public.pending_sessions SET expected_item_count=6 WHERE session_key=${q(pending.sessionKey)} RETURNING 1`);
+    const result: FinalizeResult = JSON.parse(await scalar(finalizeSql(pending.sessionKey, pending.generation, pending.rawMessageId, parsed)));
+    expect(result.status).toBe("finalized");
+    expect(await scalar(`SELECT array_agg(item_number ORDER BY item_number)::text FROM public.produce_items WHERE session_id=${q(result.session_id!)}::uuid`)).toBe("{10,11,12,13,14,15}");
+  });
+
+  test("actual count shortfall waits, stale revision refuses, then a complete fresh snapshot finalizes", async () => {
+    const first = document("กี้นับ", "ตลาดนับ", [{ product: "มังคุด", price: 45, quantity: 2, unit: "โล" }]);
+    const pending = await seedPending();
+    await scalar(`UPDATE public.pending_sessions SET expected_item_count=2 WHERE session_key=${q(pending.sessionKey)} RETURNING 1`);
+    const waiting = JSON.parse(await scalar(finalizeSql(pending.sessionKey, pending.generation, pending.rawMessageId, first)));
+    expect(waiting).toMatchObject({ status: "pending", reason: "missing_items", missing: [2] });
+    expect(await scalar(`SELECT terminalized::text FROM public.pending_sessions WHERE session_key=${q(pending.sessionKey)}`)).toBe("false");
+    const full = document("กี้นับ", "ตลาดนับ", [{ product: "มังคุด", price: 45, quantity: 2, unit: "โล" }, { product: "ส้ม", price: 30, quantity: 3, unit: "โล" }]);
+    await scalar(`UPDATE public.pending_sessions SET ingest_revision=2, next_attempt_at=now()-interval '1 second' WHERE session_key=${q(pending.sessionKey)} RETURNING 1`);
+    const stale = JSON.parse(await scalar(finalizeSql(pending.sessionKey, pending.generation, pending.rawMessageId, full)));
+    expect(stale.status).toBe("stale_snapshot");
+    const result = JSON.parse(await scalar(finalizeSql(pending.sessionKey, pending.generation, pending.rawMessageId, full, { snapshotRevision: 2 })));
+    expect(result.status).toBe("finalized");
+  });
+
+  test("an actual count shortfall still fails after the immutable close deadline", async () => {
+    const first = document("กี้ไม่ครบ", "ตลาดนับ", [{ product: "มังคุด", price: 45, quantity: 2, unit: "โล" }]);
+    const pending = await seedPending();
+    const before = await produceSessionCount();
+    await scalar(`UPDATE public.pending_sessions SET expected_item_count=2, close_deadline_at=now()-interval '1 second' WHERE session_key=${q(pending.sessionKey)} RETURNING 1`);
+    expect(JSON.parse(await scalar(finalizeSql(pending.sessionKey, pending.generation, pending.rawMessageId, first))))
+      .toMatchObject({ status: "failed_closed", reason: "missing_items", missing: [2] });
+    expect(await produceSessionCount()).toBe(before);
+  });
+
+  test("count migration reapplication preserves function definition and execute permissions", async () => {
+    const signature = "public.try_finalize_pending_generation(text,uuid,text,integer,text,text,jsonb,jsonb,text[])";
+    const before = await scalar(`SELECT md5(pg_get_functiondef('${signature}'::regprocedure))`);
+    await apply(join(ROOT, "supabase", "migrations", "20261007060911_produce_nonblocking_item_count.sql"));
+    expect(await scalar(`SELECT md5(pg_get_functiondef('${signature}'::regprocedure))`)).toBe(before);
+    expect(await scalar(`SELECT has_function_privilege('service_role','${signature}','EXECUTE')::text`)).toBe("true");
+    expect(await scalar(`SELECT has_function_privilege('anon','${signature}','EXECUTE')::text`)).toBe("false");
+    expect(await scalar(`SELECT has_function_privilege('authenticated','${signature}','EXECUTE')::text`)).toBe("false");
+  });
 
   test("a successful replacement atomically supersedes its predecessor, preserving raw evidence", async () => {
     const seller = "กี้ทดแทน";

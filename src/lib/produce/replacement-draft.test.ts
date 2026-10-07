@@ -195,7 +195,9 @@ describe("renderReplacementItemLines / buildReplacementSeedText", () => {
 
     const parsed = parseWeighSession(document);
     expect(parsed.parse_errors).toEqual([]);
-    expect(parsed.items.map((item) => item.item_number)).toEqual([1, 2, 4, 5]);
+    // Removal renumbers the rest sequentially; typed numbers stay as audit.
+    expect(parsed.items.map((item) => item.item_number)).toEqual([1, 2, 3, 4]);
+    expect(parsed.items.map((item) => item.original_item_number)).toEqual([undefined, undefined, 4, 5]);
   });
 });
 

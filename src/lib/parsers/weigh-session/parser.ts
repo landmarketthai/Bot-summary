@@ -93,17 +93,39 @@ export function parseWeighSession(
     transactionType: TransactionType;
     parseError: string;
     occurrence: number;
+    /** Source order shared with parsed items; a failed line keeps its slot. */
+    seq: number;
   };
-  // Rows created per typed item_number, in source order. Feeds item_occurrence
-  // (52A/52B selectors); counts only grow, so a removal never relabels a row.
+  // Counts retain source evidence for legacy commands while replaying raw text.
   const occurrenceCounts = new Map<number, number>();
   const nextOccurrence = (itemNumber: number) => (occurrenceCounts.get(itemNumber) ?? 0) + 1;
   const failedItemTargets = new Map<number, FailedItemTarget[]>();
+  // One counter for parsed items and failed numbered lines, so renumbering and
+  // command addressing follow the operator's message order across both.
+  let nextSeq = 0;
+  let failedItemAwaitingContinuation = false;
+  const itemErrors = new Map<number, string[]>();
+  const clearItemErrors = (item: WeighSessionItem) => {
+    for (const detail of itemErrors.get(item.source_seq!) ?? []) {
+      const index = parseErrors.indexOf(detail);
+      if (index >= 0) parseErrors.splice(index, 1);
+    }
+    itemErrors.delete(item.source_seq!);
+  };
+  type Slot = { item: WeighSessionItem | null; index: number; target: FailedItemTarget | null; seq: number };
+  const orderedSlots = (): Slot[] => [
+    ...items.map((item, index) => ({ item, index, target: null, seq: item.source_seq ?? -1 })),
+    ...[...failedItemTargets.values()].flat()
+      .map((target) => ({ item: null, index: -1, target, seq: target.seq })),
+  ].sort((a, b) => a.seq - b.seq);
+  const firstSlotNumber = (slots: Slot[]): number => slots.length > 0
+    ? Math.min(...slots.map((slot) => slot.item?.item_number ?? slot.target!.itemNumber))
+    : 1;
   let activeCorrection: {
     action: DraftItemAction;
     targetIndex: number | null;
     targetItem: WeighSessionItem | null;
-    targetContext: Pick<FailedItemTarget, "section" | "transactionType" | "occurrence"> | null;
+    targetContext: FailedItemTarget | null;
     failedParseError: string | null;
   } | null = null;
 
@@ -116,15 +138,17 @@ export function parseWeighSession(
     const targets = failedItemTargets.get(itemNumber) ?? [];
     const occurrence = nextOccurrence(itemNumber);
     occurrenceCounts.set(itemNumber, occurrence);
-    targets.push({ itemNumber, section, transactionType, parseError, occurrence });
+    targets.push({ itemNumber, section, transactionType, parseError, occurrence, seq: nextSeq++ });
     failedItemTargets.set(itemNumber, targets);
+    failedItemAwaitingContinuation = true;
   };
 
-  const clearFailedItemTarget = (itemNumber: number, parseError: string) => {
+  const clearFailedItemTarget = (target: FailedItemTarget) => {
+    const { itemNumber, parseError } = target;
     const errorIndex = parseErrors.indexOf(parseError);
     if (errorIndex >= 0) parseErrors.splice(errorIndex, 1);
     const remaining = (failedItemTargets.get(itemNumber) ?? [])
-      .filter((target) => target.parseError !== parseError);
+      .filter((candidate) => candidate.seq !== target.seq);
     if (remaining.length > 0) failedItemTargets.set(itemNumber, remaining);
     else failedItemTargets.delete(itemNumber);
   };
@@ -150,11 +174,17 @@ export function parseWeighSession(
     else parseErrors.push(detail);
   };
 
-  const commitParsedItem = (item: WeighSessionItem) => {
+  const commitParsedItem = (item: WeighSessionItem, errors: string[] = []) => {
+    failedItemAwaitingContinuation = false;
     if (!activeCorrection) {
       const occurrence = nextOccurrence(item.item_number);
-      const numbered = occurrence > 1 ? { ...item, item_occurrence: occurrence } : item;
-      if (pushOrMergeItem(items, numbered)) occurrenceCounts.set(item.item_number, occurrence);
+      const numbered: WeighSessionItem = {
+        ...(occurrence > 1 ? { ...item, item_occurrence: occurrence } : item),
+        source_seq: nextSeq++,
+      };
+      items.push(numbered);
+      occurrenceCounts.set(item.item_number, occurrence);
+      if (errors.length > 0) itemErrors.set(numbered.source_seq!, errors);
       return;
     }
 
@@ -190,22 +220,26 @@ export function parseWeighSession(
 
     const replacement: WeighSessionItem = {
       ...item,
-      item_number: correction.action.item_number,
+      // Keep the slot's typed number; renumberItem derives the shown number
+      // from position, so the replacement lands exactly where the old item was.
+      item_number: correction.targetItem?.item_number ?? correction.targetContext!.itemNumber,
       section: correction.targetItem?.section ?? correction.targetContext!.section,
       transaction_type:
         correction.targetItem?.transaction_type ?? correction.targetContext!.transactionType,
     };
+    replacement.source_seq = correction.targetItem?.source_seq ?? correction.targetContext?.seq;
     const occurrence = correction.targetItem?.item_occurrence ?? correction.targetContext?.occurrence;
     if (occurrence !== undefined && occurrence > 1) replacement.item_occurrence = occurrence;
     else delete replacement.item_occurrence;
     if (correction.targetIndex !== null) {
+      clearItemErrors(correction.targetItem!);
       items[correction.targetIndex] = replacement;
     } else {
       // The original numbered source line never parsed into an item. The
       // correction supplies that missing item now; do not replay/save any of
       // the already-good rows.
       items.push(replacement);
-      clearFailedItemTarget(correction.action.item_number, correction.failedParseError!);
+      clearFailedItemTarget(correction.targetContext!);
     }
     correction.action.status = "applied";
     correction.action.replacement_item = { ...replacement };
@@ -219,10 +253,10 @@ export function parseWeighSession(
       return;
     }
     if (pendingItem.price_per_unit === undefined) {
-      recordItemParseError(
-        `item #${pendingItem.item_number} ${pendingItem.product_name} has no price line: `
-        + `"${pendingItemLines.join(" ")}"`,
-      );
+      const detail = `item #${pendingItem.item_number} ${pendingItem.product_name} has no price line: `
+        + `"${pendingItemLines.join(" ")}"`;
+      if (!activeCorrection) registerFailedItemTarget(pendingItem.item_number!, detail);
+      recordItemParseError(detail);
     } else {
       const section = activeCorrection?.targetItem?.section
         ?? activeCorrection?.targetContext?.section
@@ -276,15 +310,28 @@ export function parseWeighSession(
         closeCurrentPendingItem();
       }
 
-      const matches = items
-        .map((item, index) => ({ item, index }))
-        .filter(({ item }) => item.item_number === draftCommand.itemNumber)
-        .filter(({ item }) =>
-          draftCommand.occurrence === undefined
-          || (item.item_occurrence ?? 1) === draftCommand.occurrence);
-      const failedMatches = (failedItemTargets.get(draftCommand.itemNumber) ?? [])
-        .filter((target) =>
-          draftCommand.occurrence === undefined || target.occurrence === draftCommand.occurrence);
+      failedItemAwaitingContinuation = false;
+
+      // Commands address the normalized number the bot shows back: the
+      // message-order slot over parsed items AND failed numbered lines (see
+      // renumberItem). Only when no slot holds that number does the typed
+      // number count (with an optional legacy occurrence letter), so
+      // "แก้ข้อ 17" still reaches a line typed as 17 in a "1, 17" list.
+      const slots = draftCommand.occurrence === undefined ? orderedSlots() : [];
+      const positional = slots[draftCommand.itemNumber - firstSlotNumber(slots)];
+      const indexed = items.map((item, index) => ({ item, index }));
+      const matches = positional
+        ? (positional.item ? [{ item: positional.item, index: positional.index }] : [])
+        : indexed
+          .filter(({ item }) => item.item_number === draftCommand.itemNumber)
+          .filter(({ item }) =>
+            draftCommand.occurrence === undefined
+            || (item.item_occurrence ?? 1) === draftCommand.occurrence);
+      const failedMatches = positional
+        ? (positional.target ? [positional.target] : [])
+        : (failedItemTargets.get(draftCommand.itemNumber) ?? [])
+          .filter((target) =>
+            draftCommand.occurrence === undefined || target.occurrence === draftCommand.occurrence);
       const matchCount = matches.length + failedMatches.length;
       const failedTarget = matches.length === 0 && failedMatches.length === 1
         ? failedMatches[0]
@@ -304,16 +351,6 @@ export function parseWeighSession(
         ...(draftCommand.occurrence !== undefined
           ? { occurrence: occurrenceLetter(draftCommand.occurrence) }
           : {}),
-        ...(matchCount > 1
-          ? {
-              selectors: [
-                ...matches.map(({ item }) => item.item_occurrence ?? 1),
-                ...failedMatches.map((target) => target.occurrence),
-              ]
-                .sort((a, b) => a - b)
-                .map((occurrence) => `${draftCommand.itemNumber}${occurrenceLetter(occurrence)}`),
-            }
-          : {}),
         ...(matches.length === 1 ? { previous_item: { ...matches[0].item } } : {}),
       };
       draftItemActions.push(action);
@@ -325,20 +362,17 @@ export function parseWeighSession(
       }
 
       if (draftCommand.kind === "remove") {
-        if (matches.length === 1 && matchCount === 1) items.splice(matches[0].index, 1);
-        else if (failedTarget) clearFailedItemTarget(draftCommand.itemNumber, failedTarget.parseError);
+        if (matches.length === 1 && matchCount === 1) {
+          clearItemErrors(matches[0].item);
+          items.splice(matches[0].index, 1);
+        }
+        else if (failedTarget) clearFailedItemTarget(failedTarget);
       } else {
         activeCorrection = {
           action,
           targetIndex: matches.length === 1 && matchCount === 1 ? matches[0].index : null,
           targetItem: matches.length === 1 && matchCount === 1 ? { ...matches[0].item } : null,
-          targetContext: failedTarget
-            ? {
-                section: failedTarget.section,
-                transactionType: failedTarget.transactionType,
-                occurrence: failedTarget.occurrence,
-              }
-            : null,
+          targetContext: failedTarget,
           failedParseError: failedTarget?.parseError ?? null,
         };
       }
@@ -353,6 +387,7 @@ export function parseWeighSession(
       } else {
         activeCorrection = null;
       }
+      failedItemAwaitingContinuation = false;
       // Closer/opener discipline: an additional batch must close with its own
       // matching จบรายการ<type>เพิ่ม closer, and additional closers are invalid
       // for main sessions.
@@ -386,16 +421,23 @@ export function parseWeighSession(
       // เบิก 13/8/2569" has nowhere.
       const headerCode = resolveItemLineProductCode(content);
       if (headerCode.kind === "unknown") {
-        parseErrors.push(unknownProductCodeError(headerCode.code, line));
+        const detail = unknownProductCodeError(headerCode.code, line);
+        const numbered = content.match(/^(\d+)\s*\.?\s*/);
+        if (numbered) registerFailedItemTarget(Number(numbered[1]), detail);
+        parseErrors.push(detail);
         continue;
       }
       // Accept both prefixed (LINE export) and bare (direct typed) header lines.
       const headerItem = parseItemLine(headerCode.content, nextItemNumber(items, pendingItem));
       if (headerItem === "orphan_basis") {
-        parseErrors.push(`orphan basis line (no product name): "${line}"`);
+        const detail = `orphan basis line (no product name): "${line}"`;
+        const numbered = content.match(/^(\d+)[.)]/);
+        if (numbered) registerFailedItemTarget(Number(numbered[1]), detail);
+        parseErrors.push(detail);
         continue;
       }
       if (headerItem) {
+        failedItemAwaitingContinuation = false;
         pendingItem = headerItem;
         pendingItemLines = [line];
         state = "items";
@@ -467,12 +509,13 @@ export function parseWeighSession(
           if (pendingItem.pricing_mode === "basis" && !pendingItem.basis_unit && pendingItem.unit) {
             pendingItem.basis_unit = pendingItem.unit;
           }
+          const errors: string[] = [];
           if (pendingItem.basis_unit && pendingItem.unit !== pendingItem.basis_unit) {
             const wasCorrection = activeCorrection !== null;
-            recordItemParseError(
-              `basis unit mismatch for item #${pendingItem.item_number} "${pendingItem.product_name}": ` +
-              `basis is per ${pendingItem.basis_unit} but quantity line uses ${pendingItem.unit}`,
-            );
+            const detail = `basis unit mismatch for item #${pendingItem.item_number} "${pendingItem.product_name}": ` +
+              `basis is per ${pendingItem.basis_unit} but quantity line uses ${pendingItem.unit}`;
+            recordItemParseError(detail);
+            errors.push(detail);
             if (wasCorrection) {
               pendingItem = null;
               pendingItemLines = [];
@@ -480,7 +523,7 @@ export function parseWeighSession(
             }
           }
           const finalizedItem = finalize(pendingItem, currentSection, currentTxType);
-          commitParsedItem(finalizedItem);
+          commitParsedItem(finalizedItem, errors);
           pendingItem = null;
           pendingItemLines = [];
           continue;
@@ -490,13 +533,13 @@ export function parseWeighSession(
           // either a genuine orphan, or the pending item is still missing
           // its own price. Never silently misattributed onto the wrong item.
           if (pendingItem?.product_name) {
-            recordItemParseError(
-              `item #${pendingItem.item_number} ${pendingItem.product_name} is missing a price line ` +
-              `before its quantity: "${line}"`,
-            );
+            const detail = `item #${pendingItem.item_number} ${pendingItem.product_name} is missing a price line ` +
+              `before its quantity: "${line}"`;
+            if (!activeCorrection) registerFailedItemTarget(pendingItem.item_number!, detail);
+            recordItemParseError(detail);
             pendingItem = null;
             pendingItemLines = [];
-          } else {
+          } else if (!failedItemAwaitingContinuation) {
             recordItemParseError(`quantity with no preceding item: "${line}"`);
           }
           continue;
@@ -525,6 +568,11 @@ export function parseWeighSession(
         continue;
       }
 
+      // Price/quantity continuations belong to the unreadable source slot.
+      // Its existing identity error blocks it until that slot is corrected.
+      if (priceOnly && !pendingItem && failedItemAwaitingContinuation) continue;
+      failedItemAwaitingContinuation = false;
+
       // Product Code resolution — the narrowest boundary that exists: the line
       // is already past the quantity and price-continuation branches, so what
       // remains is an item line, and only its leading product token is
@@ -534,7 +582,10 @@ export function parseWeighSession(
       const codeResolution = resolveItemLineProductCode(content);
       if (codeResolution.kind === "unknown") {
         closeCurrentPendingItem();
-        recordItemParseError(unknownProductCodeError(codeResolution.code, line));
+        const detail = unknownProductCodeError(codeResolution.code, line);
+        const numbered = content.match(/^(\d+)\s*\.?\s*/);
+        if (numbered && !activeCorrection) registerFailedItemTarget(Number(numbered[1]), detail);
+        recordItemParseError(detail);
         continue;
       }
       const itemContent = codeResolution.content;
@@ -542,7 +593,10 @@ export function parseWeighSession(
       const parsedItem = parseItemLine(itemContent, nextItemNumber(items, pendingItem));
       if (parsedItem === "orphan_basis") {
         closeCurrentPendingItem();
-        recordItemParseError(`orphan basis line (no product name): "${line}"`);
+        const detail = `orphan basis line (no product name): "${line}"`;
+        const numbered = itemContent.match(/^(\d+)[.)]/);
+        if (numbered && !activeCorrection) registerFailedItemTarget(Number(numbered[1]), detail);
+        recordItemParseError(detail);
       } else if (parsedItem) {
         // A new single-line item header — with or without a LINE-export prefix.
         closeCurrentPendingItem();
@@ -590,7 +644,7 @@ export function parseWeighSession(
             // this exact failed line without asking the operator to resend the
             // already-good document.
             if (!activeCorrection) {
-              const explicitFailedItem = itemContent.match(/^(\d+)[.)]\s*/);
+              const explicitFailedItem = itemContent.match(/^(\d+)(?:[.)]\s*|(?=[^\d\s]))/);
               if (explicitFailedItem) {
                 registerFailedItemTarget(Number(explicitFailedItem[1]), detail);
               }
@@ -616,7 +670,21 @@ export function parseWeighSession(
     closeCurrentPendingItem();
   }
 
-  const failedTargets = [...failedItemTargets.values()].flat();
+  // Renumber items AND failed numbered lines together, in message order.
+  const slots = orderedSlots();
+  const firstNumber = firstSlotNumber(slots);
+  const numberOf = new Map<Slot, number>(slots.map((slot, index) => [slot, firstNumber + index]));
+  // Diagnostics for parsed rows follow the shown number, just like commands.
+  for (const slot of slots) {
+    for (const detail of itemErrors.get(slot.seq) ?? []) {
+      const index = parseErrors.indexOf(detail);
+      if (index >= 0) parseErrors[index] = detail.replace(/item #\d+/, `item #${numberOf.get(slot)}`);
+    }
+  }
+  const renumbered = slots.filter((slot) => slot.item).map((slot) => renumberItem(slot.item!, numberOf.get(slot)!));
+  const failedTargets = slots.filter((slot) => slot.target).map((slot) => ({
+    ...slot.target!, itemNumber: numberOf.get(slot)!,
+  }));
 
   return {
     // Additional sessions must carry an explicit date — never fall back to
@@ -628,13 +696,13 @@ export function parseWeighSession(
     session_title:    sessionTitle,
     session_kind:     sessionKind,
     declared_transaction_type: declaredTxType,
-    items,
+    items:            renumbered,
     parse_errors:     parseErrors,
     ...(failedTargets.length > 0
       ? {
           failed_item_targets: failedTargets.map((target) => ({
             item_number: target.itemNumber,
-            occurrence: target.occurrence,
+            occurrence: 1,
             parse_error: target.parseError,
           })),
         }
@@ -643,6 +711,22 @@ export function parseWeighSession(
   };
 }
 
+/**
+ * Operator item numbers are input metadata, not identity. Duplicate ("12,
+ * 12"), missing or out-of-order numbers are renumbered sequentially in
+ * message order, starting from the lowest number written. The typed number
+ * survives as original_item_number whenever it changed. No dedup hash reads
+ * item_number, so this never shifts a duplicate-detection fingerprint.
+ */
+function renumberItem(item: WeighSessionItem, itemNumber: number): WeighSessionItem {
+  // Once numbers are unique there is no duplicate to address with a letter:
+  // item_occurrence and source_seq are parse-time evidence only.
+  const { item_occurrence: _occurrence, source_seq: _seq, ...rest } = item;
+  void _occurrence; void _seq;
+  return item.item_number === itemNumber
+    ? rest
+    : { ...rest, item_number: itemNumber, original_item_number: item.item_number };
+}
 export function getWeighSessionFinalizationErrors(session: WeighSession): string[] {
   const errors = [...session.parse_errors];
 
@@ -667,13 +751,6 @@ export function getWeighSessionFinalizationErrors(session: WeighSession): string
       errors.push("additional session requires a declared base transaction type");
     }
 
-    const seen = new Set<number>();
-    for (const item of session.items) {
-      if (seen.has(item.item_number)) {
-        errors.push(`duplicate item number #${item.item_number} in additional session`);
-      }
-      seen.add(item.item_number);
-    }
   }
 
   return errors;
@@ -681,6 +758,11 @@ export function getWeighSessionFinalizationErrors(session: WeighSession): string
 
 export function assertWeighSessionFinalizable(session: WeighSession): void {
   const errors = getWeighSessionFinalizationErrors(session);
+  for (const item of session.items) {
+    if (item.unit && !isKnownUnit(item.unit)) {
+      errors.push(`item #${item.item_number} "${item.product_name}" has invalid quantity or unit`);
+    }
+  }
   if (errors.length > 0) {
     throw new Error(`weigh session validation failed: ${errors.join("; ")}`);
   }
@@ -732,7 +814,6 @@ export function buildWeighSessionValidationReply(session: WeighSession): string 
   ].join("\n");
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 /**
  * Closes out whatever the parser currently has pending, at any point another
@@ -759,6 +840,7 @@ function applyQuantity(
   }
   item.quantity  = resolved.quantity;
   item.unit      = resolved.unit;
+  if (normalizeUnitAlias(resolved.unit) !== unit.trim()) item.raw_unit = unit.trim();
 
   // The one place the retired rescaling still gets computed — as evidence, not
   // as the item's price. Every duplicate-detection fingerprint folds
@@ -793,39 +875,12 @@ function finalize(
     entered_quantity: p.entered_quantity,
     entered_unit: p.entered_unit,
     item_number_explicit: p.item_number_explicit,
+    ...(p.raw_unit !== undefined ? { raw_unit: p.raw_unit } : {}),
   };
 }
 
 function actionSelector(action: DraftItemAction): string {
-  return `${action.item_number}${action.occurrence ?? ""}`;
-}
-
-/** True when a new row was appended (vs merged into an existing one). */
-function pushOrMergeItem(items: WeighSessionItem[], item: WeighSessionItem): boolean {
-  const existingIndex = findMergeCandidateIndex(items, item);
-
-  if (existingIndex === -1) {
-    items.push(item);
-    return true;
-  }
-
-  if (hasValidQuantity(item)) {
-    items[existingIndex] = {
-      ...item,
-      item_number: items[existingIndex].item_number,
-      // The kept number's provenance travels with it; the incoming line's
-      // flag describes a number that is being discarded here.
-      item_number_explicit: items[existingIndex].item_number_explicit,
-      item_occurrence: items[existingIndex].item_occurrence,
-      section: items[existingIndex].section,
-      transaction_type: items[existingIndex].transaction_type,
-    };
-    if (items[existingIndex].item_occurrence === undefined) delete items[existingIndex].item_occurrence;
-    return false;
-  }
-
-  // Avoid appending repeated zero/null placeholders for the same product+price.
-  return false;
+  return String(action.item_number);
 }
 
 /**
@@ -954,32 +1009,6 @@ function nextItemNumber(
 ): number {
   const maxExisting = items.reduce((max, item) => Math.max(max, item.item_number), 0);
   return Math.max(maxExisting, pendingItem?.item_number ?? 0) + 1;
-}
-
-function findMergeCandidateIndex(items: WeighSessionItem[], item: WeighSessionItem): number {
-  if (hasValidQuantity(item)) {
-    const sameIndex = items.findIndex((existing) =>
-      existing.item_number === item.item_number &&
-      existing.transaction_type === item.transaction_type &&
-      (isIncompleteItem(existing) || sameProductAndPrice(existing, item)),
-    );
-    if (sameIndex !== -1) return sameIndex;
-  }
-
-  return items.findIndex((existing) =>
-    sameProductAndPrice(existing, item) &&
-    existing.transaction_type === item.transaction_type &&
-    isIncompleteItem(existing),
-  );
-}
-
-function sameProductAndPrice(a: WeighSessionItem, b: WeighSessionItem): boolean {
-  return normalizeProductName(a.product_name) === normalizeProductName(b.product_name)
-    && a.price_per_unit === b.price_per_unit;
-}
-
-function normalizeProductName(name: string): string {
-  return name.replace(/\s+/g, "").trim();
 }
 
 function isMissingQuantity(quantity: number | null): boolean {

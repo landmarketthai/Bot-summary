@@ -8,6 +8,7 @@ import type {
   PurchaseStatus,
   PurchaseUncertaintyReason,
 } from "@/lib/summary/purchase-planning";
+import { produceSectionOf, type ProduceSection } from "@/lib/summary/produce-section";
 import { stockCategoryFor } from "@/lib/summary/stock-categories";
 
 const CATEGORY_BY_PRODUCT = new Map(
@@ -43,9 +44,14 @@ export function morningBriefProductIdentity(productName: string, unit: string): 
   category: string;
 } {
   const canonical = canonicalProduceProductIdentity(productName, unit);
+  const section = produceSectionOf(canonical);
+  const category = CATEGORY_BY_PRODUCT.get(canonical) ?? stockCategoryFor(canonical);
   return {
     productName: canonical,
-    category: CATEGORY_BY_PRODUCT.get(canonical) ?? stockCategoryFor(canonical),
+    // Special packs contain both fruit and vegetables; assign their explicit section.
+    category: category === "รายการพิเศษ" && section !== "other"
+      ? section === "fruit" ? "ผลไม้" : "ผัก"
+      : category,
   };
 }
 
@@ -259,5 +265,7 @@ export interface MorningBriefReport {
   houseStock: MorningBriefHouseStock;
   whiteSheetStatus?: MorningBriefWhiteSheetStatus;
   fruitFinancial?: MorningBriefFruitFinancialSummary;
+  /** Only populated sections; each total includes exclusively that section. */
+  produceFinancial?: Partial<Record<ProduceSection, MorningBriefFruitFinancialSummary>>;
   reconciliation?: MorningBriefReconciliation;
 }

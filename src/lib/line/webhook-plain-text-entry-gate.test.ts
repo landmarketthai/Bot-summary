@@ -336,7 +336,6 @@ describe("P4A on the plain-text close", () => {
       pendingRow([RETURN_HEADER, "1.ทุเรียน45บาท", "4โล"].join("\n"), actor),
       master([{}]),
     );
-    const before = db.tables.produce_transactions.length;
     const replies: string[] = [];
     await build(db, replies).processEvents([
       textEvent("จบรายการชั่งคืน", "close-cross-user", actor),
@@ -344,10 +343,10 @@ describe("P4A on the plain-text close", () => {
 
     expect(replies).toEqual([PRODUCE_CLOSE_PENDING_REPLY]);
     expect(db.pending.close_line_event_id).toBe("close-cross-user");
-    expect(db.tables.produce_transactions).toHaveLength(before);
+    expect(db.tables.produce_transactions).toHaveLength(1);
   });
 
-  it("stages good return lines and asks to fix only an unknown return identity", async () => {
+  it("allows a readable unknown return on the first close without field correction", async () => {
     const db = new PlainTextGateDatabase(
       pendingRow([
         RETURN_HEADER,
@@ -361,32 +360,11 @@ describe("P4A on the plain-text close", () => {
 
     await service.processEvents([textEvent("จบรายการชั่งคืน", "partial-close-1")], "dest");
 
-    expect(replies).toHaveLength(2);
-    expect(replies[0]).toContain("✅ รับรายการชั่งคืนแล้ว");
-    expect(replies[0]).toContain("1. มังคุด 4 โล × 45 บาท = 180.00 บาท");
-    expect(replies[0]).toContain("2. พักผ่อน 4 แพค × 20 บาท = 80.00 บาท ⚠️ รอตรวจชื่อสินค้า");
-    expect(replies[0]).toContain("ยอดจากรายการที่อ่านได้ทั้งหมด: 260.00 บาท");
-    expect(replies[0]).toContain("ยอดที่ตรวจแล้ว: 180.00 บาท");
-    expect(replies[0]).toContain("⚠️ รอตรวจ: 80.00 บาท (1 รายการ)");
-    expect(replies[0]).toContain("ยอดขาด-เกินจะสรุปหลังแก้รายการที่รอตรวจเรียบร้อย");
-    expect(replies[0]).not.toContain("Settlement");
-    expect(replies[0]).not.toContain("Final");
-    expect(replies[1]).toContain("⚠️ มี 1 รายการที่ต้องแก้");
-    expect(replies[1]).toContain("พักผ่อน");
-    expect(replies[1]).toContain("แก้ข้อ 2");
-    expect(replies[1]).toContain("ลบข้อ 2");
-    expect(replies[1]).toContain("ตัวอย่างกรณีมีหลายข้อ");
-    expect(replies[1]).not.toContain("Dictionary");
-    expect(db.pending.close_event_timestamp_ms).toBeNull();
+    expect(replies).toEqual([PRODUCE_CLOSE_PENDING_REPLY]);
+    expect(replies.join("\n")).not.toContain("แก้ข้อ");
+    expect(db.pending.close_line_event_id).toBe("partial-close-1");
     expect(db.reviews).toHaveLength(0);
-    expect(db.pending.partial_capture).toBeTruthy();
-
-    // Repeating “จบรายการ” is NOT an override for an unknown return identity.
-    replies.length = 0;
-    await service.processEvents([textEvent("จบรายการชั่งคืน", "partial-close-2")], "dest");
-    expect(replies[1]).toContain("แก้ข้อ 2");
-    expect(db.pending.close_event_timestamp_ms).toBeNull();
-    expect(db.reviews).toHaveLength(0);
+    expect(db.pending.partial_capture).toBeFalsy();
   });
 
   it("accepts a changed price on the first close without a review record", async () => {
@@ -457,41 +435,37 @@ describe("P4A on the plain-text close", () => {
     expect(db.closeRefusals).toEqual([]);
   });
 
-  it("shows the exact close CTA, then finalizes the unchanged name on second close", async () => {
-    const db = new PlainTextGateDatabase(
-      pendingRow([
-        "ดำ-ราชพฤกษ์ เบิก 11/8/2569",
-        "4.มะม่วง20บาท",
-        "1โล",
-      ].join("\n")),
-      [],
-    );
+  // The only confirmable review left is a risky ขีด/กรัม price basis.
+  it("shows the exact close CTA and records the item confirmation", async () => {
+    const db = new PlainTextGateDatabase(pendingRow([
+      "ดำ-ราชพฤกษ์ เบิก 11/8/2569",
+      "4.มะม่วง2ขีด20บาท",
+      "1โล",
+    ].join("\n")), []);
     const replies: string[] = [];
     const service = build(db, replies);
 
     await service.processEvents([textEvent("จบรายการเบิก", "review-close-1")], "dest");
 
-    expect(replies.at(-1)).toContain("✅ ถ้าชื่อนี้ถูกต้องและต้องการบันทึกตามที่พิมพ์");
+    expect(replies.at(-1)).toContain("ยืนยันทีละข้อ: “ยืนยันข้อ 4”");
     expect(replies.at(-1)).toContain("ส่ง “จบรายการเบิก” อีกครั้ง");
-    expect(replies.at(-1)).toContain("ส่ง “แก้ข้อ 4”");
     expect(db.pending.close_line_event_id).toBeNull();
-    expect(db.reviews).toHaveLength(1);
     expect(db.reviews[0]?.confirmed_at).toBeNull();
     expect(db.reviews[0]?.presented_delivered_at).not.toBeNull();
     expect(db.reviews[0]?.presented_line_event_id).toBe("review-close-1");
     expect(db.pending.accumulated_text).not.toContain("จบรายการเบิก");
 
-    await service.processEvents([textEvent("จบรายการเบิก", "review-close-2")], "dest");
-
-    expect(replies.at(-1)).toBe(PRODUCE_CLOSE_PENDING_REPLY);
-    expect(db.pending.close_line_event_id).toBe("review-close-2");
+    // Confirming the item is recorded; the per-item close path itself is
+    // covered against the real gate in entry-validation-gate.test.ts.
+    await service.processEvents([textEvent("ยืนยันข้อ 4", "confirm-4")], "dest");
+    expect(replies.at(-1)).toContain("✅ ยืนยันข้อ 4 แล้ว");
     expect(db.reviews[0]?.confirmed_at).not.toBeNull();
   });
 
   it("keeps the review identity stable when the first close event is redelivered", async () => {
     const original = [
       "ดำ-ราชพฤกษ์ เบิก 11/8/2569",
-      "4.มะม่วง20บาท",
+      "4.มะม่วง2ขีด20บาท",
       "1โล",
     ].join("\n");
     const db = new PlainTextGateDatabase(pendingRow(original), []);
@@ -499,86 +473,69 @@ describe("P4A on the plain-text close", () => {
     const service = build(db, replies);
 
     await service.processEvents([textEvent("จบรายการเบิก", "duplicate-close")], "dest");
-    const digest = db.reviews[0]?.digest;
+    const digests = db.reviews.map((review) => review.digest);
     await service.processEvents([textEvent("จบรายการเบิก", "duplicate-close")], "dest");
 
     expect(db.pending.accumulated_text).toBe(original);
-    expect(db.reviews.map((review) => review.digest)).toEqual([digest]);
-    expect(db.reviews[0]?.confirmed_at).toBeNull();
-
-    await service.processEvents([textEvent("จบรายการเบิก", "distinct-close")], "dest");
-    expect(db.reviews[0]?.confirmed_at).not.toBeNull();
-    expect(db.pending.close_line_event_id).toBe("distinct-close");
+    expect(db.reviews.map((review) => review.digest)).toEqual(digests);
+    expect(db.reviews.every((review) => review.confirmed_at === null)).toBe(true);
+    expect(db.pending.close_line_event_id).toBeNull();
   });
 
   it("recovers from a failed delivery stamp without growing review rows", async () => {
-    const original = [
+    const db = new PlainTextGateDatabase(pendingRow([
       "ดำ-ราชพฤกษ์ เบิก 11/8/2569",
-      "4.มะม่วง20บาท",
+      "4.มะม่วง2ขีด20บาท",
       "1โล",
-    ].join("\n");
-    const db = new PlainTextGateDatabase(pendingRow(original), []);
+    ].join("\n")), []);
     db.presentationError = "temporary database failure";
     const replies: string[] = [];
     const service = build(db, replies);
 
     await service.processEvents([textEvent("จบรายการเบิก", "failed-stamp")], "dest");
-    expect(db.reviews).toHaveLength(1);
+    const rows = db.reviews.length;
     expect(db.reviews[0]?.presented_delivered_at).toBeNull();
 
     db.presentationError = null;
     await service.processEvents([textEvent("จบรายการเบิก", "re-present")], "dest");
-    expect(db.reviews).toHaveLength(1);
+    expect(db.reviews).toHaveLength(rows);
     expect(db.reviews[0]?.presented_delivered_at).not.toBeNull();
     expect(db.reviews[0]?.presented_line_event_id).toBe("re-present");
     expect(db.reviews[0]?.confirmed_at).toBeNull();
-
-    await service.processEvents([textEvent("จบรายการเบิก", "confirm-after-recovery")], "dest");
-    expect(db.reviews[0]?.confirmed_at).not.toBeNull();
-    expect(db.pending.close_line_event_id).toBe("confirm-after-recovery");
   });
 
   it("invalidates a delivered review when the Produce document changes", async () => {
     const db = new PlainTextGateDatabase(pendingRow([
       "ดำ-ราชพฤกษ์ เบิก 11/8/2569",
-      "4.มะม่วง20บาท",
+      "4.มะม่วง2ขีด20บาท",
       "1โล",
     ].join("\n")), []);
     const replies: string[] = [];
     const service = build(db, replies);
 
     await service.processEvents([textEvent("จบรายการเบิก", "before-change")], "dest");
-    const oldDigest = db.reviews[0]!.digest;
+    const oldDigests = new Set(db.reviews.map((review) => review.digest));
     db.pending.accumulated_text = `${db.pending.accumulated_text}\n5.ฝรั่ง30บาท\n1โล`;
     db.pending.ingest_revision = 1;
 
     await service.processEvents([textEvent("จบรายการเบิก", "after-change")], "dest");
-    expect(db.reviews).toHaveLength(2);
-    expect(db.reviews[1]?.digest).not.toBe(oldDigest);
-    expect(db.reviews[0]?.confirmed_at).toBeNull();
-    expect(db.reviews[1]?.confirmed_at).toBeNull();
+    expect(db.reviews.some((review) => !oldDigests.has(review.digest))).toBe(true);
+    expect(db.reviews.every((review) => review.confirmed_at === null)).toBe(true);
     expect(db.pending.close_event_timestamp_ms).toBeNull();
   });
 });
 
 /**
- * 2026-09-19 — false-missing on a forwarded session (items 1-25 all present,
- * arrival order after 15 was 24,16,25,17,20,18,19,21,23,22).
+ * 2026-09-19 — false-missing on a forwarded session, and the 2026-08-30 race.
  *
- * The entry gate's item-number-gap check itself is order-independent (it
- * reads the operator's printed numbers into a Set, not a sequence — see
- * item-number-gap.test.ts). What can still fabricate a gap is the SAME
- * straggler race #108/#118 already guard: the gate evaluates a snapshot
- * captured before its own async round-binding work, and a same-generation
- * append can land while that work is in flight. The existing guard only
- * checked whether ingest_revision moved; it never confirmed the move
- * actually cleared the gap, so an unrelated append (or a partial one) could
- * either wrongly excuse a real gap or — the case this file did not cover —
- * wrongly leave a NOW-COMPLETE document blocked. This section pins the fix:
- * completeness is recomputed from the live snapshot, not inferred from the
- * revision counter.
+ * Printed item numbers are input metadata now: a skipped or out-of-order
+ * number never blocks a close. What still matters is TRANSPORT ordering: the
+ * close boundary is stamped against the exact ingest_revision the gate
+ * validated (append_pending_session's p_expected_ingest_revision, enforced in
+ * SQL by 20260831120000). A same-generation item that lands while the gate is
+ * working refuses the boundary with recoverable copy, whatever its number.
  */
-describe("close gate completeness — recomputed from the live snapshot, not arrival order", () => {
+describe("close gate — late LINE events by ingest revision, never by item numbers", () => {
   /** A ชั่งเบิก withdrawal whose lines carry exactly the given printed numbers. */
   function withdrawalText(numbers: number[]): string {
     const lines = ["ดำ-ราชพฤกษ์ เบิก 11/8/2569"];
@@ -586,11 +543,8 @@ describe("close gate completeness — recomputed from the live snapshot, not arr
     return lines.join("\n");
   }
 
-  /** Mutates the canonical pending row (a NEW object, not an in-place edit,
-   * so a `pending` reference already captured by the running request keeps
-   * seeing the old document) the first time the given RPC fires — the same
-   * point in the flow where Production's straggler landed: after the gate
-   * captured its document, during the round-binding work that follows. */
+  /** Mutates the canonical pending row (a NEW object) the first time the given
+   * RPC fires — after the gate captured its document, during round binding. */
   function raceRpcResult(db: PlainTextGateDatabase, onFirstRpc: string, mutate: () => void) {
     const original = db.rpc;
     let fired = false;
@@ -603,54 +557,62 @@ describe("close gate completeness — recomputed from the live snapshot, not arr
     };
   }
 
-  it("clears a fabricated gap once the live snapshot actually completes it", async () => {
-    // Sent 1..14 and 16 — a genuine hole at 15. It lands mid-flight, closing
-    // the gap the gate saw against the stale snapshot.
-    const db = new PlainTextGateDatabase(pendingRow(withdrawalText(
-      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16],
-    )), []);
+  /** What append_pending_session does in SQL with a pinned revision. */
+  function enforcePinnedRevision(db: PlainTextGateDatabase, pinned: unknown[]) {
+    const original = db.rpc;
+    db.rpc = async (name, args) => {
+      if (name === "append_pending_session" && args.p_expected_ingest_revision != null) {
+        pinned.push(args.p_expected_ingest_revision);
+        const current = db.pending.ingest_revision as number;
+        if (current !== args.p_expected_ingest_revision) {
+          return {
+            data: {
+              accepted: false,
+              reason: "stale_validation_snapshot",
+              expected_revision: args.p_expected_ingest_revision,
+              current_revision: current,
+            },
+            error: null,
+          } as never;
+        }
+      }
+      return original(name, args);
+    };
+  }
+
+  it("refuses the boundary when a same-generation item lands mid-gate", async () => {
+    const db = new PlainTextGateDatabase(pendingRow(withdrawalText([1, 2, 3, 4, 5])), []);
+    const pinned: unknown[] = [];
+    enforcePinnedRevision(db, pinned);
     raceRpcResult(db, "bind_plain_text_accountability_round", () => {
       const old = db.pending;
       db.tables.pending_sessions[0] = {
         ...old,
-        accumulated_text: `${old.accumulated_text}\n15.มังคุด105บาท\n1โล`,
+        accumulated_text: `${old.accumulated_text}\n6.มังคุด96บาท\n1โล`,
         ingest_revision: (old.ingest_revision as number) + 1,
       };
     });
     const replies: string[] = [];
 
-    await build(db, replies).processEvents([textEvent("จบรายการเบิก", "close-race-clears")], "dest");
+    await build(db, replies).processEvents([textEvent("จบรายการเบิก", "close-race")], "dest");
 
+    expect(pinned).toEqual([0]);
     expect(replies).toEqual([CLOSE_RACED_LATE_ITEM_REPLY]);
     expect(db.pending.close_event_timestamp_ms).toBeNull();
   });
 
-  it("still blocks a genuinely missing item even when something else moves the revision", async () => {
-    // Sent 1..14 and 16 — a genuine hole at 15 that never arrives. A
-    // DIFFERENT item lands mid-flight (17) — the revision moves, but the
-    // hole at 15 is still real.
+  it("closes a stable document even when its printed numbering skips", async () => {
     const db = new PlainTextGateDatabase(pendingRow(withdrawalText(
       [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16],
     )), []);
-    raceRpcResult(db, "bind_plain_text_accountability_round", () => {
-      const old = db.pending;
-      db.tables.pending_sessions[0] = {
-        ...old,
-        accumulated_text: `${old.accumulated_text}\n17.มังคุด107บาท\n1โล`,
-        ingest_revision: (old.ingest_revision as number) + 1,
-      };
-    });
+    const pinned: unknown[] = [];
+    enforcePinnedRevision(db, pinned);
     const replies: string[] = [];
 
-    await build(db, replies).processEvents([textEvent("จบรายการเบิก", "close-race-persists")], "dest");
+    await build(db, replies).processEvents([textEvent("จบรายการเบิก", "close-skipped")], "dest");
 
-    expect(replies[0]).not.toBe(CLOSE_RACED_LATE_ITEM_REPLY);
-    expect(replies[0]).toContain("✅ รับรายการเบิกแล้ว");
-    expect(replies[0]).toContain("1. มังคุด 1 โล × 91 บาท = 91.00 บาท");
-    expect(replies[0]).toContain("17. มังคุด 1 โล × 107 บาท = 107.00 บาท");
-    expect(replies[1]).toContain("⛔");
-    expect(replies[1]).toContain("ขาดข้อ 15");
-    expect(db.pending.close_event_timestamp_ms).toBeNull();
+    expect(replies).toEqual([PRODUCE_CLOSE_PENDING_REPLY]);
+    expect(db.pending.close_line_event_id).toBe("close-skipped");
   });
 
   it("reports no gap for the exact production arrival order (1..15, then 24,16,25,17,20,18,19,21,23,22)", async () => {

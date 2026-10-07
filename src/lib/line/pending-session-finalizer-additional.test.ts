@@ -233,7 +233,7 @@ describe("additional-batch finalization payload", () => {
     expect(errors.some((e) => e.includes("wrong closer"))).toBe(true);
   });
 
-  it("rejects item numbers outside 1..N when an expected count exists", async () => {
+  it("accepts readable item labels outside 1..N when an expected count exists", async () => {
     const outOfRangeText = [
       "กี้-คลองเตย เบิกเพิ่ม 12/7/2569",
       "5.ทุเรียน100บาท",
@@ -257,6 +257,7 @@ describe("additional-batch finalization payload", () => {
 
     const call = db.rpcCalls.find((c) => c.name === "try_finalize_pending_generation")!;
     const errors = (call.args.p_session as Row).validation_errors as string[];
-    expect(errors.some((e) => e.includes("outside the expected range"))).toBe(true);
+    expect(errors).toEqual([]);
+    expect((call.args.p_items as Row[]).map((item) => item.item_number)).toEqual([5]);
   });
 });

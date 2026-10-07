@@ -147,11 +147,11 @@ describe("Example 1: รายการชั่งคืน", () => {
     expect(returns).toHaveLength(2);
 
     expect(returns[0]).toMatchObject({
-      item_number: 1, product_name: "ชะนี", price_per_unit: 100,
+      item_number: 7, original_item_number: 1, product_name: "ชะนี", price_per_unit: 100,
       quantity: 11.6, unit: "โล", section: "คืนเสีย",
     });
     expect(returns[1]).toMatchObject({
-      item_number: 2, product_name: "กระท้อน", price_per_unit: 35,
+      item_number: 8, original_item_number: 2, product_name: "กระท้อน", price_per_unit: 35,
       quantity: 4.1, unit: "โล", section: "คืนเสีย",
     });
   });
@@ -287,11 +287,11 @@ describe("real message: short withdraw header followed by return section", () =>
       quantity: 20.1, unit: "โล", section: "main",
     });
     expect(result.items[4]).toMatchObject({
-      item_number: 1, product_name: "ทุเรียนรวม", price_per_unit: 100,
+      item_number: 5, original_item_number: 1, product_name: "ทุเรียนรวม", price_per_unit: 100,
       quantity: 26.3, unit: "โล", section: "รายการชั่งคืน",
     });
     expect(result.items[5]).toMatchObject({
-      item_number: 2, product_name: "ทุเรียนรวม", price_per_unit: 89,
+      item_number: 6, original_item_number: 2, product_name: "ทุเรียนรวม", price_per_unit: 89,
       quantity: 44.7, unit: "โล", section: "รายการชั่งคืน",
     });
   });
@@ -602,30 +602,20 @@ describe("edge cases", () => {
     },
   );
 
-  // Behavior change from the old whitelist-only parser (see units.ts):
-  // a genuinely unknown unit is no longer rejected — it persists as text,
-  // with no invented conversion, rather than blocking the whole session.
-  it("accepts a genuinely unknown unit as text with no invented conversion", async () => {
-    const { parsed, itemInserts } = await parseAndPersistItems(
-      [
-        "กี้-วัดทุ่งลานนา เบิก 29/6/2569",
-        "1น้อยหน่า50บาท",
-        "0.3ปอนด์",
-        "จบรายการเบิก",
-      ].join("\n"),
-      "unknown-unit-pound",
-    );
-    const item = parsed.items[0];
-
-    expect(parsed.parse_errors).toHaveLength(0);
-    expect(item).toMatchObject({
-      product_name:   "น้อยหน่า",
-      quantity:       0.3,
-      unit:           "ปอนด์",
-      price_per_unit: 50, // unchanged — no conversion invented for an unknown unit
-    });
-    expect(() => assertWeighSessionFinalizable(parsed)).not.toThrow();
-    expect(itemInserts[0]).toMatchObject({ quantity: 0.3, unit: "ปอนด์" });
+  it("preserves an unknown unit as raw evidence but refuses persistence", async () => {
+    const text = ["กี้-วัดทุ่งลานนา เบิก 29/6/2569", "1น้อยหน่า50บาท", "0.3ปอนด์", "จบรายการเบิก"].join("\n");
+    const parsed = parseWeighSession(text);
+    expect(parsed.parse_errors).toEqual([]);
+    expect(parsed.items[0]).toMatchObject({ product_name: "น้อยหน่า", quantity: 0.3, unit: "ปอนด์", price_per_unit: 50 });
+    expect(() => assertWeighSessionFinalizable(parsed)).toThrow("invalid quantity or unit");
+    const result = await new WeighSessionParser().parse({
+      type: "message", timestamp: 0, source: { type: "user", userId: "unit-test" },
+      replyToken: "test", message: { type: "text", id: "unit-test", text },
+    } as LineMessageEvent);
+    let writes = 0;
+    await expect(result.persist({ from: () => { writes++; throw Error("unexpected write"); } } as never, "raw-unit-test"))
+      .rejects.toThrow("invalid quantity or unit");
+    expect(writes).toBe(0);
   });
 
   it("parses and persists exact production ฝรั่ง line with a period before บาท", async () => {
@@ -706,28 +696,18 @@ describe("edge cases", () => {
     expect((result.items[0].price_per_unit ?? 0) * (result.items[0].quantity ?? 0)).toBe(180);
   });
 
-  it("replaces an earlier zero-quantity row when the same product and price is later sent with a valid pack quantity", () => {
-    const result = parseWeighSession(`\
-18:53 เสือ รายการชั่งเบิก
-22.มะเขือลาย20บาท
-0แพค
-22มะเขือลาย20บาท
-9.แพค
-18:53 เสือ จบรายการเบิก`);
-
-    const items = result.items.filter((item) => item.product_name === "มะเขือลาย");
-    expect(items).toHaveLength(1);
-    expect(items[0]).toMatchObject({
-      item_number: 22,
-      product_name: "มะเขือลาย",
-      price_per_unit: 20,
-      quantity: 9,
-      unit: "แพค",
-    });
-    expect((items[0].price_per_unit ?? 0) * (items[0].quantity ?? 0)).toBe(180);
+  it("keeps a zero-quantity source slot until an explicit correction or deletion", () => {
+    const source = ["รายการชั่งเบิก", "22.มะเขือลาย20บาท", "0แพค", "22มะเขือลาย20บาท", "9.แพค", "จบรายการเบิก"].join("\n");
+    const result = parseWeighSession(source);
+    expect(result.items.map((item) => [item.item_number, item.quantity])).toEqual([[22, 0], [23, 9]]);
+    expect(getWeighSessionFinalizationErrors(result)).toHaveLength(1);
+    const removed = parseWeighSession(source + "\nลบข้อ 22");
+    expect(getWeighSessionFinalizationErrors(removed)).toEqual([]);
+    expect(removed.items).toHaveLength(1);
+    expect(removed.items[0]).toMatchObject({ product_name: "มะเขือลาย", quantity: 9, unit: "แพค", price_per_unit: 20 });
   });
 
-  it("keeps only one row when a typo pack unit is later corrected for the same item", () => {
+  it("keeps both financially readable repeated rows after unit alias normalization", () => {
     const result = parseWeighSession(`\
 22มะเขือลาย20บาท
 
@@ -738,7 +718,7 @@ describe("edge cases", () => {
 9.แพค`);
 
     const items = result.items.filter((item) => item.product_name === "มะเขือลาย");
-    expect(items).toHaveLength(1);
+    expect(items).toHaveLength(2);
     expect(items[0]).toMatchObject({
       product_name: "มะเขือลาย",
       quantity: 9,
@@ -747,7 +727,7 @@ describe("edge cases", () => {
     });
     expect((items[0].price_per_unit ?? 0) * (items[0].quantity ?? 0)).toBe(180);
     expect(items.some((item) => item.quantity === 0)).toBe(false);
-    expect(result.items).toHaveLength(1);
+    expect(result.items.map((item) => item.item_number)).toEqual([22, 23]);
   });
 
   it("keeps valid duplicate product rows with different quantities", () => {
@@ -911,9 +891,9 @@ describe("real sample: พี่ดำ-เฉลิมฯ72 ทุเรีย�
     });
   });
 
-  it("parses item 5 — ทุเนียนกล่อง 20 แพค (skipped number 4 is ok)", () => {
+  it("parses item 5 — ทุเนียนกล่อง 20 แพค (skipped number 4 is renumbered away)", () => {
     expect(result.items[3]).toMatchObject({
-      item_number: 5, product_name: "ทุเนียนกล่อง", price_per_unit: 80,
+      item_number: 4, original_item_number: 5, product_name: "ทุเนียนกล่อง", price_per_unit: 80,
       quantity: 20, unit: "แพค",
     });
   });
@@ -1160,14 +1140,14 @@ describe("real sample: return session with หัว unit", () => {
     expect(result.parse_errors).toHaveLength(0);
     expect(result.items.every((item) => item.transaction_type === "คืน")).toBe(true);
     expect(result.items[1]).toMatchObject({
-      item_number: 9,
+      item_number: 2, original_item_number: 9,
       product_name: "บ็อคเคอรี่",
       price_per_unit: 40,
       quantity: 16,
       unit: "หัว",
     });
     expect(result.items[2]).toMatchObject({
-      item_number: 10,
+      item_number: 3, original_item_number: 10,
       product_name: "กระหล่ำปลีนอก",
       transaction_type: "คืน",
     });
@@ -1430,7 +1410,8 @@ describe("real-world session: mixed plain, basis, and conversion lines", () => {
 
     expect(parsed.parse_errors).toHaveLength(0);
     expect(parsed.items).toHaveLength(5);
-    expect(parsed.items.map((i) => i.item_number)).toEqual([56, 85, 102, 52, 26]);
+    expect(parsed.items.map((i) => i.item_number)).toEqual([26, 27, 28, 29, 30]);
+    expect(parsed.items.map((i) => i.original_item_number)).toEqual([56, 85, 102, 52, 26]);
 
     // "ตัว" is accepted with no fixed whitelist and no invented conversion.
     expect(parsed.items[0]).toMatchObject({
@@ -1440,7 +1421,7 @@ describe("real-world session: mixed plain, basis, and conversion lines", () => {
 
     // The flagship basis case: 85ผักกาดขาว3หัว20บาท / 32.หัว
     expect(parsed.items[1]).toMatchObject({
-      item_number: 85, product_name: "ผักกาดขาว",
+      item_number: 27, original_item_number: 85, product_name: "ผักกาดขาว",
       quantity: 32, unit: "หัว",
       pricing_mode: "basis", basis_quantity: 3, basis_unit: "หัว", basis_price: 20,
     });
@@ -1449,25 +1430,25 @@ describe("real-world session: mixed plain, basis, and conversion lines", () => {
 
     // Product name starting with the unit word ฝัก must not be misread as a basis line.
     expect(parsed.items[2]).toMatchObject({
-      item_number: 102, product_name: "ฝักกระเจียบ",
+      item_number: 28, original_item_number: 102, product_name: "ฝักกระเจียบ",
       quantity: 26, unit: "แพค", price_per_unit: 20, pricing_mode: "unit",
     });
 
     // "แพต" typo alias normalizes to "แพค".
     expect(parsed.items[3]).toMatchObject({
-      item_number: 52, product_name: "ถั่วพู", quantity: 9, unit: "แพค", price_per_unit: 20,
+      item_number: 29, original_item_number: 52, product_name: "ถั่วพู", quantity: 9, unit: "แพค", price_per_unit: 20,
     });
 
     // Product name starting with the unit word ดอก, plus a ขีด→โล conversion
     // on the quantity line — only the measurement converts, price_per_unit
     // stays the header price.
     expect(parsed.items[4]).toMatchObject({
-      item_number: 26, product_name: "ดอกผักปัง", quantity: 0.05, unit: "โล", price_per_unit: 100,
+      item_number: 30, original_item_number: 26, product_name: "ดอกผักปัง", quantity: 0.05, unit: "โล", price_per_unit: 100,
     });
     expect(parsed.items[4].price_per_unit * (parsed.items[4].quantity ?? 0)).toBe(5);
 
     expect(() => assertWeighSessionFinalizable(parsed)).not.toThrow();
-    expect(itemInserts.find((i) => i.item_number === 85)).toMatchObject({
+    expect(itemInserts.find((i) => i.item_number === 27)).toMatchObject({
       basis_quantity: 3, basis_unit: "หัว", basis_price: 20,
     });
   });

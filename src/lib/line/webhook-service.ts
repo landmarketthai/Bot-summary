@@ -163,16 +163,14 @@ import {
 } from "@/lib/line/data-entry-session-ownership";
 import { tryHandlePurchaseCaptureMessage } from "@/lib/purchase-capture/webhook-handler";
 import { bindPlainTextRound } from "@/lib/produce/plain-text-round-binding";
+import { validateProduceEntry } from "@/lib/produce/entry-validation";
 import {
-  closeGapBlockIsStragglerFabricable,
   confirmProduceSubunitReview,
   markProduceValidationReviewsPresented,
   deliveredPresentationDigests,
-  hasCorrectionRequiredReturnIdentity,
   isProduceReviewApproved,
   runProduceCloseGate,
 } from "@/lib/produce/entry-validation-gate";
-import { validateProduceEntry } from "@/lib/produce/entry-validation";
 import {
   buildProducePartialCapture,
   buildPartialCaptureReviewReply,
@@ -2665,48 +2663,6 @@ export class WebhookService {
     }
   }
 
-  /**
-   * A bounded, single re-read barrier: did a same-generation append advance
-   * ingest_revision while the entry gate was validating the snapshot it was
-   * handed? A true answer is only a CANDIDATE for a straggler artefact — the
-   * revision counter says the document changed, not that it now completes the
-   * numbering. Completeness itself is judged by re-parsing the CURRENT
-   * accumulated_text and checking whether the item-number gap the gate
-   * computed is still there: a live document with every number the operator
-   * ever printed clears it regardless of the arrival order that assembled it;
-   * a document that still has a real hole does not. No polling and no sleep —
-   * one lookup. A read failure, a rotated generation, a missing row, or a
-   * fresh snapshot that STILL has finalization errors or the gap all return
-   * false, so the gate falls through to its ordinary verdict and never
-   * swallows a genuine block.
-   */
-  private async closeSnapshotMovedUnderGate(
-    pending: PendingSession,
-    log:     ChildLogger,
-  ): Promise<boolean> {
-    try {
-      const current = await new PendingSessionService(this.supabase).lookup(pending.session_key);
-      const row = current.session;
-      if (!row || row.session_generation !== pending.session_generation) return false;
-      if (!((row.ingest_revision ?? 0) > (pending.ingest_revision ?? 0))) return false;
-
-      const freshParsed = parseWeighSession(row.accumulated_text, bangkokToday());
-      if (getWeighSessionFinalizationErrors(freshParsed).length > 0) return false;
-      const freshResult = validateProduceEntry({
-        parsed: freshParsed,
-        roundRows: [],
-        roundBound: false,
-      });
-      return !freshResult.blocking.some((exception) => exception.kind === "item_number_gap");
-    } catch (error) {
-      log.warn("close-gate snapshot recheck failed", {
-        sessionKey: pending.session_key,
-        error:      error instanceof Error ? error.message : String(error),
-      });
-      return false;
-    }
-  }
-
   // ── Additional produce batch: open (append-only, no direct persist) ──────
   // Creates a fresh pending generation for an additional batch and, when the
   // message already carries its closer, marks the close so the Release B
@@ -2816,89 +2772,24 @@ export class WebhookService {
         eventId,
       );
       if (decision.decision === "blocked") {
-        // Before committing to a definitive item-number-gap rejection, make one
-        // bounded check that the document the gate just validated is still the
-        // current one. The gate does real async work (round binding, master
-        // read, review lookups); a legitimate same-generation item can commit
-        // during that window and only an item-number gap can be FABRICATED by
-        // such a straggler (see closeGapBlockIsStragglerFabricable). If the
-        // snapshot grew under the gate, the "missing" numbers are in flight, not
-        // lost — answer with the same recoverable copy the close-boundary race
-        // uses (#108) instead of a false missing-item block. No boundary is
-        // stamped, nothing is confirmed, and a genuine gap re-blocks on the next
-        // close once ingest_revision has settled.
-        if (
-          closeGapBlockIsStragglerFabricable(decision.result)
-          && await this.closeSnapshotMovedUnderGate(pending, log)
-        ) {
-          log.warn("produce close gap suppressed — snapshot grew under the entry gate", {
-            sessionKey:        pending.session_key,
-            sessionGeneration: pending.session_generation,
-            snapshotRevision:  pending.ingest_revision,
-          });
-          return { refusalText: CLOSE_RACED_LATE_ITEM_REPLY };
-        }
         // Not confirmable: no presentation to prove. Keep every clean line in
         // the durable staging snapshot and send the correction detail as its
         // own LINE message, so one bad row no longer makes the operator resend
         // the good rows.
-        let capture = buildProducePartialCapture(parsed, decision.result, []);
+        const capture = buildProducePartialCapture(parsed, decision.result, []);
         const staging = new PendingSessionService(this.supabase);
-        let staged = await staging.savePartialCapture(
+        const staged = await staging.savePartialCapture(
           pending.session_key,
           pending.session_generation,
           pending.ingest_revision,
           capture,
         );
-        let blockerReply = buildBlockingValidationReply(decision.result, undefined, parsed);
+        const blockerReply = buildBlockingValidationReply(decision.result, undefined, parsed);
 
-        // A real numbering gap can remain real even when another line lands
-        // during validation. In that case the revision fence above correctly
-        // rejects our stale snapshot, but answering only “data arrived while
-        // closing” would hide the still-actionable missing number. Re-read once,
-        // re-parse the current document, and persist the fresh gap snapshot.
-        if (
-          !staged
-          && decision.result.blocking.some((exception) => exception.kind === "item_number_gap")
-        ) {
-          const current = await staging.lookup(pending.session_key);
-          const row = current.session;
-          if (
-            row
-            && row.session_generation === pending.session_generation
-            && !row.terminalized
-            && (row.ingest_revision ?? 0) > (pending.ingest_revision ?? 0)
-          ) {
-            const freshParsed = parseWeighSession(
-              `${row.accumulated_text}\n${closeText}`,
-              bangkokToday(),
-            );
-            const freshValidation = validateProduceEntry({
-              parsed: freshParsed,
-              roundRows: [],
-              roundBound: false,
-            });
-            if (freshValidation.blocking.some((exception) => exception.kind === "item_number_gap")) {
-              capture = buildProducePartialCapture(
-                freshParsed,
-                freshValidation,
-                getWeighSessionFinalizationErrors(freshParsed),
-              );
-              staged = await staging.savePartialCapture(
-                row.session_key,
-                row.session_generation,
-                row.ingest_revision,
-                capture,
-              );
-              blockerReply = buildBlockingValidationReply(
-                freshValidation,
-                undefined,
-                freshParsed,
-              );
-            }
-          }
-        }
-
+        // The revision fence is the late-event protection: a same-generation
+        // append that landed while the gate worked makes this save refuse, and
+        // the operator closes again against the complete document. Item
+        // numbering never blocks, so there is no gap to re-check here.
         if (!staged) return { refusalText: CLOSE_RACED_LATE_ITEM_REPLY };
         if (capture.acceptedCount === 0) {
           return { refusalText: blockerReply };
@@ -2909,22 +2800,6 @@ export class WebhookService {
         };
       }
       if (decision.decision === "review_presented") {
-        if (hasCorrectionRequiredReturnIdentity(decision.result)) {
-          const capture = buildProducePartialCapture(parsed, decision.result, []);
-          const staged = await new PendingSessionService(this.supabase).savePartialCapture(
-            pending.session_key,
-            pending.session_generation,
-            pending.ingest_revision,
-            capture,
-          );
-          if (!staged) return { refusalText: CLOSE_RACED_LATE_ITEM_REPLY };
-          const correction = buildPartialCaptureReviewReply(capture);
-          if (capture.acceptedCount === 0) return { refusalText: correction };
-          return {
-            refusalText: buildPartialCaptureSavedReply(capture),
-            refusalPages: [correction],
-          };
-        }
         // Render first, then authorize only what the rendering shows. The set
         // is paginated rather than capped, so a session with more exceptions
         // than fit in one message still has a finite path to confirmation.

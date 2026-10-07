@@ -8,6 +8,7 @@ import {
   type SalesReport,
   type SalesTotal,
 } from "@/lib/sales/calculate";
+import { summarizeProduceFinancial } from "./morning-brief-service";
 import type { PurchasePlanningItem } from "@/lib/summary/purchase-planning";
 import { morningBriefProductIdentity, summarizePurchasePlanning, summarizeSales } from "./morning-brief";
 
@@ -215,5 +216,38 @@ describe("summarizeSales", () => {
     expect(summary.confirmedSalesSatang).toBe(20_000);
     expect(summary.totalSalesSatang).toBe(140_000);
     expect(summary.excludedFromSalesCount).toBe(0);
+  });
+});
+
+describe("Morning Brief section financial purity", () => {
+  test("mixed market rows and house stock stay exclusively in their explicit sections", () => {
+    const names = ["มังคุด", "ขนุนแพ็ค", "เห็ดเข็มทอง", "ใบกุยช่าย", "หมอนทอง", "ปลาทู", "สินค้าใหม่ไม่รู้จัก"];
+    const sales = salesReport([market("mixed", names.map((productName, index) => salesRow({
+      productName, withdrawnQuantity: index + 1, goodReturnQuantity: 1,
+      enteredPriceSatang: 100, expectedSalesSatang: (index + 1) * 10,
+    })))]);
+    const house = {
+      status: "available" as const, groupCount: 3, totalValueSatang: 600,
+      items: [
+        { productName: "มังคุด", category: "ผลไม้", unit: "กก.", quantity: 1, unitPriceSatang: 100, valueSatang: 100 },
+        { productName: "เห็ดเข็มทอง", category: "เห็ด", unit: "กก.", quantity: 2, unitPriceSatang: 100, valueSatang: 200 },
+        { productName: "หมอนทอง", category: "ทุเรียน", unit: "กก.", quantity: 3, unitPriceSatang: 100, valueSatang: 300 },
+      ],
+    };
+    const fruit = summarizeProduceFinancial(sales, house, "fruit");
+    const vegetable = summarizeProduceFinancial(sales, house, "vegetable");
+    const other = summarizeProduceFinancial(sales, house, "other");
+    expect([fruit.withdrawalValueSatang, vegetable.withdrawalValueSatang, other.withdrawalValueSatang]).toEqual([300, 700, 1800]);
+    expect([fruit.salesValueSatang, vegetable.salesValueSatang, other.salesValueSatang]).toEqual([30, 70, 180]);
+    expect([fruit.goodReturnValueSatang, vegetable.goodReturnValueSatang, other.goodReturnValueSatang]).toEqual([200, 200, 300]);
+    expect([fruit.houseStockValueSatang, vegetable.houseStockValueSatang, other.houseStockValueSatang]).toEqual([100, 200, 300]);
+    expect([fruit.readyValueSatang, vegetable.readyValueSatang, other.readyValueSatang]).toEqual([300, 400, 600]);
+  });
+
+  test("known vegetables and special packs have classified purchase headings", () => {
+    expect(morningBriefProductIdentity("ใบกุยช่าย", "กำ").category).not.toBe("ไม่จัดหมวด");
+    expect(morningBriefProductIdentity("เห็ดเข็มทอง", "แพค").category).not.toBe("ไม่จัดหมวด");
+    expect(morningBriefProductIdentity("ขนุนแพ็ค", "แพค").category).toBe("ผลไม้");
+    expect(morningBriefProductIdentity("มะระถุง", "ถุง").category).toBe("ผัก");
   });
 });

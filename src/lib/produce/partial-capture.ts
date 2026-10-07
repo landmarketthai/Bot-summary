@@ -1,5 +1,4 @@
 import type { WeighSession, WeighSessionItem } from "@/lib/parsers/weigh-session/types";
-import { occurrenceLetter } from "@/lib/parsers/weigh-session/draft-item-command";
 import { exactLineTotalScaled, scaledToBaht } from "./exact-line-total";
 import type {
   ProduceValidationException,
@@ -62,22 +61,10 @@ function parseErrorItemNumber(detail: string): number | null {
 
 function exceptionDetail(exception: ProduceValidationException): string {
   switch (exception.kind) {
-    case "unknown_product_vocabulary":
-      return `ไม่พบชื่อสินค้า “${exception.productName}”`;
     case "unknown_unit":
       return `ไม่รู้จักหน่วย “${exception.unit}” ของ ${exception.productName}`;
-    case "unit_not_withdrawn":
-      return `${exception.productName} ใช้หน่วย ${exception.unit} แต่รายการเบิกใช้ ${exception.withdrawnUnits.join(", ")}`;
-    case "duplicate_item_number":
-      return `เลขข้อ ${exception.itemNumber} ซ้ำ ${exception.matchCount} รายการ`;
-    case "item_number_gap":
-      return `เลขข้อขาด: ${exception.missingItemNumbers.join(", ")}`;
     case "subunit_confirmation":
       return `${exception.productName} ต้องยืนยันการแปลง ${exception.enteredQuantity} ${exception.enteredUnit}`;
-    case "product_not_withdrawn":
-      return `${exception.productName} ไม่พบในรายการเบิกของรอบนี้`;
-    case "return_exceeds_withdrawal":
-      return `${exception.productName} คืนรวมเกินเบิก ${exception.excessQuantity} ${exception.unit}`;
     case "price_not_withdrawn":
       return `${exception.productName} ราคาที่คืน ${exception.enteredPrice} บาท ต่างจากราคาเบิก`;
   }
@@ -99,18 +86,8 @@ export function buildProducePartialCapture(
 ): ProducePartialCapture {
   const issues: ProducePartialCaptureIssue[] = [];
   const failedTargets = [...(parsed.failed_item_targets ?? [])];
-  const parseErrorItemNumbers = new Set(
-    finalizationErrors.map(parseErrorItemNumber).filter((n): n is number => n !== null),
-  );
 
-  for (let exception of [...validation.blocking, ...validation.reviews]) {
-    // A number missing only because its own source line failed to parse is
-    // already reported by that parse error; one source line, one issue.
-    if (exception.kind === "item_number_gap") {
-      const missing = exception.missingItemNumbers.filter((n) => !parseErrorItemNumbers.has(n));
-      if (missing.length === 0) continue;
-      exception = { ...exception, missingItemNumbers: missing };
-    }
+  for (const exception of [...validation.blocking, ...validation.reviews]) {
     const itemNumber = exceptionItemNumber(exception);
     issues.push({
       kind: exception.kind,
@@ -258,41 +235,23 @@ function lineTotalText(item: WeighSessionItem): string {
 }
 
 function reviewStatusLabel(entry: ProducePartialCaptureItem): string {
-  if (entry.issueKinds.includes("unknown_product_vocabulary")) return "รอตรวจชื่อสินค้า";
-  if (entry.issueKinds.includes("unknown_unit") || entry.issueKinds.includes("unit_not_withdrawn")) {
-    return "รอตรวจหน่วย";
-  }
+  if (entry.issueKinds.includes("unknown_unit")) return "รอตรวจหน่วย";
   if (entry.issueKinds.includes("subunit_confirmation")) return "รอยืนยันจำนวน";
   return "รอตรวจ";
 }
 
-function knownOccurrences(capture: ProducePartialCapture, itemNumber: number): number[] {
-  const occurrences = [
-    ...capture.items
-      .filter((entry) => entry.item.item_number === itemNumber)
-      .map((entry) => entry.item.item_occurrence ?? 1),
-    ...capture.issues
-      .filter((issue) => issue.itemNumber === itemNumber && issue.itemOccurrence !== undefined)
-      .map((issue) => issue.itemOccurrence!),
-  ];
-  return [...new Set(occurrences)].sort((left, right) => left - right);
+/**
+ * Item numbers are unique after the parser renumbers them, so a line is always
+ * addressed by its number alone — never "52A"/"52B".
+ */
+function selectorForOccurrence(itemNumber: number, _occurrence?: number, _capture?: ProducePartialCapture): string {
+  void _occurrence; void _capture;
+  return String(itemNumber);
 }
 
-function selectorForOccurrence(
-  itemNumber: number,
-  occurrence: number,
-  capture: ProducePartialCapture,
-): string {
-  const known = knownOccurrences(capture, itemNumber);
-  const letter = occurrenceLetter(occurrence);
-  return (occurrence > 1 || known.length > 1) && letter
-    ? `${itemNumber}${letter}`
-    : String(itemNumber);
-}
-
-/** "52A"/"52B" when duplicate occurrence evidence exists, else just "52". */
-function itemSelector(item: WeighSessionItem, capture: ProducePartialCapture): string {
-  return selectorForOccurrence(item.item_number, item.item_occurrence ?? 1, capture);
+function itemSelector(item: WeighSessionItem, _capture?: ProducePartialCapture): string {
+  void _capture;
+  return String(item.item_number);
 }
 
 function itemSummaryLine(entry: ProducePartialCaptureItem, capture: ProducePartialCapture): string {
@@ -414,11 +373,6 @@ export function buildPartialCaptureReviewReply(capture: ProducePartialCapture): 
       lines.push("");
     }
 
-    const selectors = knownOccurrences(capture, itemNumber)
-      .map((occurrence) => selectorForOccurrence(itemNumber, occurrence, capture));
-    if (selectors.length > 1 && reviewEntries.length + specificIssues.size > 1) {
-      lines.push(`ระบุข้อด้วยตัวอักษร เช่น “แก้ข้อ ${selectors[0]}” หรือ “ลบข้อ ${selectors.at(-1)}”`, "");
-    }
   }
 
   for (const issue of unnumbered.slice(0, Math.max(0, 10 - itemNumbers.length))) {
