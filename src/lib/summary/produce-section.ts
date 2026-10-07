@@ -3,8 +3,8 @@
  *
  * Nothing is fruit merely for not being a vegetable. The code table decides
  * first; its mixed "รายการพิเศษ" packs are assigned one by one; names the code
- * table does not know fall back to the explicit stock category map. Durian,
- * fish / dry goods, unmapped special packs and unknown names are "other".
+ * table does not know fall back to the explicit stock category map. Durian is
+ * fruit; fish / dry goods, unmapped special packs and unknown names are "other".
  */
 import { PRODUCT_CODE_ENTRIES } from "@/lib/produce/product-code/dictionary";
 import { stockCategoryFor } from "@/lib/summary/stock-categories";
@@ -26,6 +26,16 @@ const VEGETABLE_CODE_CATEGORIES: ReadonlySet<string> = new Set([
 const SPECIAL_FRUIT: ReadonlySet<string> = new Set(["ผลไม้กล่อง", "ขนุนแพ็ค", "ส้มโอแพ็ค", "สับปะรดแบบหัว"]);
 const SPECIAL_VEGETABLE: ReadonlySet<string> = new Set(["บวบหอมแพ็ค", "แตงร้านถุง", "มะระถุง"]);
 
+/** Business-approved Morning Brief classifications for exact field spellings. */
+const BUSINESS_FRUIT: ReadonlySet<string> = new Set([
+  "กล้วยน้ำหว้า",
+  "ลูกพลุน",
+  "ลูกพรุน",
+  "ลูกไหนดำแดง",
+  "องุ่นมีเม็ด",
+]);
+const BUSINESS_VEGETABLE: ReadonlySet<string> = new Set(["กันจอง"]);
+
 export type ProduceSection = "fruit" | "vegetable" | "other";
 export const PRODUCE_SECTIONS: readonly ProduceSection[] = ["fruit", "vegetable", "other"];
 export const PRODUCE_SECTION_LABEL: Record<ProduceSection, string> = {
@@ -33,16 +43,19 @@ export const PRODUCE_SECTION_LABEL: Record<ProduceSection, string> = {
 };
 
 export function produceSectionOf(productName: string): ProduceSection {
+  if (BUSINESS_FRUIT.has(productName)) return "fruit";
+  if (BUSINESS_VEGETABLE.has(productName)) return "vegetable";
+
   const category = CATEGORY_BY_EXACT_NAME.get(productName);
-  if (category === "ผลไม้") return "fruit";
+  if (category === "ผลไม้" || category === "ทุเรียน") return "fruit";
   if (category !== undefined && VEGETABLE_CODE_CATEGORIES.has(category)) return "vegetable";
   if (category === "รายการพิเศษ") {
     return SPECIAL_FRUIT.has(productName) ? "fruit" : SPECIAL_VEGETABLE.has(productName) ? "vegetable" : "other";
   }
-  // ทุเรียน and ปลา / อาหารแห้ง / ของแห้ง are known, and are neither.
+  // ปลา / อาหารแห้ง / ของแห้ง stay outside fruit and vegetable totals.
   if (category !== undefined) return "other";
   const stock = stockCategoryFor(productName);
-  return stock === "ผลไม้" ? "fruit" : stock === "ผัก" ? "vegetable" : "other";
+  return stock === "ผลไม้" || stock === "ทุเรียน" ? "fruit" : stock === "ผัก" ? "vegetable" : "other";
 }
 
 /** The code-table category by exact name, or undefined when the table does not list it. */

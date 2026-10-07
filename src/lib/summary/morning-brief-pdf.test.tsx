@@ -97,7 +97,7 @@ function collectRenderCallbacks(node: React.ReactNode): PdfRenderCallback[] {
 }
 
 describe("Morning Brief A4 PDF", () => {
-  test("uses explicit section pages and canonical stock identity, hiding empty fruit", async () => {
+  test("uses explicit section pages and canonical stock identity, classifying durian as fruit", async () => {
     const empty = { count: 0, productNames: [], items: [] };
     const summary = { withdrawalValueSatang: 200, salesValueSatang: 100, goodReturnValueSatang: 100,
       houseStockValueSatang: 300, readyValueSatang: 400, markets: [] };
@@ -113,12 +113,13 @@ describe("Morning Brief A4 PDF", () => {
     const text = collectText(tree);
     expect(text).toContain("สรุปผักคงเหลือเพื่อสั่งซื้อ");
     expect(text).toContain("สรุปอื่นๆคงเหลือเพื่อสั่งซื้อ");
+    expect(text).toContain("หมวดผลไม้ -");
     expect(text).toContain("หมวดผัก -");
-    expect(text).toContain("หมวดอื่นๆ -");
-    expect(text).not.toContain("หมวดผลไม้");
+    expect(text).not.toContain("หมวดอื่นๆ -");
     expect(text).not.toContain("ไม่ระบุหมวด");
-    expect(text.indexOf("ใบกุยช่าย")).toBeLessThan(text.indexOf("หมวดอื่นๆ -"));
-    expect(text.indexOf("หมอนทอง")).toBeGreaterThan(text.indexOf("หมวดอื่นๆ -"));
+    expect(text.indexOf("หมอนทอง")).toBeGreaterThan(text.indexOf("หมวดผลไม้ -"));
+    expect(text.indexOf("หมอนทอง")).toBeLessThan(text.indexOf("หมวดผัก -"));
+    expect(text.indexOf("ใบกุยช่าย")).toBeGreaterThan(text.indexOf("หมวดผัก -"));
     registerFonts();
     const buffer = await renderToBuffer(tree);
     expect(buffer.subarray(0, 4).toString()).toBe("%PDF");
