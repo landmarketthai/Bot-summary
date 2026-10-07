@@ -192,6 +192,15 @@ import {
   isExactCancelActiveDraftCommand,
 } from "@/lib/produce/cancel-active-draft";
 import { getRuntimeEnvironment } from "@/lib/runtime-environment";
+import { answerWithReadonlyTools } from "@/lib/ai/readonly-analyst";
+import {
+  BOT_SUMMARY_NOT_AVAILABLE_REPLY,
+  BOT_SUMMARY_TEMPORARY_ERROR_REPLY,
+  BOT_SUMMARY_USAGE_REPLY,
+  extractBotSummaryQuestion,
+  isBotSummaryAnalystEnabled,
+  isBotSummaryAnalystSourceAllowed,
+} from "@/lib/ai/line-command";
 
 type Supabase      = SupabaseClient<Database>;
 type ChildLogger   = ReturnType<typeof logger.child>;
@@ -253,6 +262,8 @@ type PhysicalInventorySessionGateway = Pick<
   "closeOpenEvent" | "listIngestTexts" | "findCloseIngestByLineMessageId" | "cancelClose"
 >>;
 type RecordDataQualityIssue = (candidate: DataQualityIssueCandidate) => Promise<unknown>;
+type BotSummaryAnalystAnswerer = (question: string) => Promise<string>;
+type BotSummaryAnalystSourceAllowed = (sourceId: string) => boolean;
 
 const BATCH_FIRST_IMAGE_REPLY = [
   "รับรูปหลักฐานแล้วครับ",
@@ -558,6 +569,9 @@ interface WebhookServiceDependencies {
   physicalInventoryService?: PhysicalInventorySessionGateway;
   dataEntrySessionOwnershipResolver?: DataEntrySessionOwnershipResolver;
   recordDataQualityIssue?: RecordDataQualityIssue;
+  botSummaryAnalystAnswerer?: BotSummaryAnalystAnswerer;
+  botSummaryAnalystEnabled?: boolean;
+  botSummaryAnalystSourceAllowed?: BotSummaryAnalystSourceAllowed;
 }
 
 export interface WebhookProcessResult {
@@ -752,6 +766,9 @@ export class WebhookService {
   private readonly physicalInventoryService: PhysicalInventorySessionGateway;
   private readonly dataEntrySessionOwnershipResolver: DataEntrySessionOwnershipResolver;
   private readonly recordDataQualityIssue: RecordDataQualityIssue;
+  private readonly botSummaryAnalystAnswerer: BotSummaryAnalystAnswerer;
+  private readonly botSummaryAnalystEnabled: boolean;
+  private readonly botSummaryAnalystSourceAllowed: BotSummaryAnalystSourceAllowed;
   private orderedQueueAvailable: boolean | null = null;
 
   constructor(
@@ -805,6 +822,13 @@ export class WebhookService {
     this.recordDataQualityIssue =
       dependencies.recordDataQualityIssue
       ?? ((candidate) => upsertDataQualityIssuesAtomically(this.supabase, [candidate]));
+    this.botSummaryAnalystEnabled =
+      dependencies.botSummaryAnalystEnabled ?? isBotSummaryAnalystEnabled();
+    this.botSummaryAnalystSourceAllowed =
+      dependencies.botSummaryAnalystSourceAllowed ?? isBotSummaryAnalystSourceAllowed;
+    this.botSummaryAnalystAnswerer =
+      dependencies.botSummaryAnalystAnswerer
+      ?? (async (question) => (await answerWithReadonlyTools(this.supabase, question)).answer);
   }
 
   async processEvents(
@@ -997,6 +1021,33 @@ export class WebhookService {
     const sourceId       = getSourceId(msgEvent.source);
     const lineUserId     = getUserId(msgEvent.source);
     const draftItemCommand = findDraftItemCommand(text);
+
+    const botSummaryQuestion = extractBotSummaryQuestion(
+      message as LineTextMessage,
+      destination,
+    );
+    if (botSummaryQuestion !== null) {
+      await this.markRawMessageProcessed(rawMessageId, log);
+      const sourceAllowed = this.botSummaryAnalystSourceAllowed(sourceId);
+      if (replyToken) {
+        if (!this.botSummaryAnalystEnabled || !sourceAllowed) {
+          await replyMessage(replyToken, BOT_SUMMARY_NOT_AVAILABLE_REPLY);
+        } else if (!botSummaryQuestion) {
+          await replyMessage(replyToken, BOT_SUMMARY_USAGE_REPLY);
+        } else {
+          try {
+            const answer = await this.botSummaryAnalystAnswerer(botSummaryQuestion);
+            await replyMessage(replyToken, answer);
+          } catch (error) {
+            log.error("Bot Summary analyst failed", {
+              error: error instanceof Error ? error.message : String(error),
+            });
+            await replyMessage(replyToken, BOT_SUMMARY_TEMPORARY_ERROR_REPLY);
+          }
+        }
+      }
+      return { eventId, eventType: event.type, status: "saved", parsed: true };
+    }
 
     const quotedSlipResult = await this.tryProcessQuotedSlipAmountCorrection(
       msgEvent,
