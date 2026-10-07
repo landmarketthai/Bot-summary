@@ -56,6 +56,7 @@ export type OpenAIResponseRequest = {
   tool_choice?: "auto" | "none";
   parallel_tool_calls?: boolean;
   maxOutputTokens?: number;
+  textFormat?: { type: "json_schema"; name: string; strict: true; schema: unknown };
 };
 
 const DEFAULT_ENDPOINT = "https://api.openai.com/v1/responses";
@@ -133,6 +134,7 @@ export async function createOpenAIResponse(
         max_output_tokens: request.maxOutputTokens ?? options.maxOutputTokens ?? 320,
         instructions: request.instructions,
         input: request.input,
+        ...(request.textFormat ? { text: { format: request.textFormat } } : {}),
         ...(request.tools ? { tools: request.tools } : {}),
         ...(request.tool_choice ? { tool_choice: request.tool_choice } : {}),
         ...(request.parallel_tool_calls !== undefined

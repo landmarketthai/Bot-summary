@@ -58,6 +58,7 @@ function journeyStub(state: GuidedJourneyState) {
 
 function supabaseStub() {
   return {
+    async rpc(name: string) { throw new Error(`unexpected rpc: ${name}`); },
     from(table: string) {
       if (table === "raw_messages") {
         return {

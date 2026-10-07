@@ -39,4 +39,32 @@ describe("downloadLineMessageContent", () => {
       downloadLineMessageContent("missing", "line-token"),
     ).rejects.toThrow("LINE content download failed with HTTP 404");
   });
+  it("enforces a declared download size before reading bytes", async () => {
+    let cancelled = false;
+    globalThis.fetch = (async () => new Response(new ReadableStream({
+      cancel() { cancelled = true; },
+    }), { headers: { "content-length": "100" } })) as unknown as typeof fetch;
+    await expect(downloadLineMessageContent("img", "token", { maxBytes: 5 })).rejects.toThrow("size limit");
+    expect(cancelled).toBe(true);
+  });
+  it("enforces the streamed size without trusting content-length", async () => {
+    let cancelled = false;
+    globalThis.fetch = (async () => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2, 3]));
+        controller.enqueue(new Uint8Array([4, 5, 6]));
+      }, cancel() { cancelled = true; },
+    }))) as unknown as typeof fetch;
+    await expect(downloadLineMessageContent("img", "token", { maxBytes: 5 })).rejects.toThrow("size limit");
+    expect(cancelled).toBe(true);
+  });
+  it("preserves a bounded streamed body and applies a download timeout signal", async () => {
+    globalThis.fetch = (async (_input, init) => {
+      expect(init?.signal).toBeDefined();
+      return new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "image/jpeg" } });
+    }) as typeof fetch;
+    expect(await downloadLineMessageContent("img", "token", { maxBytes: 5, timeoutMs: 100 })).toEqual({
+      bytes: new Uint8Array([1, 2, 3]), mimeType: "image/jpeg",
+    });
+  });
 });

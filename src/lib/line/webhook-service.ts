@@ -191,6 +191,10 @@ import {
 } from "@/lib/produce/cancel-active-draft";
 import { getRuntimeEnvironment } from "@/lib/runtime-environment";
 import { answerWithReadonlyTools } from "@/lib/ai/readonly-analyst";
+import { isWhiteSheetReaderEnabled, resolveWhiteSheetReadMode, whiteSheetReadCommand, PREVIEW_TTL_MS } from "@/lib/white-sheet-reader/mode";
+import {
+  readWhiteSheetImage, PREVIEW_START_REPLY, PREVIEW_CONSUMED_REPLY, PREVIEW_RETRY_REPLY,
+} from "@/lib/white-sheet-reader/reader";
 import {
   BOT_SUMMARY_NOT_AVAILABLE_REPLY,
   BOT_SUMMARY_TEMPORARY_ERROR_REPLY,
@@ -570,6 +574,9 @@ interface WebhookServiceDependencies {
   botSummaryAnalystAnswerer?: BotSummaryAnalystAnswerer;
   botSummaryAnalystEnabled?: boolean;
   botSummaryAnalystSourceAllowed?: BotSummaryAnalystSourceAllowed;
+  whiteSheetReaderEnabled?: boolean;
+  whiteSheetImageReader?: typeof readWhiteSheetImage;
+  whiteSheetReadModeResolver?: typeof resolveWhiteSheetReadMode;
 }
 
 export interface WebhookProcessResult {
@@ -767,6 +774,9 @@ export class WebhookService {
   private readonly botSummaryAnalystAnswerer: BotSummaryAnalystAnswerer;
   private readonly botSummaryAnalystEnabled: boolean;
   private readonly botSummaryAnalystSourceAllowed: BotSummaryAnalystSourceAllowed;
+  private readonly whiteSheetReaderEnabled: boolean;
+  private readonly whiteSheetImageReader: typeof readWhiteSheetImage;
+  private readonly whiteSheetReadModeResolver: typeof resolveWhiteSheetReadMode;
   private orderedQueueAvailable: boolean | null = null;
 
   constructor(
@@ -824,9 +834,13 @@ export class WebhookService {
       dependencies.botSummaryAnalystEnabled ?? isBotSummaryAnalystEnabled();
     this.botSummaryAnalystSourceAllowed =
       dependencies.botSummaryAnalystSourceAllowed ?? isBotSummaryAnalystSourceAllowed;
+    this.whiteSheetReaderEnabled =
+      dependencies.whiteSheetReaderEnabled ?? isWhiteSheetReaderEnabled();
     this.botSummaryAnalystAnswerer =
       dependencies.botSummaryAnalystAnswerer
       ?? (async (question) => (await answerWithReadonlyTools(this.supabase, question)).answer);
+    this.whiteSheetImageReader = dependencies.whiteSheetImageReader ?? readWhiteSheetImage;
+    this.whiteSheetReadModeResolver = dependencies.whiteSheetReadModeResolver ?? resolveWhiteSheetReadMode;
   }
 
   async processEvents(
@@ -992,6 +1006,28 @@ export class WebhookService {
     const message  = msgEvent.message;
 
     if (message.type === "image") {
+      if (this.botSummaryAnalystEnabled && this.whiteSheetReaderEnabled && msgEvent.source.type === "group"
+        && getUserId(msgEvent.source) && this.botSummaryAnalystSourceAllowed(getSourceId(msgEvent.source))) {
+        let texts: string[] | null = null;
+        try {
+          const mode = await this.whiteSheetReadModeResolver(this.supabase, msgEvent, rawMessageId, destination);
+          if (mode === "read") {
+            texts = message.contentProvider.type === "line" && (!message.imageSet || message.imageSet.total === 1)
+              ? await this.whiteSheetImageReader(message.id) : [PREVIEW_RETRY_REPLY];
+          } else if (mode === "consumed") texts = [PREVIEW_CONSUMED_REPLY];
+        } catch {
+          // Uncertain preview ownership must never fall into a writing OCR/slip path.
+          texts = [PREVIEW_RETRY_REPLY];
+        }
+        if (texts) {
+          await this.markRawMessageProcessed(rawMessageId, log);
+          if (msgEvent.replyToken) {
+            if (texts.length === 1) await replyMessage(msgEvent.replyToken, texts[0]);
+            else await replyMessages(msgEvent.replyToken, texts);
+          }
+          return { eventId, eventType: event.type, status: "saved", parsed: false };
+        }
+      }
       return this.processImageMessage(
         msgEvent,
         message as LineImageMessage,
@@ -1030,6 +1066,20 @@ export class WebhookService {
       if (replyToken) {
         if (!this.botSummaryAnalystEnabled || !sourceAllowed) {
           await replyMessage(replyToken, BOT_SUMMARY_NOT_AVAILABLE_REPLY);
+        } else if (whiteSheetReadCommand(message as LineTextMessage, destination)) {
+          const command = whiteSheetReadCommand(message as LineTextMessage, destination);
+          if (!this.whiteSheetReaderEnabled) {
+            await replyMessage(replyToken, BOT_SUMMARY_NOT_AVAILABLE_REPLY);
+          } else if (msgEvent.source.type !== "group" || !lineUserId) {
+            await replyMessage(replyToken, BOT_SUMMARY_NOT_AVAILABLE_REPLY);
+          } else if (command === "cancel") {
+            await replyMessage(replyToken, "ยกเลิกโหมดอ่านใบขาวแล้วครับ");
+          } else if (!Number.isFinite(event.timestamp) || Date.now() < event.timestamp
+            || Date.now() - event.timestamp >= PREVIEW_TTL_MS) {
+            await replyMessage(replyToken, PREVIEW_RETRY_REPLY);
+          } else {
+            await replyMessage(replyToken, PREVIEW_START_REPLY);
+          }
         } else if (!botSummaryQuestion) {
           await replyMessage(replyToken, BOT_SUMMARY_USAGE_REPLY);
         } else {
@@ -4897,6 +4947,8 @@ export class WebhookService {
       || isProduceOrderingEvent(event)
       || isPhysicalInventoryOrderingEvent(event)
       || (event.type === "message" && message?.type === "image")
+      || (event.type === "message" && message?.type === "text"
+        && whiteSheetReadCommand(message as LineTextMessage, destination) !== null)
     ) && this.orderedQueueAvailable !== false) {
       let data: unknown;
       let error: { code?: string; message: string } | null = null;

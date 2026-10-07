@@ -7,6 +7,7 @@ import type { Database } from "@/types/database";
 
 function createRawMessageSupabase(rawId = "raw-img") {
   const client = {
+    async rpc(name: string) { throw new Error(`unexpected rpc: ${name}`); },
     from(table: string) {
       if (table === "raw_messages") {
         return {
