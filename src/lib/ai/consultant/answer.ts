@@ -360,7 +360,8 @@ function buildExtension(
   now: number,
 ): AnalystToolExtension {
   const businessDate = explicitQuestionDate(question, today);
-  const dateOption = { now, ...(businessDate ? { businessDate } : {}) };
+  const requestedKind = kindFromQuestion(question);
+  const dateOption = { now, ...(businessDate ? { businessDate } : {}), ...(requestedKind ? { transactionKind: requestedKind } : {}) };
   return {
     definitions: [KNOWLEDGE_TOOL, ...WORKFLOW_TOOLS],
     instructions: CONSULTANT_INSTRUCTIONS,
@@ -381,7 +382,7 @@ function buildExtension(
       const staff = { ...staffOption(stringArg(args, "staff")), ...(market ? { market } : {}) };
       switch (name) {
         case "get_submission_status": {
-          const kind = kindArg(args);
+          const kind = requestedKind ?? kindArg(args);
           return getLatestSubmissionStatus(supabase, scope, {
             ...staff, ...dateOption, ...(kind ? { transactionKind: kind } : {}),
           }).then(workflowOutput);
@@ -427,26 +428,10 @@ export function claimsSaved(text: string, allowQuoted = false): boolean {
   return false;
 }
 
-const GUIDE_SENTENCE_BOUNDARY = /\n|(?<=[.!?。])|(?<=ครับ|ค่ะ|คะ)/u;
-
-/** Guide phrases explain bot replies; they do not prove the asker's document was saved. */
+/** Only complete verified text can explain persistence without live workflow proof. */
 export function claimsUngroundedSaved(answer: string, groundingTexts: string[]): boolean {
-  const grounding = groundingTexts.map(compactThai);
-  const verifiedSentences = new Set(groundingTexts.flatMap((text) => text.split(GUIDE_SENTENCE_BOUNDARY).map(compactThai)));
-  // Reset instructional context at sentence boundaries so a later live claim stays strict.
-  for (const sentence of answer.split(GUIDE_SENTENCE_BOUNDARY)) {
-    const compact = compactThai(sentence);
-    if (verifiedSentences.has(compact)) continue;
-    let previousClaimEnd = 0;
-    for (const match of compact.matchAll(SAVED_CLAIM)) {
-      const before = compact.slice(previousClaimEnd, match.index);
-      previousClaimEnd = match.index + match[0].length;
-      if (/(?:ยัง|ไม่|ไม่ได้)$/u.test(before)) continue;
-      const instructional = /ถ้า|เมื่อ|หาก|จนกว่า|คำว่า|ข้อความ|บอท(?:จะ)?(?:ตอบ|ส่ง)|ขึ้นว่า|หมายถึง|ถึงจะถือว่า|จึงถือว่า|[“"']$/u.test(before);
-      if (!instructional || !grounding.some((text) => text.includes(match[0]))) return true;
-    }
-  }
-  return false;
+  return claimsSaved(answer)
+    && !groundingTexts.some((text) => compactThai(text) === compactThai(answer));
 }
 
 /**
@@ -490,26 +475,47 @@ function suggestsUnsupportedAction(answer: string, workflowOutputs: ToolOutput[]
 }
 
 const STATUS_QUESTION =
-  /เข้า(?:หรือ)?ยัง|เข้าไหม|เข้ามั้ย|สำเร็จ(?:ไหม|มั้ย|หรือยัง)|บันทึก(?:แล้ว)?(?:หรือยัง|ไหม|มั้ย)|รายการ.{0,12}เป็น(?:ยัง|อย่าง)?ไง|ล่าสุด|ไม่ขึ้น|ยังไม่เข้า|ติดอะไร/u;
+  /เข้า(?:หรือ)?ยัง|เข้าไหม|เข้ามั้ย|สำเร็จ(?:ไหม|มั้ย|หรือยัง)|บันทึก(?:แล้ว)?(?:หรือยัง|ไหม|มั้ย)|รายการ.{0,12}เป็น(?:ยัง|อย่าง)?ไง|ไม่ขึ้น|ยังไม่เข้า|ติดอะไร/u;
 const PENDING_QUESTION = /ค้าง|ยังไม่จบ|ยังไม่เสร็จ/u;
 const PROBLEM_QUESTION = /ทำไม|ไม่ผ่าน|ต้องแก้|แก้อะไร|ข้อไหน|ผิด|ส่งใหม่|ต่อยังไง|ยังไงต่อ|ทำอะไรต่อ/u;
-// Markers that the question is about a real document, not about how to do something.
-const PERSONAL_STATUS =
-  /ผม|ฉัน|หนู|(?<!กู้รายการ)ล่าสุด|เมื่อกี้|ตอนนี้.{0,12}(?:รายการ|ต้องทำ|ติด|เป็นยังไง)|ข้อ\s*\d|เข้า(?:หรือ)?ยัง|ไม่เข้า|สำเร็จ(?:ไหม|มั้ย|หรือยัง)|ไม่ขึ้น|ติดอะไร|ส่งใหม่/u;
+// Intent comes from the question, never from whichever tool the model chose.
+const USAGE_QUESTION = /วิธี|หมายถึง|แปลว่า|คืออะไร|(?:พิมพ์|ใช้งาน|ใช้|ส่ง|ทำ|แก้|กู้|ลบ).{0,30}(?:ยังไง|อย่างไร)(?!ต่อ)/u;
+const DOCUMENT_CONTEXT = /รายการ|เอกสาร|เบิก|ชั่งคืน|คืนเสีย|ข้อ\s*\d/u;
+const FIRST_PERSON = /ผม|ฉัน|หนู|ของเรา|ของตัวเอง|เมื่อกี้/u;
 
-/**
- * "ทำไมข้อ 22 ไม่ผ่าน" is about a document; "ถ้าพิมพ์ชื่อผักผิดต้องแก้ยังไง" is
- * a how-to even though it says ผิด / ต้องแก้. A how-to topic match wins
- * unless the question carries a personal/status marker.
- */
-export function isStatusQuestion(question: string): boolean {
-  if (PERSONAL_STATUS.test(question)) return true;
-  if (findKnowledge(question).length > 0) return false;
-  return STATUS_QUESTION.test(question) || PENDING_QUESTION.test(question)
-    || PROBLEM_QUESTION.test(question);
+const ANALYST_CONTEXT = /ยอดขาย|สต็อก|ของเหลือ|คงเหลือ|เงินขาด|เงินเกิน|ปิดเงิน|ยอดส่ง|ยอดรับ|ใบขาว|สลิป/u;
+
+/** Domain and live-state intent are resolved before trusting any selected tool. */
+function questionIntent(question: string): "workflow" | "guide" | "analyst" {
+  const compact = compactThai(question);
+  if (/^(?:ถ้า|หาก|สมมติ)/u.test(compact)) return "guide";
+  const specificDocument = /เมื่อกี้|ข้อ\d|(?:รายการ|เอกสาร)(?:ของ)?(?:ผม|ฉัน|หนู)/u.test(compact);
+  if (USAGE_QUESTION.test(compact) && !specificDocument) return "guide";
+  const stateQuestion = STATUS_QUESTION.test(compact) || PENDING_QUESTION.test(compact)
+    || (/ล่าสุด/u.test(compact) && DOCUMENT_CONTEXT.test(compact));
+  const topics = findKnowledge(compact);
+  if (!stateQuestion && !PROBLEM_QUESTION.test(compact)
+    && topics.some((entry) => entry.keywords.some((keyword) => compactThai(keyword) === compact))) return "guide";
+  const liveDocument = STATUS_QUESTION.test(compact) && DOCUMENT_CONTEXT.test(compact);
+  if (ANALYST_CONTEXT.test(compact) && !liveDocument) return "analyst";
+  if (stateQuestion) return "workflow";
+  if (PROBLEM_QUESTION.test(compact) && (FIRST_PERSON.test(compact) || /ข้อ\d/u.test(compact))) return "workflow";
+  if (topics.length > 0) return "guide";
+  return PROBLEM_QUESTION.test(compact) ? "workflow" : "analyst";
 }
 
-const FIRST_PERSON = /ผม|ฉัน|หนู|ของเรา|ของตัวเอง|เมื่อกี้/u;
+export function isStatusQuestion(question: string): boolean {
+  return questionIntent(question) === "workflow";
+}
+
+/** Unspecified documents default to own scope; management-wide questions do not. */
+function canInspectOwnWorkflow(question: string, analystToolsAllowed: boolean): boolean {
+  if (!analystToolsAllowed) return true;
+  if (/ของ(?:ผม|ฉัน|หนู|เรา|ตัวเอง)/u.test(question)) return true;
+  if (/ทุก(?:คน|ตลาด|กลุ่ม)|ภาพรวม|ทั้งหมด|มีใคร|คนไหน/u.test(question)) return false;
+  return FIRST_PERSON.test(question) || kindFromQuestion(question) !== undefined
+    || (DOCUMENT_CONTEXT.test(question) && (STATUS_QUESTION.test(question) || /ล่าสุด|ข้อ\s*\d/u.test(question)));
+}
 
 const OTHER_PERSON = /ของ(?!ผม|ฉัน|หนู|เรา|ตัวเอง|กู|พี่เอง)\s*[ก-๙A-Za-z]/u;
 
@@ -534,8 +540,9 @@ export async function deterministicConsultantAnswer(
   now: number,
   analystToolsAllowed = false,
 ): Promise<string | null> {
-  if (isStatusQuestion(question)) {
-    if (analystToolsAllowed && !FIRST_PERSON.test(question)) return null;
+  const intent = questionIntent(question);
+  if (intent === "workflow") {
+    if (!canInspectOwnWorkflow(question, analystToolsAllowed)) return null;
     // A named other worker needs the model to extract the name; never guess it.
     if (OTHER_PERSON.test(question)) return null;
     if (!scope) return REPLY_IDENTITY_UNVERIFIED;
@@ -551,7 +558,7 @@ export async function deterministicConsultantAnswer(
       ...(itemNumber ? { itemNumber: Number(itemNumber) } : {}),
     })).suggestedReply ?? null;
   }
-  const [entry] = findKnowledge(question);
+  const [entry] = intent === "guide" ? findKnowledge(question) : [];
   return entry ? entry.answerThai : null;
 }
 
@@ -614,29 +621,26 @@ export async function answerBotSummaryForLine(
       .filter((entry) => WORKFLOW_TOOL_NAMES.has(entry.tool))
       .map((entry) => entry.output as ToolOutput);
     if (workflowOutputs.length > 0) return guardConsultantAnswer(result.answer, workflowOutputs);
-    const analystToolRan = result.toolExecutions.some((entry) =>
-      !WORKFLOW_TOOL_NAMES.has(entry.tool) && entry.tool !== "get_usage_guide");
-    if (analystToolRan) return result.answer;
-    // A status question answered without reading status: never trust it —
-    // unless it was really a how-to the model answered from the usage guide.
-    const guides = result.extensionOutputs.filter((entry) =>
-      entry.tool === "get_usage_guide" && entry.output.status === "ok");
-    const answeredFromGuide = guides.length > 0;
-    if (isStatusQuestion(question) && !(answeredFromGuide && !PERSONAL_STATUS.test(question))) {
-      if (analystToolsAllowed && !FIRST_PERSON.test(question)) return result.answer;
+    // A selected Analyst/guide tool cannot satisfy a document-status request.
+    // Apply the same intent and scoped evidence policy on success and outage.
+    if (isStatusQuestion(question)) {
       const deterministic = await deterministicConsultantAnswer(supabase, scope, question, today, now, analystToolsAllowed);
       if (deterministic) return deterministic;
       return claimsSaved(result.answer) ? REPLY_CANNOT_CONFIRM : result.answer;
     }
-    if (answeredFromGuide && !PERSONAL_STATUS.test(question)) {
-      const groundingTexts = guides.flatMap(({ output }) => [
-        output.suggestedReply,
-        ...((output.caveats as string[] | undefined) ?? []),
-        ...((output.examples as string[] | undefined) ?? []),
-      ]).filter((text): text is string => typeof text === "string");
-      return claimsUngroundedSaved(result.answer, groundingTexts) ? REPLY_CANNOT_CONFIRM : result.answer;
+    const guides = result.extensionOutputs.filter((entry) =>
+      entry.tool === "get_usage_guide" && entry.output.status === "ok");
+    if (guides.length > 0) {
+      const verifiedReplies = guides.map(({ output }) => output.suggestedReply)
+        .filter((reply): reply is string => typeof reply === "string");
+      // Guidance is not persistence proof. Do not infer instructional meaning
+      // from model words; replace unverified save wording with trusted guidance.
+      return claimsUngroundedSaved(result.answer, verifiedReplies)
+        ? verifiedReplies.join("\n\n") || REPLY_CANNOT_CONFIRM
+        : result.answer;
     }
-    return claimsSaved(result.answer, true) ? REPLY_CANNOT_CONFIRM : result.answer;
+    // Successful Analyst calls and quotation marks are not workflow proof.
+    return claimsSaved(result.answer) ? REPLY_CANNOT_CONFIRM : result.answer;
   } catch (error) {
     const fallback = await deterministicConsultantAnswer(supabase, scope, question, today, now, analystToolsAllowed)
       .catch(() => null);

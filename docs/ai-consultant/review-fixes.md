@@ -69,3 +69,59 @@ lookback/search limits and the conservative Thai phrasing guard remain.
 
 Production rollout remains blocked by the separate P0 sold-out reporting issue
 documented in `sold-out-risk.md`, independent security/owner approval, and live UAT.
+
+## 2026-10-08 — Independent re-review round 2 and local validation
+
+The next independent review of commit `0444299` identified four additional P2 edge cases
+(see [PR #174 review comment](https://github.com/landmarketthai/Bot-summary/pull/174#issuecomment-6054807984)).
+The current **uncommitted** implementation in `answer.ts` and its two regression-test files
+addresses those cases; this section documents evidence before the next commit:
+
+1. **Personal status despite an unrelated Analyst tool:** select the intent from the
+   original user question. A stock/sales tool response is not persistence evidence
+   for a specific person's produce document.
+2. **Guide-based false saving claims:** full verified guide text may be returned,
+   but an invented claim about a specific already-saved document may not borrow
+   keywords, quotation marks, or conditional phrasing from a guide. An unsafe
+   model paraphrase is replaced by the verified guide itself.
+3. **Produce pending-status routing:** questions such as `ชั่งคืนมีอะไรค้าง`
+   and `รายการเบิกค้างอะไร` inspect the actual scoped workflow even on provider
+   outage; how-to questions still use knowledge.
+4. **No-tool Analyst status answers:** the model cannot claim a document was
+   saved without authoritative workflow status, including in management chats.
+
+The same patch also preserves an explicit requested transaction kind when the
+model selects a mismatching tool, and preserves aggregate market-wide Analyst
+answers rather than substituting a personal status.
+
+### Round 2 evidence
+
+- Independent QA: **84 passed / 0 failed / 218 assertions**; simulated LINE
+  transcript: **41 cases, no failures** (local `qa-final.log` and
+  `qa-final-transcript.json`).
+- Focused Consultant/LINE tests reported by the implementing agent:
+  **596 passed / 0 failed**. A separate maintainer rerun of a bounded
+  10-file AI/LINE selection passed **516 / 516**.
+- Final non-PostgreSQL regression on the branch: **5,583 passed / 25 failed**.
+  Main baseline: **5,085 passed / 25 failed**. The failure-name sets were
+  identical. Earlier branch run had **27 failures**; the two additional cases
+  (multi-image White Sheet routing and a pathological LINE reply hitting a
+  five-second timeout) passed on rerun. Treat them as potentially flaky and
+  monitor rather than claiming their root cause is proven.
+- `npx tsc --noEmit`: passed in the maintainer rerun.
+- `npx eslint .`: **0 errors / 69 warnings** in the maintainer rerun
+  (same count as main baseline).
+- Local `next build --webpack` with process-local placeholder credentials:
+  succeeded in the implementing agent's final build log.
+- `git diff --check`: passed. No accounting code, migrations, LINE webhook
+  implementation, database rows, or Production environment variables were changed.
+
+Original evidence is on the developer workstation in
+`C:\GitHub\Bot-summary\tmp\pr174-round2-evidence-20261008`,
+including `branch-final.log`, `main-full-tests.log`,
+`qa-final.log`, and `build.log`.
+
+**Release gate remains closed:** independent review of the *new commit*,
+Live GPT-6 Luna + real LINE Preview UAT, PostgreSQL integration checks,
+and the separate P0 failed-return/sold-out fix are still outstanding.
+Keep PR #174 Draft; do not merge or deploy to Production.

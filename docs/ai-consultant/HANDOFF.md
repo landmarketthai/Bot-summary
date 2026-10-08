@@ -331,3 +331,34 @@ script; Git Bash heredocs mangle Thai text — write patch scripts with an edito
 - [ ] No changes to sales/settlement calculations, migrations, Production data or env; no merge/deploy.
 - [ ] `uat-transcript.md` replies re-verified against regenerated output (or updated from it).
 - [ ] PR #174 updated with a summary of fixes + test evidence; re-review requested.
+
+## 12. Status update — independent review round 2 (2026-10-08)
+
+This handoff is historical context from the initial review. The first four P2s
+were addressed in 0444299, then an independent Sol 6.1 re-review found four
+further P2 edge cases (PR #174 comment 6054807984):
+
+- A personal document-status question could be answered using an unrelated
+  Analyst tool without workflow persistence evidence.
+- A guide answer could smuggle live "saved" claims using substring matches
+  such as เมื่อ in เมื่อคืน, or an earlier quoted save phrase.
+- Produce questions containing ค้าง could be routed to how-to instead of
+  the current pending workflow.
+- A no-tool analyst-chat response could assert บันทึกแล้ว without evidence.
+
+The current local patch updates answer.ts plus answer.test.ts and
+answer-guard.test.ts and resolves the above through question-intent routing,
+workflow evidence checks independent of model tool choice, and conservative
+guide-response grounding. It also guards requested transaction kind and keeps
+Analyst management-wide summaries intact.
+
+See review-fixes.md, section "Independent re-review round 2 and local
+validation", for actual test results, the comparison to main, evidence paths,
+and remaining release gates. Keep the original checkboxes as the initial
+handoff's historical acceptance list; do not mistake them for the current
+release status.
+
+**Current action sequence:** review local diff and evidence, commit and push to
+existing Draft PR #174, request a fresh independent review, then conduct Preview
+GPT-6 Luna / LINE UAT. Do not merge or deploy Production. The separate P0
+failed-return/sold-out accounting risk remains unresolved.

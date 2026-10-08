@@ -132,6 +132,11 @@ class FakeQuery implements PromiseLike<{ data: Row[] | null; error: { message: s
     this.predicates.push((row) => (row[column] ?? null) === value);
     return this;
   }
+  not(column: string, operator: string, value: unknown) {
+    if (operator !== "is") throw new Error(`fake: unsupported not() operator ${operator}`);
+    this.predicates.push((row) => (row[column] ?? null) !== value);
+    return this;
+  }
   insert() { this.db.writes.push(`insert:${this.table}`); return this; }
   update() { this.db.writes.push(`update:${this.table}`); return this; }
   upsert() { this.db.writes.push(`upsert:${this.table}`); return this; }
@@ -1896,7 +1901,10 @@ describe("PR #174 P2 regressions", () => {
   ])("P2-3 keeps grounded operational explanation: %s", async (answer) => {
     const db = newDb();
     const model = new ScriptedModel([toolCall("get_usage_guide", { topic: "after_close_confirmation" }), modelText(answer)]);
-    expect(await answerBotSummaryForLine(asClient(db), "จบรายการแล้วต้องทำอะไรต่อ", context(NOI), deps(model))).toBe(answer);
+    const reply = await answerBotSummaryForLine(asClient(db), "จบรายการแล้วต้องทำอะไรต่อ", context(NOI), deps(model));
+    const verifiedReply = toolOutputsIn(model.bodies[1]!)[0]!.suggestedReply;
+    if (typeof verifiedReply !== "string") throw new Error("verified usage guide has no suggested reply");
+    expect(reply).toBe(verifiedReply);
     expect(db.queriesOn("pending_sessions")).toEqual([]);
   });
 
@@ -1911,7 +1919,11 @@ describe("PR #174 P2 regressions", () => {
   ])("P2-3 rejects live or ungrounded claims even after a guide: %s", async (answer) => {
     const db = newDb();
     const model = new ScriptedModel([toolCall("get_usage_guide", { topic: "after_close_confirmation" }), modelText(answer)]);
-    expect(await answerBotSummaryForLine(asClient(db), "จบรายการแล้วต้องทำอะไรต่อ", context(NOI), deps(model))).toContain("ยังยืนยันจากระบบไม่ได้");
+    const reply = await answerBotSummaryForLine(asClient(db), "จบรายการแล้วต้องทำอะไรต่อ", context(NOI), deps(model));
+    const verifiedReply = toolOutputsIn(model.bodies[1]!)[0]!.suggestedReply;
+    if (typeof verifiedReply !== "string") throw new Error("verified usage guide has no suggested reply");
+    expect(reply).toBe(verifiedReply);
+    expect(reply).not.toBe(answer);
   });
 
   test("P2-3 personal status remains strict after a guide", async () => {
@@ -1978,5 +1990,217 @@ describe("verified operational guide regression", () => {
     const reply = await answerBotSummaryForLine(asClient(db), "อธิบายวิธีใช้งานหัวข้อนี้", context(NOI), deps(model));
     expect(reply).toBe(entry.answerThai);
     expect(db.queriesOn("pending_sessions")).toEqual([]);
+  });
+});
+
+describe("PR #174 independent review round two", () => {
+  test.each([
+    "รายการของคุณบันทึกแล้วครับ",
+    "ตอนนี้มีสินค้าคงเหลือ 12 กิโลกรัมครับ",
+  ])("P2-1 unrelated Analyst output cannot satisfy personal status: %s", async (answer) => {
+    const db = newDb();
+    db.tables.pending_sessions.push(openDraftRow());
+    const model = new ScriptedModel([toolCall("get_stock_summary", {}), modelText(answer)]);
+    const reply = await answerBotSummaryForLine(asClient(db), "ตอนนี้รายการผมเป็นยังไง", context(DAENG, { analystToolsAllowed: true }), deps(model));
+    expect(reply).toContain("แก้ข้อ 4");
+    expect(reply).not.toBe(answer);
+    expect(claimsSaved(reply)).toBe(false);
+    expect(db.queriesOn("pending_sessions").some((query) => query.eq.line_user_id === DAENG)).toBe(true);
+    expect(db.writes).toEqual([]);
+  });
+
+  test.each([
+    "เมื่อคืนรายการของคุณบันทึกแล้วครับ",
+    "หากสงสัย รายการของคุณบันทึกแล้วครับ",
+    "ข้อความจากคุณบันทึกแล้วครับ",
+    "ถ้าบอทตอบว่าบันทึกแล้ว ไม่ต้องส่งซ้ำครับ เมื่อคืนรายการของคุณบันทึกแล้วครับ",
+    "เมื่อบอทตอบว่าบันทึกแล้ว รายการของคุณก็เข้าระบบแล้วครับ",
+  ])("P2-2 temporal or mixed guide wording cannot prove a live save: %s", async (answer) => {
+    const db = newDb();
+    const model = new ScriptedModel([toolCall("get_usage_guide", { topic: "after_close_confirmation" }), modelText(answer)]);
+    const reply = await answerBotSummaryForLine(asClient(db), "จบรายการแล้วต้องทำอะไรต่อ", context(NOI), deps(model));
+    const verifiedReply = toolOutputsIn(model.bodies[1]!)[0]!.suggestedReply;
+    if (typeof verifiedReply !== "string") throw new Error("verified usage guide has no suggested reply");
+    expect(reply).toBe(verifiedReply);
+    expect(reply).not.toBe(answer);
+    expect(db.writes).toEqual([]);
+  });
+
+  test.each([
+    "เมื่อบอทตอบว่าบันทึกแล้ว ไม่ต้องส่งซ้ำครับ",
+    "หากบอทตอบว่าบันทึกแล้ว ไม่ต้องส่งซ้ำครับ",
+    "บอทจะตอบว่า “บันทึกแล้ว” เมื่อเสร็จครับ",
+  ])("P2-2 verified conditional guide explanation remains usable: %s", async (answer) => {
+    const db = newDb();
+    const model = new ScriptedModel([toolCall("get_usage_guide", { topic: "after_close_confirmation" }), modelText(answer)]);
+    const reply = await answerBotSummaryForLine(asClient(db), "จบรายการแล้วต้องทำอะไรต่อ", context(NOI), deps(model));
+    const verifiedReply = toolOutputsIn(model.bodies[1]!)[0]!.suggestedReply;
+    if (typeof verifiedReply !== "string") throw new Error("verified usage guide has no suggested reply");
+    expect(reply).toBe(verifiedReply);
+    expect(db.queriesOn("pending_sessions")).toEqual([]);
+  });
+
+  test.each([
+    { question: "ชั่งคืนมีอะไรค้าง", kindThai: "ชั่งคืน", guide: "produce_return" },
+    { question: "รายการเบิกค้างอะไร", kindThai: "เบิก", guide: "produce_withdrawal" },
+    { question: "คืนเสียมีอะไรค้าง", kindThai: "คืนเสีย", guide: "produce_damaged_return" },
+  ].flatMap((entry) => [false, true].flatMap((analystToolsAllowed) => [false, true].map((outage) => ({ ...entry, analystToolsAllowed, outage })))))
+  ("P2-3 kind-specific pending checks workflow: $question analyst=$analystToolsAllowed outage=$outage", async ({ question, kindThai, guide, analystToolsAllowed, outage }) => {
+    const db = newDb();
+    const text = documentText("แดง", "วิหาร", kindThai, { items: 6, broken: 4 });
+    db.tables.pending_sessions.push(openDraftRow(DAENG, "แดง", "วิหาร", {
+      accumulated_text: text,
+      partial_capture: captureOf(text),
+    }));
+    const model = new ScriptedModel(outage
+      ? [httpError(500)]
+      : [toolCall("get_usage_guide", { topic: guide }), echoSuggestedReply]);
+    const reply = await answerBotSummaryForLine(asClient(db), question, context(DAENG, { analystToolsAllowed }), deps(model));
+    expect(reply).toContain("แก้ข้อ 4");
+    expect(reply).toContain(kindThai);
+    expect(claimsSaved(reply)).toBe(false);
+    expect(db.returnedRows("pending_sessions")).toHaveLength(1);
+    expect(db.returnedRows("pending_sessions").every((row) => row.line_user_id === DAENG && row.source_id === GROUP)).toBe(true);
+    expect(db.writes).toEqual([]);
+  });
+
+  test.each(["ชั่งคืนล่าสุดเข้าหรือยัง", "เบิกล่าสุดเข้าหรือยัง", "คืนเสียล่าสุดเข้าหรือยัง"])("P2-4 Analyst no-tool live status requires workflow evidence: %s", async (question) => {
+    const db = newDb();
+    const kindThai = question.startsWith("ชั่งคืน") ? "ชั่งคืน" : question.startsWith("คืนเสีย") ? "คืนเสีย" : "เบิก";
+    const text = documentText("แดง", "วิหาร", kindThai, { items: 6, broken: 4 });
+    db.tables.pending_sessions.push(openDraftRow(DAENG, "แดง", "วิหาร", { accumulated_text: text, partial_capture: captureOf(text) }));
+    const model = new ScriptedModel([modelText("บันทึกแล้วครับ")]);
+    const reply = await answerBotSummaryForLine(asClient(db), question, context(DAENG, { analystToolsAllowed: true }), deps(model));
+    expect(reply).toContain("แก้ข้อ 4");
+    expect(reply).toContain(kindThai);
+    expect(claimsSaved(reply)).toBe(false);
+    expect(db.queriesOn("pending_sessions").some((query) => query.eq.line_user_id === DAENG)).toBe(true);
+    expect(db.writes).toEqual([]);
+  });
+});
+
+describe("PR #174 intent-bound workflow evidence", () => {
+  test.each(["get_submission_status", "get_submission_problem", "get_unfinished_submissions"].flatMap((tool) => [false, true].map((outage) => ({ tool, outage }))))
+  ("requested return overrides model withdrawal via $tool outage=$outage", async ({ tool, outage }) => {
+    const db = newDb();
+    const saved = finalizedRows();
+    saved.pending.accumulated_text = documentText("น้อย", "ราชพฤกษ์", "เบิก", { items: 24 });
+    saved.pending.source_id = OTHER_GROUP;
+    saved.pending.session_key = keyOf(NOI, OTHER_GROUP);
+    saved.produce.ingest_idempotency_key = keyOf(NOI, OTHER_GROUP) + ":gen-1";
+    db.tables.pending_sessions.push(saved.pending, incidentRow());
+    db.tables.produce_sessions.push(saved.produce);
+    const thirdGroup = "C-third-group";
+    if (tool === "get_unfinished_submissions") {
+      db.tables.pending_sessions.push(openDraftRow(NOI, "น้อย", "วิหาร", {
+        source_id: thirdGroup, session_key: keyOf(NOI, thirdGroup),
+      }));
+    }
+    const model = new ScriptedModel([
+      toolCall(tool, { staff: "", market: "", transaction_kind: "withdrawal", item_number: 0 }),
+      outage ? httpError(500) : modelText("รายการเบิกบันทึกแล้วครับ"),
+    ]);
+    const question = tool === "get_unfinished_submissions" ? "ชั่งคืนของผมมีอะไรค้าง" : "ชั่งคืนล่าสุดของผมเข้าหรือยัง";
+    const reply = await answerBotSummaryForLine(asClient(db), question, context(NOI, { analystToolsAllowed: true }), deps(model, {
+      scopeOptions: {
+        allowedSourceIds: new Set([GROUP, OTHER_GROUP, thirdGroup]), managementSourceIds: new Set([GROUP]),
+        supervisorIds: new Set([NOI]), runtimeEnvironment: "production",
+      },
+    }));
+    expect(reply).toContain("ชั่งคืน");
+    expect(reply).toContain("ข้อ 22");
+    expect(reply).not.toContain("วิหาร");
+    expect(claimsSaved(reply)).toBe(false);
+    const output = toolOutputsIn(model.bodies[1]!)[0]!;
+    if (tool === "get_unfinished_submissions") {
+      expect(output.count).toBe(1);
+      expect(output.submissions).toMatchObject([{ transactionKindThai: "ชั่งคืน", persisted: false }]);
+    } else {
+      expect(output.submission).toMatchObject({ transactionKindThai: "ชั่งคืน", persisted: false });
+    }
+    expect(db.returnedRows("pending_sessions").every((row) => row.line_user_id === NOI)).toBe(true);
+    expect(db.writes).toEqual([]);
+  });
+
+  test("unverified quoted live-save text without tools is not instructional evidence", async () => {
+    const db = newDb();
+    const answer = "รายการของคุณ “บันทึกแล้ว” ครับ";
+    const model = new ScriptedModel([modelText(answer)]);
+    const reply = await answerBotSummaryForLine(asClient(db), "ขอคำแนะนำหน่อย", context(NOI), deps(model));
+    expect(reply).toContain("ยังยืนยันจากระบบไม่ได้");
+    expect(reply).not.toBe(answer);
+    expect(db.writes).toEqual([]);
+  });
+
+  test.each([
+    ["ผมอยากรู้ของเหลือเท่าไหร่", "get_stock_summary", "มีของเหลือ 12 กิโลกรัมครับ"],
+    ["ผมอยากรู้ยอดขายวันนี้เท่าไหร่", "get_daily_summary", "วันนี้ยอดขายรวม 250 บาทครับ"],
+  ])("first-person Analyst finance/stock question keeps its tool-backed answer: %s", async (question, tool, answer) => {
+    const db = newDb();
+    db.tables.pending_sessions.push(incidentRow());
+    const model = new ScriptedModel([toolCall(tool, {}), modelText(answer)]);
+    const reply = await answerBotSummaryForLine(asClient(db), question, context(NOI, { analystToolsAllowed: true }), deps(model));
+    expect(reply).toBe(answer);
+    expect(toolOutputsIn(model.bodies[1]!)[0]).toMatchObject({ tool });
+    expect(db.queriesOn("pending_sessions").filter((query) => "line_user_id" in query.eq)).toEqual([]);
+    expect(db.writes).toEqual([]);
+  });
+});
+
+describe("PR #174 personal Analyst domain preservation", () => {
+  test.each([
+    { question: "ทำไมยอดขายของผมลดลง", tool: "get_daily_summary", args: {}, answer: "ยอดขายวันนี้น้อยลงจากเมื่อวานครับ" },
+    { question: "ทำไมสต็อกของผมเหลือน้อย", tool: "get_stock_summary", args: {}, answer: "สต็อกคงเหลือวันนี้มีน้อยครับ" },
+    { question: "ผมมีเงินขาดค้างอยู่เท่าไร", tool: "get_staff_settlement", args: { staff: "น้อย" }, answer: "ยังไม่พบยอดเงินขาดของน้อยครับ" },
+  ].flatMap((entry) => [false, true].map((outage) => ({ ...entry, outage }))))
+  ("preserves finance/stock routing: $question outage=$outage", async ({ question, tool, args, answer, outage }) => {
+    const db = newDb();
+    db.tables.pending_sessions.push(incidentRow());
+    const model = new ScriptedModel(outage ? [httpError(500)] : [toolCall(tool, args), modelText(answer)]);
+    const result = answerBotSummaryForLine(asClient(db), question, context(NOI, { analystToolsAllowed: true }), deps(model));
+    if (outage) await expect(result).rejects.toThrow();
+    else {
+      expect(await result).toBe(answer);
+      expect(toolOutputsIn(model.bodies[1]!)[0]).toMatchObject({ tool });
+    }
+    expect(db.queriesOn("pending_sessions").filter((query) => "line_user_id" in query.eq)).toEqual([]);
+    expect(db.writes).toEqual([]);
+  });
+});
+
+describe("PR #174 management aggregate preservation", () => {
+  test.each([
+    "วันนี้ทุกตลาดมีรายการอะไรค้างบ้าง",
+    "สรุปรายการเบิกที่ค้างทุกตลาดวันนี้",
+    "วันนี้มีรายการอะไรยังไม่จบ",
+  ])("keeps authorized Analyst aggregate without substituting own workflow: %s", async (question) => {
+    const db = newDb();
+    db.tables.pending_sessions.push(openDraftRow());
+    const answer = "ทุกตลาดมีรายการค้าง 2 รายการครับ กรุณาตรวจสอบรายการที่รอตรวจในรายงานครับ";
+    const model = new ScriptedModel([toolCall("get_pending_items", {}), modelText(answer)]);
+    const reply = await answerBotSummaryForLine(asClient(db), question, context(DAENG, { analystToolsAllowed: true }), deps(model));
+    expect(reply).toBe(answer);
+    expect(toolOutputsIn(model.bodies[1]!)[0]).toMatchObject({ tool: "get_pending_items" });
+    expect(db.queriesOn("pending_sessions").filter((query) => "line_user_id" in query.eq)).toEqual([]);
+    expect(db.writes).toEqual([]);
+  });
+});
+
+describe("PR #174 explicit own aggregate workflow", () => {
+  test.each(["ผม", "ฉัน", "หนู", "เรา", "ตัวเอง"].flatMap((owner) => [false, true].map((outage) => ({ owner, outage }))))
+  ("own $owner aggregate still needs scoped workflow outage=$outage", async ({ owner, outage }) => {
+    const db = newDb();
+    db.tables.pending_sessions.push(openDraftRow(), incidentRow());
+    const model = new ScriptedModel(outage
+      ? [httpError(500)]
+      : [toolCall("get_stock_summary", {}), modelText("วันนี้ไม่มีของเหลือครับ")]);
+    const reply = await answerBotSummaryForLine(asClient(db), `รายการเบิกของ${owner}ทั้งหมดค้างอะไร`, context(DAENG, { analystToolsAllowed: true }), deps(model));
+    expect(reply).toContain("เบิก");
+    expect(reply).toContain("แก้ข้อ 4");
+    expect(claimsSaved(reply)).toBe(false);
+    expect(db.queriesOn("pending_sessions").some((query) => query.eq.line_user_id === DAENG)).toBe(true);
+    expect(db.returnedRows("pending_sessions")).toHaveLength(1);
+    expect(db.returnedRows("pending_sessions").every((row) => row.line_user_id === DAENG && row.source_id === GROUP)).toBe(true);
+    expect(db.writes).toEqual([]);
   });
 });
