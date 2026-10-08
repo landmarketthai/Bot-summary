@@ -18,13 +18,39 @@ import {
 type Supabase = SupabaseClient<Database>;
 
 export type AnalystToolExecution = {
-  tool: ReadonlyAnalystToolName;
+  tool: ReadonlyAnalystToolName | (string & {});
   arguments: Record<string, unknown>;
+};
+
+/**
+ * Extra read-only tools layered on the analyst loop (the AI Consultant).
+ * `execute` returns null for names it does not own and must enforce its own
+ * authorization: tool arguments come from the model and prove nothing.
+ */
+export type AnalystToolExtension = {
+  definitions: readonly unknown[];
+  instructions: string;
+  /** Untrusted conversational context appended to the user turn as data. */
+  context?: string;
+  execute(
+    name: string,
+    args: Record<string, unknown>,
+    businessDate: string,
+  ): Promise<Record<string, unknown>> | null;
+  /** Epoch ms after which no new model call may start. */
+  deadlineAt?: number;
+  /**
+   * Only the extension's tools exist (worker chats without the sales and
+   * settlement analyst). Any other tool name the model emits is refused.
+   */
+  exclusive?: boolean;
 };
 
 export type ReadonlyAnalystResult = {
   businessDate: string;
   toolExecutions: AnalystToolExecution[];
+  /** Outputs of extension tools, for deterministic guards and fallbacks. */
+  extensionOutputs: Array<{ tool: string; output: Record<string, unknown> }>;
   answer: string;
 };
 
@@ -402,6 +428,8 @@ async function runToolCalls(
   payload: OpenAIResponsePayload,
   businessDate: string,
   executions: AnalystToolExecution[],
+  extension: AnalystToolExtension | undefined,
+  extensionOutputs: ReadonlyAnalystResult["extensionOutputs"],
 ): Promise<Array<Record<string, unknown>>> {
   const calls = extractOpenAIFunctionCalls(payload);
   const remaining = MAX_TOOL_CALLS_TOTAL - executions.length;
@@ -414,13 +442,22 @@ async function runToolCalls(
     const args = parseArguments(call.arguments);
     let output: Record<string, unknown>;
     try {
-      const request = toolRequestFromCall(call.name, args, businessDate);
-      const data = await executeReadonlyAnalystTool(supabase, request);
-      output = compactToolOutput(data);
-      executions.push({
-        tool: request.tool,
-        arguments: args,
-      });
+      const extensionResult = extension?.execute(call.name, args, businessDate) ?? null;
+      if (extensionResult) {
+        output = await extensionResult;
+        extensionOutputs.push({ tool: call.name, output });
+        executions.push({ tool: call.name, arguments: args });
+      } else if (extension?.exclusive) {
+        output = { error: `tool ${call.name} is not available in this chat` };
+      } else {
+        const request = toolRequestFromCall(call.name, args, businessDate);
+        const data = await executeReadonlyAnalystTool(supabase, request);
+        output = compactToolOutput(data);
+        executions.push({
+          tool: request.tool,
+          arguments: args,
+        });
+      }
     } catch (error) {
       output = {
         error: error instanceof Error ? error.message : "tool execution failed",
@@ -436,31 +473,60 @@ async function runToolCalls(
   return outputs;
 }
 
+function optionsWithinDeadline(
+  options: OpenAIAnalystOptions,
+  deadlineAt: number | undefined,
+): OpenAIAnalystOptions {
+  if (deadlineAt === undefined) return options;
+  const remainingMs = deadlineAt - Date.now();
+  if (remainingMs < 1_000) throw new Error("OpenAI analyst request timed out.");
+  return { ...options, timeoutMs: Math.min(options.timeoutMs ?? remainingMs, remainingMs) };
+}
+
 export async function answerWithReadonlyTools(
   supabase: Supabase,
   question: string,
   options: OpenAIAnalystOptions = {},
   businessDate = resolveAnalystBusinessDate(question),
+  extension?: AnalystToolExtension,
 ): Promise<ReadonlyAnalystResult> {
   const trimmed = question.trim();
   if (!trimmed) throw new Error("Analyst question must not be empty.");
 
   const executions: AnalystToolExecution[] = [];
+  const extensionOutputs: ReadonlyAnalystResult["extensionOutputs"] = [];
+  const baseInstructions = extension?.exclusive
+    ? BOT_SUMMARY_ANALYST_INSTRUCTIONS
+    : analystInstructions(businessDate);
+  const instructions = extension
+    ? `${baseInstructions}
+
+${extension.instructions}`
+    : baseInstructions;
+  const tools = extension?.exclusive
+    ? [...extension.definitions]
+    : [...TOOL_DEFINITIONS, ...(extension?.definitions ?? [])];
+  const userText = extension?.context ? `${trimmed}
+
+${extension.context}` : trimmed;
+  // store:false means the API keeps no history: every round must resend the
+  // question and all earlier rounds, or the model answers without the question.
+  const history: unknown[] = [
+    {
+      role: "user",
+      content: [{ type: "input_text", text: userText }],
+    },
+  ];
   let payload = await createOpenAIResponse(
     {
-      instructions: analystInstructions(businessDate),
-      input: [
-        {
-          role: "user",
-          content: [{ type: "input_text", text: trimmed }],
-        },
-      ],
-      tools: [...TOOL_DEFINITIONS],
+      instructions,
+      input: history,
+      tools,
       tool_choice: "auto",
       parallel_tool_calls: true,
       maxOutputTokens: 420,
     },
-    options,
+    optionsWithinDeadline(options, extension?.deadlineAt),
   );
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
@@ -468,7 +534,7 @@ export async function answerWithReadonlyTools(
     if (calls.length === 0) {
       const answer = extractOpenAIOutputText(payload);
       if (!answer) throw new Error("OpenAI analyst returned an empty answer.");
-      return { businessDate, toolExecutions: executions, answer };
+      return { businessDate, toolExecutions: executions, extensionOutputs, answer };
     }
 
     const toolOutputs = await runToolCalls(
@@ -476,21 +542,21 @@ export async function answerWithReadonlyTools(
       payload,
       businessDate,
       executions,
+      extension,
+      extensionOutputs,
     );
+    history.push(...(payload.output ?? []), ...toolOutputs);
 
     payload = await createOpenAIResponse(
       {
-        instructions: analystInstructions(businessDate),
-        input: [
-          ...(payload.output ?? []),
-          ...toolOutputs,
-        ],
-        tools: [...TOOL_DEFINITIONS],
+        instructions,
+        input: history,
+        tools,
         tool_choice: "auto",
         parallel_tool_calls: true,
         maxOutputTokens: 420,
       },
-      options,
+      optionsWithinDeadline(options, extension?.deadlineAt),
     );
   }
 

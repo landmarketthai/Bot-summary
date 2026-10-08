@@ -6,6 +6,10 @@
  * question text ("รายการของผม", "ของน้อย") and model tool arguments are never
  * treated as proof of who someone is.
  *
+ * Chats: BOT_SUMMARY_ANALYST_LINE_SOURCE_IDS (management chats: analyst +
+ * consultant) or BOT_SUMMARY_CONSULTANT_LINE_SOURCE_IDS (worker chats:
+ * consultant only — no sales or settlement tools).
+ *
  * Initial scope is deliberately narrow:
  * - everyone: only documents they sent themselves, in the chat they ask from;
  * - supervisors (explicit env allowlist of LINE user ids): any document in the
@@ -30,6 +34,18 @@ export function parseConsultantSupervisorIds(
   value = process.env.BOT_SUMMARY_CONSULTANT_SUPERVISOR_LINE_USER_IDS,
 ): Set<string> {
   return new Set((value ?? "").split(/[,\s]+/u).map((part) => part.trim()).filter(Boolean));
+}
+
+/** Worker chats that get the consultant but NOT the sales/settlement analyst. */
+export function parseConsultantSourceIds(
+  value = process.env.BOT_SUMMARY_CONSULTANT_LINE_SOURCE_IDS,
+): Set<string> {
+  return parseConsultantSupervisorIds(value);
+}
+
+/** Every chat the consultant may answer in: analyst chats plus consultant-only chats. */
+export function consultantAllowedSourceIds(): Set<string> {
+  return new Set([...parseBotSummaryAnalystSourceIds(), ...parseConsultantSourceIds()]);
 }
 
 export type ScopeResolution =
@@ -68,7 +84,7 @@ export async function resolveConsultantScope(
   const sourceId = requester.sourceId.trim();
   if (!lineUserId) return { ok: false, reason: "no_user" };
 
-  const allowed = options.allowedSourceIds ?? parseBotSummaryAnalystSourceIds();
+  const allowed = options.allowedSourceIds ?? consultantAllowedSourceIds();
   if (!sourceId || !allowed.has(sourceId)) return { ok: false, reason: "source_not_allowed" };
 
   const runtimeEnvironment = options.runtimeEnvironment ?? getRuntimeEnvironment();
