@@ -190,7 +190,13 @@ import {
   isExactCancelActiveDraftCommand,
 } from "@/lib/produce/cancel-active-draft";
 import { getRuntimeEnvironment } from "@/lib/runtime-environment";
-import { answerWithReadonlyTools } from "@/lib/ai/readonly-analyst";
+import {
+  answerBotSummaryForLine,
+  botSummaryUsageReply,
+  isBotSummaryConsultantEnabled,
+  type BotSummaryQuestionContext,
+} from "@/lib/ai/consultant/answer";
+import { parseConsultantSourceIds } from "@/lib/ai/consultant/authorization";
 import {
   isReadableWhiteSheetImage, isWhiteSheetApproval, isWhiteSheetReaderEnabled, resolveWhiteSheetSession,
   whiteSheetReadCommand, whiteSheetSessionMayBeActive, PREVIEW_TTL_MS,
@@ -204,7 +210,6 @@ import { readAndRecordSheet, reviewApproval, reviewCorrectionTurn } from "@/lib/
 import {
   BOT_SUMMARY_NOT_AVAILABLE_REPLY,
   BOT_SUMMARY_TEMPORARY_ERROR_REPLY,
-  BOT_SUMMARY_USAGE_REPLY,
   extractBotSummaryQuestion,
   isBotSummaryAnalystEnabled,
   isBotSummaryAnalystSourceAllowed,
@@ -270,7 +275,10 @@ type PhysicalInventorySessionGateway = Pick<
   "closeOpenEvent" | "listIngestTexts" | "findCloseIngestByLineMessageId" | "cancelClose"
 >>;
 type RecordDataQualityIssue = (candidate: DataQualityIssueCandidate) => Promise<unknown>;
-type BotSummaryAnalystAnswerer = (question: string) => Promise<string>;
+type BotSummaryAnalystAnswerer = (
+  question: string,
+  context: BotSummaryQuestionContext,
+) => Promise<string>;
 type BotSummaryAnalystSourceAllowed = (sourceId: string) => boolean;
 
 const BATCH_FIRST_IMAGE_REPLY = [
@@ -580,6 +588,8 @@ interface WebhookServiceDependencies {
   botSummaryAnalystAnswerer?: BotSummaryAnalystAnswerer;
   botSummaryAnalystEnabled?: boolean;
   botSummaryAnalystSourceAllowed?: BotSummaryAnalystSourceAllowed;
+  botSummaryConsultantEnabled?: boolean;
+  botSummaryConsultantSourceAllowed?: BotSummaryAnalystSourceAllowed;
   whiteSheetReaderEnabled?: boolean;
   whiteSheetBaseReader?: typeof readWhiteSheetBase;
   whiteSheetCorrectionApplier?: typeof applyWhiteSheetCorrection;
@@ -781,6 +791,8 @@ export class WebhookService {
   private readonly botSummaryAnalystAnswerer: BotSummaryAnalystAnswerer;
   private readonly botSummaryAnalystEnabled: boolean;
   private readonly botSummaryAnalystSourceAllowed: BotSummaryAnalystSourceAllowed;
+  private readonly botSummaryConsultantEnabled: boolean;
+  private readonly botSummaryConsultantSourceAllowed: BotSummaryAnalystSourceAllowed;
   private readonly whiteSheetReaderEnabled: boolean;
   private readonly whiteSheetBaseReader: typeof readWhiteSheetBase;
   private readonly whiteSheetCorrectionApplier: typeof applyWhiteSheetCorrection;
@@ -842,11 +854,18 @@ export class WebhookService {
       dependencies.botSummaryAnalystEnabled ?? isBotSummaryAnalystEnabled();
     this.botSummaryAnalystSourceAllowed =
       dependencies.botSummaryAnalystSourceAllowed ?? isBotSummaryAnalystSourceAllowed;
+    this.botSummaryConsultantEnabled =
+      dependencies.botSummaryConsultantEnabled ?? isBotSummaryConsultantEnabled();
+    this.botSummaryConsultantSourceAllowed =
+      dependencies.botSummaryConsultantSourceAllowed
+      ?? ((sourceId) => parseConsultantSourceIds().has(sourceId));
     this.whiteSheetReaderEnabled =
       dependencies.whiteSheetReaderEnabled ?? isWhiteSheetReaderEnabled();
     this.botSummaryAnalystAnswerer =
       dependencies.botSummaryAnalystAnswerer
-      ?? (async (question) => (await answerWithReadonlyTools(this.supabase, question)).answer);
+      ?? ((question, context) => answerBotSummaryForLine(this.supabase, question, context, {
+        consultantEnabled: this.botSummaryConsultantEnabled,
+      }));
     this.whiteSheetBaseReader = dependencies.whiteSheetBaseReader ?? readWhiteSheetBase;
     this.whiteSheetCorrectionApplier = dependencies.whiteSheetCorrectionApplier ?? applyWhiteSheetCorrection;
     this.whiteSheetSessionResolver = dependencies.whiteSheetSessionResolver ?? resolveWhiteSheetSession;
@@ -1074,11 +1093,15 @@ export class WebhookService {
     );
     if (botSummaryQuestion !== null) {
       await this.markRawMessageProcessed(rawMessageId, log);
-      const sourceAllowed = this.botSummaryAnalystSourceAllowed(sourceId);
+      const analystAllowed = this.botSummaryAnalystEnabled
+        && this.botSummaryAnalystSourceAllowed(sourceId);
+      // Worker chats may get the consultant without the sales/settlement analyst.
+      const consultantOnly = !analystAllowed && this.botSummaryConsultantEnabled
+        && this.botSummaryConsultantSourceAllowed(sourceId);
       if (replyToken) {
-        if (!this.botSummaryAnalystEnabled || !sourceAllowed) {
+        if (!analystAllowed && !consultantOnly) {
           await replyMessage(replyToken, BOT_SUMMARY_NOT_AVAILABLE_REPLY);
-        } else if (whiteSheetReadCommand(message as LineTextMessage, destination)
+        } else if (analystAllowed && whiteSheetReadCommand(message as LineTextMessage, destination)
           && (whiteSheetReadCommand(message as LineTextMessage, destination) !== "end" || this.whiteSheetReaderEnabled)) {
           const command = whiteSheetReadCommand(message as LineTextMessage, destination);
           if (!this.whiteSheetReaderEnabled) {
@@ -1105,10 +1128,17 @@ export class WebhookService {
             await replyMessage(replyToken, restarted ? PREVIEW_RESTART_REPLY : PREVIEW_START_REPLY);
           }
         } else if (!botSummaryQuestion) {
-          await replyMessage(replyToken, BOT_SUMMARY_USAGE_REPLY);
+          await replyMessage(replyToken, botSummaryUsageReply(this.botSummaryConsultantEnabled, consultantOnly));
         } else {
           try {
-            const answer = await this.botSummaryAnalystAnswerer(botSummaryQuestion);
+            const answer = await this.botSummaryAnalystAnswerer(botSummaryQuestion, {
+              sourceId,
+              sourceType: msgEvent.source.type,
+              lineUserId: lineUserId ?? null,
+              destination,
+              rawMessageId,
+              analystToolsAllowed: analystAllowed,
+            });
             await replyMessage(replyToken, answer);
           } catch (error) {
             log.error("Bot Summary analyst failed", {
