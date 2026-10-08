@@ -36,7 +36,7 @@ import {
   findKnowledge,
   getKnowledge,
 } from "./knowledge";
-import type { ConsultantScope } from "./types";
+import type { ConsultantActionId, ConsultantScope } from "./types";
 import {
   getLatestSubmissionStatus,
   getPendingSubmissions,
@@ -432,11 +432,33 @@ export function guardConsultantAnswer(
   if (INTERNAL_TERMS.test(answer)) return fallback;
   const provenSaved = (last.submission as { persisted?: unknown } | undefined)?.persisted === true;
   if (!provenSaved && claimsSaved(answer)) return fallback;
+  if (suggestsUnsupportedAction(answer, workflowOutputs)) return fallback;
   return answer;
 }
 
+// Worker instructions the model might add, and the action each one requires.
+const ACTION_PHRASES: Array<[RegExp, ConsultantActionId]> = [
+  [/แก้ข้อ/u, "correct_item_in_open_draft"],
+  [/ลบข้อ/u, "remove_item_in_open_draft"],
+  [/ยืนยันข้อ|ยืนยันจบรายการ/u, "confirm_review"],
+  [/พิมพ์(?:คำสั่ง)?จบรายการ|ส่ง(?:คำสั่ง)?จบรายการ(?:อีก|ใหม่)/u, "send_close_again"],
+  [/ส่ง(?:รายการ)?ใหม่ทั้งหมด|พิมพ์ใหม่ทั้งหมด|เริ่มรายการใหม่/u, "start_new_document"],
+];
+
+/** True when the answer tells the worker to do something the evidence does not allow. */
+function suggestsUnsupportedAction(answer: string, workflowOutputs: ToolOutput[]): boolean {
+  const last = workflowOutputs.at(-1)!;
+  const documents = [
+    last.submission,
+    ...((last.submissions as unknown[] | undefined) ?? []),
+  ] as Array<{ allowedNextActions?: Array<{ action: string }> } | undefined>;
+  const allowed = new Set(documents.flatMap((doc) => doc?.allowedNextActions?.map((entry) => entry.action) ?? []));
+  const compact = compactThai(answer);
+  return ACTION_PHRASES.some(([phrase, action]) => phrase.test(compact) && !allowed.has(action));
+}
+
 const STATUS_QUESTION =
-  /เข้า(?:หรือ)?ยัง|เข้าไหม|เข้ามั้ย|สำเร็จ(?:ไหม|มั้ย|หรือยัง)|บันทึก(?:แล้ว)?(?:หรือยัง|ไหม|มั้ย)|เป็นยังไง|เป็นไง|ล่าสุด|ไม่ขึ้น|ยังไม่เข้า|ติดอะไร/u;
+  /เข้า(?:หรือ)?ยัง|เข้าไหม|เข้ามั้ย|สำเร็จ(?:ไหม|มั้ย|หรือยัง)|บันทึก(?:แล้ว)?(?:หรือยัง|ไหม|มั้ย)|รายการ.{0,12}เป็น(?:ยัง|อย่าง)?ไง|ล่าสุด|ไม่ขึ้น|ยังไม่เข้า|ติดอะไร/u;
 const PENDING_QUESTION = /ค้าง|ยังไม่จบ|ยังไม่เสร็จ/u;
 const PROBLEM_QUESTION = /ทำไม|ไม่ผ่าน|ต้องแก้|แก้อะไร|ข้อไหน|ผิด|ส่งใหม่|ต่อยังไง|ยังไงต่อ|ทำอะไรต่อ/u;
 // Markers that the question is about a real document, not about how to do something.
@@ -547,8 +569,11 @@ export async function answerBotSummaryForLine(
       .filter((entry) => WORKFLOW_TOOL_NAMES.has(entry.tool))
       .map((entry) => entry.output as ToolOutput);
     if (workflowOutputs.length > 0) return guardConsultantAnswer(result.answer, workflowOutputs);
-    // A status question answered without reading status: never trust it.
-    if (isStatusQuestion(question)) {
+    // A status question answered without reading status: never trust it —
+    // unless it was really a how-to the model answered from the usage guide.
+    const answeredFromGuide = result.extensionOutputs.some((entry) =>
+      entry.tool === "get_usage_guide" && entry.output.status === "ok");
+    if (isStatusQuestion(question) && !(answeredFromGuide && !PERSONAL_STATUS.test(question))) {
       const deterministic = await deterministicConsultantAnswer(supabase, scope, question, today, now);
       if (deterministic) return deterministic;
       return claimsSaved(result.answer) ? REPLY_CANNOT_CONFIRM : result.answer;

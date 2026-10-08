@@ -66,14 +66,21 @@ export async function lookupStaffLabel(
   supabase: AnyClient,
   lineUserId: string,
 ): Promise<string | null> {
-  const { data, error } = await supabase
-    .from("line_operator_identities")
-    .select("staff_label, active")
-    .eq("line_user_id", lineUserId)
-    .maybeSingle();
   // ponytail: an unreadable mapping only removes the name shortcut; own-row
   // access still works through line_user_id, so this fails closed.
-  if (error || !data || data.active !== true) return null;
+  let data: { staff_label?: unknown; active?: unknown } | null = null;
+  try {
+    const result = await supabase
+      .from("line_operator_identities")
+      .select("staff_label, active")
+      .eq("line_user_id", lineUserId)
+      .maybeSingle();
+    if (result.error) return null;
+    data = result.data;
+  } catch {
+    return null;
+  }
+  if (!data || data.active !== true) return null;
   const label = typeof data.staff_label === "string" ? data.staff_label.trim() : "";
   return label || null;
 }
