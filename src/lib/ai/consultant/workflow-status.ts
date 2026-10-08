@@ -47,6 +47,7 @@ import type { ConsultantScope, SubmissionLifecycleState } from "./types";
 type AnyClient = SupabaseClient<any>;
 
 export const MAX_SUBMISSION_ROWS = 20;
+export const MAX_STAFF_SEARCH_ROWS = 200;
 export const DEFAULT_LOOKBACK_DAYS = 3;
 /** Two documents touched this close together are "equally plausible" latest. */
 export const SIMULTANEOUS_WINDOW_MS = 60_000;
@@ -492,12 +493,15 @@ async function loadSubmissions(
   }
 
   let staffFilter: string | null = null;
-  let selfOnly = scope.kind === "own";
+  // "รายการของผม" from a supervisor is still their own; others only by name.
+  let selfOnly = true;
   if (options.staff !== undefined && options.staff.trim() !== "") {
     const verdict = authorizeStaffQuery(scope, options.staff);
     if (verdict === "denied") return { status: "forbidden" };
-    if (verdict === "self") selfOnly = true;
-    else staffFilter = normalizeStaffName(options.staff);
+    if (verdict === "allowed") {
+      selfOnly = false;
+      staffFilter = normalizeStaffName(options.staff);
+    }
   }
 
   if (scope.kind === "supervisor" && scope.sourceIds.length === 0) {
@@ -527,9 +531,11 @@ async function loadSubmissions(
     query = query.gte("updated_at", new Date(sinceMs).toISOString());
     if (untilMs !== null) query = query.lt("updated_at", new Date(untilMs).toISOString());
 
+    // ponytail: the staff name is matched in memory (labels live in jsonb or
+    // free text), so a named search reads a wider bounded window.
     const { data, error } = await query
       .order("updated_at", { ascending: false })
-      .limit(MAX_SUBMISSION_ROWS);
+      .limit(staffFilter === null ? MAX_SUBMISSION_ROWS : MAX_STAFF_SEARCH_ROWS);
     if (error) return { status: "unavailable" };
     rows = (data ?? []) as unknown as PendingRow[];
   } catch {
@@ -568,7 +574,8 @@ async function loadSubmissions(
     derived = derived.filter(({ facts }) => facts.header.transactionKind === options.transactionKind);
   }
 
-  return { status: "ok", rows: derived, truncated: rows.length >= MAX_SUBMISSION_ROWS };
+  const limit = staffFilter === null ? MAX_SUBMISSION_ROWS : MAX_STAFF_SEARCH_ROWS;
+  return { status: "ok", rows: derived, truncated: rows.length >= limit };
 }
 
 /**

@@ -1128,7 +1128,7 @@ export class WebhookService {
             await replyMessage(replyToken, restarted ? PREVIEW_RESTART_REPLY : PREVIEW_START_REPLY);
           }
         } else if (!botSummaryQuestion) {
-          await replyMessage(replyToken, botSummaryUsageReply(this.botSummaryConsultantEnabled));
+          await replyMessage(replyToken, botSummaryUsageReply(this.botSummaryConsultantEnabled, consultantOnly));
         } else {
           try {
             const answer = await this.botSummaryAnalystAnswerer(botSummaryQuestion, {

@@ -12,8 +12,9 @@
  *
  * Initial scope is deliberately narrow:
  * - everyone: only documents they sent themselves, in the chat they ask from;
- * - supervisors (explicit env allowlist of LINE user ids): any document in the
- *   consultant's allowlisted chats.
+ * - supervisors (explicit env allowlist of LINE user ids): documents of the
+ *   chat they ask from; from a management (analyst) chat or a DM, documents of
+ *   every allowlisted chat. Without a staff name, only their own documents.
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -54,6 +55,8 @@ export type ScopeResolution =
 
 export interface ScopeResolutionOptions {
   allowedSourceIds?: ReadonlySet<string>;
+  /** Management (analyst) chats where a supervisor may see every allowlisted chat. */
+  managementSourceIds?: ReadonlySet<string>;
   supervisorIds?: ReadonlySet<string>;
   runtimeEnvironment?: RuntimeEnvironment;
 }
@@ -92,12 +95,16 @@ export async function resolveConsultantScope(
   const supervisors = options.supervisorIds ?? parseConsultantSupervisorIds();
 
   if (supervisors.has(lineUserId)) {
+    // The reply is posted where the question was asked: from a worker group a
+    // supervisor sees only that group; from a management chat or a DM, all.
+    const management = options.managementSourceIds ?? parseBotSummaryAnalystSourceIds();
+    const seesAllChats = management.has(sourceId) || requester.sourceType === "user";
     return {
       ok: true,
       scope: {
         kind: "supervisor",
         lineUserId,
-        sourceIds: [...allowed],
+        sourceIds: seesAllChats ? [...allowed] : [sourceId],
         staffLabel,
         runtimeEnvironment,
       },
@@ -109,12 +116,14 @@ export async function resolveConsultantScope(
   };
 }
 
+function compactName(value: string): string {
+  return value.normalize("NFC").replace(/[\s​-‍﻿]+/gu, "");
+}
+
+/** Comparable staff name; a polite prefix is dropped only when a name remains ("พี่" stays "พี่"). */
 export function normalizeStaffName(value: string): string {
-  return value
-    .normalize("NFC")
-    .replace(/\s+/gu, "")
-    .replace(/^(?:พี่|น้อง|คุณ|เจ๊|ป้า|ลุง)/u, "")
-    .trim();
+  const compact = compactName(value);
+  return compact.replace(/^(?:พี่|น้อง|คุณ|เจ๊|ป้า|ลุง)/u, "") || compact;
 }
 
 /**
@@ -129,6 +138,7 @@ export function authorizeStaffQuery(
 ): "self" | "allowed" | "denied" {
   const target = normalizeStaffName(requestedStaff);
   if (!target) return "self";
+  if (scope.staffLabel && compactName(scope.staffLabel) === compactName(requestedStaff)) return "self";
   if (scope.staffLabel && normalizeStaffName(scope.staffLabel) === target) return "self";
   return scope.kind === "supervisor" ? "allowed" : "denied";
 }

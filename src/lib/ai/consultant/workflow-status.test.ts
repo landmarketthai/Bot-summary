@@ -474,22 +474,42 @@ describe("authorization inside the query", () => {
     expect(db.calls.some((call) => call.method === "eq" && call.args[0] === "line_user_id")).toBe(false);
   });
 
-  test("simultaneous documents from two workers → ambiguous candidates", async () => {
+  // A supervisor with no name sees only their own documents; ambiguity across
+  // documents arises for one named worker active in two chats (management view).
+  const managementScope: ConsultantScope = { ...supervisorScope, sourceIds: [GROUP, "OTHER"] };
+
+  test("supervisor without a staff name sees only their own documents", async () => {
     const db = twoWorkerDb();
     const result = await getLatestSubmissionStatus(client(db), supervisorScope, { now: NOW });
+    expect(result).toEqual({ status: "none" });
+    expect(db.calls).toContainEqual({ table: "pending_sessions", method: "eq", args: ["line_user_id", SUPERVISOR] });
+  });
+
+  test("simultaneous documents of one worker in two chats → ambiguous candidates", async () => {
+    const db = new FakeDb();
+    db.tables.pending_sessions.push(incidentRow());
+    db.tables.pending_sessions.push(pendingRow({
+      session_key: `group:OTHER:user:${NOI}`,
+      source_id: "OTHER",
+      line_user_id: NOI,
+      updated_at: "2026-10-07T10:05:20.000Z",
+      accumulated_text: documentText("น้อย", "วิหาร", "เบิก", { items: 3 }),
+    }));
+    const result = await getLatestSubmissionStatus(client(db), managementScope, { staff: "น้อย", now: NOW });
     expect(result.status).toBe("ambiguous");
     if (result.status !== "ambiguous") return;
     expect(result.reason).toBe("simultaneous_documents");
-    expect(result.candidates.map((candidate) => candidate.staff).sort()).toEqual(["น้อย", "แดง"]);
+    expect(result.candidates.map((candidate) => candidate.market).sort()).toEqual(["ราชพฤกษ์", "วิหาร"]);
   });
 
   test("item number present as an issue in two documents → clarification", async () => {
     const db = new FakeDb();
     db.tables.pending_sessions.push(incidentRow());
-    const text = documentText("แดง", "วิหาร", "ชั่งคืน", { items: 24, broken: 22 });
+    const text = documentText("น้อย", "วิหาร", "ชั่งคืน", { items: 24, broken: 22 });
     db.tables.pending_sessions.push(pendingRow({
-      session_key: `group:${GROUP}:user:${DAENG}`,
-      line_user_id: DAENG,
+      session_key: `group:OTHER:user:${NOI}`,
+      source_id: "OTHER",
+      line_user_id: NOI,
       updated_at: "2026-10-07T11:30:00.000Z",
       ingest_revision: 4,
       partial_capture: captureOf(text),
@@ -497,7 +517,7 @@ describe("authorization inside the query", () => {
       partial_capture_updated_at: "2026-10-07T11:29:00.000Z",
       accumulated_text: text,
     }));
-    const result = await getSubmissionDiagnosis(client(db), supervisorScope, { itemNumber: 22, now: NOW });
+    const result = await getSubmissionDiagnosis(client(db), managementScope, { staff: "น้อย", itemNumber: 22, now: NOW });
     expect(result.status).toBe("ambiguous");
     if (result.status !== "ambiguous") return;
     expect(result.reason).toBe("item_in_multiple_documents");

@@ -69,17 +69,24 @@ export interface ConsultantAnswerDependencies {
   budgetMs?: number;
 }
 
-const DEFAULT_BUDGET_MS = 25_000;
-const PER_CALL_TIMEOUT_MS = 12_000;
+// The answer runs inside the per-chat ordered LINE queue; keep it short so a
+// question never holds that chat's produce messages for long.
+const DEFAULT_BUDGET_MS = 15_000;
+const PER_CALL_TIMEOUT_MS = 8_000;
 
-export function botSummaryUsageReply(consultantEnabled: boolean): string {
+const CONSULTANT_USAGE_LINES = [
+  "• @Botsummary ชั่งคืนต้องพิมพ์ยังไง",
+  "• @Botsummary เมื่อกี้รายการผมเข้าหรือยัง",
+  "• @Botsummary ทำไมข้อ 22 ไม่ผ่าน",
+];
+
+/** consultantOnly: worker chats, where sales/settlement questions are not offered. */
+export function botSummaryUsageReply(consultantEnabled: boolean, consultantOnly = false): string {
   if (!consultantEnabled) return BOT_SUMMARY_USAGE_REPLY;
-  return [
-    BOT_SUMMARY_USAGE_REPLY,
-    "• @Botsummary ชั่งคืนต้องพิมพ์ยังไง",
-    "• @Botsummary เมื่อกี้รายการผมเข้าหรือยัง",
-    "• @Botsummary ทำไมข้อ 22 ไม่ผ่าน",
-  ].join("\n");
+  if (consultantOnly) {
+    return ["ถาม @Botsummary ได้ เช่น", ...CONSULTANT_USAGE_LINES, "• @Botsummary วันนี้มีอะไรค้าง"].join("\n");
+  }
+  return [BOT_SUMMARY_USAGE_REPLY, ...CONSULTANT_USAGE_LINES].join("\n");
 }
 
 // ── Thai fixed replies ───────────────────────────────────────────────────────
@@ -91,10 +98,23 @@ const REPLY_UNAVAILABLE =
 const REPLY_IDENTITY_UNVERIFIED =
   "ยังยืนยันตัวผู้ถามไม่ได้ จึงดูสถานะรายการให้ไม่ได้ครับ กรุณาถามจากบัญชีไลน์ที่ใช้ส่งรายการครับ";
 const REPLY_NONE =
-  "ไม่พบรายการผักที่คุณส่งในช่วง 3 วันนี้ในแชทนี้ครับ ถ้าเพิ่งส่ง กรุณาดูข้อความตอบกลับของบอทหรือถามใหม่อีกครั้งครับ";
+  "ไม่พบรายการผักที่ตรงกับคำถามในช่วง 3 วันนี้ครับ ถ้าเพิ่งส่ง กรุณาดูข้อความตอบกลับของบอทหรือถามใหม่อีกครั้งครับ";
+const REPLY_CANNOT_CONFIRM =
+  "ยังยืนยันจากระบบไม่ได้ว่ารายการบันทึกแล้วหรือยังครับ กรุณาถามสถานะอีกครั้ง เช่น “รายการชั่งคืนล่าสุดของผมเข้าหรือยัง” ครับ";
+
+/** Worker-typed labels reach the model as data: keep only Thai, digits and simple punctuation. */
+function safeLabel(value: string | null): string | null {
+  if (!value) return null;
+  return value.replace(/[^\u0E00-\u0E7F0-9 .\-/()]/gu, "").trim().slice(0, 40) || null;
+}
 
 function candidateLine(candidate: SubmissionCandidate): string {
-  return [candidate.transactionKindThai, candidate.staff, candidate.market, candidate.businessDate]
+  return [
+    candidate.transactionKindThai,
+    safeLabel(candidate.staff),
+    safeLabel(candidate.market),
+    candidate.businessDate,
+  ]
     .filter(Boolean)
     .join(" ");
 }
@@ -111,8 +131,8 @@ type ToolOutput = Record<string, unknown> & { suggestedReply?: string };
 function evidenceForModel(evidence: SubmissionEvidence): Record<string, unknown> {
   return {
     businessDate: evidence.businessDate,
-    staff: evidence.staff,
-    market: evidence.market,
+    staff: safeLabel(evidence.staff),
+    market: safeLabel(evidence.market),
     transactionKindThai: evidence.transactionKindThai,
     state: evidence.state,
     persisted: evidence.persisted,
@@ -121,7 +141,7 @@ function evidenceForModel(evidence: SubmissionEvidence): Record<string, unknown>
     needsReviewCount: evidence.needsReviewCount,
     blockers: evidence.blockers.slice(0, 5).map((blocker) => ({
       itemNumber: blocker.itemNumber,
-      productName: blocker.productName,
+      productName: safeLabel(blocker.productName),
       problemThai: blocker.kindThai,
       detailThai: blocker.detailThai,
     })),
@@ -373,12 +393,25 @@ function buildExtension(
 // ── Deterministic guard + fallback ──────────────────────────────────────────
 
 const INTERNAL_TERMS =
-  /failed_closed|terminaliz|partial_capture|pending_session|finaliz|finalization|accountability|session_key|\bnull\b|undefined/iu;
-/** "บันทึกแล้ว/เรียบร้อย/สำเร็จ" asserted as fact — not quoted, not negated by ยัง/ไม่ just before. */
-export function claimsSaved(text: string): boolean {
-  for (const match of text.matchAll(/บันทึก(?:แล้ว|ไว้แล้ว|เรียบร้อย|สำเร็จ)/gu)) {
-    const before = text.slice(Math.max(0, match.index - 8), match.index);
-    if (/[“"']\s*$/u.test(before) || /(?:ยัง|ไม่)(?:ได้)?\s*$/u.test(before)) continue;
+  /failed_closed|terminaliz|partial_capture|pending_session|finaliz|accountability|session_key|\bnull\b|undefined/iu;
+
+function compactThai(text: string): string {
+  return text.normalize("NFC").replace(/[\s\u200b-\u200d\ufeff]+/gu, "");
+}
+
+/**
+ * Does the text assert that something was saved? Deliberately broad: a false
+ * positive only swaps the model's wording for the deterministic reply, while a
+ * false negative tells a worker their goods were recorded when they were not.
+ * `allowQuoted` keeps how-to answers that quote the bot's own “บันทึกแล้ว”.
+ */
+export function claimsSaved(text: string, allowQuoted = false): boolean {
+  const compact = compactThai(text);
+  const claim = /(?:บันทึก|เซฟ|เข้าระบบ|รายการเข้า|ส่งเข้า)(?:(?!ไม่|ยัง).){0,8}?(?:แล้ว|เรียบร้อย|สำเร็จ|ครบ)|สำเร็จแล้ว|เรียบร้อยแล้ว/gu;
+  for (const match of compact.matchAll(claim)) {
+    const before = compact.slice(Math.max(0, match.index - 6), match.index);
+    if (/(?:ยัง|ไม่|ไม่ได้)$/u.test(before)) continue;
+    if (allowQuoted && /[“"']$/u.test(before)) continue;
     return true;
   }
   return false;
@@ -386,22 +419,18 @@ export function claimsSaved(text: string): boolean {
 
 /**
  * Replace a model answer that contradicts the evidence with the deterministic
- * reply. Only workflow answers are checked: knowledge answers legitimately
- * quote the bot's own “บันทึกแล้ว” message.
+ * reply. A saved claim is accepted only when the LAST status evidence the
+ * model saw proves persistence for that document.
  */
 export function guardConsultantAnswer(
   answer: string,
   workflowOutputs: ToolOutput[],
 ): string {
   if (workflowOutputs.length === 0) return answer;
-  const fallback = workflowOutputs.at(-1)?.suggestedReply;
-  if (!fallback) return answer;
+  const last = workflowOutputs.at(-1)!;
+  const fallback = last.suggestedReply ?? REPLY_CANNOT_CONFIRM;
   if (INTERNAL_TERMS.test(answer)) return fallback;
-  const provenSaved = workflowOutputs.some((output) => {
-    const submission = output.submission as { persisted?: unknown } | undefined;
-    const submissions = output.submissions as Array<{ persisted?: unknown }> | undefined;
-    return submission?.persisted === true || submissions?.some((entry) => entry.persisted === true);
-  });
+  const provenSaved = (last.submission as { persisted?: unknown } | undefined)?.persisted === true;
   if (!provenSaved && claimsSaved(answer)) return fallback;
   return answer;
 }
@@ -410,6 +439,22 @@ const STATUS_QUESTION =
   /เข้า(?:หรือ)?ยัง|เข้าไหม|เข้ามั้ย|สำเร็จ(?:ไหม|มั้ย|หรือยัง)|บันทึก(?:แล้ว)?(?:หรือยัง|ไหม|มั้ย)|เป็นยังไง|เป็นไง|ล่าสุด|ไม่ขึ้น|ยังไม่เข้า|ติดอะไร/u;
 const PENDING_QUESTION = /ค้าง|ยังไม่จบ|ยังไม่เสร็จ/u;
 const PROBLEM_QUESTION = /ทำไม|ไม่ผ่าน|ต้องแก้|แก้อะไร|ข้อไหน|ผิด|ส่งใหม่|ต่อยังไง|ยังไงต่อ|ทำอะไรต่อ/u;
+// Markers that the question is about a real document, not about how to do something.
+const PERSONAL_STATUS =
+  /ผม|ฉัน|หนู|(?<!กู้รายการ)ล่าสุด|เมื่อกี้|ตอนนี้|ข้อ\s*\d|ค้าง|เข้า(?:หรือ)?ยัง|ไม่เข้า|สำเร็จ(?:ไหม|มั้ย|หรือยัง)|ไม่ขึ้น|ติดอะไร|ส่งใหม่/u;
+
+/**
+ * "ทำไมข้อ 22 ไม่ผ่าน" is about a document; "ถ้าพิมพ์ชื่อผักผิดต้องแก้ยังไง" is
+ * a how-to even though it says ผิด / ต้องแก้. A how-to topic match wins
+ * unless the question carries a personal/status marker.
+ */
+export function isStatusQuestion(question: string): boolean {
+  if (PERSONAL_STATUS.test(question)) return true;
+  if (findKnowledge(question).length > 0) return false;
+  return STATUS_QUESTION.test(question) || PENDING_QUESTION.test(question)
+    || PROBLEM_QUESTION.test(question);
+}
+
 const OTHER_PERSON = /ของ(?!ผม|ฉัน|หนู|เรา|ตัวเอง|กู|พี่เอง)\s*[ก-๙A-Za-z]/u;
 
 /**
@@ -424,9 +469,7 @@ export async function deterministicConsultantAnswer(
   today: string,
   now: number,
 ): Promise<string | null> {
-  const asksStatus = STATUS_QUESTION.test(question) || PENDING_QUESTION.test(question)
-    || PROBLEM_QUESTION.test(question);
-  if (asksStatus) {
+  if (isStatusQuestion(question)) {
     // A named other worker needs the model to extract the name; never guess it.
     if (OTHER_PERSON.test(question)) return null;
     if (!scope) return REPLY_IDENTITY_UNVERIFIED;
@@ -487,7 +530,8 @@ export async function answerBotSummaryForLine(
     today,
     previousQuestions,
     !analystToolsAllowed,
-    now + (dependencies.budgetMs ?? DEFAULT_BUDGET_MS),
+    // Real clock: the model-call timeouts are measured against Date.now().
+    Date.now() + (dependencies.budgetMs ?? DEFAULT_BUDGET_MS),
     now,
   );
 
@@ -502,7 +546,14 @@ export async function answerBotSummaryForLine(
     const workflowOutputs = result.extensionOutputs
       .filter((entry) => WORKFLOW_TOOL_NAMES.has(entry.tool))
       .map((entry) => entry.output as ToolOutput);
-    return guardConsultantAnswer(result.answer, workflowOutputs);
+    if (workflowOutputs.length > 0) return guardConsultantAnswer(result.answer, workflowOutputs);
+    // A status question answered without reading status: never trust it.
+    if (isStatusQuestion(question)) {
+      const deterministic = await deterministicConsultantAnswer(supabase, scope, question, today, now);
+      if (deterministic) return deterministic;
+      return claimsSaved(result.answer) ? REPLY_CANNOT_CONFIRM : result.answer;
+    }
+    return claimsSaved(result.answer, true) ? REPLY_CANNOT_CONFIRM : result.answer;
   } catch (error) {
     const fallback = await deterministicConsultantAnswer(supabase, scope, question, today, now)
       .catch(() => null);
