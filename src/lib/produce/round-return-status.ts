@@ -21,6 +21,8 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { RE } from "@/lib/parsers/weigh-session/regex";
+import { parseWeighSession } from "@/lib/parsers/weigh-session/parser";
+import { normalizedMarketLabel } from "@/lib/market";
 import { baseTransactionType, transactionBucket } from "@/lib/summary/transactions";
 import { transactionKindFromText } from "./failure-lifecycle-source";
 
@@ -38,6 +40,9 @@ export type RoundReturnState = "persisted" | "blocked" | "pending" | "none";
 /** One round's withdrawal side, from persisted transactions plus round identity. */
 export interface RoundWithdrawal {
   accountabilityRoundId: string;
+  /** Canonical LINE source and date used only for safety attribution. */
+  sourceId?: string | null;
+  businessDate?: string | null;
   sellerLabel: string;
   /** The ROUND's canonical market label — never a transaction's raw label. */
   marketLabel: string;
@@ -139,6 +144,8 @@ interface ProduceRow {
 
 interface RoundRow {
   id: string;
+  source_id: string | null;
+  business_date: string | null;
   seller_label: string | null;
   market_label: string | null;
 }
@@ -149,6 +156,53 @@ interface PendingRow {
   declared_transaction_type: string | null;
   accumulated_text: string | null;
   close_requested_at: string | null;
+  source_id: string | null;
+  business_date: string | null;
+  staff_label: string | null;
+  market_label: string | null;
+}
+
+/**
+ * P0 safety attribution for an unbound failed return. This is a REPORT-ONLY
+ * guard, not an accounting-round binding or reconciliation. Matching requires
+ * four explicit business dimensions: LINE source, business date, seller and
+ * canonical market. A missing dimension is never a wildcard. More than one
+ * matching round remains ambiguous: protect every candidate, but choose none.
+ */
+export interface UnboundReturnIdentity {
+  sourceId: string | null;
+  businessDate: string | null;
+  sellerLabel: string | null;
+  marketLabel: string | null;
+}
+
+function exactIdentity(value: string | null | undefined): string | null {
+  const text = value?.normalize("NFC").replace(/\s+/g, " ").trim() ?? "";
+  return text || null;
+}
+
+export function protectiveUnboundReturnRoundIds(
+  rounds: readonly (RoundRow & { id: string })[],
+  attempts: readonly UnboundReturnIdentity[],
+): Set<string> {
+  const blocked = new Set<string>();
+  for (const attempt of attempts) {
+    const source = exactIdentity(attempt.sourceId);
+    const date = exactIdentity(attempt.businessDate);
+    const seller = exactIdentity(attempt.sellerLabel);
+    const market = normalizedMarketLabel(attempt.marketLabel);
+    if (!source || !date || !seller || !market) continue;
+
+    for (const round of rounds) {
+      if (
+        exactIdentity(round.source_id) === source
+        && exactIdentity(round.business_date) === date
+        && exactIdentity(round.seller_label) === seller
+        && normalizedMarketLabel(round.market_label) === market
+      ) blocked.add(round.id);
+    }
+  }
+  return blocked;
 }
 
 /** Unknown stays fail-closed; a proven withdrawal cannot be return evidence. */
@@ -187,6 +241,8 @@ function chunks<T>(values: readonly T[], size: number): T[][] {
 export async function loadRoundReturnStatuses(
   supabase: AnyClient,
   businessDate: string,
+  /** Optional lifecycle-filtered unbound attempts; avoids reviving superseded failures. */
+  activeUnboundAttempts?: readonly UnboundReturnIdentity[],
 ): Promise<RoundReturnStatus[]> {
   // Paged: a busy business date exceeds PostgREST's default 1000-row ceiling,
   // and a short read here would classify a returned round as never returned.
@@ -222,7 +278,7 @@ export async function loadRoundReturnStatuses(
   for (const chunk of chunks(roundIds, CHUNK)) {
     const { data, error } = await supabase
       .from("accountability_rounds")
-      .select("id, seller_label, market_label")
+      .select("id, source_id, business_date, seller_label, market_label")
       .in("id", chunk);
     if (error) throw new Error(`accountability round lookup failed: ${error.message}`);
     for (const row of (data ?? []) as RoundRow[]) identities.set(row.id, row);
@@ -252,10 +308,68 @@ export async function loadRoundReturnStatuses(
     }
   }
 
+  // P0: a refused plain-text return may have failed BEFORE bindPlainTextRound.
+  // That is precisely the missing evidence which used to turn into "none".
+  // Read only unbound operational records, then attribute through the round's
+  // full business identity. Do not mutate pending_sessions or guess a round.
+  const unboundAttempts: UnboundReturnIdentity[] = activeUnboundAttempts
+    ? [...activeUnboundAttempts]
+    : [];
+  if (!activeUnboundAttempts) {
+    for (let offset = 0; offset < 50 * PAGE; offset += PAGE) {
+      const { data, error } = await supabase
+        .from("pending_sessions")
+        .select(
+          "accountability_round_id, finalization_status, declared_transaction_type, accumulated_text, close_requested_at, source_id, business_date, staff_label, market_label",
+        )
+        .is("accountability_round_id", null)
+        // Fetch a superset of unresolved documents; client filter below is final.
+        .or(`finalization_status.is.null,finalization_status.not.in.(${[...RESOLVED_PENDING_STATUSES].join(",")})`)
+        .order("id", { ascending: true })
+        .range(offset, offset + PAGE - 1);
+      if (error) throw new Error(`unbound pending return lookup failed: ${error.message}`);
+      const page = (data ?? []) as PendingRow[];
+      for (const row of page) {
+        if (row.accountability_round_id !== null) continue;
+        if (RESOLVED_PENDING_STATUSES.has(row.finalization_status ?? "pending")) continue;
+        if (!pendingRowCanBeReturn(row.declared_transaction_type, row.accumulated_text)) continue;
+        const parsed = row.accumulated_text ? parseWeighSession(row.accumulated_text) : null;
+        // Never use insertion time to invent a date across the 04:00 cutoff.
+        // A contradictory explicit header and structured business date is not
+        // proof of this particular round.
+        if (row.business_date && parsed?.date && row.business_date !== parsed.date) continue;
+        const claimedDate = row.business_date ?? parsed?.date ?? null;
+        if (claimedDate !== businessDate) continue;
+        unboundAttempts.push({
+          sourceId: row.source_id,
+          businessDate: claimedDate,
+          sellerLabel: row.staff_label ?? parsed?.staff_name ?? null,
+          marketLabel: row.market_label ?? parsed?.session_title ?? null,
+        });
+      }
+      if (page.length < PAGE) break;
+      if (offset + PAGE >= 50 * PAGE) {
+        throw new Error("unbound pending return scan exceeded safe page limit");
+      }
+    }
+  }
+  const blockedUnboundRounds = protectiveUnboundReturnRoundIds(
+    [...identities.values()], unboundAttempts,
+  );
+  for (const id of blockedUnboundRounds) {
+    evidence.push({
+      accountabilityRoundId: id,
+      finalizationStatus: "failed_closed",
+      closeAttempted: true,
+    });
+  }
+
   const rounds: RoundWithdrawal[] = roundIds.map((id) => {
     const identity = identities.get(id);
     return {
       accountabilityRoundId: id,
+      sourceId: identity?.source_id ?? null,
+      businessDate: identity?.business_date ?? null,
       sellerLabel: (identity?.seller_label ?? "").trim(),
       marketLabel: (identity?.market_label ?? "").trim(),
       withdrawalItemCount: withdrawals.get(id) ?? 0,

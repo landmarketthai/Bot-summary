@@ -84,6 +84,24 @@ describe("Morning Decision Brief", () => {
     expect(message).not.toContain("+อีก");
   });
 
+  test("P0: explicitly marks provisional money in the LINE morning brief", () => {
+    const provisional = buildMorningBriefMessage(report({
+      produceFinancial: {
+        fruit: {
+          withdrawalValueSatang: 1000, salesValueSatang: 1000,
+          goodReturnValueSatang: 0, houseStockValueSatang: null,
+          readyValueSatang: null, markets: [],
+        },
+      },
+    }));
+    expect(provisional).toContain("ยอดขายยังไม่ยืนยันทั้งหมด");
+    expect(provisional).toContain("ยอดขายหมวดนี้ยังไม่ยืนยัน");
+    const trusted = buildMorningBriefMessage(report({
+      sales: { ...report().sales, valueAuthoritative: true },
+    }));
+    expect(trusted).not.toContain("ห้ามใช้ตัวเลขนี้ปิดยอดเงิน");
+  });
+
   test("shows business money totals without diagnostic issue counters", () => {
     const message = buildMorningBriefMessage(report());
     expect(message).toContain("ยอดขายรวมที่คำนวณได้ (บางส่วน) 22,460.74 บาท");
@@ -175,7 +193,7 @@ describe("Morning Decision Brief", () => {
     const unavailable = buildMorningBriefMessage(report({ houseStock: { status: "unavailable" } }));
     expect(missing).toContain("ยังไม่มีข้อมูลสต๊อกบ้าน");
     expect(unavailable).toContain("ยังไม่มีข้อมูลสต๊อกบ้านสำหรับสรุปนี้");
-    expect(unavailable).not.toContain("⚠️");
+    expect(unavailable.split("🏠 ของในบ้าน")[1]).not.toContain("⚠️");
   });
   test("large categorized lists chunk instead of truncating names", () => {
     const many = purchaseItems("สินค้า", 150);
@@ -210,6 +228,7 @@ describe("Morning Decision Brief", () => {
         priceIssueCount: 0,
         incompleteReturnIssueCount: 0,
         excludedFromSalesCount: 0,
+        valueAuthoritative: true,
       },
     }));
     expect(message).toContain("💰 ภาพรวมเงิน\nยอดขายรวม 21,740.74 บาท");
@@ -282,6 +301,21 @@ describe("Morning Brief LINE layout — Production 2026-09-07 regression", () =>
     for (const message of messages) expect(countCodePoints(message)).toBeLessThanOrEqual(800);
     expect(messages.join("\n")).toContain("ผักซื้อเพิ่มชื่อยาว74");
     expect(messages.join("\n")).not.toContain("รายละเอียดมากเกินขีดจำกัด LINE");
+  });
+
+  test("P0: PDF explicitly warns when sales are not authoritative", () => {
+    const model = report({
+      produceFinancial: {
+        fruit: {
+          withdrawalValueSatang: 1000, salesValueSatang: 1000,
+          goodReturnValueSatang: 0, houseStockValueSatang: null,
+          readyValueSatang: null, markets: [],
+        },
+      },
+    });
+    const text = pdfText(MorningBriefA4Doc({ report: model, generatedAt: new Date("2026-09-08T01:00:00Z") }));
+    expect(text).toContain("ยอดขายยังไม่ยืนยัน");
+    expect(text).toContain("ห้ามใช้ปิดยอดเงิน");
   });
 
   test("the PDF keeps purchase status but omits internal review dumps", () => {

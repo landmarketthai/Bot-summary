@@ -335,11 +335,12 @@ function DataFooter({ generatedText }: { generatedText: string }) {
   </View>;
 }
 
-function FinancialSummaryPage({ financial, label, businessDate, generatedText }: {
+function FinancialSummaryPage({ financial, label, businessDate, generatedText, valueAuthoritative }: {
   financial: MorningBriefFruitFinancialSummary;
   label: string;
   businessDate: string;
   generatedText: string;
+  valueAuthoritative: boolean;
 }) {
   const marketTotals = financial.markets;
   const dateText = thaiNumericDate(businessDate);
@@ -348,6 +349,7 @@ function FinancialSummaryPage({ financial, label, businessDate, generatedText }:
       <View style={S.header}>
         <Text style={S.title}>{`สรุป${label}คงเหลือเพื่อสั่งซื้อ - ${formatThaiDate(businessDate)}`}</Text>
         <Text style={S.subtitle}>Bot-summary | ข้อมูลวันที่ {dateText} | หมวด{label}</Text>
+        {!valueAuthoritative ? <Text style={S.subtitle}>⚠️ ยอดขายยังไม่ยืนยัน ห้ามใช้ปิดยอดเงินจนกว่าจะตรวจข้อมูลคืนเรียบร้อย</Text> : null}
       </View>
 
       <View style={S.kpiGrid}>
@@ -429,6 +431,7 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
     {financialSections.map(({ section, financial }) => <FinancialSummaryPage
       key={section} financial={financial} label={PRODUCE_SECTION_LABEL[section]}
       businessDate={report.businessDate} generatedText={generatedText}
+      valueAuthoritative={report.sales.valueAuthoritative}
     />)}
     {financialSections.length === 0 && !stockItems.some(hasRealStockQuantity) ? <Page size="A4" style={S.page}>
       <Text style={S.title}>สรุปเช้า - {formatThaiDate(report.businessDate)}</Text>
@@ -445,6 +448,7 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
         <View style={S.stockHeader}>
           <Text style={S.title}>{`หมวด${category}${chunks.length > 1 ? ` ${index + 1}/${chunks.length}` : ""} - ${formatThaiDate(report.businessDate)}`}</Text>
           <Text style={S.subtitle}>รวมคงเหลือ = คงเหลือในบ้าน + ในตลาด</Text>
+          {!report.sales.valueAuthoritative ? <Text style={S.subtitle}>⚠️ ข้อมูลสินค้าชั่งคืนและยอดขายบางส่วนยังไม่ยืนยัน กรุณาตรวจสอบก่อนใช้สรุปเงินหรือสั่งซื้อ</Text> : null}
         </View>
         <StockMatrix
           items={items}

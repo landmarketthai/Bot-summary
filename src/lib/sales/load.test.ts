@@ -146,6 +146,83 @@ describe("P1 business-date window", () => {
   });
 });
 
+describe("P0 loader: failed return without round binding", () => {
+  const roundId = "round-p0-7oct";
+  function incidentFixture(overrides: Fixture = {}): Fixture {
+    return baseFixture({
+      produce: [produceRow({
+        id: "p0-withdrawal", session_id: "p0-session", quantity: 10,
+        transaction_type: "เบิก", base_transaction_type: "เบิก",
+        accountability_round_id: roundId, raw_message_id: "raw-1",
+      })],
+      sessions: [{
+        id: "p0-session", total_items: 1, parser_errors: null,
+        staff_name: "เสือ", session_title: "ตลาดกี้",
+        session_date: DATE, session_kind: "main",
+        accountability_round_id: roundId, raw_message_id: "raw-1",
+        finalized_at: "2026-07-25T03:00:00.000Z", voided_at: null,
+      }],
+      accountabilityRounds: [{
+        id: roundId, source_id: SOURCE_A, business_date: DATE,
+        seller_label: "เสือ", market_label: "ตลาดกี้", status: "open",
+      }],
+      pending: [{
+        id: "failed-unbound", accountability_round_id: null,
+        finalization_status: "failed_closed", terminalized: true,
+        accumulated_text: "เสือ-ตลาดกี้ ชั่งคืน 25/7/2569\n1.หมอนทอง 5 โล\nจบรายการชั่งคืน",
+        business_date: DATE, source_id: SOURCE_A, staff_label: "เสือ",
+        market_label: "ตลาดกี้", declared_transaction_type: "คืน",
+        created_at: "2026-07-25T08:00:00.000Z",
+      }],
+      ...overrides,
+    });
+  }
+
+  test("a failed unbound return demotes item and cash, not just the day header", async () => {
+    const report = await loadSalesReport(fakeSupabase(incidentFixture()), DATE);
+    const item = report.markets[0].rows[0];
+    expect(item.status).toBe("QUANTITY_BLOCKED");
+    expect(item.returnEvidenceIncomplete).toBe(true);
+    expect(item.soldQuantity).toBeNull();
+    expect(item.expectedSalesSatang).toBeNull();
+    expect(item.valueStatus).toBe("PENDING_REVIEW");
+    expect(report.allMarkets.expectedSalesSatang).toBe(0);
+  });
+
+  test("the true no-return case remains a trusted sold-out item", async () => {
+    const report = await loadSalesReport(
+      fakeSupabase(incidentFixture({ pending: [] })), DATE,
+    );
+    expect(report.markets[0].rows[0].status).toBe("TRUSTED");
+    expect(report.markets[0].rows[0].soldQuantity).toBe(10);
+  });
+
+  test("a later successful re-send clears the active unbound failure", async () => {
+    const base = incidentFixture();
+    const returnRow = produceRow({
+      id: "p0-return", session_id: "p0-return-session",
+      accountability_round_id: roundId,
+      raw_message_id: "raw-2", quantity: 4,
+      transaction_type: "คืน", base_transaction_type: "คืน",
+    });
+    const report = await loadSalesReport(fakeSupabase(incidentFixture({
+      produce: [...(base.produce ?? []), returnRow],
+      rawMessages: [
+        { id: "raw-1", source_id: SOURCE_A }, { id: "raw-2", source_id: SOURCE_A },
+      ],
+      sessions: [...(base.sessions ?? []), {
+        id: "p0-return-session", staff_name: "เสือ",
+        session_title: "ตลาดกี้", session_date: DATE, session_kind: "main",
+        total_items: 1, parser_errors: null,
+        accountability_round_id: roundId, raw_message_id: "raw-2",
+        finalized_at: "2026-07-25T10:00:00.000Z", voided_at: null,
+      }],
+    })), DATE);
+    expect(report.markets[0].rows[0].status).toBe("TRUSTED");
+    expect(report.markets[0].rows[0].soldQuantity).toBe(6);
+  });
+});
+
 describe("P1 loader", () => {
   test("produces a trusted report from clean data", async () => {
     const report = await loadSalesReport(fakeSupabase(baseFixture()), DATE);

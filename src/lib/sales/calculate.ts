@@ -171,6 +171,8 @@ export interface SalesCalculationInput {
    * quantity is not final and its calculable money stays pending review.
    */
   incompleteReturnRounds?: ReadonlySet<string>;
+  /** Active unbound return cannot be attributed even to a candidate scope. */
+  unattributableReturnRisk?: boolean;
   /**
    * Rounds that already have a persisted ชั่งคืน / คืนเสีย document. A
    * withdrawn identity in one of these rounds that never appears in any
@@ -773,9 +775,9 @@ export function calculateSalesReport(input: SalesCalculationInput): SalesReport 
       addReason(reasons, "product_return_absent");
     }
 
-    const returnEvidenceIncomplete =
-      aggregate.accountabilityRoundId !== null
-      && incompleteRounds.has(aggregate.accountabilityRoundId);
+    const returnEvidenceIncomplete = input.unattributableReturnRisk === true
+      || (aggregate.accountabilityRoundId !== null
+        && incompleteRounds.has(aggregate.accountabilityRoundId));
     const returnQuantityPending = reasons.has("product_return_absent") || returnEvidenceIncomplete;
     const hardQuantityBlocked = [...reasons].some((reason) => reason !== "product_return_absent");
     const quantityBlocked = hardQuantityBlocked || returnQuantityPending;

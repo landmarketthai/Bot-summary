@@ -16,6 +16,7 @@ import {
   loadRoundReturnStatuses,
   roundsWithIncompleteReturn,
   roundsWithPersistedReturn,
+  protectiveUnboundReturnRoundIds,
 } from "@/lib/produce/round-return-status";
 import {
   activeFailureIds,
@@ -1267,7 +1268,48 @@ export async function loadSalesReport(
   // whose ชั่งคืน is unfinished, and the rounds that already have a persisted
   // return. The last one is what stops a withdrawn product omitted from that
   // return from being reported as a confident sold-out sale.
-  const roundStatuses = await loadRoundReturnStatuses(supabase, businessDate);
+  // P0 sales integrity: use the lifecycle scan's ACTIVE verdict, not a raw
+  // stale failed_closed row. A later proven replacement must clear the block.
+  // The attribution below is read-only: it never assigns a database round ID.
+  const activeIds = activeFailureIds(failures.classifications);
+  const activeUnboundReturns = failures.attempts.filter((attempt) =>
+    activeIds.has(attempt.attemptId)
+    && !attempt.accountabilityRoundId
+    && attempt.transactionKind !== "เบิก"
+    && (options.includeQaScopes || !isQaMarketLabel(attempt.marketLabel))
+    && (attempt.businessDate === null || attempt.businessDate === businessDate)
+  );
+  const roundStatuses = await loadRoundReturnStatuses(
+    supabase, businessDate,
+    activeUnboundReturns.map((attempt) => ({
+      sourceId: attempt.sourceId,
+      businessDate: attempt.businessDate,
+      sellerLabel: attempt.staffLabel,
+      marketLabel: attempt.marketLabel,
+    })),
+  );
+  const protectedUnboundRounds = protectiveUnboundReturnRoundIds(
+    roundStatuses.map((round) => ({
+      id: round.accountabilityRoundId,
+      source_id: round.sourceId ?? null,
+      business_date: round.businessDate ?? null,
+      seller_label: round.sellerLabel,
+      market_label: round.marketLabel,
+    })),
+    activeUnboundReturns.map((attempt) => ({
+      sourceId: attempt.sourceId,
+      businessDate: attempt.businessDate,
+      sellerLabel: attempt.staffLabel,
+      marketLabel: attempt.marketLabel,
+    })),
+  );
+  // Missing identity is NOT evidence that every seller sold out. Where no
+  // complete source/date/seller/market is available, report quantities are
+  // pending review rather than choosing a round or confirming money.
+  const unattributableReturnRisk = activeUnboundReturns.some((attempt) =>
+    !attempt.sourceId || !attempt.businessDate
+    || !attempt.staffLabel || !normalizedMarketLabel(attempt.marketLabel)
+  );
 
   // QA scopes are dropped HERE, before the calculator sees them, so they can
   // never reach a rollup, a trusted/blocked count or a blocker list. Hiding
@@ -1293,7 +1335,9 @@ export async function loadSalesReport(
     incompleteReturnRounds: new Set([
       ...roundsWithIncompleteReturn(roundStatuses),
       ...activeIncompleteReturnRoundIds(failures.attempts, failures.classifications),
+      ...protectedUnboundRounds,
     ]),
     persistedReturnRounds: roundsWithPersistedReturn(roundStatuses),
+    unattributableReturnRisk,
   });
 }

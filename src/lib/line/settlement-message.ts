@@ -37,7 +37,7 @@ export function buildSettlementLineMessage(input: SettlementLineMessageInput): s
   const market = displayMarketName(input.marketName, "");
   const title = market ? `${input.staffName} — ${market}` : input.staffName;
   const diff = input.settlement.ขาดเกิน;
-  const diffLine = input.produceValueStatus === "invalid"
+  const diffLine = input.produceValueStatus !== "complete"
     ? `ผลตรวจ: ${UNKNOWN_FINANCIAL}`
     :
     diff === 0
@@ -47,7 +47,9 @@ export function buildSettlementLineMessage(input: SettlementLineMessageInput): s
         : `ผลตรวจ: ขาด ${fmt(Math.abs(diff))} บาท`;
 
   const lines = [
-    "รายการส่งเงิน ✅",
+    input.produceValueStatus === "complete"
+      ? "รายการส่งเงิน ✅"
+      : "รายการส่งเงิน (รับข้อมูลแล้ว ยอดเงินรอตรวจ)",
     "",
     `${title} — ${formatThaiDate(input.date)}`,
     "",
@@ -63,7 +65,7 @@ export function buildSettlementLineMessage(input: SettlementLineMessageInput): s
     `ค่าแรง: ${fmt(input.settlement.ค่าแรง)} บาท`,
     `ยอดขายจากรายการส่งเงิน: ${fmt(input.settlement.ยอดขาย)} บาท`,
     diffLine,
-    input.produceValueStatus === "invalid"
+    input.produceValueStatus !== "complete"
       ? `เงินสดที่ควรเหลือส่งเจ๊: ${UNKNOWN_FINANCIAL}`
       : `เงินสดที่ควรเหลือส่งเจ๊: ${fmt(input.settlement.เงินสดต้องส่งเจ๊)} บาท`,
   ];
@@ -93,7 +95,7 @@ export function buildFinalSettlementMessage(input: FinalSettlementMessageInput):
   const s      = input.settlement;
   const r      = input.reconciliation;
 
-  const salesDiffLine = input.produceValueStatus === "invalid"
+  const salesDiffLine = input.produceValueStatus !== "complete"
     ? `ผลตรวจ: ${UNKNOWN_FINANCIAL}`
     :
     s.ขาดเกิน === 0
@@ -110,7 +112,9 @@ export function buildFinalSettlementMessage(input: FinalSettlementMessageInput):
         : `ผลตรวจสลิป: ขาด ${fmt(Math.abs(r.difference))} บาท`;
 
   const lines = [
-    "รายการส่งเงิน ✅ (ยืนยันแล้ว)",
+    input.produceValueStatus === "complete"
+      ? "รายการส่งเงิน ✅ (ยืนยันแล้ว)"
+      : "รายการส่งเงิน (รับข้อมูลแล้ว ยอดเงินรอตรวจ)",
     "",
     `${title} — ${formatThaiDate(input.date)}`,
     "",
@@ -126,7 +130,7 @@ export function buildFinalSettlementMessage(input: FinalSettlementMessageInput):
     `ค่าแรง: ${fmt(s.ค่าแรง)} บาท`,
     `ยอดขายจากรายการส่งเงิน: ${fmt(s.ยอดขาย)} บาท`,
     salesDiffLine,
-    input.produceValueStatus === "invalid"
+    input.produceValueStatus !== "complete"
       ? `เงินสดที่ควรเหลือส่งเจ๊: ${UNKNOWN_FINANCIAL}`
       : `เงินสดที่ควรเหลือส่งเจ๊: ${fmt(s.เงินสดต้องส่งเจ๊)} บาท`,
     "",

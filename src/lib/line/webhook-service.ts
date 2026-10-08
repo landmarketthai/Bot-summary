@@ -2858,6 +2858,33 @@ export class WebhookService {
     const parsed = parseWeighSession(document, bangkokToday());
     const finalizationErrors = getWeighSessionFinalizationErrors(parsed);
     if (finalizationErrors.length > 0) {
+      // P0: validation can refuse an item before the usual round binding.
+      // A recognized return still needs durable round identity even when
+      // nothing is booked to produce_items. The binding RPC checks the
+      // exact source/owner/date/seller/market and is idempotent. It never
+      // creates a return round, and failures stay in partial capture.
+      if (
+        !pending.accountability_round_id
+        && parsed.items.some((item) =>
+          item.transaction_type === "คืน" || item.transaction_type === "คืนเสีย")
+      ) {
+        const binding = await bindPlainTextRound(
+          this.supabase,
+          {
+            sessionKey: pending.session_key,
+            sessionGeneration: pending.session_generation,
+            sourceId: pending.source_id,
+            lineUserId: pending.line_user_id,
+          },
+          parsed,
+        );
+        if (binding.status === "refused") {
+          log.warn("failed return round attribution refused", {
+            sessionKey: pending.session_key,
+            reason: binding.reason,
+          });
+        }
+      }
       // A malformed line no longer throws away every line that parsed cleanly.
       // Stage the good subset durably, but keep it outside produce_items so a
       // partial document can never leak into Settlement or financial reports.

@@ -549,7 +549,13 @@ export async function finalizePendingGeneration(
   let entryGateDetail: string | null = null;
   let entryGateAdvisories: ProduceValidationAdvisory[] = [];
   let entryGateReconciliation: ProduceValidationReconciliation[] = [];
-  if (validationErrors.length === 0 && !seed && !accountabilityRoundId) {
+  // P0: a return can have valid seller/market/date but a malformed ITEM.
+  // Bind that attempted return before failed-closed finalization so the failed
+  // document remains attributable; never bind a malformed withdrawal here.
+  const hasRecognizedReturn = parsed.items.some(
+    (item) => item.transaction_type === "คืน" || item.transaction_type === "คืนเสีย",
+  );
+  if ((validationErrors.length === 0 || hasRecognizedReturn) && !seed && !accountabilityRoundId) {
     const binding = await bindPlainTextRound(
       supabase,
       {

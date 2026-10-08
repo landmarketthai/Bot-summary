@@ -136,6 +136,18 @@ describe("buildSettlementLineMessage", () => {
     expectMoneySideUnchanged(result);
   });
 
+  it("P0: blocked settlement cannot claim a final financial difference", () => {
+    const result = message({
+      transactions: { เบิก: 9000, คืน: 0, คืนเสีย: 0, ยอดส่ง: 9000 },
+      produceValueStatus: "blocked",
+      producePresence: { เบิก: true, คืน: false, คืนเสีย: false },
+    });
+    expect(result).toContain("ผลตรวจ: ⚠️ ยังยืนยันไม่ได้");
+    expect(result).toContain("เงินสดที่ควรเหลือส่งเจ๊: ⚠️ ยังยืนยันไม่ได้");
+    expect(result).not.toContain("รายการส่งเงิน ✅");
+    expect(result).toContain("เงินโอน: 2,680.00 บาท");
+  });
+
   it("BLOCKED with all numeric components: still shows numbers as unconfirmed", () => {
     const result = message({
       transactions: { เบิก: 13929.7, คืน: 10522.2, คืนเสีย: 213, ยอดส่ง: 3194.5 },

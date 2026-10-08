@@ -85,7 +85,13 @@ function buildSalesBlock(report: MorningBriefReport): string {
   const totalLabel = sales.excludedFromSalesCount > 0
     ? "ยอดขายรวมที่คำนวณได้ (บางส่วน)"
     : "ยอดขายรวม";
-  const lines = ["💰 ภาพรวมเงิน", `${totalLabel} ${satangToBahtText(sales.totalSalesSatang)} บาท`];
+  const lines = [
+    "💰 ภาพรวมเงิน",
+    ...(!sales.valueAuthoritative
+      ? ["⚠️ ยอดขายยังไม่ยืนยันทั้งหมด ห้ามใช้ตัวเลขนี้ปิดยอดเงินจนกว่าจะตรวจรายการคืนสำเร็จ"]
+      : []),
+    `${totalLabel} ${satangToBahtText(sales.totalSalesSatang)} บาท`,
+  ];
   if (sales.pendingReviewSalesSatang !== 0) {
     lines.push(
       `ยอดยืนยันแล้ว ${satangToBahtText(sales.confirmedSalesSatang)} บาท`,
@@ -105,6 +111,9 @@ function buildProduceFinancialBlocks(report: MorningBriefReport): string[] {
       `ยอดขาย ${satangToBahtText(financial.salesValueSatang)} บาท`,
       `เบิก ${satangToBahtText(financial.withdrawalValueSatang)} บาท`,
       `ชั่งคืนดี ${satangToBahtText(financial.goodReturnValueSatang)} บาท`,
+      ...(!report.sales.valueAuthoritative
+        ? ["⚠️ ตัวเลขยอดขายหมวดนี้ยังไม่ยืนยัน ห้ามใช้สรุปเงิน"]
+        : []),
     ].join("\n")];
   });
 }
