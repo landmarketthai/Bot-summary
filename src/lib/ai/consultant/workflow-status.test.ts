@@ -24,6 +24,7 @@ class FakeDb {
   tables: Record<string, Row[]> = { pending_sessions: [], produce_sessions: [] };
   calls: Call[] = [];
   failTables = new Set<string>();
+  ignoreFilters = false;
 
   from(table: string) {
     this.calls.push({ table, method: "from", args: [] });
@@ -93,7 +94,8 @@ class FakeQuery implements PromiseLike<{ data: Row[] | null; error: { message: s
   }
 
   private run(): Row[] {
-    let rows = (this.db.tables[this.table] ?? []).filter((row) => this.predicates.every((predicate) => predicate(row)));
+    let rows = (this.db.tables[this.table] ?? []).filter((row) =>
+      this.db.ignoreFilters || this.predicates.every((predicate) => predicate(row)));
     if (this.orderBy) {
       const { column, ascending } = this.orderBy;
       rows = [...rows].sort((a, b) => (Date.parse(String(a[column])) - Date.parse(String(b[column]))) * (ascending ? 1 : -1));
@@ -500,6 +502,81 @@ describe("authorization inside the query", () => {
     if (result.status !== "ambiguous") return;
     expect(result.reason).toBe("simultaneous_documents");
     expect(result.candidates.map((candidate) => candidate.market).sort()).toEqual(["ราชพฤกษ์", "วิหาร"]);
+  });
+
+  test("canonical market resolves supervisor status and diagnosis ambiguity", async () => {
+    const db = new FakeDb();
+    db.tables.pending_sessions.push(incidentRow());
+    const text = documentText("น้อย", "วิหาร", "ชั่งคืน", { items: 24, broken: 22 });
+    db.tables.pending_sessions.push(pendingRow({
+      session_key: `group:OTHER:user:${NOI}`,
+      source_id: "OTHER",
+      line_user_id: NOI,
+      updated_at: "2026-10-07T10:05:20.000Z",
+      ingest_revision: 4,
+      partial_capture: captureOf(text),
+      partial_capture_revision: 4,
+      accumulated_text: text,
+    }));
+    const options = { staff: "น้อย", now: NOW, transactionKind: "return" as const };
+    expect((await getLatestSubmissionStatus(client(db), managementScope, options)).status).toBe("ambiguous");
+    expect((await getSubmissionDiagnosis(client(db), managementScope, { ...options, itemNumber: 22 })).status)
+      .toBe("ambiguous");
+
+    const status = await getLatestSubmissionStatus(client(db), managementScope, { ...options, market: "ตลาดราชพฤก" });
+    const diagnosis = await getSubmissionDiagnosis(client(db), managementScope, {
+      ...options, market: "ตลาดราชพฤกษ์", itemNumber: 22,
+    });
+    if (status.status !== "ok" || diagnosis.status !== "ok") throw new Error("expected narrowed documents");
+    expect(status.submission.market).toBe("ราชพฤกษ์");
+    expect(status.submission.transactionKindThai).toBe("ชั่งคืน");
+    expect(diagnosis.submission.reference).toBe(status.submission.reference);
+    expect(diagnosis.requestedItem?.status).toBe("blocker");
+    expect(db.calls.some((call) => JSON.stringify(call.args).includes("ตลาดราชพฤก"))).toBe(false);
+  });
+
+  test("market narrows pending documents together with the requested transaction kind", async () => {
+    const db = new FakeDb();
+    db.tables.pending_sessions.push(incidentRow());
+    db.tables.pending_sessions.push(pendingRow({
+      session_key: "withdrawal",
+      line_user_id: NOI,
+      accumulated_text: documentText("น้อย", "ราชพฤกษ์", "เบิก", { items: 3 }),
+    }));
+    const result = await getPendingSubmissions(client(db), ownScope(NOI, "น้อย"), {
+      market: "ราชพฤก", transactionKind: "return", now: NOW,
+    });
+    if (result.status !== "ok") throw new Error(result.status);
+    expect(result.submissions).toHaveLength(1);
+    expect(result.submissions[0]!.transactionKindThai).toBe("ชั่งคืน");
+  });
+
+  test("market cannot bypass own or supervisor scope even if the client ignores query filters", async () => {
+    const db = twoWorkerDb();
+    db.ignoreFilters = true;
+    for (const [scope, staff, market] of [
+      [ownScope(NOI, "น้อย"), undefined, "ทรัพย์พัน"], // same user, unauthorized source
+      [ownScope(NOI, "น้อย"), undefined, "วิหาร"], // another user, same source
+      [supervisorScope, "น้อย", "ทรัพย์พัน"], // supervisor's unauthorized source
+      [supervisorScope, undefined, "ราชพฤกษ์"], // supervisor without staff is self-only
+    ] as const) {
+      expect(await getLatestSubmissionStatus(client(db), scope, { staff, market, now: NOW }))
+        .toEqual({ status: "none" });
+    }
+    const forbiddenDb = twoWorkerDb();
+    expect(await getSubmissionDiagnosis(client(forbiddenDb), ownScope(DAENG, "แดง"), {
+      staff: "น้อย", market: "ราชพฤกษ์", itemNumber: 22, now: NOW,
+    })).toEqual({ status: "forbidden" });
+    expect(forbiddenDb.calls).toEqual([]);
+  });
+
+  test("injection-like and unknown markets are literal selectors and never enter database filters", async () => {
+    for (const market of ["ราชพฤกษ์,source_id.eq.OTHER", "ราชพฤกษ", "เบิก"]) {
+      const db = twoWorkerDb();
+      expect(await getLatestSubmissionStatus(client(db), managementScope, { staff: "น้อย", market, now: NOW }))
+        .toEqual({ status: "none" });
+      expect(db.calls.some((call) => call.args.some((arg) => arg === market))).toBe(false);
+    }
   });
 
   test("item number present as an issue in two documents → clarification", async () => {

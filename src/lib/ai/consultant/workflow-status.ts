@@ -28,6 +28,7 @@
 
 import { createHash } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { canonicalMarketLabel } from "@/lib/market";
 import { parseWeighSession } from "@/lib/parsers/weigh-session/parser";
 import type { ProducePartialCapture, ProducePartialCaptureIssue } from "@/lib/produce/partial-capture";
 import { authorizeStaffQuery, normalizeStaffName } from "./authorization";
@@ -205,6 +206,8 @@ export interface SubmissionQueryOptions {
   /** YYYY-MM-DD business date. Without it the lookback is DEFAULT_LOOKBACK_DAYS. */
   businessDate?: string;
   transactionKind?: ProduceTransactionKind;
+  /** A market selector only narrows already authorized documents. */
+  market?: string;
   /** Test seam for the clock. */
   now?: number;
 }
@@ -481,7 +484,7 @@ type LoadResult =
 /**
  * The single authorized read. Applies scope filters IN THE QUERY, then proves
  * produce persistence, then applies in-memory filters (supervisor staff name,
- * business date, kind) on derived facts.
+ * business date, kind, market) on derived facts.
  */
 async function loadSubmissions(
   supabase: AnyClient,
@@ -569,6 +572,10 @@ async function loadSubmissions(
   if (options.businessDate) {
     derived = derived.filter(({ row, facts }) =>
       (facts.header.businessDate ?? bangkokDate(Date.parse(row.created_at))) === options.businessDate);
+  }
+  if (options.market?.trim()) {
+    const market = canonicalMarketLabel(options.market);
+    derived = derived.filter(({ facts }) => market !== "" && canonicalMarketLabel(facts.header.market) === market);
   }
   if (options.transactionKind) {
     derived = derived.filter(({ facts }) => facts.header.transactionKind === options.transactionKind);
@@ -693,7 +700,7 @@ const FINISHED_STATES: ReadonlySet<SubmissionLifecycleState> = new Set([
 export async function getPendingSubmissions(
   supabase: AnyClient,
   scope: ConsultantScope,
-  options: Omit<SubmissionQueryOptions, "transactionKind"> = {},
+  options: SubmissionQueryOptions = {},
 ): Promise<PendingSubmissionsResult> {
   const loaded = await loadSubmissions(supabase, scope, options);
   if (loaded.status !== "ok") return loaded;

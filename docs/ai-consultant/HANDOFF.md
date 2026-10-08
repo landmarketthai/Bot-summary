@@ -2,6 +2,10 @@
 
 Self-contained engineering handoff for the next session (Sol 6.1).
 
+**P2 follow-up completed (2026-10-08):** all four findings below are fixed. See
+[review-fixes.md](review-fixes.md) for the current implementation and validation
+evidence. The original analysis below is preserved as historical context.
+
 | | |
 |---|---|
 | Repository | `landmarketthai/Bot-summary` |

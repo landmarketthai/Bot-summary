@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { claimsSaved, guardConsultantAnswer, isStatusQuestion } from "./answer";
+import { claimsSaved, claimsUngroundedSaved, guardConsultantAnswer, isStatusQuestion, kindFromQuestion } from "./answer";
+import { CONSULTANT_KNOWLEDGE } from "./knowledge";
 
 describe("saved-claim detection", () => {
   test.each([
@@ -48,4 +49,46 @@ describe("status vs how-to routing", () => {
     "เบิกของต้องพิมพ์ยังไง", "ชั่งคืนต้องทำยังไง", "ถ้าพิมพ์ชื่อผักผิดต้องแก้ยังไง", "ส่งสลิปยังไง",
     "ใบขาวใช้ยังไง", "จบรายการแล้วต้องทำอะไรต่อ", "กู้รายการล่าสุดทำยังไง",
   ])("how-to: %p", (question) => expect(isStatusQuestion(question)).toBe(false));
+});
+
+describe("grounded guide claims", () => {
+  const guide = ["ถ้าบอทส่งสรุปว่า “บันทึกแล้ว” ถึงจะถือว่าบันทึกเรียบร้อย"];
+  test.each([
+    "ถ้าบอทตอบว่าบันทึกแล้ว ไม่ต้องส่งซ้ำครับ",
+    "ถ้าบอทส่งสรุปว่า “บันทึกแล้ว” ถึงจะถือว่าบันทึกเรียบร้อย",
+    "รอข้อความ “บันทึกแล้ว” จากบอทครับ",
+  ])("accepts grounded explanation: %s", (answer) => {
+    expect(claimsUngroundedSaved(answer, guide)).toBe(false);
+  });
+  test.each([
+    "รายการของคุณบันทึกแล้วครับ",
+    "ถ้าบอทตอบว่าเซฟให้แล้ว ให้ทำขั้นต่อไป",
+    "ถ้าบอทตอบว่าบันทึกแล้ว รายการของคุณบันทึกแล้ว",
+    "ถ้าบอทตอบว่าบันทึกแล้ว ตอนนี้คือรายการของคุณบันทึกแล้ว",
+    "ถ้าบอทตอบว่าบันทึกแล้วครับ รายการของคุณบันทึกแล้ว",
+  ])("rejects ungrounded or later live claim: %s", (answer) => {
+    expect(claimsUngroundedSaved(answer, guide)).toBe(true);
+  });
+});
+
+describe("fallback transaction kind", () => {
+  test.each([
+    ["คืนเสียล่าสุดของผมเข้าหรือยัง", "damaged_return"],
+    ["ชั่งคืนล่าสุดของผมเข้าหรือยัง", "return"],
+    ["คืนดีของผมยังไม่จบ", "return"],
+    ["เบิกของผมเข้าหรือยัง", "withdrawal"],
+    ["เบิกเพิ่มล่าสุดเข้าหรือยัง", "withdrawal"],
+    ["รายการผมเข้าหรือยัง", undefined],
+  ] as const)("%s → %s", (question, expected) => {
+    expect(kindFromQuestion(question)).toBe(expected);
+  });
+});
+
+describe("verified guide wording", () => {
+  test.each([...CONSULTANT_KNOWLEDGE])("P2-3 accepts exact guidance and caveats: $id", (entry) => {
+    const grounding = [entry.answerThai, ...entry.caveats, ...entry.examples];
+    for (const text of [entry.answerThai, ...entry.caveats]) {
+      expect(claimsUngroundedSaved(text, grounding)).toBe(false);
+    }
+  });
 });

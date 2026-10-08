@@ -76,6 +76,7 @@ class FakeQuery implements PromiseLike<{ data: Row[] | null; error: { message: s
   private predicates: Array<(row: Row) => boolean> = [];
   private orderBy: { column: string; ascending: boolean } | null = null;
   private max: number | null = null;
+  private page: [number, number] | null = null;
   private readonly log: QueryLog;
 
   constructor(private db: FakeDb, private table: string) {
@@ -95,10 +96,18 @@ class FakeQuery implements PromiseLike<{ data: Row[] | null; error: { message: s
     return this;
   }
   or(expression: string) {
-    const parts = expression.split(",").map((part) => {
+    const parts = expression.split(/,(?![^()]*\))/u).map((part) => {
       const [column, op, ...rest] = part.split(".");
       const value = rest.join(".");
       if (op === "eq") return (row: Row) => row[column!] === value;
+      if (op === "ilike") {
+        const needle = value.replace(/[%*]/g, "").toLowerCase();
+        return (row: Row) => String(row[column!] ?? "").toLowerCase().includes(needle);
+      }
+      if (op === "not" && value.startsWith("in.(")) {
+        const excluded = value.slice(4, -1).split(",");
+        return (row: Row) => row[column!] != null && !excluded.includes(String(row[column!]));
+      }
       if (op === "is" && value === "null") return (row: Row) => row[column!] == null;
       throw new Error(`fake: unsupported or() part ${part}`);
     });
@@ -118,6 +127,11 @@ class FakeQuery implements PromiseLike<{ data: Row[] | null; error: { message: s
     return this;
   }
   limit(count: number) { this.max = count; return this; }
+  range(from: number, to: number) { this.page = [from, to]; return this; }
+  is(column: string, value: unknown) {
+    this.predicates.push((row) => (row[column] ?? null) === value);
+    return this;
+  }
   insert() { this.db.writes.push(`insert:${this.table}`); return this; }
   update() { this.db.writes.push(`update:${this.table}`); return this; }
   upsert() { this.db.writes.push(`upsert:${this.table}`); return this; }
@@ -135,19 +149,21 @@ class FakeQuery implements PromiseLike<{ data: Row[] | null; error: { message: s
     return Promise.resolve(this.execute()).then(onfulfilled, onrejected);
   }
 
-  private execute(): { data: Row[] | null; error: { message: string } | null } {
+  private execute(): { data: Row[] | null; error: { message: string } | null; count: number | null } {
     if (this.db.failTables.has(this.table)) {
-      return { data: null, error: { message: `permission denied for table ${this.table} (secret detail)` } };
+      return { data: null, error: { message: `permission denied for table ${this.table} (secret detail)` }, count: null };
     }
     let rows = (this.db.tables[this.table] ?? []).filter((row) => this.predicates.every((predicate) => predicate(row)));
     if (this.orderBy) {
       const { column, ascending } = this.orderBy;
       rows = [...rows].sort((a, b) => (Date.parse(String(a[column])) - Date.parse(String(b[column]))) * (ascending ? 1 : -1));
     }
+    const count = rows.length;
+    if (this.page) rows = rows.slice(this.page[0], this.page[1] + 1);
     if (this.max !== null) rows = rows.slice(0, this.max);
     const out = rows.map((row) => structuredClone(row));
     this.log.returned.push(...out);
-    return { data: out, error: null };
+    return { data: out, error: null, count };
   }
 }
 
@@ -1806,5 +1822,161 @@ describe("claimsSaved", () => {
   test("how-to answers (allowQuoted) may quote the bot's own “บันทึกแล้ว” message", () => {
     expect(claimsSaved("บอทจะตอบว่า “บันทึกแล้ว” เมื่อเสร็จ", true)).toBe(false);
     expect(claimsSaved("บันทึกแล้วครับ", true)).toBe(true);
+  });
+});
+
+describe("PR #174 P2 regressions", () => {
+  test.each([
+    ["วันนี้มีอะไรยังไม่จบ", "get_pending_items", "วันนี้ไม่มีรายการค้างครับ"],
+    ["ตอนนี้ของเหลือเท่าไหร่", "get_stock_summary", "วันนี้ไม่มีสินค้าคงเหลือครับ"],
+  ])("P2-1 preserves analyst tool-backed answer: %s", async (question, tool, answer) => {
+    const db = newDb();
+    db.tables.pending_sessions.push(openDraftRow());
+    const model = new ScriptedModel([toolCall(tool, {}), modelText(answer)]);
+    const reply = await answerBotSummaryForLine(asClient(db), question, context(DAENG, { analystToolsAllowed: true }), deps(model));
+    expect(reply).toBe(answer);
+    expect(toolOutputsIn(model.bodies[1]!)[0]).toMatchObject({ tool });
+    expect(db.queriesOn("pending_sessions").filter((query) => "line_user_id" in query.eq)).toEqual([]);
+  });
+
+  test.each(["วันนี้มีอะไรยังไม่จบ", "ตอนนี้ของเหลือเท่าไหร่"])("P2-1 analyst outage never substitutes own workflow: %s", async (question) => {
+    const db = newDb();
+    db.tables.pending_sessions.push(openDraftRow());
+    await expect(answerBotSummaryForLine(asClient(db), question, context(DAENG, { analystToolsAllowed: true }), deps(new ScriptedModel([httpError(500)]))))
+      .rejects.toThrow();
+    expect(db.queriesOn("pending_sessions")).toEqual([]);
+  });
+
+  test("P2-1 analyst answer without tools is kept for a chat-wide question", async () => {
+    const db = newDb();
+    const answer = "กรุณาระบุวันที่ที่ต้องการตรวจรายการค้างครับ";
+    expect(await answerBotSummaryForLine(asClient(db), "วันนี้มีอะไรยังไม่จบ", context(DAENG, { analystToolsAllowed: true }), deps(new ScriptedModel([modelText(answer)]))))
+      .toBe(answer);
+    expect(db.queriesOn("pending_sessions")).toEqual([]);
+  });
+
+  test.each([false, true])("P2-1 personal status still reads deterministic facts (analyst=%s)", async (analystToolsAllowed) => {
+    const db = newDb();
+    db.tables.pending_sessions.push(openDraftRow());
+    const reply = await answerBotSummaryForLine(asClient(db), "ตอนนี้รายการผมเป็นยังไง", context(DAENG, { analystToolsAllowed }), deps(new ScriptedModel([modelText("บันทึกแล้วครับ")])));
+    expect(reply).toContain("แก้ข้อ 4");
+    expect(claimsSaved(reply)).toBe(false);
+  });
+
+  function mixedKinds() {
+    const db = newDb();
+    const saved = finalizedRows(NOI);
+    saved.pending.accumulated_text = documentText("น้อย", "ราชพฤกษ์", "เบิก", { items: 24 });
+    // Same sender can have documents in separate chats; a management supervisor may read both.
+    saved.pending.source_id = OTHER_GROUP;
+    saved.pending.session_key = keyOf(NOI, OTHER_GROUP);
+    saved.produce.ingest_idempotency_key = keyOf(NOI, OTHER_GROUP) + ":gen-1";
+    db.tables.pending_sessions.push(saved.pending, incidentRow());
+    db.tables.produce_sessions.push(saved.produce);
+    return db;
+  }
+
+  test.each(["ชั่งคืนล่าสุดของผมเข้าหรือยัง", "คืนเสียล่าสุดของผมเข้าหรือยัง", "เบิกเพิ่มล่าสุดของผมเข้าหรือยัง", "ชั่งคืนของผมมีอะไรค้าง"])("P2-2 fallback honors kind: %s", async (question) => {
+    const db = mixedKinds();
+    const reply = await answerBotSummaryForLine(asClient(db), question, context(NOI), deps(new ScriptedModel([httpError(500)]), {
+      scopeOptions: { allowedSourceIds: new Set([GROUP, OTHER_GROUP]), managementSourceIds: new Set([GROUP]), supervisorIds: new Set([NOI]), runtimeEnvironment: "production" },
+    }));
+    if (question.startsWith("คืนเสีย")) expect(reply).toContain("ไม่พบรายการ");
+    else if (question.startsWith("เบิก")) expect(reply).toContain("บันทึกเรียบร้อยแล้ว");
+    else {
+      expect(reply).toContain("ชั่งคืน");
+      expect(reply).toContain("ข้อ 22");
+      expect(claimsSaved(reply)).toBe(false);
+    }
+  });
+
+  test.each([
+    "ถ้าบอทตอบว่าบันทึกแล้ว ไม่ต้องส่งซ้ำครับ",
+    "เมื่อบอทส่งสรุปว่าบันทึกเรียบร้อย จึงทำขั้นต่อไปครับ",
+  ])("P2-3 keeps grounded operational explanation: %s", async (answer) => {
+    const db = newDb();
+    const model = new ScriptedModel([toolCall("get_usage_guide", { topic: "after_close_confirmation" }), modelText(answer)]);
+    expect(await answerBotSummaryForLine(asClient(db), "จบรายการแล้วต้องทำอะไรต่อ", context(NOI), deps(model))).toBe(answer);
+    expect(db.queriesOn("pending_sessions")).toEqual([]);
+  });
+
+  test.each([
+    "บันทึกแล้วครับ", // a phrase in the guide still cannot prove this document was saved
+    "รายการของคุณบันทึกแล้วครับ",
+    "เซฟให้แล้วครับ",
+    "เมื่อบอทตอบว่าบันทึกแล้ว ไม่ต้องส่งซ้ำ และรายการของคุณบันทึกแล้ว",
+    "ถ้าบอทตอบว่าบันทึกแล้ว ตอนนี้คือรายการของคุณบันทึกแล้ว",
+    "บันทึกแล้วครับ ไม่ต้องส่งซ้ำ ถ้ามีปัญหาให้ถามผู้ดูแล",
+    "ถ้าบอทตอบว่าบันทึกแล้ว ไม่ต้องส่งซ้ำครับ\nรายการของคุณบันทึกแล้วครับ",
+  ])("P2-3 rejects live or ungrounded claims even after a guide: %s", async (answer) => {
+    const db = newDb();
+    const model = new ScriptedModel([toolCall("get_usage_guide", { topic: "after_close_confirmation" }), modelText(answer)]);
+    expect(await answerBotSummaryForLine(asClient(db), "จบรายการแล้วต้องทำอะไรต่อ", context(NOI), deps(model))).toContain("ยังยืนยันจากระบบไม่ได้");
+  });
+
+  test("P2-3 personal status remains strict after a guide", async () => {
+    const db = newDb();
+    db.tables.pending_sessions.push(incidentRow());
+    const model = new ScriptedModel([toolCall("get_usage_guide", { topic: "after_close_confirmation" }), modelText("ถ้าบอทตอบว่าบันทึกแล้ว ไม่ต้องส่งซ้ำครับ")]);
+    const reply = await answerBotSummaryForLine(asClient(db), "รายการผมเข้าหรือยัง", context(NOI), deps(model));
+    expect(reply).toContain("ข้อ 22");
+    expect(claimsSaved(reply)).toBe(false);
+  });
+
+  test("P2-4 supervisor market follow-up resolves same worker/date/kind ambiguity", async () => {
+    const db = newDb();
+    const secondText = documentText("น้อย", "วิหาร", "ชั่งคืน", { items: 6, broken: 4 });
+    db.tables.pending_sessions.push(incidentRow(), incidentRow({
+      session_key: keyOf(NOI, OTHER_GROUP), source_id: OTHER_GROUP,
+      accumulated_text: secondText, partial_capture: captureOf(secondText),
+    }));
+    const options = { scopeOptions: { allowedSourceIds: new Set([GROUP, OTHER_GROUP]), managementSourceIds: new Set([GROUP]), supervisorIds: new Set([SUPERVISOR]), runtimeEnvironment: "production" as const } };
+    const first = new ScriptedModel([toolCall("get_submission_status", { staff: "น้อย", transaction_kind: "return", market: "" }), echoSuggestedReply]);
+    const ambiguous = await answerBotSummaryForLine(asClient(db), "ชั่งคืนของน้อยเข้าหรือยัง", context(SUPERVISOR), deps(first, options));
+    expect(ambiguous).toContain("มากกว่าหนึ่งรายการ");
+    expect(ambiguous).toContain("ราชพฤกษ์");
+    expect(ambiguous).toContain("วิหาร");
+    db.tables.raw_messages.push({ id: "previous", source_id: GROUP, user_id: SUPERVISOR, message_type: "text", created_at: minutesAgo(1), payload: { message: { id: "previous", type: "text", text: "@Botsummary ชั่งคืนของน้อยเข้าหรือยัง" } } });
+    const second = new ScriptedModel([toolCall("get_submission_status", { staff: "น้อย", transaction_kind: "return", market: "ราชพฤกษ์" }), echoSuggestedReply]);
+    const reply = await answerBotSummaryForLine(asClient(db), "ราชพฤกษ์", context(SUPERVISOR), deps(second, options));
+    expect(reply).toContain("ราชพฤกษ์");
+    expect(reply).toContain("ข้อ 22");
+    expect(reply).not.toContain("มากกว่าหนึ่งรายการ");
+    expect(second.firstUserText()).toContain("ชั่งคืนของน้อยเข้าหรือยัง");
+    expect(db.writes).toEqual([]);
+  });
+
+  test.each(["get_submission_status", "get_submission_problem", "get_unfinished_submissions"])("P2-4 market selector cannot read another worker via %s", async (tool) => {
+    const db = newDb();
+    db.tables.pending_sessions.push(incidentRow(), openDraftRow());
+    const model = new ScriptedModel([toolCall(tool, { staff: "", transaction_kind: "return", item_number: 22, market: "ราชพฤกษ์" }), echoSuggestedReply]);
+    const reply = await answerBotSummaryForLine(asClient(db), "ราชพฤกษ์", context(DAENG), deps(model));
+    expect(reply).not.toContain("ข้อ 22");
+    expect(db.returnedRows("pending_sessions").every((row) => row.line_user_id === DAENG && row.source_id === GROUP)).toBe(true);
+    const output = toolOutputsIn(model.bodies[1]!)[0]!;
+    expect(tool === "get_unfinished_submissions" ? output.count : output.status).toBe(tool === "get_unfinished_submissions" ? 0 : "none");
+    expect(db.writes).toEqual([]);
+  });
+
+  test("P2-4 all workflow selectors are strict, required market strings without scope fields", async () => {
+    const model = new ScriptedModel([modelText("ครับ")]);
+    await answerBotSummaryForLine(asClient(newDb()), "สวัสดี", context(NOI), deps(model));
+    const tools = model.bodies[0]!.tools! as unknown as Array<{ name: string; strict: boolean; parameters: { properties: Record<string, unknown>; required: string[]; additionalProperties: boolean } }>;
+    for (const tool of tools.filter((tool) => tool.name !== "get_usage_guide")) {
+      expect(tool.strict).toBe(true);
+      expect(tool.parameters.properties.market).toMatchObject({ type: "string" });
+      expect(tool.parameters.required).toContain("market");
+      expect(tool.parameters.additionalProperties).toBe(false);
+    }
+  });
+});
+
+describe("verified operational guide regression", () => {
+  test.each([...CONSULTANT_KNOWLEDGE])("P2-3 preserves the authoritative guide: $id", async (entry) => {
+    const db = newDb();
+    const model = new ScriptedModel([toolCall("get_usage_guide", { topic: entry.id }), modelText(entry.answerThai)]);
+    const reply = await answerBotSummaryForLine(asClient(db), "อธิบายวิธีใช้งานหัวข้อนี้", context(NOI), deps(model));
+    expect(reply).toBe(entry.answerThai);
+    expect(db.queriesOn("pending_sessions")).toEqual([]);
   });
 });

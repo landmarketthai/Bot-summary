@@ -235,6 +235,11 @@ const KNOWLEDGE_TOOL = {
   strict: true,
 } as const;
 
+const MARKET_PARAM = {
+  type: "string",
+  description: "ชื่อตลาดถ้าผู้ใช้ระบุ ไม่ระบุให้ส่งค่าว่าง",
+};
+
 const WORKFLOW_TOOLS = [
   {
     type: "function",
@@ -244,9 +249,10 @@ const WORKFLOW_TOOLS = [
       type: "object",
       properties: {
         staff: STAFF_PARAM,
+        market: MARKET_PARAM,
         transaction_kind: { type: "string", enum: KIND_ENUM, description: "any=ไม่ระบุ" },
       },
-      required: ["staff", "transaction_kind"],
+      required: ["staff", "transaction_kind", "market"],
       additionalProperties: false,
     },
     strict: true,
@@ -257,8 +263,8 @@ const WORKFLOW_TOOLS = [
     description: "รายการผักที่ยังไม่จบ ยังไม่บันทึก หรือติดปัญหาอยู่",
     parameters: {
       type: "object",
-      properties: { staff: STAFF_PARAM },
-      required: ["staff"],
+      properties: { staff: STAFF_PARAM, market: MARKET_PARAM },
+      required: ["staff", "market"],
       additionalProperties: false,
     },
     strict: true,
@@ -271,9 +277,10 @@ const WORKFLOW_TOOLS = [
       type: "object",
       properties: {
         staff: STAFF_PARAM,
+        market: MARKET_PARAM,
         item_number: { type: "integer", description: "เลขข้อที่ผู้ใช้ถาม ถ้าไม่ระบุให้ใส่ 0" },
       },
-      required: ["staff", "item_number"],
+      required: ["staff", "item_number", "market"],
       additionalProperties: false,
     },
     strict: true,
@@ -285,6 +292,7 @@ const CONSULTANT_INSTRUCTIONS = [
   "คำถามวิธีใช้งาน ให้เรียก get_usage_guide แล้วตอบตามข้อมูลนั้นเท่านั้น ห้ามแต่งคำสั่งหรือขั้นตอนที่ไม่มีใน tool",
   "คำถามว่ารายการเข้าหรือยัง สำเร็จไหม ค้างอะไร ข้อไหนผิด ต้องแก้อะไร ต้องส่งใหม่ไหม ให้เรียก tool สถานะรายการทุกครั้ง แม้เคยถามมาก่อน",
   "ถ้าผู้ใช้ถามรายการของตัวเองหรือไม่ระบุชื่อ ให้ส่ง staff เป็นค่าว่าง ใส่ชื่อเฉพาะเมื่อผู้ใช้ระบุชื่อคนขาย",
+  "ถ้าผู้ใช้ตอบชื่อตลาดหลังถูกถามกลับ ให้เรียก tool เดิมพร้อม market และ staff จากคำถามก่อนหน้า ห้ามเดาตลาดถ้าผู้ใช้ยังไม่ระบุ",
   "สิทธิ์การดูข้อมูลตรวจโดยระบบหลังบ้าน ถ้า status เป็น forbidden ให้ตอบตาม suggestedReply ห้ามเดาข้อมูลของคนอื่น",
   "ถ้ามี suggestedReply ให้ใช้เป็นหลัก ปรับถ้อยคำได้เล็กน้อยให้ตรงคำถาม แต่ห้ามเปลี่ยนข้อเท็จจริง ตัวเลข หรือขั้นตอน",
   "ห้ามพูดว่า บันทึกแล้ว หรือ บันทึกสำเร็จ เว้นแต่ tool ให้ persisted เป็น true",
@@ -369,7 +377,8 @@ function buildExtension(
       // Authorization was resolved from the LINE event before the model ran.
       // Model arguments only narrow the request; they never widen the scope.
       if (!scope) return Promise.resolve({ status: "identity_unverified", suggestedReply: REPLY_IDENTITY_UNVERIFIED });
-      const staff = staffOption(stringArg(args, "staff"));
+      const market = stringArg(args, "market");
+      const staff = { ...staffOption(stringArg(args, "staff")), ...(market ? { market } : {}) };
       switch (name) {
         case "get_submission_status": {
           const kind = kindArg(args);
@@ -392,6 +401,8 @@ function buildExtension(
 
 // ── Deterministic guard + fallback ──────────────────────────────────────────
 
+const SAVED_CLAIM = /(?:บันทึก|เซฟ|เข้าระบบ|รายการเข้า|ส่งเข้า)(?:(?!ไม่|ยัง).){0,8}?(?:แล้ว|เรียบร้อย|สำเร็จ|ครบ)|สำเร็จแล้ว|เรียบร้อยแล้ว/gu;
+
 const INTERNAL_TERMS =
   /failed_closed|terminaliz|partial_capture|pending_session|finaliz|accountability|session_key|\bnull\b|undefined/iu;
 
@@ -407,12 +418,33 @@ function compactThai(text: string): string {
  */
 export function claimsSaved(text: string, allowQuoted = false): boolean {
   const compact = compactThai(text);
-  const claim = /(?:บันทึก|เซฟ|เข้าระบบ|รายการเข้า|ส่งเข้า)(?:(?!ไม่|ยัง).){0,8}?(?:แล้ว|เรียบร้อย|สำเร็จ|ครบ)|สำเร็จแล้ว|เรียบร้อยแล้ว/gu;
-  for (const match of compact.matchAll(claim)) {
+  for (const match of compact.matchAll(SAVED_CLAIM)) {
     const before = compact.slice(Math.max(0, match.index - 6), match.index);
     if (/(?:ยัง|ไม่|ไม่ได้)$/u.test(before)) continue;
     if (allowQuoted && /[“"']$/u.test(before)) continue;
     return true;
+  }
+  return false;
+}
+
+const GUIDE_SENTENCE_BOUNDARY = /\n|(?<=[.!?。])|(?<=ครับ|ค่ะ|คะ)/u;
+
+/** Guide phrases explain bot replies; they do not prove the asker's document was saved. */
+export function claimsUngroundedSaved(answer: string, groundingTexts: string[]): boolean {
+  const grounding = groundingTexts.map(compactThai);
+  const verifiedSentences = new Set(groundingTexts.flatMap((text) => text.split(GUIDE_SENTENCE_BOUNDARY).map(compactThai)));
+  // Reset instructional context at sentence boundaries so a later live claim stays strict.
+  for (const sentence of answer.split(GUIDE_SENTENCE_BOUNDARY)) {
+    const compact = compactThai(sentence);
+    if (verifiedSentences.has(compact)) continue;
+    let previousClaimEnd = 0;
+    for (const match of compact.matchAll(SAVED_CLAIM)) {
+      const before = compact.slice(previousClaimEnd, match.index);
+      previousClaimEnd = match.index + match[0].length;
+      if (/(?:ยัง|ไม่|ไม่ได้)$/u.test(before)) continue;
+      const instructional = /ถ้า|เมื่อ|หาก|จนกว่า|คำว่า|ข้อความ|บอท(?:จะ)?(?:ตอบ|ส่ง)|ขึ้นว่า|หมายถึง|ถึงจะถือว่า|จึงถือว่า|[“"']$/u.test(before);
+      if (!instructional || !grounding.some((text) => text.includes(match[0]))) return true;
+    }
   }
   return false;
 }
@@ -463,7 +495,7 @@ const PENDING_QUESTION = /ค้าง|ยังไม่จบ|ยังไม�
 const PROBLEM_QUESTION = /ทำไม|ไม่ผ่าน|ต้องแก้|แก้อะไร|ข้อไหน|ผิด|ส่งใหม่|ต่อยังไง|ยังไงต่อ|ทำอะไรต่อ/u;
 // Markers that the question is about a real document, not about how to do something.
 const PERSONAL_STATUS =
-  /ผม|ฉัน|หนู|(?<!กู้รายการ)ล่าสุด|เมื่อกี้|ตอนนี้|ข้อ\s*\d|ค้าง|เข้า(?:หรือ)?ยัง|ไม่เข้า|สำเร็จ(?:ไหม|มั้ย|หรือยัง)|ไม่ขึ้น|ติดอะไร|ส่งใหม่/u;
+  /ผม|ฉัน|หนู|(?<!กู้รายการ)ล่าสุด|เมื่อกี้|ตอนนี้.{0,12}(?:รายการ|ต้องทำ|ติด|เป็นยังไง)|ข้อ\s*\d|เข้า(?:หรือ)?ยัง|ไม่เข้า|สำเร็จ(?:ไหม|มั้ย|หรือยัง)|ไม่ขึ้น|ติดอะไร|ส่งใหม่/u;
 
 /**
  * "ทำไมข้อ 22 ไม่ผ่าน" is about a document; "ถ้าพิมพ์ชื่อผักผิดต้องแก้ยังไง" is
@@ -477,7 +509,17 @@ export function isStatusQuestion(question: string): boolean {
     || PROBLEM_QUESTION.test(question);
 }
 
+const FIRST_PERSON = /ผม|ฉัน|หนู|ของเรา|ของตัวเอง|เมื่อกี้/u;
+
 const OTHER_PERSON = /ของ(?!ผม|ฉัน|หนู|เรา|ตัวเอง|กู|พี่เอง)\s*[ก-๙A-Za-z]/u;
+
+/** Keep an explicit kind when the model is unavailable; never substitute another document type. */
+export function kindFromQuestion(question: string): "withdrawal" | "return" | "damaged_return" | undefined {
+  if (/คืนเสีย/u.test(question)) return "damaged_return";
+  if (/ชั่งคืน|คืนดี/u.test(question)) return "return";
+  if (/เบิก/u.test(question)) return "withdrawal";
+  return undefined;
+}
 
 /**
  * Answer without the model (timeout, provider outage). Uses the same tools,
@@ -490,13 +532,16 @@ export async function deterministicConsultantAnswer(
   question: string,
   today: string,
   now: number,
+  analystToolsAllowed = false,
 ): Promise<string | null> {
   if (isStatusQuestion(question)) {
+    if (analystToolsAllowed && !FIRST_PERSON.test(question)) return null;
     // A named other worker needs the model to extract the name; never guess it.
     if (OTHER_PERSON.test(question)) return null;
     if (!scope) return REPLY_IDENTITY_UNVERIFIED;
     const businessDate = explicitQuestionDate(question, today);
-    const dateOption = { now, ...(businessDate ? { businessDate } : {}) };
+    const transactionKind = kindFromQuestion(question);
+    const dateOption = { now, ...(businessDate ? { businessDate } : {}), ...(transactionKind ? { transactionKind } : {}) };
     if (PENDING_QUESTION.test(question) && !PROBLEM_QUESTION.test(question)) {
       return pendingOutput(await getPendingSubmissions(supabase, scope, dateOption)).suggestedReply ?? null;
     }
@@ -569,18 +614,31 @@ export async function answerBotSummaryForLine(
       .filter((entry) => WORKFLOW_TOOL_NAMES.has(entry.tool))
       .map((entry) => entry.output as ToolOutput);
     if (workflowOutputs.length > 0) return guardConsultantAnswer(result.answer, workflowOutputs);
+    const analystToolRan = result.toolExecutions.some((entry) =>
+      !WORKFLOW_TOOL_NAMES.has(entry.tool) && entry.tool !== "get_usage_guide");
+    if (analystToolRan) return result.answer;
     // A status question answered without reading status: never trust it —
     // unless it was really a how-to the model answered from the usage guide.
-    const answeredFromGuide = result.extensionOutputs.some((entry) =>
+    const guides = result.extensionOutputs.filter((entry) =>
       entry.tool === "get_usage_guide" && entry.output.status === "ok");
+    const answeredFromGuide = guides.length > 0;
     if (isStatusQuestion(question) && !(answeredFromGuide && !PERSONAL_STATUS.test(question))) {
-      const deterministic = await deterministicConsultantAnswer(supabase, scope, question, today, now);
+      if (analystToolsAllowed && !FIRST_PERSON.test(question)) return result.answer;
+      const deterministic = await deterministicConsultantAnswer(supabase, scope, question, today, now, analystToolsAllowed);
       if (deterministic) return deterministic;
       return claimsSaved(result.answer) ? REPLY_CANNOT_CONFIRM : result.answer;
     }
+    if (answeredFromGuide && !PERSONAL_STATUS.test(question)) {
+      const groundingTexts = guides.flatMap(({ output }) => [
+        output.suggestedReply,
+        ...((output.caveats as string[] | undefined) ?? []),
+        ...((output.examples as string[] | undefined) ?? []),
+      ]).filter((text): text is string => typeof text === "string");
+      return claimsUngroundedSaved(result.answer, groundingTexts) ? REPLY_CANNOT_CONFIRM : result.answer;
+    }
     return claimsSaved(result.answer, true) ? REPLY_CANNOT_CONFIRM : result.answer;
   } catch (error) {
-    const fallback = await deterministicConsultantAnswer(supabase, scope, question, today, now)
+    const fallback = await deterministicConsultantAnswer(supabase, scope, question, today, now, analystToolsAllowed)
       .catch(() => null);
     if (fallback) return fallback;
     throw error;
