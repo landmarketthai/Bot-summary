@@ -192,3 +192,49 @@ Supabase process or proposed application/DB test listener.
 Production remains NO-GO for the release gates already recorded in the handoff,
 including required capability/migration, real runtime verification, latency margin,
 baseline issues and historical incident reconciliation. None was cleared here.
+
+## Follow-up: Docker unblocked and isolated database verified (9 Oct, 14:22–14:38 Bangkok)
+
+The previous Docker-unavailable result is historical. At the user's explicit
+request, the coordinator invoked lnwjud-local and launched Docker Desktop.
+The Linux engine became ready (`29.6.2 linux`). At engine startup there were
+zero pre-existing containers; relevant Supabase image caches were present.
+
+- The 130 repository migrations were copied into the ignored isolated workdir;
+  no repository migration was edited and no Production endpoint was accessed.
+- A bounded `supabase start` attempt with unique local project and ports
+  revealed Docker Desktop publishing test DB TCP 56322 on
+  `0.0.0.0` and `::`. It was **cancelled immediately**; the one owned
+  container was stopped and the isolated Supabase CLI project was cleaned.
+  Do not repeat the standard CLI start without enforcing loopback bindings.
+- An isolated Docker bridge network's default host-bind preference was
+  insufficient on this Windows Docker Desktop host. Explicit
+  `--publish 127.0.0.1:56390:80` was confirmed to bind only loopback
+  and serve an HTTP 200 test. Both temporary Nginx probes were stopped.
+- A dedicated local **test-only** Supabase PostgreSQL container named
+  `botsummary-uat-postgres-20261009` was started on the owned network
+  `botsummary-uat-loopback-20261009` with
+  `127.0.0.1:56322 -> 5432`, synthetic credentials and a named test
+  volume. PostgreSQL `17.6` reports healthy. The existing host listener
+  on 5432 was never touched.
+- Targeting that exact loopback container, the disposable migration
+  regression suite `migration-retired-generations.pg.test.ts` passed
+  **12/12 (0 failed)**, including historical rotation, refusal, service-role
+  privilege checks, idempotency and 04:00. The suite creates and drops its
+  own disposable test database, not Production.
+- The base Postgres image has `auth` and `storage` namespaces/roles but
+  no `storage.buckets` relation. Thus the project's full 130 migrations,
+  real PostgREST/GoTrue Auth, real Next HTTP workflows and 31-day staging
+  latency remain **NOT TESTED**. Do not report an E2E Staging GO.
+
+Verified closeout: only the dedicated loopback PostgreSQL test container
+was running; no all-interface published ports or Supabase CLI containers
+remained, and Git was clean before this documentation update. Docker
+Desktop remains active. No Git push/merge, Production SQL/deploy, LINE send
+or cloud staging creation occurred.
+
+**Next:** construct a fully isolated local Supabase runtime using explicit
+`127.0.0.1` bindings for each published service (rather than default CLI
+bindings), initialize complete current schema plus synthetic Auth users,
+and perform real HTTP UAT. If that cannot be achieved, seek separate
+authorization for a dedicated cloud staging instance. Production remains NO-GO.
