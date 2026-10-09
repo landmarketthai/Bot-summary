@@ -13,7 +13,7 @@ test('recovered SQL payload is exactly the historical Git blob', () => {
 });
 
 test('complete replay is deterministic, unchanged, ordered, and never resumes/skips', () => {
-  const database = 'botsummary_compose_uat_20261009';
+  const database = 'botsummary_baseline_replay_20261009b';
   const replay = buildReplay(database);
   assert.deepEqual(replay, buildReplay(database));
   const migrations = migrationPlan();
@@ -29,6 +29,8 @@ test('complete replay is deterministic, unchanged, ordered, and never resumes/sk
   const baseline = phases.indexOf('supabase/tests/staging_missing_baseline.sql');
   assert.equal(phases[baseline - 1], 'supabase/migrations/0030_manual_slip_market_key.sql');
   assert.equal(phases[baseline + 2], 'supabase/migrations/0031_pending_session_sender_identity.sql');
+  const contract = phases.indexOf('supabase/migrations/20260809045849_p2e_accountability_round_identity_contract.sql');
+  assert.equal(phases[contract - 1], 'supabase/tests/staging_p2e_legacy_unique_name.sql');
   assert.match(replay.sql, /\\set ON_ERROR_STOP on/);
   assert.match(replay.sql, /Database is not fresh/);
   assert.match(replay.sql, /server_version_num'\)::int >= 180000/);

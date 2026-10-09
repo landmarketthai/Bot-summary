@@ -1,7 +1,8 @@
 # Historical baseline recovery and isolated replay — 9 October 2026
 
-**Historical pending-session source RECOVERED. Ordered PG17 replay PREPARED,
-not executed in the Codex sandbox. Full financial Staging UAT NO-GO;
+**Historical pending-session source RECOVERED. Ordered PG17 replay 130/130
+VERIFIED by the authorized host (not the Codex sandbox), with documented
+TEST-ONLY compatibility steps. Full financial Staging UAT NO-GO;
 Production NO-GO.** Recovery is supported by committed SQL, not a new
 Production inspection. This report supplements
 [the Compose UAT evidence](staging-compose-uat-20261009.md).
@@ -118,27 +119,28 @@ schema, or default ACL. It creates, drops and resets **no database**. The
 current active `botsummary_compose_uat_20261009` contains Auth/probe objects,
 so it must be rejected. Do not reset it to make the harness pass.
 
-A fresh disposable sibling named `botsummary_baseline_replay_20261009` is
-prepared as a second exact allowed target. Its creation/execution is pending
-the user's local-scope clarification; preparing files grants no additional
-database authorization. Until that is confirmed, use preparation only and
-leave the active database untouched. No general database-name option exists.
+The authorized host created a disposable sibling named
+`botsummary_baseline_replay_20261009b`, used it for the successful full replay,
+and left it intact for inspection. That database must **not** be replayed again;
+the runner's freshness guard will reject it. A separate unused name ending
+`20261009c` is allowed for a future independently authorized fresh run.
+The existing Compose Auth/probe database is not a replay target.
 
 Offline checks, safe in this sandbox:
 
 ```powershell
 node --test scripts/staging-baseline-replay.test.mjs
 node --check scripts/staging-baseline-replay.mjs
-node scripts/staging-baseline-replay.mjs --prepare botsummary_compose_uat_20261009
+node scripts/staging-baseline-replay.mjs --prepare botsummary_baseline_replay_20261009b
 ```
 
-**Host continuation, only after disposable sibling scope is confirmed:**
+**Historical commands executed by the authorized host against fresh sibling b (do not rerun on b):**
 
 ```powershell
 node .tmp-staging-uat-20261009/compose/verify-owned.cjs
-docker --config .tmp-staging-uat-20261009/compose/docker-config -H npipe:////./pipe/dockerDesktopLinuxEngine exec botsummary-uat-postgres-20261009 psql -X --no-password -h /var/run/postgresql -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE botsummary_baseline_replay_20261009 TEMPLATE template0;"
-node scripts/staging-baseline-replay.mjs --prepare botsummary_baseline_replay_20261009
-node scripts/staging-baseline-replay.mjs --run botsummary_baseline_replay_20261009
+docker --config .tmp-staging-uat-20261009/compose/docker-config -H npipe:////./pipe/dockerDesktopLinuxEngine exec botsummary-uat-postgres-20261009 psql -X --no-password -h /var/run/postgresql -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE botsummary_baseline_replay_20261009b TEMPLATE template0;"
+node scripts/staging-baseline-replay.mjs --prepare botsummary_baseline_replay_20261009b
+node scripts/staging-baseline-replay.mjs --run botsummary_baseline_replay_20261009b
 ```
 
 Run commands sequentially and stop on every nonzero exit. CREATE DATABASE
@@ -168,7 +170,7 @@ design. Every canonical migration hash was checked against the starting
 HEAD's committed content.
 
 [staging_baseline_verification.sql](../supabase/tests/staging_baseline_verification.sql)
-is appended after the complete chain. Its PG17 regression is **not run here**.
+is appended after the complete chain. Its PG17 regression was not executed in the Codex sandbox, but the host ran it successfully as part of the canonical 130-file replay described below.
 It checks financial relations/view, representative exact columns/defaults,
 the real finalization FK, extension schemas, current RPC signatures/return
 types/ACLs, enabled retention trigger, RLS, and evidence permissions including
@@ -216,6 +218,75 @@ Required financial evidence remains:
    capture. Leave finalizer cron uncalled until these exist; stored historical
    timestamps alone do not test the route's current-clock behavior.
 
+## Host verification after Codex handoff (actual PG17 and REST)
+
+The Codex sandbox could not reach the Docker pipe. The authorized lnwjud-local
+host continued against the **owned test-only** PostgreSQL container with
+exact published binding `127.0.0.1:56322 -> 5432`; host PostgreSQL 5432,
+Production, LINE and all Cloud projects were untouched.
+
+1. The recovered original Git `0042` source was applied after `0030`,
+   before `0031`. First full rehearsal moved past the prior `0032`
+   failure and through `0049`, then reached a new, unrelated P2E CONTRACT
+   assertion after 65 successful numbered migrations.
+2. Root cause: the local fresh chain already carried the correctly defined
+   `UNIQUE(source_id,business_date)` constraint under the auto-generated
+   name `transfer_reconciliations_source_id_business_date_key`. The
+   `20260731111743` migration intentionally does not rename an equivalent
+   existing constraint, but later `20260809045849` P2E CONTRACT requires and
+   drops the old name `transfer_reconciliations_source_date_key`.
+   `staging_p2e_legacy_unique_name.sql` is an explicit **local-only**
+   exact-definition/name compatibility phase immediately before CONTRACT.
+   It rejects wrong source columns, already conflicting names, wrong PG17,
+   wrong database and wrong role. Neither actual financial identity nor
+   any committed migration text is changed.
+3. The next rehearsal reached `20261007060911`, whose exact-text SQL check
+   failed on Windows CRLF transport although the expected old finalizer
+   fragment appeared exactly once when compared with CR removed. The replay
+   harness normalizes checkout CRLF back to the committed Git LF bytes before
+   applying, consistent with its pinned SHA-256 manifest, without changing
+   semantics or overwriting repository migration files.
+4. **Canonical reproducible replay PASSED:** a new empty
+   `botsummary_baseline_replay_20261009b` database was created with
+   `TEMPLATE template0`. The reviewed
+   `node scripts/staging-baseline-replay.mjs --run botsummary_baseline_replay_20261009b`
+   returned exit **0**, emitting
+   `PG17 ordered replay and schema/security assertions passed` after all
+   **130** SHA-256-pinned migrations, the verbatim historic baseline,
+   test-only ledger RLS and exact P2E naming compatibility. Its generated
+   SQL bundle hash was
+   `134055ae5e33ece8ec807e3d12ef41d7e8765a12f40ba10ed750474311470609`.
+   This is a proof of the *explicitly staged* replay chain, not proof that
+   the unmodified 130-file chain alone builds cleanly.
+5. `node --test scripts/staging-baseline-replay.test.mjs` passed **3/3**.
+   A separate scratch-chain rehearsal against another synthetic fresh
+   database completed with exit 0 and verification SQL passed with
+   `BEGIN/DO/ROLLBACK`, checking retained evidence, RPC/column shapes,
+   service ACLs and RLS; these are not Production results.
+6. A separate isolated full-schema PostgREST v14.15 container at
+   `127.0.0.1:56331` was started with a synthetic login and JWT secret
+   (never committed). **Real HTTP** GETs on the fully replayed database
+   returned `service_role=200`, `anon=401` for both
+   `pending_session_retired_generations` and `accountability_rounds`.
+   This is stronger than the earlier unrelated probe-table HTTP smoke,
+   but does not establish money correctness, genuine GoTrue login/SSR or
+   monthly financial performance.
+
+**Remaining NO-GO:** The full-schema PostgREST instance is not yet linked
+with a verified full-schema GoTrue Auth/Next process. The original GoTrue
+health check ran against a different synthetic database. Authenticated
+web-flow access, actual White Sheet finalize/sale/settlement HTTP, LINE
+no-send 04:00 behavior, durable correction of historical cases and 31-day
+report timing all require further UAT. The test-only replay also includes
+deliberate local platform metadata shims rather than full Supabase Storage
+services. A deployed Production release still requires a separate explicit
+authorization and its own safe migration sequencing.
+
+All added test database/container resources have synthetic names and remain
+on loopback for controlled continuation. Do not run the generated replay
+bundle against existing databases or Production. No Git push, merge, deploy,
+Production query/mutation or real LINE send occurred.
+
 ## Remaining definitions and release decision
 
 **Missing pending-session application definitions: none identified after
@@ -229,8 +300,9 @@ definitions are not reconstructed; use real local GoTrue, not guessed tables.
 Any proposal to compare those objects or this recovered baseline with actual
 Production requires distinct approval. None is requested or performed here.
 
-Until host ordered replay, genuine Auth/SSR, financial correction/finalization,
-contained cutoff scenarios and actual monthly performance pass, full Staging
-and Production remain **NO-GO**. No Production SQL/read/write/schema pull,
+Although host ordered replay and isolated full-schema REST ACL checks now pass,
+genuine Auth/SSR, financial correction/finalization, contained cutoff scenarios
+and actual monthly performance still need testing; full Staging and Production
+remain **NO-GO**. No Production SQL/read/write/schema pull,
 Production data copy, LINE send, Vercel/Neon/remote cron, push, merge or deploy
 occurred. The original host PostgreSQL on 5432 was untouched.

@@ -9,7 +9,7 @@ import { spawnSync } from 'node:child_process';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const output = join(root, '.tmp-staging-uat-20261009', 'baseline');
-export const databases = ['botsummary_compose_uat_20261009', 'botsummary_baseline_replay_20261009'];
+export const databases = ['botsummary_baseline_replay_20261009b', 'botsummary_baseline_replay_20261009c'];
 const read = name => readFileSync(join(root, name), 'utf8');
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 
@@ -67,6 +67,12 @@ END $$;\n`;
       phases.push({ path: 'test-only-ledger-rls', sql:
         'ALTER TABLE public.pending_session_ingest ENABLE ROW LEVEL SECURITY;\n' +
         'ALTER TABLE public.pending_session_admission ENABLE ROW LEVEL SECURITY;\n' });
+    }
+    // 20260731 keeps an equivalent constraint under its fresh-DB name, while
+    // P2E CONTRACT asserts/drops the historical name. Test-only exact rename;
+    // canonical migration contents remain untouched.
+    if (migration.path.endsWith('/20260809045849_p2e_accountability_round_identity_contract.sql')) {
+      phases.push(fixture('supabase/tests/staging_p2e_legacy_unique_name.sql'));
     }
     phases.push(migration);
   }
