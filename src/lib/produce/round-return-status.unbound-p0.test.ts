@@ -116,25 +116,78 @@ describe("P0 — refused unbound return is not proof of selling out", () => {
     expect((await loadRoundReturnStatuses(db, DAY))[0]?.state).toBe("persisted");
   });
 
-  test("an unbound failure for a different market does not block the withdrawn market", async () => {
+  test("a failure naming the seller's OTHER real market protects only that market's round", async () => {
+    const db = filteredClient({
+      produce_transactions: [issued, {
+        ...issued, id: "w72", accountability_round_id: "round-72",
+      }],
+      accountability_rounds: [identity, {
+        ...identity, id: "round-72", market_label: "เฉลิมฯ72",
+      }],
+      pending_sessions: [{ ...refusedUnboundReturn,
+        market_label: "ตลาด72",
+        accumulated_text: "น้อย-ตลาด72 ชั่งคืน 7/10/2569\n1.มะนาว 3 แพค\nจบรายการชั่งคืน",
+      }],
+    });
+    const byRound = new Map((await loadRoundReturnStatuses(db, DAY))
+      .map((row) => [row.accountabilityRoundId, row.state]));
+    // ตลาด72 is a reviewed alias of เฉลิมฯ72: the same market, as the RPC sees it.
+    expect(byRound.get("round-72")).toBe("blocked");
+    expect(byRound.get(ROUND)).toBe("none");
+  });
+
+  test("a market typo matching no round still protects the seller's round (never silent sold-out)", async () => {
     const db = filteredClient({
       produce_transactions: [issued],
       accountability_rounds: [identity],
       pending_sessions: [{ ...refusedUnboundReturn,
-        market_label: "ตลาด72",
-        accumulated_text: "น้อย-ตลาด72 ชั่งคืน 7/10/2569\\n1.มะนาว 3 แพค\\nจบรายการชั่งคืน",
+        market_label: "ราชพรึก",
+        accumulated_text: "น้อย-ราชพรึก ชั่งคืน 7/10/2569\n1.มะนาว 3 แพค\nจบรายการชั่งคืน",
       }],
     });
-    expect((await loadRoundReturnStatuses(db, DAY))[0]?.state).toBe("none");
+    expect((await loadRoundReturnStatuses(db, DAY))[0]?.state).toBe("blocked");
   });
 
-  test("a different LINE source never attaches a failed return to this round", async () => {
+  test("an unreviewed seller spelling protects the group's round in the named market", async () => {
+    const db = filteredClient({
+      produce_transactions: [issued, {
+        ...issued, id: "w-other", accountability_round_id: "round-other-seller",
+      }],
+      accountability_rounds: [identity, {
+        ...identity, id: "round-other-seller", seller_label: "แดง", market_label: "วัดทุ่งลานนา",
+      }],
+      pending_sessions: [{ ...refusedUnboundReturn,
+        accumulated_text: "พี่น้อย-ราชพฤกษ์ ชั่งคืน 7/10/2569\n1.มะนาว 3 แพค\nจบรายการชั่งคืน",
+        staff_label: "พี่น้อย",
+      }],
+    });
+    const byRound = new Map((await loadRoundReturnStatuses(db, DAY))
+      .map((row) => [row.accountabilityRoundId, row.state]));
+    expect(byRound.get(ROUND)).toBe("blocked");
+    expect(byRound.get("round-other-seller")).toBe("none");
+  });
+
+  test("a different LINE source never reaches a round when its own group holds the seller's round", async () => {
+    const db = filteredClient({
+      produce_transactions: [issued, {
+        ...issued, id: "w-b", accountability_round_id: "round-group-b",
+      }],
+      accountability_rounds: [identity, { ...identity, id: "round-group-b", source_id: "other-source" }],
+      pending_sessions: [{ ...refusedUnboundReturn, source_id: "other-source" }],
+    });
+    const byRound = new Map((await loadRoundReturnStatuses(db, DAY))
+      .map((row) => [row.accountabilityRoundId, row.state]));
+    expect(byRound.get("round-group-b")).toBe("blocked");
+    expect(byRound.get(ROUND)).toBe("none");
+  });
+
+  test("a return sent from the wrong group still protects the seller's only matching round", async () => {
     const db = filteredClient({
       produce_transactions: [issued],
       accountability_rounds: [identity],
-      pending_sessions: [{ ...refusedUnboundReturn, source_id: "other-source" }],
+      pending_sessions: [{ ...refusedUnboundReturn, source_id: "group-without-rounds" }],
     });
-    expect((await loadRoundReturnStatuses(db, DAY))[0]?.state).toBe("none");
+    expect((await loadRoundReturnStatuses(db, DAY))[0]?.state).toBe("blocked");
   });
 
   test("an explicit previous business date never blocks the next day's withdrawal", async () => {

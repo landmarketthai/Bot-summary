@@ -19,8 +19,8 @@ import {
 import { PROFITABILITY_CALCULATION_VERSION } from "@/lib/profitability/types";
 import type { Database } from "@/types/database";
 import { stubManualSlipTables } from "@/lib/white-sheet/test-manual-slip-db";
+import { loadDigitalWhiteSheetPageModel } from "./test-certified-returns";
 import {
-  loadDigitalWhiteSheetPageModel,
   requireTrustedWhiteSheetSummary,
   WhiteSheetHardStopError,
   WhiteSheetNotSubmittedError,

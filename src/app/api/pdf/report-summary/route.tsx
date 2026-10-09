@@ -6,7 +6,8 @@ import { renderToBuffer } from "@react-pdf/renderer";
 import { createServiceClient } from "@/lib/supabase/server";
 import { registerFonts } from "@/lib/pdf/fonts";
 import { ReportSummaryDoc } from "@/lib/pdf/ReportSummaryDoc";
-import type { ReportRow, SettlementMap } from "@/lib/summary/report";
+import { buildReportGroups, type ReportRow, type SettlementMap } from "@/lib/summary/report";
+import { uncertifiedReportGroupKeys } from "@/lib/settlement/produce-value-status";
 import { displayMarketName } from "@/lib/market";
 import { logger } from "@/lib/logger";
 import { pdfContentDisposition } from "@/lib/pdf/content-disposition";
@@ -78,10 +79,16 @@ async function renderReportPdf(
   rows: ReportRow[],
   settlements: SettlementMap,
   filterLabel: string,
+  uncertifiedKeys: string[],
 ): Promise<Buffer> {
   registerFonts();
   return renderToBuffer(
-    <ReportSummaryDoc rows={rows} settlements={settlements} filterLabel={filterLabel} />,
+    <ReportSummaryDoc
+      rows={rows}
+      settlements={settlements}
+      filterLabel={filterLabel}
+      uncertifiedKeys={uncertifiedKeys}
+    />,
   );
 }
 
@@ -105,7 +112,11 @@ export async function GET(req: NextRequest) {
     const uniqueDates = [...new Set(rows.map((r) => r.transaction_date).filter(Boolean) as string[])];
     const settlements = await getSettlements(supabase, uniqueDates);
 
-    const buffer = await renderReportPdf(rows, settlements, filterLabel);
+    // P0: the settlement verdict decides which ยอดส่ง/ขาด-เกิน may print as money.
+    const uncertifiedKeys = await uncertifiedReportGroupKeys(
+      supabase, buildReportGroups(rows, settlements),
+    );
+    const buffer = await renderReportPdf(rows, settlements, filterLabel, uncertifiedKeys);
 
     return new NextResponse(new Uint8Array(buffer), {
       headers: {

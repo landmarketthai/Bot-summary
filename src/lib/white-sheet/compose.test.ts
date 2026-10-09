@@ -2,8 +2,8 @@ import { describe, expect, it } from "bun:test";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 import { stubManualSlipTables } from "@/lib/white-sheet/test-manual-slip-db";
+import { loadDigitalWhiteSheetPageModel } from "./test-certified-returns";
 import {
-  loadDigitalWhiteSheetPageModel,
   requireSubmittedWhiteSheetSummary,
   requireTrustedWhiteSheetSummary,
   WhiteSheetHardStopError,

@@ -46,6 +46,29 @@ export function bangkokBusinessDateFromTimestamp(
   return isoDateFromParts(parts.year, parts.month, parts.day);
 }
 
+/**
+ * How close to the 04:00 cutoff a clock may sit before it stops PROVING which
+ * business day an undated document belongs to: an event at 03:59 is inserted
+ * after 04:00, and a late return for yesterday arrives just after it.
+ */
+export const BUSINESS_DATE_CUTOFF_MARGIN_MS = 30 * 60 * 1000;
+
+/**
+ * Every business date a clock reading could belong to once the cutoff margin
+ * is allowed for: one date normally, the two adjacent dates near 04:00.
+ */
+export function bangkokBusinessDatesNear(
+  timestamp: number,
+  marginMs = BUSINESS_DATE_CUTOFF_MARGIN_MS,
+): string[] {
+  const dates = new Set<string>();
+  for (const ms of [timestamp - marginMs, timestamp + marginMs]) {
+    const date = bangkokBusinessDateFromTimestamp(ms);
+    if (date) dates.add(date);
+  }
+  return [...dates].sort();
+}
+
 export function bangkokBusinessDateNow(cutoffHour = DEFAULT_CUTOFF_HOUR): string {
   return bangkokBusinessDateFromTimestamp(Date.now(), cutoffHour) ?? new Date().toISOString().slice(0, 10);
 }

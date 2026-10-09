@@ -6,7 +6,7 @@
  * because that is what keeps the session in capture where the corrected line is
  * still an ordinary item message and the original business date survives.
  */
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, setSystemTime } from "bun:test";
 import { WebhookService } from "./webhook-service";
 import type { LineMessageEvent } from "./types";
 
@@ -698,5 +698,63 @@ describe("a refused close cannot strand its generation", () => {
     expect(replies[0]).toContain("มากกว่า 1 รอบ");
     expect(db.closeRefusals).toHaveLength(1);
     expect(db.closeRefusals[0].close_line_event_id).toBe("close-10");
+  });
+});
+
+describe("P0: a refused return keeps its round identity, never a guessed one", () => {
+  function captureBinds(db: PlainTextGateDatabase): Row[] {
+    const calls: Row[] = [];
+    const rpc = db.rpc;
+    db.rpc = async (name: string, args: Row) => {
+      if (name === "bind_plain_text_accountability_round") calls.push(args);
+      return rpc(name, args);
+    };
+    return calls;
+  }
+
+  it("a return with one malformed line is attached to its round, nothing is booked", async () => {
+    const db = new PlainTextGateDatabase(
+      pendingRow([RETURN_HEADER, "1.มังคุด45บาท", "4โล", "22.มะม่วง"].join("\n")),
+      master([{}]),
+    );
+    const binds = captureBinds(db);
+    const masterRows = db.rows("produce_transactions").length;
+
+    await build(db, []).processEvents([textEvent("จบรายการชั่งคืน", "p0-partial-close")], "dest");
+
+    expect(binds).toHaveLength(1);
+    expect(binds[0]).toMatchObject({ p_is_new_round: false, p_business_date: "2026-08-11" });
+    expect(db.rows("produce_transactions")).toHaveLength(masterRows);
+    expect(db.pending.partial_capture).toBeTruthy();
+  });
+
+  it("a refused document carrying a withdrawal never reaches the binding RPC", async () => {
+    const db = new PlainTextGateDatabase(
+      pendingRow([
+        // A valid คืน line made the old guard bind with p_is_new_round=true.
+        "ดำ-ราชพฤกษ์ เบิก 11/8/2569", "1.มังคุด45บาท", "4โล", "คืน", "2.มะม่วง40บาท", "2โล", "3.ส้ม",
+      ].join("\n")),
+      master([{}]),
+    );
+    const binds = captureBinds(db);
+    await build(db, []).processEvents([textEvent("จบรายการ", "p0-mixed-close")], "dest");
+    expect(binds).toHaveLength(0);
+  });
+
+  it("an undated return closed at 04:05 is refused before any round is chosen", async () => {
+    setSystemTime(new Date("2026-08-11T21:05:00.000Z")); // 04:05 Bangkok, 12/8
+    try {
+      const db = new PlainTextGateDatabase(
+        pendingRow(["ดำ-ราชพฤกษ์ ชั่งคืน", "1.มังคุด45บาท", "4โล"].join("\n")),
+        master([{}]),
+      );
+      const binds = captureBinds(db);
+      const replies: string[] = [];
+      await build(db, replies).processEvents([textEvent("จบรายการชั่งคืน", "p0-cutoff-close")], "dest");
+      expect(binds).toHaveLength(0);
+      expect(replies.join("\n")).toContain("ไม่มีวันที่ในหัวรายการ");
+    } finally {
+      setSystemTime();
+    }
   });
 });

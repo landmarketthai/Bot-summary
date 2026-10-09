@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authErrorStatus, requireAdminActor } from "@/lib/auth/admin";
 import { createClient } from "@/lib/supabase/server";
-import { normalizedMarketLabel } from "@/lib/white-sheet";
+import {
+  normalizedMarketLabel,
+  WhiteSheetHardStopError,
+  WhiteSheetNotSubmittedError,
+} from "@/lib/white-sheet";
 import { WhiteSheetPersistenceError } from "@/lib/white-sheet/persist";
 import { finalizeServerWhiteSheetCashEntry } from "@/lib/white-sheet/server";
 
@@ -47,8 +51,11 @@ export async function POST(req: NextRequest) {
     );
     return NextResponse.json(state);
   } catch (err) {
-    if (err instanceof WhiteSheetPersistenceError) {
+    if (err instanceof WhiteSheetPersistenceError || err instanceof WhiteSheetNotSubmittedError) {
       return NextResponse.json({ error: err.message }, { status: 400 });
+    }
+    if (err instanceof WhiteSheetHardStopError) {
+      return NextResponse.json({ error: err.message }, { status: 409 });
     }
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "finalize failed" },

@@ -44,7 +44,7 @@ function enrichGroups(groups: GroupRow[], settlements: SettlementEntry[]) {
   return groups.map((g) => {
     const k   = `${g.date}||${g.time ?? ""}||${g.seller}||${g.market}`;
     const s   = map.get(k) ?? { transfer: 0, cash: 0, expenses: 0, labor: 0 };
-    const netTrusted = g.produceNetStatus !== "returns_exceed_withdrawal";
+    const netTrusted = g.produceNetStatus === undefined || g.produceNetStatus === "trusted";
     const settlement = calculateSettlementTotals({
       ยอดส่ง: g.ยอดส่ง,
       money_transfer: s.transfer,
@@ -194,7 +194,7 @@ export function FinancialSummaryDoc({ month, groups, settlements }: FinancialSum
     gเบิก    += g.เบิก;
     gคืน     += g.คืน;
     gคืนเสีย += g.คืนเสีย;
-    if (g.produceNetStatus === "returns_exceed_withdrawal") untrustedNetCount += 1;
+    if (g.produceNetStatus !== undefined && g.produceNetStatus !== "trusted") untrustedNetCount += 1;
     else gยอดส่ง += g.ยอดส่ง;
     gโอน     += g.ยอดโอน;
     gสด      += g.เงินสด;
@@ -245,7 +245,7 @@ export function FinancialSummaryDoc({ month, groups, settlements }: FinancialSum
               const vals = [
                 thaiDate(g.date), g.seller, g.market,
                 fmt(g.เบิก), fmt(g.คืน), fmt(g.คืนเสีย),
-                g.produceNetStatus === "returns_exceed_withdrawal" ? "ตรวจสอบ" : fmt(g.ยอดส่ง),
+                g.produceNetStatus !== undefined && g.produceNetStatus !== "trusted" ? "ตรวจสอบ" : fmt(g.ยอดส่ง),
                 fmt(g.ยอดโอน), fmt(g.เงินสด), fmt(g.ค่าใช้จ่าย), fmt(g.ค่าแรง), fmt(g.ยอดขาย),
               ];
               return (

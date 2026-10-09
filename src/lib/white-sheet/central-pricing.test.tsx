@@ -5,7 +5,7 @@ import type { Database } from "@/types/database";
 import { DigitalWhiteSheetSummary } from "@/components/white-sheet/DigitalWhiteSheetSummary";
 import { buildWhiteSheetSummaryMessagesFromPageModel } from "@/lib/line/white-sheet-summary";
 import { requireTrustedWhiteSheetSummary, WhiteSheetHardStopError } from "./compose";
-import { loadDigitalWhiteSheetCalculation } from "./load";
+import { loadDigitalWhiteSheetCalculation } from "./test-certified-returns";
 import { SYSTEM_WITHDRAWAL_SEED_ACTOR } from "./pricing";
 import { seedCentralPricesFromPersistedWithdrawals } from "./seed-from-withdrawal";
 import { stubManualSlipTables } from "@/lib/white-sheet/test-manual-slip-db";

@@ -291,7 +291,9 @@ function DetailTable({ items, typeLabel }: { items: ReportRow[]; typeLabel: stri
   );
 }
 
-function SummaryBlock({ g }: { g: ReportGroup }) {
+function SummaryBlock({ g }: { g: ReportGroup & { provisional?: boolean } }) {
+  // P0: money that rests on an uncertified ชั่งคืน is pending, never a figure.
+  const pending = new Set(g.provisional ? ["ยอดส่ง", "เงินสดต้องส่งเจ๊", "ขาด/เกิน"] : []);
   const cells = [
     { label: "ยอดเบิก",          value: g.ยอดเบิก,          color: "#15803D" },
     { label: "ยอดคืน",           value: g.ยอดคืน,           color: "#1D4ED8" },
@@ -307,8 +309,7 @@ function SummaryBlock({ g }: { g: ReportGroup }) {
         <View key={label} style={S.summaryCell}>
           <Text style={S.summaryLabel}>{label}</Text>
           <Text style={[S.summaryValue, { color }]}>
-            {value > 0 && label === "ขาด/เกิน" ? "+" : ""}
-            {fmt(value)}
+            {pending.has(label) ? "รอตรวจสอบ" : `${value > 0 && label === "ขาด/เกิน" ? "+" : ""}${fmt(value)}`}
           </Text>
         </View>
       ))}
@@ -322,10 +323,12 @@ export interface ReportSummaryDocProps {
   rows:        ReportRow[];
   settlements: SettlementMap;
   filterLabel: string;
+  /** Server verdict: groups whose ชั่งคืน is not certified. */
+  uncertifiedKeys?: string[];
 }
 
-export function ReportSummaryDoc({ rows, settlements, filterLabel }: ReportSummaryDocProps) {
-  const groups  = buildReportGroups(rows, settlements);
+export function ReportSummaryDoc({ rows, settlements, filterLabel, uncertifiedKeys = [] }: ReportSummaryDocProps) {
+  const groups  = buildReportGroups(rows, settlements, uncertifiedKeys);
   const today   = new Date().toLocaleDateString("th-TH", { day: "numeric", month: "long", year: "numeric" });
 
   return (

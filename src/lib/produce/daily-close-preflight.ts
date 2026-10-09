@@ -32,12 +32,14 @@ import {
   type RoundReturnStatus,
 } from "./round-return-status";
 import {
-  classifyProduceFailures,
   type FinalizedProduceOutcome,
   type ProduceFailureAttempt,
   type ProduceFailureClassification,
 } from "./failure-lifecycle";
-import { loadProduceFailureEvidence } from "./failure-lifecycle-source";
+import {
+  classifyProduceFailuresAcrossCutoff,
+  loadProduceFailureEvidence,
+} from "./failure-lifecycle-source";
 import {
   buildCentralPriceReview,
   type CentralPriceReviewItem,
@@ -765,10 +767,10 @@ export async function loadDailyClosePreflight(
   ]);
   const openRounds = await loadOpenRoundRecords(supabase, businessDate, produceRows);
 
-  const failureClassifications = classifyProduceFailures(
+  const failureClassifications = await classifyProduceFailuresAcrossCutoff(
+    supabase,
     options.failureAttempts,
-    evidence.outcomes,
-    { cancelledRoundIds: evidence.cancelledRoundIds },
+    evidence,
   );
 
   const result = buildDailyClosePreflight({

@@ -117,6 +117,12 @@ export interface WeighSession {
   session_kind:     SessionKind;
   /** Base transaction type declared by an additional-batch header; null for main. */
   declared_transaction_type: BaseTransactionType | null;
+  /**
+   * The base type a MAIN header names explicitly ("น้อย-ราชพฤกษ์ ชั่งคืน …"),
+   * null when it names none. Lets a document whose every item line failed
+   * still be recognised for what it is.
+   */
+  header_transaction_type?: BaseTransactionType | null;
   items:            WeighSessionItem[];
   parse_errors:     string[];
   /**

@@ -22,7 +22,11 @@ import {
   loadDailyClosePreflight,
   type DailyClosePreflightResult,
 } from "./daily-close-preflight";
-import type { RoundReturnStatus } from "./round-return-status";
+import {
+  activeUnboundReturnIdentities,
+  loadRoundReturnStatuses,
+  type RoundReturnStatus,
+} from "./round-return-status";
 
 type Supabase = SupabaseClient<Database>;
 
@@ -56,12 +60,20 @@ export async function runDailyClosePreflight(
     accountabilityRoundId: row.accountability_round_id,
   }));
 
+  // Same unbound-return rule as the Sales loader: lifecycle-active attempts
+  // only, so a proven resend clears the round in both places alike.
+  const roundStatuses = options.roundStatuses ?? await loadRoundReturnStatuses(
+    supabase,
+    businessDate,
+    activeUnboundReturnIdentities(failures.attempts, failures.classifications, businessDate),
+  );
+
   return loadDailyClosePreflight(supabase, businessDate, {
     failureAttempts: failures.attempts,
     withdrawalRows,
     outcomes: failures.evidence.outcomes,
     cancelledRoundIds: failures.evidence.cancelledRoundIds,
-    roundStatuses: options.roundStatuses,
+    roundStatuses,
     produceRows: rows,
   });
 }

@@ -8,7 +8,8 @@ interface YodSong {
   เบิก:     number;
   คืน:      number;
   คืนเสีย:  number;
-  ยอดส่ง:   number;
+  /** null while the settlement verdict does not certify the ชั่งคืน. */
+  ยอดส่ง:   number | null;
 }
 
 interface InitialValues {
@@ -48,7 +49,8 @@ export function SettlementForm({ initial }: { initial?: Partial<InitialValues> }
   const [saving,        startSave]        = useTransition();
 
   const ยอดขาย  = moneyTransfer + moneyCash + expenses + labor;
-  const ขาดเกิน = yodSong != null ? ยอดขาย - yodSong.ยอดส่ง : null;
+  // The API withholds ยอดส่ง (null) while a ชั่งคืน is unresolved: no ขาด/เกิน.
+  const ขาดเกิน = yodSong?.ยอดส่ง != null ? ยอดขาย - yodSong.ยอดส่ง : null;
 
   const month = date ? date.slice(0, 7) : null;
 
@@ -275,7 +277,9 @@ export function SettlementForm({ initial }: { initial?: Partial<InitialValues> }
               </div>
               <div className="flex items-center justify-between border-t border-slate-100 pt-2.5">
                 <span className="text-xs text-slate-500">ยอดขายสุทธิ (เบิก−คืน−คืนเสีย)</span>
-                <span className="text-sm font-bold tabular-nums text-slate-800">{fmtMoney(yodSong.ยอดส่ง)}</span>
+                <span className="text-sm font-bold tabular-nums text-slate-800">
+                  {yodSong.ยอดส่ง == null ? "รอตรวจสอบ (ข้อมูลชั่งคืนยังไม่ครบ)" : fmtMoney(yodSong.ยอดส่ง)}
+                </span>
               </div>
             </div>
           )}

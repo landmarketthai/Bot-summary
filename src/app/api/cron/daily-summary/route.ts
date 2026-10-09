@@ -3,6 +3,7 @@ import { createServiceClient } from "@/lib/supabase/server";
 import { logger } from "@/lib/logger";
 import { pushLineMessage } from "@/lib/line/reply";
 import { buildDailySummaryMessage } from "@/lib/line/daily-summary-message";
+import { loadProduceValueStatusResolver } from "@/lib/settlement/produce-value-status";
 import {
   dailySummaryCategoryLedgers,
   dailySummaryRetryKey,
@@ -121,7 +122,18 @@ export async function GET(req: NextRequest) {
   // targets that already received today's summary.
   let sentCount = 0;
   const failedSourceIds: string[] = [];
-  for (const [sourceId, rows] of summariesBySource) {
+  // P0: the same verdict Settlement uses. A refused/open ชั่งคืน turns that
+  // seller's ยอดส่ง into "รอตรวจสอบ" instead of withdrawn-minus-nothing.
+  const produceValueStatus = await loadProduceValueStatusResolver(supabase, [summaryDate]);
+  for (const [sourceId, sourceRows] of summariesBySource) {
+    const rows = sourceRows.map((row) => ({
+      ...row,
+      produce_value_status: produceValueStatus(
+        summaryDate,
+        { staffName: row.staff_name, marketName: row.market_name },
+        row.transaction_count,
+      ),
+    }));
     const message = buildDailySummaryMessage(summaryDate, rows, categoryLedgers.get(sourceId));
     logger.info("daily summary cron pushing LINE message", {
       summaryDate,

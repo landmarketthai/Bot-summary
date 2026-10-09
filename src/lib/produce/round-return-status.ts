@@ -22,8 +22,14 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { RE } from "@/lib/parsers/weigh-session/regex";
 import { parseWeighSession } from "@/lib/parsers/weigh-session/parser";
-import { normalizedMarketLabel } from "@/lib/market";
+import { canonicalMarketLabel } from "@/lib/market";
+import { isQaMarketLabel } from "@/lib/sales/qa-scopes";
 import { baseTransactionType, transactionBucket } from "@/lib/summary/transactions";
+import {
+  activeFailureIds,
+  type ProduceFailureAttempt,
+  type ProduceFailureClassification,
+} from "./failure-lifecycle";
 import { transactionKindFromText } from "./failure-lifecycle-source";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -163,11 +169,9 @@ interface PendingRow {
 }
 
 /**
- * P0 safety attribution for an unbound failed return. This is a REPORT-ONLY
- * guard, not an accounting-round binding or reconciliation. Matching requires
- * four explicit business dimensions: LINE source, business date, seller and
- * canonical market. A missing dimension is never a wildcard. More than one
- * matching round remains ambiguous: protect every candidate, but choose none.
+ * The identity an unbound failed return names about itself. Every field may
+ * be missing or wrong — a typo in the seller or market is often exactly why
+ * the document was refused.
  */
 export interface UnboundReturnIdentity {
   sourceId: string | null;
@@ -181,28 +185,92 @@ function exactIdentity(value: string | null | undefined): string | null {
   return text || null;
 }
 
-export function protectiveUnboundReturnRoundIds(
-  rounds: readonly (RoundRow & { id: string })[],
-  attempts: readonly UnboundReturnIdentity[],
-): Set<string> {
-  const blocked = new Set<string>();
-  for (const attempt of attempts) {
+/** Each dimension an attempt may narrow by, in order of authority. */
+const NARROWING_DIMENSIONS: ReadonlyArray<
+  (attempt: UnboundReturnIdentity, round: RoundRow) => boolean | null
+> = [
+  // The source is a column, never typed text: the most authoritative.
+  (attempt, round) => {
     const source = exactIdentity(attempt.sourceId);
-    const date = exactIdentity(attempt.businessDate);
+    return source ? exactIdentity(round.source_id) === source : null;
+  },
+  (attempt, round) => {
     const seller = exactIdentity(attempt.sellerLabel);
-    const market = normalizedMarketLabel(attempt.marketLabel);
-    if (!source || !date || !seller || !market) continue;
+    return seller ? exactIdentity(round.seller_label) === seller : null;
+  },
+  // Reviewed aliases are one market, exactly as the binding RPC treats them.
+  (attempt, round) => {
+    const market = canonicalMarketLabel(attempt.marketLabel);
+    return market ? canonicalMarketLabel(round.market_label) === market : null;
+  },
+];
 
-    for (const round of rounds) {
-      if (
-        exactIdentity(round.source_id) === source
-        && exactIdentity(round.business_date) === date
-        && exactIdentity(round.seller_label) === seller
-        && normalizedMarketLabel(round.market_label) === market
-      ) blocked.add(round.id);
+/**
+ * P0 protective attribution of an unbound failed return. REPORT-ONLY: it never
+ * binds, writes or reconciles anything.
+ *
+ * Starts from every round of the attempt's business date and narrows by each
+ * dimension the evidence names AND at least one candidate shares — source,
+ * then seller, then market. A dimension that no candidate shares (a typo, an
+ * unreviewed alias, the wrong group) is not proof that the return belongs to
+ * no round, so it does not narrow. Every surviving round is protected and
+ * none is chosen. Exact evidence therefore protects exactly its own round(s),
+ * while broken evidence protects every round it could plausibly belong to.
+ *
+ * `unplaced` is an attempt that cannot be put on a day at all (no date), or
+ * whose day has no round to protect: the caller must not treat that day's
+ * unbound produce as certified.
+ */
+export function protectiveUnboundReturnRounds(
+  rounds: readonly RoundRow[],
+  attempts: readonly UnboundReturnIdentity[],
+): { roundIds: Set<string>; unplaced: boolean } {
+  const roundIds = new Set<string>();
+  let unplaced = false;
+  for (const attempt of attempts) {
+    const date = exactIdentity(attempt.businessDate);
+    let candidates = date
+      ? rounds.filter((round) => exactIdentity(round.business_date) === date)
+      : [];
+    if (candidates.length === 0) {
+      unplaced = true;
+      continue;
     }
+    for (const matches of NARROWING_DIMENSIONS) {
+      const narrowed = candidates.filter((round) => matches(attempt, round) === true);
+      if (narrowed.length > 0) candidates = narrowed;
+    }
+    for (const round of candidates) roundIds.add(round.id);
   }
-  return blocked;
+  return { roundIds, unplaced };
+}
+
+/**
+ * The active unbound non-withdrawal attempts a report must protect against —
+ * one rule for the Sales loader and the Daily Close preflight. Superseded and
+ * abandoned attempts are excluded by their lifecycle verdict; QA scopes too.
+ * A missing date falls back to the date the scan attributed it to.
+ */
+export function activeUnboundReturnIdentities(
+  attempts: readonly ProduceFailureAttempt[],
+  classifications: readonly ProduceFailureClassification[],
+  businessDate: string,
+  includeQaScopes = false,
+): UnboundReturnIdentity[] {
+  const active = activeFailureIds(classifications);
+  return attempts
+    .filter((attempt) =>
+      active.has(attempt.attemptId)
+      && !exactIdentity(attempt.accountabilityRoundId)
+      && attempt.transactionKind !== "เบิก"
+      && (includeQaScopes || !isQaMarketLabel(attempt.marketLabel))
+      && (attempt.businessDate === null || attempt.businessDate === businessDate))
+    .map((attempt) => ({
+      sourceId: attempt.sourceId,
+      businessDate: attempt.businessDate ?? businessDate,
+      sellerLabel: attempt.staffLabel,
+      marketLabel: attempt.marketLabel,
+    }));
 }
 
 /** Unknown stays fail-closed; a proven withdrawal cannot be return evidence. */
@@ -353,7 +421,7 @@ export async function loadRoundReturnStatuses(
       }
     }
   }
-  const blockedUnboundRounds = protectiveUnboundReturnRoundIds(
+  const { roundIds: blockedUnboundRounds } = protectiveUnboundReturnRounds(
     [...identities.values()], unboundAttempts,
   );
   for (const id of blockedUnboundRounds) {

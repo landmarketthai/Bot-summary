@@ -244,6 +244,20 @@ describe("Morning Brief section financial purity", () => {
     expect([fruit.readyValueSatang, vegetable.readyValueSatang, other.readyValueSatang]).toEqual([300, 400, 600]);
   });
 
+  test("P0: a section keeps confirmed and pending (unreturned) money apart", () => {
+    const sales = salesReport([market("ราชพฤกษ์", [
+      salesRow({ productName: "มังคุด", withdrawnQuantity: 10, enteredPriceSatang: 100, expectedSalesSatang: 1000 }),
+      salesRow({
+        productName: "มังคุด", unit: "แพค", withdrawnQuantity: 5, enteredPriceSatang: 100,
+        expectedSalesSatang: null, pendingReviewSalesSatang: 500,
+      }),
+    ])]);
+    const fruit = summarizeProduceFinancial(sales, { status: "missing" } as never, "fruit");
+    expect(fruit.salesValueSatang).toBe(1500);
+    expect(fruit.pendingSalesValueSatang).toBe(500);
+    expect(fruit.markets[0].pendingSalesValueSatang).toBe(500);
+  });
+
   test("known vegetables and special packs have classified purchase headings", () => {
     expect(morningBriefProductIdentity("ใบกุยช่าย", "กำ").category).not.toBe("ไม่จัดหมวด");
     expect(morningBriefProductIdentity("เห็ดเข็มทอง", "แพค").category).not.toBe("ไม่จัดหมวด");

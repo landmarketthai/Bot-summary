@@ -356,7 +356,9 @@ function FinancialSummaryPage({ financial, label, businessDate, generatedText, v
         <View style={S.kpi}><View style={S.kpiBox}>
           <Text style={S.kpiLabel}>ยอดขายรวมเมื่อวาน ({label})</Text>
           <Text style={S.kpiValue}>{financial ? bahtFromSatang(financial.salesValueSatang) : "-"}</Text>
-          <Text style={S.kpiUnit}>บาท</Text>
+          <Text style={S.kpiUnit}>{(financial?.pendingSalesValueSatang ?? 0) > 0
+            ? `บาท · ยังไม่ยืนยัน ${bahtFromSatang(financial.pendingSalesValueSatang ?? 0)} บาท`
+            : "บาท"}</Text>
         </View></View>
         <View style={S.kpi}><View style={S.kpiBox}>
           <Text style={S.kpiLabel}>{label}ที่เบิกออกไปขายเมื่อวาน</Text>
@@ -396,13 +398,13 @@ function FinancialSummaryPage({ financial, label, businessDate, generatedText, v
         {marketTotals.map((market, index) => <View style={S.tr} key={`${market.marketLabel}-${index}`} wrap={false}>
           <MarketCell width="28%" tone="name">{market.marketLabel}</MarketCell>
           <MarketCell width="24%" tone="withdrawal">{bahtFromSatang(market.withdrawalValueSatang)}</MarketCell>
-          <MarketCell width="24%" tone="sales">{bahtFromSatang(market.salesValueSatang)}</MarketCell>
+          <MarketCell width="24%" tone="sales">{`${bahtFromSatang(market.salesValueSatang)}${(market.pendingSalesValueSatang ?? 0) > 0 ? " (รอตรวจ)" : ""}`}</MarketCell>
           <MarketCell width="24%" tone="return">{bahtFromSatang(market.goodReturnValueSatang)}</MarketCell>
         </View>)}
         <View style={S.tr} wrap={false}>
           <MarketCell width="28%" tone="name" total>รวม</MarketCell>
           <MarketCell width="24%" tone="withdrawal" total>{financial ? bahtFromSatang(financial.withdrawalValueSatang) : "-"}</MarketCell>
-          <MarketCell width="24%" tone="sales" total>{financial ? bahtFromSatang(financial.salesValueSatang) : "-"}</MarketCell>
+          <MarketCell width="24%" tone="sales" total>{financial ? `${bahtFromSatang(financial.salesValueSatang)}${(financial.pendingSalesValueSatang ?? 0) > 0 ? " (รอตรวจ)" : ""}` : "-"}</MarketCell>
           <MarketCell width="24%" tone="return" total>{financial ? bahtFromSatang(financial.goodReturnValueSatang) : "-"}</MarketCell>
         </View>
       </View>

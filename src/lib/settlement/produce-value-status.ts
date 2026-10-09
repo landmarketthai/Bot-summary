@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 import { canonicalMarketLabel, displayMarketName } from "@/lib/market";
 import { runDailyClosePreflight } from "@/lib/produce/preflight-service";
+import { PLAIN_TEXT_ROUND_ENFORCEMENT_FROM } from "@/lib/produce/plain-text-round-binding";
 import type {
   DailyClosePreflightResult,
   PreflightIssue,
@@ -88,10 +89,12 @@ function matchingRound(
     ) ?? null;
   }
 
-  const market = displayMarketName(identity.marketName, "");
+  // Reviewed aliases are one market: a row typed "ตลาด72" belongs to the
+  // round the binding RPC filed under "เฉลิมฯ72".
+  const market = canonicalMarketLabel(identity.marketName);
   const matches = preflight.rounds.filter((round) =>
     sameText(round.staffName, identity.staffName)
-    && displayMarketName(round.marketName ?? "", "") === market,
+    && canonicalMarketLabel(round.marketName ?? "") === market,
   );
   return matches.length === 1 ? matches[0]! : null;
 }
@@ -138,13 +141,77 @@ export function settlementProduceValueStatus(
 ): SettlementProduceValueStatus {
   if (effectiveRowCount === 0) return "missing";
   const round = matchingRound(preflight, identity);
-  if (!round) return "blocked";
+  if (!round) {
+    // Before plain-text rounds were enforced a business date legitimately has
+    // no round to match; only day-level evidence can speak for it. From the
+    // enforcement date on, produce without its round is never certified.
+    if (preflight.businessDate >= PLAIN_TEXT_ROUND_ENFORCEMENT_FROM) return "blocked";
+    const roundless: PreflightRound = {
+      accountabilityRoundId: null,
+      staffName: identity.staffName,
+      marketName: identity.marketName,
+      status: "ready",
+      blockers: [],
+      warnings: [],
+    };
+    return preflight.integrityIssues.some((issue) =>
+      integrityIssueAffectsRound(issue, roundless, identity)) ? "blocked" : "complete";
+  }
   if (preflight.integrityIssues.some((issue) =>
     integrityIssueAffectsRound(issue, round, identity))) {
     return "blocked";
   }
   if (round.status === "ready") return "complete";
   return round.status === "partial" ? "partial" : "blocked";
+}
+
+/** A day-level blocker that can reach rows no round owns in this market. */
+function issueReachesUnboundMarket(issue: PreflightIssue, marketName: string): boolean {
+  if (issue.severity !== "blocker" || issue.code === "unresolved_central_price") return false;
+  if (issue.accountabilityRoundId) return false;
+  if (issue.marketName) {
+    return displayMarketName(issue.marketName, "") === displayMarketName(marketName, "");
+  }
+  const market = canonicalMarketLabel(marketName);
+  if (issue.sourceMarketScope && issue.sourceMarketScope.length > 0 && market) {
+    return issue.sourceMarketScope.includes(market);
+  }
+  return true;
+}
+
+/**
+ * The same verdict for a scope with no seller — a White Sheet is one LINE
+ * source + market + date. Every round its rows belong to must be complete on
+ * its own identity; rows no round owns pass only when no blocker reaches the
+ * market. One incomplete round makes the whole scope's money provisional.
+ */
+export function marketProduceValueStatus(
+  preflight: DailyClosePreflightResult,
+  marketName: string,
+  rowRoundIds: readonly (string | null)[],
+): SettlementProduceValueStatus {
+  if (rowRoundIds.length === 0) return "missing";
+  for (const id of new Set(rowRoundIds)) {
+    let status: SettlementProduceValueStatus;
+    if (!id) {
+      // Round-less produce is legacy before enforcement, an anomaly after it.
+      status = preflight.businessDate >= PLAIN_TEXT_ROUND_ENFORCEMENT_FROM
+        || preflight.integrityIssues.some((issue) => issueReachesUnboundMarket(issue, marketName))
+        ? "blocked"
+        : "complete";
+    } else {
+      const round = preflight.rounds.find((row) => row.accountabilityRoundId === id);
+      status = round
+        ? settlementProduceValueStatus(preflight, {
+            accountabilityRoundId: id,
+            staffName: round.staffName ?? "",
+            marketName: round.marketName ?? marketName,
+          }, rowRoundIds.length)
+        : "blocked";
+    }
+    if (status !== "complete") return status;
+  }
+  return "complete";
 }
 
 export async function loadSettlementProduceValueStatus(
@@ -155,4 +222,74 @@ export async function loadSettlementProduceValueStatus(
 ): Promise<SettlementProduceValueStatus> {
   const preflight = await runDailyClosePreflight(supabase, businessDate);
   return settlementProduceValueStatus(preflight, identity, effectiveRowCount);
+}
+
+export type ProduceValueStatusResolver = (
+  businessDate: string,
+  identity: SettlementProduceIdentity,
+  effectiveRowCount: number,
+) => SettlementProduceValueStatus;
+
+/**
+ * P0: the settlement verdict for many (date, seller, market) groups — one
+ * Daily Close preflight per business date. Legacy screens that net
+ * withdrawal − return per seller/market (financial summary, report summary,
+ * daily summary, ยอดส่ง preview) use this so they can never certify a ยอดส่ง
+ * or ขาด/เกิน the settlement path itself would refuse. A date that is not a
+ * real business date, or whose preflight fails, certifies nothing.
+ */
+export async function loadProduceValueStatusResolver(
+  supabase: SupabaseClient<Database>,
+  businessDates: Iterable<string>,
+): Promise<ProduceValueStatusResolver> {
+  const preflights = new Map<string, DailyClosePreflightResult | null>();
+  // ponytail: sequential, one preflight per date; a month view is ~31 runs of
+  // the same day-scoped scans. Batch the scans across dates if it gets slow.
+  for (const date of new Set(businessDates)) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+    try {
+      preflights.set(date, await runDailyClosePreflight(supabase, date));
+    } catch {
+      preflights.set(date, null);
+    }
+  }
+  return (businessDate, identity, effectiveRowCount) => {
+    const preflight = preflights.get(businessDate);
+    return preflight
+      ? settlementProduceValueStatus(preflight, identity, effectiveRowCount)
+      : "blocked";
+  };
+}
+
+/** reportGroupKey (date||market||seller) of every report group the verdict does not certify. */
+export async function uncertifiedReportGroupKeys(
+  supabase: SupabaseClient<Database>,
+  groups: readonly { date: string; market: string; seller: string }[],
+): Promise<string[]> {
+  const marked = await markUncertifiedProduceNets(
+    supabase,
+    groups.map((group): { date: string; market: string; seller: string; produceNetStatus?: ProduceNetStatus } => group),
+  );
+  return marked
+    .filter((group) => group.produceNetStatus === "return_incomplete")
+    .map((group) => `${group.date}||${group.market}||${group.seller}`);
+}
+
+/** Why a legacy ยอดส่ง may not be shown as money. */
+export type ProduceNetStatus = "trusted" | "returns_exceed_withdrawal" | "return_incomplete";
+
+/**
+ * Demote every (date, seller, market) net the settlement verdict does not
+ * certify to "return_incomplete"; screens already hide ยอดส่ง and ขาด/เกิน for
+ * any status other than "trusted".
+ */
+export async function markUncertifiedProduceNets<
+  G extends { date: string; seller: string; market: string; produceNetStatus?: ProduceNetStatus },
+>(supabase: SupabaseClient<Database>, groups: readonly G[]): Promise<G[]> {
+  const verdict = await loadProduceValueStatusResolver(supabase, groups.map((group) => group.date));
+  return groups.map((group) =>
+    group.produceNetStatus === "returns_exceed_withdrawal"
+    || verdict(group.date, { staffName: group.seller, marketName: group.market }, 1) === "complete"
+      ? group
+      : { ...group, produceNetStatus: "return_incomplete" as const });
 }

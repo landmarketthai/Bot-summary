@@ -108,7 +108,12 @@ function buildProduceFinancialBlocks(report: MorningBriefReport): string[] {
     if (!financial) return [];
     return [[
       `${PRODUCE_SECTION_LABEL[section]} — ภาพรวมเงิน`,
-      `ยอดขาย ${satangToBahtText(financial.salesValueSatang)} บาท`,
+      ...((financial.pendingSalesValueSatang ?? 0) > 0
+        ? [
+            `ยอดขาย (รวมยอดรอตรวจ) ${satangToBahtText(financial.salesValueSatang)} บาท`,
+            `ยืนยันแล้ว ${satangToBahtText(financial.salesValueSatang - (financial.pendingSalesValueSatang ?? 0))} บาท · รอตรวจ ${satangToBahtText(financial.pendingSalesValueSatang ?? 0)} บาท`,
+          ]
+        : [`ยอดขาย ${satangToBahtText(financial.salesValueSatang)} บาท`]),
       `เบิก ${satangToBahtText(financial.withdrawalValueSatang)} บาท`,
       `ชั่งคืนดี ${satangToBahtText(financial.goodReturnValueSatang)} บาท`,
       ...(!report.sales.valueAuthoritative

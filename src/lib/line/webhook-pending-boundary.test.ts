@@ -7,6 +7,7 @@ import {
 import type { LineMessageEvent } from "./types";
 import { REMAINING_STOCK_REPORT_TITLE } from "@/lib/summary/remaining-fruit";
 import { isPhysicalInventoryLineGroupAllowed } from "@/lib/physical-inventory/config";
+import { CERTIFIED_RETURNS } from "@/lib/white-sheet/test-certified-returns";
 
 type Row = Record<string, unknown>;
 type QueryMode = "select" | "insert" | "update" | "delete" | "upsert";
@@ -407,6 +408,7 @@ function service(db: BoundaryDatabase, replies: string[] = []) {
   return new WebhookService(db as never, {
     replyMessage: async (_token, text) => { replies.push(text); },
     replyMessages: async (_token, texts) => { replies.push(texts.join("\n\n")); },
+    whiteSheetLoadDeps: CERTIFIED_RETURNS,
   });
 }
 

@@ -12,6 +12,7 @@ import {
 } from "@/lib/summary/transactions";
 import { displayMarketName } from "@/lib/market";
 import { produceFinancialIntegrity } from "@/lib/settlement/produce-financial-integrity";
+import { markUncertifiedProduceNets } from "@/lib/settlement/produce-value-status";
 import Link from "next/link";
 
 interface PageProps {
@@ -185,7 +186,8 @@ async function getPageData(month: string): Promise<{
   if (settlResult.error) throw new Error(settlResult.error.message);
 
   return {
-    groups:      buildGroups(txRows),
+    // P0: a refused/open ชั่งคืน never shows as a certified ยอดส่ง or ขาด/เกิน.
+    groups:      await markUncertifiedProduceNets(supabase, buildGroups(txRows)),
     settlements: (settlResult.data ?? []) as SettlementEntry[],
   };
 }

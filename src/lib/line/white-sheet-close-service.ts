@@ -13,6 +13,7 @@ import {
   type WhiteSheetCashEntryInput,
   type WhiteSheetCashEntryState,
 } from "@/lib/white-sheet";
+import type { WhiteSheetLoadDeps } from "@/lib/white-sheet/load";
 import type { WhiteSheetCloseCommand } from "@/lib/line/white-sheet-close-command";
 import {
   buildWhiteSheetHardStopReplyMessages,
@@ -137,6 +138,7 @@ export async function processWhiteSheetCloseCommand(
     command: WhiteSheetCloseCommand;
     accountabilityRoundId?: string | null;
   },
+  deps: WhiteSheetLoadDeps = {},
 ): Promise<WhiteSheetCloseOutcome> {
   const { sourceId, command, accountabilityRoundId } = input;
   const log = logger.child({
@@ -236,7 +238,7 @@ export async function processWhiteSheetCloseCommand(
       marketLabel: command.marketLabelNormalized,
       businessDate: command.businessDate,
       accountabilityRoundId,
-    });
+    }, deps);
   } catch (error) {
     log.error("white sheet close canonical reload failed", {
       error: error instanceof Error ? error.message : String(error),

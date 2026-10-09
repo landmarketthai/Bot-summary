@@ -14,9 +14,12 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { parseWeighSession } from "@/lib/parsers/weigh-session/parser";
 import { normalizedMarketLabel } from "@/lib/market";
 import { baseTransactionType, type TransactionBucket } from "@/lib/summary/transactions";
-import type {
-  FinalizedProduceOutcome,
-  ProduceFailureAttempt,
+import {
+  classifyProduceFailure,
+  classifyProduceFailures,
+  type FinalizedProduceOutcome,
+  type ProduceFailureAttempt,
+  type ProduceFailureClassification,
 } from "./failure-lifecycle";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -57,7 +60,8 @@ export function transactionKindFromText(text: string | null | undefined): Transa
   if (!text || !text.trim()) return null;
   const parsed = parseWeighSession(text);
   if (parsed.declared_transaction_type) return parsed.declared_transaction_type;
-  if (parsed.items.length === 0) return null;
+  // A document whose every item line failed is still what its header names.
+  if (parsed.items.length === 0) return parsed.header_transaction_type ?? null;
   return singleTransactionKind(parsed.items.map((item) => item.transaction_type));
 }
 
@@ -290,4 +294,34 @@ export async function loadProduceFailureEvidence(
     loadCancelledRoundIds(supabase),
   ]);
   return { outcomes, cancelledRoundIds };
+}
+
+/**
+ * The lifecycle verdict, with the P0-D cutoff rule: an attempt that may belong
+ * to the adjacent business day (alternateBusinessDate) is also superseded by a
+ * replacement on the EARLIER of the two days — a dated resend of yesterday's
+ * late return. Never by the later day: that day's ordinary return is a
+ * different document and must not clear yesterday's failure. The other day's
+ * landed documents are read only when such an attempt is still active.
+ */
+export async function classifyProduceFailuresAcrossCutoff(
+  supabase: AnyClient,
+  attempts: readonly ProduceFailureAttempt[],
+  evidence: {
+    outcomes: readonly FinalizedProduceOutcome[];
+    cancelledRoundIds: ReadonlySet<string>;
+  },
+): Promise<ProduceFailureClassification[]> {
+  const context = { cancelledRoundIds: evidence.cancelledRoundIds };
+  const classifications = classifyProduceFailures(attempts, evidence.outcomes, context);
+  const otherDays = new Map<string, FinalizedProduceOutcome[]>();
+  for (const [index, attempt] of attempts.entries()) {
+    const day = attempt.alternateBusinessDate;
+    if (!day || !attempt.businessDate || day >= attempt.businessDate) continue;
+    if (classifications[index].state !== "active_failed") continue;
+    if (!otherDays.has(day)) otherDays.set(day, await loadFinalizedProduceOutcomes(supabase, day));
+    const other = classifyProduceFailure({ ...attempt, businessDate: day }, otherDays.get(day)!, context);
+    if (other.state === "superseded") classifications[index] = other;
+  }
+  return classifications;
 }

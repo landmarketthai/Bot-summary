@@ -2,10 +2,8 @@ import { describe, expect, it } from "bun:test";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 import { parseWhiteSheetCloseCommand } from "./white-sheet-close-command";
-import {
-  mergeWhiteSheetCloseInput,
-  processWhiteSheetCloseCommand,
-} from "./white-sheet-close-service";
+import { mergeWhiteSheetCloseInput } from "./white-sheet-close-service";
+import { processWhiteSheetCloseCommand } from "@/lib/white-sheet/test-certified-returns";
 import {
   finalizeWhiteSheetCashEntry,
   loadWhiteSheetCashEntry,
@@ -14,6 +12,7 @@ import {
 import {
   CENTRAL_PRICE_CONFLICT_WARNING_PREFIX,
   PENDING_REFERENCE_VERIFIED_TRANSFER_WARNING,
+  RETURN_EVIDENCE_INCOMPLETE_WARNING_PREFIX,
 } from "@/lib/white-sheet/warnings";
 import { stubManualSlipTables } from "@/lib/white-sheet/test-manual-slip-db";
 import { getDailyFinancialSettlement } from "@/lib/settlement/daily-financial-settlement";
@@ -459,6 +458,44 @@ describe("processWhiteSheetCloseCommand", () => {
       actualCash: 16,
       difference: 0,
     });
+  });
+
+  it("P0: a refused ชั่งคืน persists the inputs but never sends ตรง/ขาด/เกิน or expected cash", async () => {
+    const { supabase, cashEntries } = makeCloseDatabase();
+    const asked: Array<{ businessDate: string; market: string; rounds: readonly (string | null)[] }> = [];
+    const outcome = await processWhiteSheetCloseCommand(supabase, {
+      sourceId: SOURCE_ID,
+      command: mustParse(MATCHED_CLOSE),
+    }, {
+      returnIntegrity: async (businessDate, market, rounds) => {
+        asked.push({ businessDate, market, rounds });
+        return "blocked";
+      },
+    });
+
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatchObject({ businessDate: BUSINESS_DATE, market: MARKET_GEE });
+    expect(asked[0].rounds.length).toBeGreaterThan(0);
+    expect(outcome.persisted).toBe(true);
+    expect(cashEntries.size).toBe(1);
+    expect(outcome.trusted).toBe(false);
+    const text = outcome.replyMessages.join("\n");
+    expect(text).toContain(RETURN_EVIDENCE_INCOMPLETE_WARNING_PREFIX);
+    expect(text).toContain("ยังไม่สามารถสรุปยอดตรง/ขาด/เกินได้");
+    expect(text).not.toContain("ยอดตรง ✅");
+    expect(text).not.toContain("✅ ยอดตรง");
+    expect(text).not.toContain("เงินสดที่ควรส่ง 16.00");
+  });
+
+  it("P0: a failed integrity read fails closed instead of sending a summary", async () => {
+    const { supabase } = makeCloseDatabase();
+    const outcome = await processWhiteSheetCloseCommand(supabase, {
+      sourceId: SOURCE_ID,
+      command: mustParse(MATCHED_CLOSE),
+    }, { returnIntegrity: async () => { throw new Error("preflight unavailable"); } });
+    expect(outcome.persisted).toBe(true);
+    expect(outcome.trusted).toBe(false);
+    expect(outcome.replyMessages.join("\n")).not.toContain("สรุปปิดยอด — ตลาดกี้");
   });
 
   it("M. unknown market fails closed with zero persistence", async () => {

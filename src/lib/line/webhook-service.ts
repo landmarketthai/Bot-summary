@@ -139,6 +139,7 @@ import {
 } from "@/lib/slips/slip-session-service";
 import { parseWhiteSheetCloseCommandFromMessage } from "@/lib/line/white-sheet-close-command";
 import { processWhiteSheetCloseCommand } from "@/lib/line/white-sheet-close-service";
+import type { WhiteSheetLoadDeps } from "@/lib/white-sheet/load";
 import { isPhysicalInventoryLineGroupAllowed } from "@/lib/physical-inventory/config";
 import {
   classifyPhysicalInventoryStandaloneIntent,
@@ -162,7 +163,13 @@ import {
   type DataEntrySessionOwnershipResolver,
 } from "@/lib/line/data-entry-session-ownership";
 import { tryHandlePurchaseCaptureMessage } from "@/lib/purchase-capture/webhook-handler";
-import { bindPlainTextRound } from "@/lib/produce/plain-text-round-binding";
+import {
+  bindPlainTextRound,
+  isNewRoundDocument,
+  refusedReturnMayBindRound,
+  UNDATED_CUTOFF_REPLY,
+  undatedBusinessDateAmbiguous,
+} from "@/lib/produce/plain-text-round-binding";
 import { validateProduceEntry } from "@/lib/produce/entry-validation";
 import {
   confirmProduceSubunitReview,
@@ -584,6 +591,8 @@ interface WebhookServiceDependencies {
   whiteSheetBaseReader?: typeof readWhiteSheetBase;
   whiteSheetCorrectionApplier?: typeof applyWhiteSheetCorrection;
   whiteSheetSessionResolver?: typeof resolveWhiteSheetSession;
+  /** ชั่งคืน-integrity verdict for ปิดยอด; defaults to the Daily Close preflight. */
+  whiteSheetLoadDeps?: WhiteSheetLoadDeps;
 }
 
 export interface WebhookProcessResult {
@@ -785,6 +794,7 @@ export class WebhookService {
   private readonly whiteSheetBaseReader: typeof readWhiteSheetBase;
   private readonly whiteSheetCorrectionApplier: typeof applyWhiteSheetCorrection;
   private readonly whiteSheetSessionResolver: typeof resolveWhiteSheetSession;
+  private readonly whiteSheetLoadDeps: WhiteSheetLoadDeps;
   private orderedQueueAvailable: boolean | null = null;
 
   constructor(
@@ -850,6 +860,7 @@ export class WebhookService {
     this.whiteSheetBaseReader = dependencies.whiteSheetBaseReader ?? readWhiteSheetBase;
     this.whiteSheetCorrectionApplier = dependencies.whiteSheetCorrectionApplier ?? applyWhiteSheetCorrection;
     this.whiteSheetSessionResolver = dependencies.whiteSheetSessionResolver ?? resolveWhiteSheetSession;
+    this.whiteSheetLoadDeps = dependencies.whiteSheetLoadDeps ?? {};
   }
 
   async processEvents(
@@ -2856,17 +2867,19 @@ export class WebhookService {
   ): Promise<PlainTextCloseGateRefusal | null> {
     const document = `${pending.accumulated_text}\n${closeText}`;
     const parsed = parseWeighSession(document, bangkokToday());
+    // The clocks behind the fallback date: session insert and this close.
+    const dateClocks = [Date.parse(pending.created_at), Date.now()];
     const finalizationErrors = getWeighSessionFinalizationErrors(parsed);
     if (finalizationErrors.length > 0) {
       // P0: validation can refuse an item before the usual round binding.
       // A recognized return still needs durable round identity even when
       // nothing is booked to produce_items. The binding RPC checks the
-      // exact source/owner/date/seller/market and is idempotent. It never
-      // creates a return round, and failures stay in partial capture.
+      // exact source/owner/date/seller/market and is idempotent. A document
+      // that could mint a round, or whose day would be a clock guess, is
+      // never bound here; failures stay in partial capture.
       if (
         !pending.accountability_round_id
-        && parsed.items.some((item) =>
-          item.transaction_type === "คืน" || item.transaction_type === "คืนเสีย")
+        && refusedReturnMayBindRound(document, parsed, dateClocks)
       ) {
         const binding = await bindPlainTextRound(
           this.supabase,
@@ -2920,6 +2933,19 @@ export class WebhookService {
         refusalText: buildPartialCaptureSavedReply(capture),
         refusalPages: [buildPartialCaptureReviewReply(capture)],
       };
+    }
+
+    // P0-D: an undated return near the 04:00 cutoff would bind to whichever
+    // day the clock names. Refuse before binding; the session stays open.
+    if (
+      !pending.accountability_round_id
+      && !isNewRoundDocument(parsed)
+      && undatedBusinessDateAmbiguous(document, dateClocks)
+    ) {
+      log.warn("plain-text close refused: undated near business-day cutoff", {
+        sessionKey: pending.session_key,
+      });
+      return { refusalText: UNDATED_CUTOFF_REPLY };
     }
 
     try {
@@ -3340,7 +3366,7 @@ export class WebhookService {
         sourceId,
         command: parseResult.command,
         accountabilityRoundId: guidedContext?.accountabilityRoundId,
-      });
+      }, this.whiteSheetLoadDeps);
       // 3C → 3D handoff, only when the sheet actually persisted.
       const handoff =
         guidedContext && outcome.persisted

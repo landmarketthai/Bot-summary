@@ -12,6 +12,20 @@ export interface DailySummaryMessageRow {
   bad_return_total: number;
   net_sales: number;
   transaction_count: number;
+  /**
+   * P0: the settlement verdict for this seller/market (see
+   * loadProduceValueStatusResolver). Anything but "complete" means a ชั่งคืน
+   * is refused, open or unattributable: the net is withdrawn minus an
+   * unrecorded return, so it is shown as pending, never as a sale.
+   */
+  produce_value_status?: string;
+}
+
+const NET_PENDING_TEXT = "รอตรวจสอบ (ข้อมูลชั่งคืนยังไม่ครบ)";
+
+/** Absent status keeps every existing caller's output byte-identical. */
+function netCertified(row: DailySummaryMessageRow): boolean {
+  return row.produce_value_status === undefined || row.produce_value_status === "complete";
 }
 
 function fmt(n: number): string {
@@ -81,7 +95,9 @@ function buildFlatDailySummaryMessage(date: string, rows: DailySummaryMessageRow
       `เบิกรวม: ${fmt(Number(row.borrow_total))} บาท`,
       `คืนรวม: ${fmt(Number(row.return_total))} บาท`,
       `คืนเสียรวม: ${fmt(Number(row.bad_return_total))} บาท`,
-      `ยอดส่ง: ${fmt(Number(row.net_sales))} บาท`,
+      netCertified(row)
+        ? `ยอดส่ง: ${fmt(Number(row.net_sales))} บาท`
+        : `ยอดส่ง: ${NET_PENDING_TEXT}`,
     );
   }
 
@@ -115,7 +131,7 @@ function buildCategoryRowBlock(
       `เบิก ${fmtSatang(entry.withdrawnSatang)} บาท`,
       `ชั่งคืน ${fmtSatang(entry.goodReturnSatang)} บาท`,
       `คืนเสีย ${fmtSatang(entry.badReturnSatang)} บาท`,
-      `ขาย ${fmtSatang(entry.netSatang)} บาท`,
+      netCertified(row) ? `ขาย ${fmtSatang(entry.netSatang)} บาท` : `ขาย: ${NET_PENDING_TEXT}`,
     );
   }
 
@@ -128,7 +144,9 @@ function buildCategoryRowBlock(
     `ชั่งคืน ${fmt(Number(row.return_total))} บาท`,
     `คืนเสีย ${fmt(Number(row.bad_return_total))} บาท`,
     "",
-    `✅ ยอดขายสุทธิ ${fmt(Number(row.net_sales))} บาท`,
+    netCertified(row)
+      ? `✅ ยอดขายสุทธิ ${fmt(Number(row.net_sales))} บาท`
+      : `⚠️ ยอดขายสุทธิ: ${NET_PENDING_TEXT}`,
   );
 
   return lines.join("\n");

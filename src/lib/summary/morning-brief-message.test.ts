@@ -84,6 +84,19 @@ describe("Morning Decision Brief", () => {
     expect(message).not.toContain("+อีก");
   });
 
+  test("P0: a section with unreturned money says how much is confirmed", () => {
+    const message = buildMorningBriefMessage(report({
+      produceFinancial: {
+        fruit: {
+          withdrawalValueSatang: 1_399_217, salesValueSatang: 1_399_217, pendingSalesValueSatang: 1_399_217,
+          goodReturnValueSatang: 0, houseStockValueSatang: null, readyValueSatang: null, markets: [],
+        },
+      },
+    }));
+    expect(message).toContain("ยอดขาย (รวมยอดรอตรวจ) 13,992.17 บาท");
+    expect(message).toContain("ยืนยันแล้ว 0.00 บาท · รอตรวจ 13,992.17 บาท");
+  });
+
   test("P0: explicitly marks provisional money in the LINE morning brief", () => {
     const provisional = buildMorningBriefMessage(report({
       produceFinancial: {

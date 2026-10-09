@@ -46,9 +46,26 @@ export interface ReportGroup {
   ยอดขาย: number;
   เงินสดต้องส่งเจ๊: number;
   ขาดเกิน: number;
+  /**
+   * P0: the settlement verdict does not certify this seller/market's ชั่งคืน.
+   * ยอดส่ง, เงินสดต้องส่งเจ๊ and ขาด/เกิน are withdrawn-minus-unrecorded and
+   * must render as pending, never as money.
+   */
+  provisional: boolean;
 }
 
-export function buildReportGroups(rows: ReportRow[], settlements: SettlementMap): ReportGroup[] {
+/** The group identity shared by the page, the PDF and the server verdict. */
+export function reportGroupKey(group: { date: string; market: string; seller: string }): string {
+  return `${group.date}||${group.market}||${group.seller}`;
+}
+
+export function buildReportGroups(
+  rows: ReportRow[],
+  settlements: SettlementMap,
+  /** reportGroupKey of every group the server verdict did not certify. */
+  uncertifiedKeys: readonly string[] = [],
+): ReportGroup[] {
+  const uncertified = new Set(uncertifiedKeys);
   const map = new Map<string, ReportGroup>();
 
   for (const r of rows) {
@@ -76,6 +93,7 @@ export function buildReportGroups(rows: ReportRow[], settlements: SettlementMap)
         ยอดขาย: 0,
         เงินสดต้องส่งเจ๊: 0,
         ขาดเกิน: 0,
+        provisional: false,
       });
     }
 
@@ -118,6 +136,7 @@ export function buildReportGroups(rows: ReportRow[], settlements: SettlementMap)
         ยอดขาย: settlement.ยอดขาย,
         เงินสดต้องส่งเจ๊: settlement.เงินสดต้องส่งเจ๊,
         ขาดเกิน: settlement.ขาดเกิน,
+        provisional: uncertified.has(key),
       };
     })
     .sort((a, b) =>

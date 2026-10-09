@@ -14,8 +14,10 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { WeighSession } from "@/lib/parsers/weigh-session/types";
+import { parseWeighSession } from "@/lib/parsers/weigh-session/parser";
 import { baseTransactionType } from "@/lib/summary/transactions";
 import { normalizedMarketLabel } from "@/lib/market";
+import { bangkokBusinessDatesNear } from "@/lib/business-date";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyClient = SupabaseClient<any>;
@@ -141,6 +143,63 @@ export function isNewRoundDocument(parsed: WeighSession): boolean {
   return parsed.items.some(
     (item) => baseTransactionType(item.transaction_type) === "เบิก",
   );
+}
+
+export const UNDATED_CUTOFF_REPLY = [
+  "⛔ รายการนี้ไม่มีวันที่ในหัวรายการ และส่งใกล้เวลาตัดวัน 04:00",
+  "ระบบไม่เดาวันที่ให้ จึงยังไม่บันทึก",
+  "กรุณาส่งใหม่โดยระบุวันที่ในหัวรายการ เช่น \"น้อย-ราชพฤกษ์ ชั่งคืน 7/10/2569\"",
+].join("\n");
+
+/**
+ * P0-D: true when a MAIN document names no business date in its header and the
+ * clocks that would supply one (insert, close, now) do not pin a single
+ * business day — they disagree, or one sits within the cutoff margin of 04:00
+ * (BUSINESS_DATE_CUTOFF_MARGIN_MS). No usable clock is ambiguous too. Binding
+ * such a document would guess the day, and a wrong day attaches a return to
+ * the wrong withdrawal round.
+ *
+ * Additional batches never take a fallback date, so they are never ambiguous
+ * here; an explicit header date is never second-guessed by a clock.
+ */
+export function undatedBusinessDateAmbiguous(
+  text: string,
+  timestampsMs: readonly (number | null | undefined)[],
+): boolean {
+  const explicit = parseWeighSession(text);
+  if (explicit.session_kind !== "main" || explicit.date) return false;
+  const dates = new Set<string>();
+  for (const ms of timestampsMs) {
+    if (ms == null || !Number.isFinite(ms)) continue;
+    for (const date of bangkokBusinessDatesNear(ms)) dates.add(date);
+  }
+  return dates.size !== 1;
+}
+
+/**
+ * P0: may a REFUSED plain-text document still be attached to its round?
+ *
+ * Only a return (คืน / คืนเสีย) — binding it can never mint a round — whose
+ * business day is not a guess. The binding RPC still demands the exact
+ * source, seller, market and date. Nothing refused is booked: the parsed
+ * subset stays in partial capture; the round only learns that its return
+ * was attempted and is therefore not a sold-out.
+ */
+export function refusedReturnMayBindRound(
+  text: string,
+  parsed: WeighSession,
+  timestampsMs: readonly (number | null | undefined)[],
+): boolean {
+  if (isNewRoundDocument(parsed)) return false;
+  // The header names the kind even when every item line failed.
+  const kinds = parsed.declared_transaction_type
+    ? [parsed.declared_transaction_type]
+    : [
+        parsed.header_transaction_type ?? null,
+        ...parsed.items.map((item) => baseTransactionType(item.transaction_type)),
+      ];
+  if (!kinds.some((kind) => kind === "คืน" || kind === "คืนเสีย")) return false;
+  return !undatedBusinessDateAmbiguous(text, timestampsMs);
 }
 
 /** "group:<id>:user:<id>" / "room:…" / "dm:<id>" — the shape produceSessionKey mints. */

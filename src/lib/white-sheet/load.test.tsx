@@ -6,13 +6,15 @@ import { buildWhiteSheetSummaryMessage } from "@/lib/line/white-sheet-summary";
 import type { Database } from "@/types/database";
 import { stubManualSlipTables } from "@/lib/white-sheet/test-manual-slip-db";
 import {
+  loadDigitalWhiteSheetCalculation,
   loadDigitalWhiteSheetPageModel,
+} from "./test-certified-returns";
+import {
   requireTrustedWhiteSheetSummary,
   WhiteSheetHardStopError,
 } from "./compose";
 import {
   fetchProduceRows,
-  loadDigitalWhiteSheetCalculation,
   toDigitalWhiteSheetSummary,
 } from "./load";
 import { hasHardStopWarning } from "./warnings";

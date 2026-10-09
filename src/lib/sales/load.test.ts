@@ -15,6 +15,7 @@ interface Fixture {
   sessions?: Record<string, unknown>[];
   pending?: Record<string, unknown>[];
   pendingIngest?: Record<string, unknown>[];
+  retiredGenerations?: Record<string, unknown>[];
   parseErrors?: Record<string, unknown>[];
   importedSessions?: Record<string, unknown>[];
   produceItems?: Record<string, unknown>[];
@@ -22,6 +23,7 @@ interface Fixture {
   accountabilityRounds?: Record<string, unknown>[];
   deferredProduce?: Record<string, unknown>[];
   errors?: Partial<Record<string, string>>;
+  errorCodes?: Partial<Record<string, string>>;
 }
 
 /**
@@ -41,6 +43,7 @@ function fakeSupabase(fixture: Fixture): SupabaseClient<Database> {
       case "produce_sessions": return fixture.sessions ?? [];
       case "pending_sessions": return fixture.pending ?? [];
       case "pending_session_ingest": return fixture.pendingIngest ?? [];
+      case "pending_session_retired_generations": return fixture.retiredGenerations ?? [];
       case "parse_errors": return fixture.parseErrors ?? [];
       case "imported_sessions": return fixture.importedSessions ?? [];
       case "produce_items": return fixture.produceItems ?? [];
@@ -56,7 +59,7 @@ function fakeSupabase(fixture: Fixture): SupabaseClient<Database> {
       const error = fixture.errors?.[table];
       const result = () => ({
         data: error ? null : rowsFor(table),
-        error: error ? { message: error } : null,
+        error: error ? { message: error, code: fixture.errorCodes?.[table] } : null,
         count: error ? null : rowsFor(table).length,
       });
 
@@ -220,6 +223,167 @@ describe("P0 loader: failed return without round binding", () => {
     })), DATE);
     expect(report.markets[0].rows[0].status).toBe("TRUSTED");
     expect(report.markets[0].rows[0].soldQuantity).toBe(6);
+  });
+
+  const refusedReturn = incidentFixture().pending![0];
+  const nextDayWithdrawalDraft = {
+    id: "failed-unbound", session_key: "group:a:user:u", session_generation: "gen-2",
+    accountability_round_id: null, finalization_status: "pending", terminalized: false,
+    accumulated_text: "เสือ-ตลาดกี้ เบิก 26/7/2569\n1.หมอนทอง 9 โล",
+    business_date: null, source_id: SOURCE_A, staff_label: null, market_label: null,
+    declared_transaction_type: null, created_at: "2026-07-26T00:30:00.000Z",
+  };
+  const retired = (overrides: Record<string, unknown> = {}) => ({
+    session_generation: "gen-1", session_key: "group:a:user:u",
+    accumulated_text: refusedReturn.accumulated_text,
+    generation_created_at: "2026-07-25T08:00:00.000Z",
+    finalization_status: "failed_closed",
+    finalization_error: { reason: "validation_failed" },
+    business_date: DATE, source_id: SOURCE_A, staff_label: "เสือ", market_label: "ตลาดกี้",
+    declared_transaction_type: "คืน", accountability_round_id: null,
+    ...overrides,
+  });
+
+  test("the seller's next header cannot erase the refused return (retired generation)", async () => {
+    const report = await loadSalesReport(fakeSupabase(incidentFixture({
+      pending: [nextDayWithdrawalDraft],
+      retiredGenerations: [retired()],
+    })), DATE);
+    expect(report.markets[0].rows[0].status).toBe("QUANTITY_BLOCKED");
+    expect(report.markets[0].rows[0].returnEvidenceIncomplete).toBe(true);
+  });
+
+  test("a return refused at close and rotated out before it went terminal is still evidence", async () => {
+    const report = await loadSalesReport(fakeSupabase(incidentFixture({
+      pending: [nextDayWithdrawalDraft],
+      retiredGenerations: [retired({
+        finalization_status: "pending", finalization_error: null,
+        close_refused_at: "2026-07-25T14:00:00.000Z",
+      })],
+    })), DATE);
+    expect(report.markets[0].rows[0].status).toBe("QUANTITY_BLOCKED");
+  });
+
+  test("a never-closed draft that was rotated out stays discarded, as before", async () => {
+    const report = await loadSalesReport(fakeSupabase(incidentFixture({
+      pending: [nextDayWithdrawalDraft],
+      retiredGenerations: [retired({ finalization_status: "pending", finalization_error: null })],
+    })), DATE);
+    expect(report.markets[0].rows[0].status).toBe("TRUSTED");
+  });
+
+  test("a retired draft the operator cancelled is not failed-return evidence", async () => {
+    const report = await loadSalesReport(fakeSupabase(incidentFixture({
+      pending: [nextDayWithdrawalDraft],
+      retiredGenerations: [retired({ finalization_error: { reason: "user_cancelled" } })],
+    })), DATE);
+    expect(report.markets[0].rows[0].status).toBe("TRUSTED");
+  });
+
+  test("a database without the retired-generation table reads as no retained rows", async () => {
+    const report = await loadSalesReport(fakeSupabase(incidentFixture({
+      pending: [],
+      errorCodes: { pending_session_retired_generations: "PGRST205" },
+      errors: {
+        pending_session_retired_generations:
+          "Could not find the table 'public.pending_session_retired_generations' in the schema cache",
+      },
+    })), DATE);
+    expect(report.markets[0].rows[0].status).toBe("TRUSTED");
+  });
+
+  test("any other retired-generation read failure fails closed", async () => {
+    await expect(loadSalesReport(fakeSupabase(incidentFixture({
+      errors: { pending_session_retired_generations: "permission denied" },
+    })), DATE)).rejects.toThrow(SalesDataError);
+  });
+
+  test("a market typo in the refused header still protects the seller's round", async () => {
+    const report = await loadSalesReport(fakeSupabase(incidentFixture({
+      pending: [{
+        ...refusedReturn,
+        market_label: "ตลาดก้",
+        accumulated_text: "เสือ-ตลาดก้ ชั่งคืน 25/7/2569\n1.หมอนทอง 5 โล\nจบรายการชั่งคืน",
+      }],
+    })), DATE);
+    expect(report.markets[0].rows[0].status).toBe("QUANTITY_BLOCKED");
+  });
+
+  test("another seller's round in another group is not demoted", async () => {
+    const base = incidentFixture();
+    const report = await loadSalesReport(fakeSupabase(incidentFixture({
+      produce: [...(base.produce ?? []), produceRow({
+        id: "other-withdrawal", session_id: "other-session", quantity: 7,
+        market_name: "ตลาดไท", accountability_round_id: "round-other", raw_message_id: "raw-b",
+      })],
+      rawMessages: [{ id: "raw-1", source_id: SOURCE_A }, { id: "raw-b", source_id: SOURCE_B }],
+      sessions: [...(base.sessions ?? []), {
+        id: "other-session", total_items: 1, parser_errors: null,
+        staff_name: "แดง", session_title: "ตลาดไท", session_date: DATE, session_kind: "main",
+        accountability_round_id: "round-other", raw_message_id: "raw-b",
+        finalized_at: "2026-07-25T03:00:00.000Z", voided_at: null,
+      }],
+      accountabilityRounds: [...(base.accountabilityRounds ?? []), {
+        id: "round-other", source_id: SOURCE_B, business_date: DATE,
+        seller_label: "แดง", market_label: "ตลาดไท", status: "open",
+      }],
+    })), DATE);
+    const statusByMarket = new Map(report.markets.map((market) =>
+      [market.marketLabel, market.rows[0]?.status]));
+    expect(statusByMarket.get("ตลาดกี้")).toBe("QUANTITY_BLOCKED");
+    expect(statusByMarket.get("ตลาดไท")).toBe("TRUSTED");
+  });
+
+  test("the same failure retained twice is cleared by one later re-send", async () => {
+    const base = incidentFixture();
+    const report = await loadSalesReport(fakeSupabase(incidentFixture({
+      retiredGenerations: [retired()],
+      produce: [...(base.produce ?? []), produceRow({
+        id: "p0-return", session_id: "p0-return-session", accountability_round_id: roundId,
+        raw_message_id: "raw-2", quantity: 4, transaction_type: "คืน", base_transaction_type: "คืน",
+      })],
+      rawMessages: [{ id: "raw-1", source_id: SOURCE_A }, { id: "raw-2", source_id: SOURCE_A }],
+      sessions: [...(base.sessions ?? []), {
+        id: "p0-return-session", staff_name: "เสือ", session_title: "ตลาดกี้",
+        session_date: DATE, session_kind: "main", total_items: 1, parser_errors: null,
+        accountability_round_id: roundId, raw_message_id: "raw-2",
+        finalized_at: "2026-07-25T10:00:00.000Z", voided_at: null,
+      }],
+    })), DATE);
+    expect(report.markets[0].rows[0].status).toBe("TRUSTED");
+    expect(report.markets[0].rows[0].soldQuantity).toBe(6);
+  });
+
+  describe("P0-D: an undated return near the 04:00 cutoff", () => {
+    const undated = (eventIso: string) => ({
+      pending: [{
+        id: "undated-return", session_key: "group:a:user:u", session_generation: "gen-u",
+        accountability_round_id: null, finalization_status: "failed_closed", terminalized: true,
+        accumulated_text: "เสือ-ตลาดกี้ ชั่งคืน\n1.หมอนทอง 5 โล\nจบรายการชั่งคืน",
+        business_date: null, source_id: SOURCE_A, staff_label: null, market_label: null,
+        declared_transaction_type: null, created_at: eventIso,
+      }],
+      pendingIngest: [{
+        session_key: "group:a:user:u", session_generation: "gen-u",
+        line_timestamp_ms: Date.parse(eventIso),
+      }],
+    });
+
+    test("sent 04:05 on the next morning, it still protects yesterday's round", async () => {
+      // 2026-07-25T21:05Z = 04:05 Bangkok on 26/07: business date 26/07 by
+      // the clock, yet plausibly the late return for 25/07.
+      const report = await loadSalesReport(
+        fakeSupabase(incidentFixture(undated("2026-07-25T21:05:00.000Z"))), DATE,
+      );
+      expect(report.markets[0].rows[0].status).toBe("QUANTITY_BLOCKED");
+    });
+
+    test("sent 10:00 the next morning, it is that day's document, not yesterday's", async () => {
+      const report = await loadSalesReport(
+        fakeSupabase(incidentFixture(undated("2026-07-26T03:00:00.000Z"))), DATE,
+      );
+      expect(report.markets[0].rows[0].status).toBe("TRUSTED");
+    });
   });
 });
 
