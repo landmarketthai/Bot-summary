@@ -16,7 +16,6 @@ import { normalizedMarketLabel } from "@/lib/market";
 import { baseTransactionType, type TransactionBucket } from "@/lib/summary/transactions";
 import {
   classifyProduceFailure,
-  classifyProduceFailures,
   type FinalizedProduceOutcome,
   type ProduceFailureAttempt,
   type ProduceFailureClassification,
@@ -169,16 +168,22 @@ export async function loadFinalizedProduceOutcomes(
   supabase: AnyClient,
   businessDate: string,
 ): Promise<FinalizedProduceOutcome[]> {
-  const { data, error } = await supabase
-    .from("produce_sessions")
-    .select(
-      "id, staff_name, session_title, session_date, session_kind, accountability_round_id, raw_message_id, voided_at, finalized_at, created_at",
-    )
-    .eq("session_date", businessDate)
-    .is("voided_at", null);
-  if (error) throw new Error(`finalized produce session lookup failed: ${error.message}`);
-
-  const sessions = (data ?? []) as SessionRow[];
+  const sessions: SessionRow[] = [];
+  for (let offset = 0; ; offset += PAGE) {
+    const { data, error } = await supabase
+      .from("produce_sessions")
+      .select(
+        "id, staff_name, session_title, session_date, session_kind, accountability_round_id, raw_message_id, voided_at, finalized_at, created_at",
+      )
+      .eq("session_date", businessDate)
+      .is("voided_at", null)
+      .order("id", { ascending: true })
+      .range(offset, offset + PAGE - 1);
+    if (error) throw new Error(`finalized produce session lookup failed: ${error.message}`);
+    const page = (data ?? []) as SessionRow[];
+    sessions.push(...page);
+    if (page.length < PAGE) break;
+  }
   if (sessions.length === 0) return [];
 
   const kinds = await sessionTransactionKinds(supabase, businessDate);
@@ -313,7 +318,12 @@ export async function classifyProduceFailuresAcrossCutoff(
   },
 ): Promise<ProduceFailureClassification[]> {
   const context = { cancelledRoundIds: evidence.cancelledRoundIds };
-  const classifications = classifyProduceFailures(attempts, evidence.outcomes, context);
+  const classifications = attempts.map((attempt) => classifyProduceFailure(
+    attempt,
+    attempt.alternateBusinessDate && attempt.businessDate
+      && attempt.alternateBusinessDate < attempt.businessDate ? [] : evidence.outcomes,
+    context,
+  ));
   const otherDays = new Map<string, FinalizedProduceOutcome[]>();
   for (const [index, attempt] of attempts.entries()) {
     const day = attempt.alternateBusinessDate;

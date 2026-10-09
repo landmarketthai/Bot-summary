@@ -264,12 +264,12 @@ describe("P0 loader: failed return without round binding", () => {
     expect(report.markets[0].rows[0].status).toBe("QUANTITY_BLOCKED");
   });
 
-  test("a never-closed draft that was rotated out stays discarded, as before", async () => {
+  test("an open return rotated without explicit cancellation remains unresolved evidence", async () => {
     const report = await loadSalesReport(fakeSupabase(incidentFixture({
       pending: [nextDayWithdrawalDraft],
       retiredGenerations: [retired({ finalization_status: "pending", finalization_error: null })],
     })), DATE);
-    expect(report.markets[0].rows[0].status).toBe("TRUSTED");
+    expect(report.markets[0].rows[0].status).toBe("QUANTITY_BLOCKED");
   });
 
   test("a retired draft the operator cancelled is not failed-return evidence", async () => {
@@ -280,16 +280,15 @@ describe("P0 loader: failed return without round binding", () => {
     expect(report.markets[0].rows[0].status).toBe("TRUSTED");
   });
 
-  test("a database without the retired-generation table reads as no retained rows", async () => {
-    const report = await loadSalesReport(fakeSupabase(incidentFixture({
+  test.each(["PGRST205", "42P01"])("missing retired-generation evidence (%s) cannot certify money", async (code) => {
+    await expect(loadSalesReport(fakeSupabase(incidentFixture({
       pending: [],
-      errorCodes: { pending_session_retired_generations: "PGRST205" },
+      errorCodes: { pending_session_retired_generations: code },
       errors: {
         pending_session_retired_generations:
           "Could not find the table 'public.pending_session_retired_generations' in the schema cache",
       },
-    })), DATE);
-    expect(report.markets[0].rows[0].status).toBe("TRUSTED");
+    })), DATE)).rejects.toThrow(SalesDataError);
   });
 
   test("any other retired-generation read failure fails closed", async () => {

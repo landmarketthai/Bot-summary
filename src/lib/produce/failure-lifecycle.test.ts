@@ -241,6 +241,20 @@ describe("P0: an unbound refused return is released only by every round it could
   const laterReturn = (round: string, marketLabel: string) =>
     outcome({ produceSessionId: `return-${round}`, accountabilityRoundId: round, marketLabel });
 
+  test("an exact-identity return must cover every candidate round too", () => {
+    const outcomes = [master("r1", "ทรัพย์พัน"), master("r2", "ทรัพย์พัน"), laterReturn("r2", "ทรัพย์พัน")];
+    expect(classifyProduceFailure(attempt(), outcomes).state).toBe("active_failed");
+    expect(classifyProduceFailure(attempt(), [...outcomes, laterReturn("r1", "ทรัพย์พัน")]).state)
+      .toBe("superseded");
+  });
+
+  test("two later main returns on one candidate round remain ambiguous", () => {
+    const result = classifyProduceFailure(attempt(), [master("r1", "ทรัพย์พัน"),
+      laterReturn("r1", "ทรัพย์พัน"), { ...laterReturn("r1", "ทรัพย์พัน"), produceSessionId: "another-return" }]);
+    expect(result.state).toBe("active_failed");
+    expect(result.ambiguousSuccessor).toBe(true);
+  });
+
   test("a mistyped market is released by the corrected return on the seller's only round", () => {
     const result = classifyProduceFailure(
       attempt({ marketLabel: "ทรัพย์พันน" }),

@@ -5,8 +5,8 @@
  */
 import { describe, expect, test } from "bun:test";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { classifyProduceFailuresAcrossCutoff } from "./failure-lifecycle-source";
-import type { ProduceFailureAttempt } from "./failure-lifecycle";
+import { classifyProduceFailuresAcrossCutoff, loadFinalizedProduceOutcomes } from "./failure-lifecycle-source";
+import type { FinalizedProduceOutcome, ProduceFailureAttempt } from "./failure-lifecycle";
 
 type Row = Record<string, unknown>;
 
@@ -22,7 +22,7 @@ function filteredClient(tables: Record<string, Row[]>): SupabaseClient<any> {
         in(field: string, values: readonly unknown[]) { rows = rows.filter((row) => values.includes(row[field])); return query; },
         order() { return query; },
         range(start: number, end: number) { return Promise.resolve({ data: rows.slice(start, end + 1), error: null }); },
-        then(resolve: (value: unknown) => unknown) { return Promise.resolve({ data: rows, error: null }).then(resolve); },
+        then(resolve: (value: unknown) => unknown) { return Promise.resolve({ data: rows.slice(0, 1000), error: null }).then(resolve); },
       };
       return query;
     },
@@ -66,6 +66,29 @@ function attempt(businessDate: string, alternateBusinessDate: string): ProduceFa
 const noEvidence = { outcomes: [], cancelledRoundIds: new Set<string>() };
 
 describe("P0-D cross-cutoff supersession", () => {
+  test("candidate withdrawal masters beyond 1000 sessions are included", async () => {
+    const landed = Array.from({ length: 1001 }, (_, index) =>
+      landedReturn(`session-${index}`, D, "2026-10-07T12:00:00.000Z"));
+    landed[1000].item.transaction_type = "เบิก";
+    const outcomes = await loadFinalizedProduceOutcomes(db(...landed), D);
+    expect(outcomes).toHaveLength(1001);
+    expect(outcomes[1000]).toMatchObject({ produceSessionId: "session-1000", transactionKind: "เบิก" });
+  });
+  test("on today's report, today's exact-identity return cannot clear the ambiguous attempt", async () => {
+    const today: FinalizedProduceOutcome = {
+      produceSessionId: "today-return", businessDate: NEXT, sourceId: SOURCE,
+      staffLabel: "น้อย", marketLabel: "ราชพฤกษ์", transactionKind: "คืน",
+      accountabilityRoundId: `round-${NEXT}`, sessionKind: "main",
+      finalizedAtMs: Date.parse("2026-10-08T12:00:00.000Z"),
+    };
+    const evidence = { ...noEvidence, outcomes: [today] };
+    const [active] = await classifyProduceFailuresAcrossCutoff(db(), [attempt(NEXT, D)], evidence);
+    expect(active.state).toBe("active_failed");
+    const resend = landedReturn("dated-resend", D, "2026-10-08T01:00:00.000Z");
+    const [cleared] = await classifyProduceFailuresAcrossCutoff(db(resend), [attempt(NEXT, D)], evidence);
+    expect(cleared.state).toBe("superseded");
+    expect(cleared.supersededByProduceSessionId).toBe("dated-resend");
+  });
   test("on yesterday's report, today's ordinary return never clears it", async () => {
     const today = landedReturn("today-return", NEXT, "2026-10-08T12:00:00.000Z");
     const [result] = await classifyProduceFailuresAcrossCutoff(db(today), [attempt(D, NEXT)], noEvidence);

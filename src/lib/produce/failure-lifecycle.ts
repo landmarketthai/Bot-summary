@@ -191,25 +191,14 @@ export function classifyProduceFailure(
   }
 
   const successors = outcomes.filter((outcome) => isSuccessorOf(attempt, outcome));
-  if (successors.length === 1) {
+  const released = laterReturnOnEveryCandidateRound(attempt, outcomes);
+  if (released || (released === undefined && successors.length === 1)) {
     return {
       attemptId: attempt.attemptId,
       state: "superseded",
-      supersededByProduceSessionId: successors[0].produceSessionId,
+      supersededByProduceSessionId: released ?? successors[0].produceSessionId,
       ambiguousSuccessor: false,
     };
-  }
-
-  if (successors.length === 0) {
-    const released = laterReturnOnEveryCandidateRound(attempt, outcomes);
-    if (released) {
-      return {
-        attemptId: attempt.attemptId,
-        state: "superseded",
-        supersededByProduceSessionId: released,
-        ambiguousSuccessor: false,
-      };
-    }
   }
 
   return {
@@ -238,12 +227,13 @@ export function classifyProduceFailure(
 function laterReturnOnEveryCandidateRound(
   attempt: ProduceFailureAttempt,
   outcomes: readonly FinalizedProduceOutcome[],
-): string | null {
-  if (identityText(attempt.accountabilityRoundId) !== null) return null;
+): string | null | undefined {
+  // Undefined leaves legacy exact-identity proof available; null means incomplete round coverage.
+  if (identityText(attempt.accountabilityRoundId) !== null) return undefined;
   const kind = attempt.transactionKind;
-  if (kind !== "คืน" && kind !== "คืนเสีย") return null;
+  if (kind !== "คืน" && kind !== "คืนเสีย") return undefined;
   const date = identityText(attempt.businessDate);
-  if (!date || attempt.attemptedAtMs === null) return null;
+  if (!date || attempt.attemptedAtMs === null) return undefined;
   const attemptedAtMs = attempt.attemptedAtMs;
 
   const masters = new Map<string, FinalizedProduceOutcome>();
@@ -266,17 +256,17 @@ function laterReturnOnEveryCandidateRound(
     const narrowed = candidates.filter(matches);
     if (narrowed.length > 0) candidates = narrowed;
   }
-  if (candidates.length === 0) return null;
+  if (candidates.length === 0) return undefined;
 
   let released: string | null = null;
   for (const [round] of candidates) {
-    const later = outcomes.find((outcome) =>
+    const later = outcomes.filter((outcome) =>
       identityText(outcome.accountabilityRoundId) === round
       && outcome.sessionKind === "main" && outcome.voidedAtMs == null
       && outcome.transactionKind === kind
       && outcome.finalizedAtMs !== null && outcome.finalizedAtMs > attemptedAtMs);
-    if (!later) return null;
-    released ??= later.produceSessionId;
+    if (later.length !== 1) return null;
+    released ??= later[0].produceSessionId;
   }
   return released;
 }

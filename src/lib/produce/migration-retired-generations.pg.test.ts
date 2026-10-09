@@ -205,6 +205,17 @@ describe.skipIf(!pgAvailable)("retired pending generations on PostgreSQL 17", ()
     expect(await retired(generation)).toBeNull();
   });
 
+  test("an open return with item evidence survives rotation before close", async () => {
+    const key = keyFor("open-return");
+    await open(key, "open-head", 1_000, RETURN_TEXT.replace("\nจบรายการชั่งคืน", ""));
+    const generation = await generationOf(key);
+    expect((await open(key, "open-next", 2_000, "น้อย-ราชพฤกษ์ เบิก 8/10/2569", generation)).opened).toBe(true);
+    const kept = await retired(generation);
+    expect(kept?.finalization_status).toBe("pending");
+    expect(kept?.close_requested_at).toBeNull();
+    expect(kept?.accumulated_text).toContain("1.มะนาว 3 แพค");
+  });
+
   test("an update that keeps the generation writes nothing", async () => {
     const key = keyFor("same-generation");
     await open(key, "same-head", 1_000, RETURN_TEXT);

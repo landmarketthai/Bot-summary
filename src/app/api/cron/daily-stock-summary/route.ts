@@ -173,15 +173,14 @@ export async function GET(req: NextRequest) {
   let unresolvedPendingCount = 0;
   let preflightStatus: string | null = null;
   let preflightBlockedRounds = 0;
-  let hasIncompleteReturnEvidence = roundStatuses.some(
-    (round) => round.state === "blocked" || round.state === "pending",
-  );
+  let hasIncompleteReturnEvidence = false;
   try {
-    const preflight = await runDailyClosePreflight(supabase, businessDate, { roundStatuses });
+    const preflight = await runDailyClosePreflight(supabase, businessDate);
     unresolvedPendingCount = preflight.summary.activeFailedSessions;
     preflightStatus = preflight.status;
     preflightBlockedRounds = preflight.summary.blockedRounds;
-    hasIncompleteReturnEvidence ||= preflight.summary.blockedRounds > 0;
+    hasIncompleteReturnEvidence ||= preflight.status === "blocked"
+      || preflight.summary.activeFailedSessions > 0;
     logger.info("daily stock summary readiness", {
       business_date: businessDate,
       report_status: preflight.status,
@@ -192,6 +191,7 @@ export async function GET(req: NextRequest) {
       integrity_issues: preflight.summary.integrityIssues,
     });
   } catch (error) {
+    hasIncompleteReturnEvidence = true;
     // Degrade to the narrow count rather than losing the morning delivery.
     logger.warn("daily stock summary readiness lookup failed", {
       businessDate,

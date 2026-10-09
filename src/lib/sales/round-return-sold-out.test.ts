@@ -91,6 +91,40 @@ describe("round identity in Daily Sales", () => {
 describe("sold-out inference", () => {
   const soldOutRows = [row({ transactionType: "เบิก", quantity: 20 })];
 
+  test.each(["2026-08-10", "2026-08-11", "2026-10-07"])("round-less produce on %s cannot certify sold-out or money", (businessDate) => {
+    const report = calculateSalesReport({
+      businessDate,
+      centralPrices: prices,
+      rows: [
+        row({ accountabilityRoundId: null, sessionId: "unbound", quantity: 20 }),
+        row({ quantity: 30 }),
+      ],
+      incompleteReturnRounds: new Set([LANNA]),
+    });
+    const identity = report.markets.find((market) => market.marketKey !== salesRoundMarketKey(LANNA))!.rows[0]!;
+    expect(identity).toMatchObject({
+      status: "QUANTITY_BLOCKED",
+      soldQuantity: null,
+      expectedSalesSatang: null,
+      valueStatus: "PENDING_REVIEW",
+      pendingReviewSalesSatang: 200_000,
+      returnEvidenceIncomplete: true,
+    });
+    expect(isSoldOutByAbsentReturn(identity)).toBe(false);
+    expect(report.allMarkets.expectedSalesSatang).toBe(0);
+  });
+
+  test("round-less produce after enforcement stays provisional even without other rounds", () => {
+    const report = calculateSalesReport({
+      businessDate: "2026-10-07",
+      centralPrices: prices,
+      rows: [row({ accountabilityRoundId: null, quantity: 20 })],
+    });
+    expect(report.markets[0]!.rows[0]!.soldQuantity).toBeNull();
+    expect(report.markets[0]!.rows[0]!.expectedSalesSatang).toBeNull();
+    expect(isSoldOutByAbsentReturn(report.markets[0]!.rows[0]!)).toBe(false);
+  });
+
   test("Test 3 — a withdrawal with no return evidence is still sold out", () => {
     const report = calculateSalesReport({
       businessDate: "2026-08-10",

@@ -512,14 +512,11 @@ const DISCARDED_GENERATION_REASONS = new Set(["user_cancelled", "superseded"]);
  *
  * pending_sessions keeps one row per LINE user and group, so the user's next
  * header overwrites a refused return in place. The trigger keeps a copy; this
- * reads back only what is still evidence of a missing return, for a document
- * that is not a withdrawal: a finalizer refusal (failed_closed, not cancelled
- * or superseded), or a document whose close was requested or refused but not
- * yet terminal when the next header rotated it. Never-closed drafts are not
- * read, exactly as a rotation discarded them before.
+ * reads back unresolved non-withdrawal documents, including open returns.
+ * The next header is not cancellation or proof that the return landed.
  *
- * A database that predates the migration has no such table (PGRST205 / 42P01)
- * and therefore no retained rows — that, and only that, reads as empty.
+ * The retention migration is required: an absent table cannot prove that
+ * no return generation was erased, so every read error fails closed.
  */
 async function fetchRetiredRefusedReturns(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -554,8 +551,6 @@ async function fetchRetiredRefusedReturns(
       .order("session_generation", { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
     if (error) {
-      const code = (error as { code?: string }).code;
-      if (page === 0 && (code === "PGRST205" || code === "42P01")) return [];
       throw new SalesDataError(`retired pending generation query failed: ${error.message}`);
     }
     rows.push(...(data ?? []));
@@ -563,7 +558,7 @@ async function fetchRetiredRefusedReturns(
   }
   return rows
     .filter((row) =>
-      (row.finalization_status === "failed_closed" || row.close_requested_at || row.close_refused_at)
+      !RESOLVED_PENDING_STATUSES.has(row.finalization_status ?? "")
       && !DISCARDED_GENERATION_REASONS.has(String(row.finalization_error?.reason ?? ""))
       && pendingRowCanBeReturn(row.declared_transaction_type, row.accumulated_text))
     .map((row) => ({

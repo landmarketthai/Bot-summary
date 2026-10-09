@@ -124,3 +124,145 @@ compared by **test identity** (not counts).
 
 Any unresolved/ambiguous financial evidence must remain **รอตรวจสอบ** and must never be
 inferred as a confirmed sale.
+
+## Release-safety completion — 2026-10-09 (local only, starting HEAD fd274e6)
+
+Three parallel read-only reviewers audited financial consumers, failure lifecycle,
+and release verification. The coordinator alone edited code. Their findings and
+follow-up reviews were incorporated; no remaining P0/P1 regression was found in
+the reviewed changes. This section supersedes the earlier remaining-risk entries
+about missing-table tolerance, round-less Sales, discarded open returns, and the
+non-lifecycle stock/planning scans. The earlier full-suite report remains unchanged.
+
+### Necessary fixes
+
+- Sales never certifies round-less produce on/after 2026-08-11. Before enforcement,
+  mixed bound/unbound produce in one market is provisional; all-roundless legacy
+  dates keep their existing behavior. Quantities remain visible, sold quantity and
+  confirmed money are null, and calculable value is marked pending review.
+- Missing retired-generation table/schema-cache visibility (`PGRST205`, `42P01`)
+  now throws, as do other evidence-read failures. The retention migration is a
+  required capability, rather than an optional erasure safeguard.
+- All unresolved retired non-withdrawal generations remain evidence, including
+  open returns without close stamps. Explicit cancellation/supersession and
+  resolved statuses remain excluded. The existing migration already retains
+  these open generations; no additional migration is necessary.
+- An exact-identity resend cannot bypass coverage of every candidate withdrawal
+  round. Multiple later main returns on one candidate round remain ambiguous.
+- An ambiguous cross-04:00 attempt cannot be cleared by the later day's ordinary
+  return, even when that return was passed as initial lifecycle evidence.
+- Finalized session outcomes are paged in stable ID order, so a withdrawal master
+  beyond PostgREST's 1,000-row page cannot disappear from candidate-round proof.
+- Daily-stock uses the canonical lifecycle preflight, suppresses sold-out wording
+  on blockers/active failures/read errors, and accepts proven retry resolution.
+  Purchase planning feeds active unbound/retired attempts into round status and
+  leaves estimated sold quantity unknown until the return is proven resolved.
+
+### Verification performed in this completion
+
+| Check | Actual result |
+|---|---|
+| Core loader, sold-out, lifecycle and cutoff (4 files) | 172 pass / 0 fail |
+| Sales + round status + preflight + settlement verdict (14 files, overlaps core) | 440 pass / 1 baseline fail |
+| Purchase planning calculator/service | 82 pass / 1 baseline fail |
+| New daily-stock integrity tests (mock DB and LINE, local handler only) | 4 pass / 0 fail |
+| Existing daily-stock route tests | 25 pass / 3 baseline fails |
+| Retention migration on newly created disposable PG17 cluster | 6 pass / 0 fail, none skipped |
+| Typecheck, ESLint on all changed TS files, normal git diff --check | Pass, 0 lint errors |
+| Full webpack build with loopback-only synthetic Supabase configuration | FAIL: Google Fonts Sarabun fetch blocked by network; no current full-build pass |
+
+All five failing test identities above were reproduced using copies of the
+relevant `fd274e6` implementation/tests inside this worktree, without checkout,
+stash or changes to baseline. They are the Sales message `P4: pending-review
+money is labelled by review state, never under ยังไม่รวม`, the purchase-planning
+`an item-only rejected เบิก poisons only the named product`, and the three
+existing stock accountability-round message tests. Full suites were not repeated.
+
+New defect reproducers failed before their fixes. The 1,001-session fixture now
+caps an unpaged read at 1,000; it fails against the old implementation (1,000
+received) and passes against the paged implementation (1,001 received).
+Reviewers independently verified focused calculator and consumer tests.
+
+PG rehearsal used a new cluster inside this worktree, bound only to
+`127.0.0.1:55489`, rather than the existing local server. It applied the prerequisite
+RPC migrations and `20261008150000`, proved rotation retention (failed, close-refused,
+and open return), resolved/same-generation exclusions, and backend-only privileges.
+The test database was dropped and the server stopped. Disposable cluster and
+baseline-snapshot files remain in ignored `.tmp-p0-*` directories because automatic
+command-policy review rejected recursive cleanup. Test logs are retained locally
+in `.tmp-p0-evidence`; none of these files are committed.
+An initial `pg_ctl start` was blocked by the sandbox's restricted-token handling;
+running the disposable `postgres.exe` directly succeeded. No production SQL ran.
+
+The first standalone typecheck raced build-generated `.next/types` deletion;
+after build stopped, `next typegen` followed sequentially by `tsc --noEmit` passed.
+Actual Supabase environment remains absent; synthetic loopback build values provide
+no production or runtime integration evidence. The prior missing-env `/overview`
+build failure is still relevant when no configuration is supplied.
+
+### Exact release order for a separately authorized operator
+
+1. Keep financial certification and scheduled financial delivery withheld while
+   capability checks are unresolved. Preserve the currently deployed artifact,
+   schema/privilege evidence and incident records; reconcile any already published
+   money independently. Historical erased generations cannot be reconstructed here.
+2. Verify prerequisite schema and RPCs, including generation/refusal identity columns,
+   `20260815094931_produce_out_of_order_admission.sql` and
+   `20260924090000_produce_generation_rotation_carry_forward.sql`.
+3. Apply `20261008150000_pending_session_retired_generations.sql` in its transaction
+   BEFORE application code. Verify the trigger enabled on generation UPDATE,
+   backend SELECT-only privileges, and successful table reads through the actual
+   application server role/PostgREST schema cache. An empty table alone does not
+   prove trigger operation or recover past erased evidence.
+4. In non-production, reproduce refused/open-return rotation and corrected retries.
+   Verify Sales, White Sheet close/finalize, yod-song, financial/report PDF, stock
+   wording and planning stay provisional until the correct evidence clears them.
+   Verify unrelated seller/market/source remains unaffected and cross-cutoff
+   corrections clear only the earlier business date.
+5. Complete a full build and runtime smoke test with safe real non-production
+   configuration and font access. Measure the monthly financial page/PDF with
+   representative volume against the configured runtime timeout. About 31 sequential
+   preflights, each scanning retained history, remain unmeasured; no performance
+   refactor was made without evidence.
+6. Only after these gates pass, deploy the reviewed application artifact, verify
+   capability and consumer behavior again, then authorize financial delivery.
+   Do not automatically clear settlement `sent` markers or reuse notification
+   identities to force a confirmed follow-up.
+
+### Rollback and decision
+
+Preserve the additive retention table, rows and enabled trigger. Withhold financial
+certification/delivery and fix forward. Returning application code to `fd274e6`
+or older reopens the audited P0 defects; it is not a safe money rollback. Dropping
+the trigger resumes erasure and is acceptable only after a replacement evidence
+retention mechanism exists. No rollback or release action was executed.
+
+**NO-GO for production.** Local fixes and independent review are complete, but
+production migration/capability, historical incident evidence, full build/runtime
+verification and monthly latency remain unverified. Settlement still sends only
+one provisional notification; corrected evidence does not automatically send a
+confirmed follow-up. Undated returns more than 30 minutes from 04:00 still use the
+event business date: operators must supply an explicit date for late returns.
+No push, PR, merge, deploy, production mutation, real LINE message, cron trigger,
+secret exposure or edit outside the specified worktree occurred.
+
+### Local commit and production read-only verification
+
+The Codex sandbox could not stage files because linked Git metadata is outside
+its writable root (index.lock permission denied). The authorized lnwjud Git
+tool staged the 14 reviewed files and committed locally on this branch; inspect
+Git HEAD for the final SHA. The disposable test/patch evidence in ignored
+`.tmp-p0-*` directories is not part of the commit. No push, PR, merge,
+Production migration or deploy was performed.
+
+Separate read-only Production SQL on 2026-10-09 confirmed:
+- `public.pending_session_retired_generations` is absent. Therefore the
+  required migration/capability gate is definitely unmet in Production.
+- Pending session `4e0d5ed6-a3f3-4ee4-acd2-7faff90fa57b` currently shows
+  `finalized` and links to an **open 2026-10-08** accountability round.
+  This is NOT evidence that the original 2026-10-07 failed return was
+  repaired; the same pending row can be reused on generation rotation.
+- Pending session `81f1db96-8780-492f-9cda-2c61d5a92cd0` remains
+  `failed_closed`, with no linked accountability round or partial capture.
+Historical outbound LINE/report amounts have not been verified. These were
+SELECT-only queries; no Production records were changed.

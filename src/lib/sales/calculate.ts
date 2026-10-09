@@ -2,6 +2,7 @@ import { normalizeProductName } from "@/lib/summary/remaining-fruit";
 import { baseTransactionType } from "@/lib/summary/transactions";
 import { resolveUnitQuantity } from "@/lib/parsers/weigh-session/units";
 import { centralPriceMapKey } from "@/lib/white-sheet/pricing";
+import { PLAIN_TEXT_ROUND_ENFORCEMENT_FROM } from "@/lib/produce/plain-text-round-binding";
 
 /**
  * P1 Daily Sales — the pure calculator.
@@ -659,6 +660,10 @@ export function calculateSalesReport(input: SalesCalculationInput): SalesReport 
   const roundLabels = input.roundMarketLabels ?? new Map<string, string>();
   const incompleteRounds = input.incompleteReturnRounds ?? new Set<string>();
   const persistedReturnRounds = input.persistedReturnRounds ?? new Set<string>();
+  const marketsWithRounds = new Set(input.rows.filter((row) => roundId(row))
+    .map((row) => identityLabel(row.marketName)));
+  const unboundMarketsWithRounds = new Set(input.rows.filter((row) => !roundId(row)
+    && marketsWithRounds.has(identityLabel(row.marketName))).map(rowMarketKey));
 
   for (const row of input.rows) {
     const round = row.accountabilityRoundId?.trim() || null;
@@ -776,6 +781,9 @@ export function calculateSalesReport(input: SalesCalculationInput): SalesReport 
     }
 
     const returnEvidenceIncomplete = input.unattributableReturnRisk === true
+      || (aggregate.accountabilityRoundId === null
+        && (input.businessDate >= PLAIN_TEXT_ROUND_ENFORCEMENT_FROM
+          || unboundMarketsWithRounds.has(aggregate.marketKey)))
       || (aggregate.accountabilityRoundId !== null
         && incompleteRounds.has(aggregate.accountabilityRoundId));
     const returnQuantityPending = reasons.has("product_return_absent") || returnEvidenceIncomplete;

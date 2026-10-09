@@ -80,6 +80,43 @@ function highSellingDay(db = new FakeDatabase()): FakeDatabase {
 const client = (db: FakeDatabase): SupabaseClient<Database> =>
   db as unknown as SupabaseClient<Database>;
 
+describe("P0 purchase planning return evidence", () => {
+  const failedReturn = {
+    id: "failed-return", session_generation: "generation-1", session_key: "group:g:user:u",
+    source_id: "group-1", staff_label: "โอม", market_label: "ตลาด72",
+    declared_transaction_type: "คืน", business_date: BUSINESS_DATE,
+    accountability_round_id: null, finalization_status: "failed_closed",
+    accumulated_text: "โอม-ตลาด72 ชั่งคืน 21/8/2569\n1.แอปเปิ้ล 20 ลูก\nจบรายการชั่งคืน",
+    created_at: "2026-08-21T08:00:00.000Z", generation_created_at: "2026-08-21T08:00:00.000Z",
+  };
+  function withdrawalDay() {
+    return new FakeDatabase()
+      .seed("produce_transactions", [produceRow()])
+      .seed("accountability_rounds", [{ id: ROUND, source_id: "group-1", business_date: BUSINESS_DATE,
+        seller_label: "โอม", market_label: "ตลาด72" }])
+      .seed("produce_sessions", [cleanSession(1)]);
+  }
+  test.each(["pending_sessions", "pending_session_retired_generations"])("%s unbound return leaves sold quantity unknown", async (table) => {
+    const db = withdrawalDay().seed(table, [failedReturn]);
+    const report = await loadPurchasePlanningReport(client(db), BUSINESS_DATE);
+    expect(report.items[0]!.estimatedSoldQuantity).toBeNull();
+    expect(report.items[0]!.uncertaintyReasons).toContain("return_incomplete");
+    expect(db.appendCalls).toBe(0);
+  });
+  test("a later proven resend clears the retired return in planning", async () => {
+    const db = withdrawalDay().seed("pending_session_retired_generations", [failedReturn])
+      .seed("produce_transactions", [produceRow(), produceRow({ id: "returned", session_id: "resend",
+        transaction_type: "คืน", base_transaction_type: "คืน", quantity: 20, raw_message_id: "raw-resend" })])
+      .seed("produce_sessions", [cleanSession(1), { id: "resend", total_items: 1, parser_errors: [],
+        session_date: BUSINESS_DATE, session_kind: "main", staff_name: "โอม", session_title: "ตลาด72",
+        accountability_round_id: ROUND, raw_message_id: "raw-resend", finalized_at: "2026-08-21T09:00:00.000Z" }])
+      .seed("raw_messages", [{ id: "raw-resend", source_id: "group-1" }]);
+    const report = await loadPurchasePlanningReport(client(db), BUSINESS_DATE);
+    expect(report.unresolvedSessionCount).toBe(0);
+    expect(report.items[0]!.estimatedSoldQuantity).toBe(80);
+  });
+});
+
 describe("loadPurchasePlanningReport — house stock wiring", () => {
   test("a matched authoritative snapshot turns a high seller green", async () => {
     const db = highSellingDay()
