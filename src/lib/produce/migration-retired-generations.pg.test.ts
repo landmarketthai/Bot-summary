@@ -234,5 +234,87 @@ describe.skipIf(!pgAvailable)("retired pending generations on PostgreSQL 17", ()
       'public.pending_session_retired_generations', 'SELECT')`)).toBe("t");
     expect(await scalar(`SELECT has_table_privilege('service_role',
       'public.pending_session_retired_generations', 'UPDATE')`)).toBe("f");
+    for (const privilege of ["INSERT", "DELETE"]) {
+      expect(await scalar(`SELECT has_table_privilege('service_role',
+        'public.pending_session_retired_generations', '${privilege}')`)).toBe("f");
+    }
+    expect(await scalar(`SELECT relrowsecurity FROM pg_class
+      WHERE oid='public.pending_session_retired_generations'::regclass`)).toBe("t");
+    expect(await scalar(`SELECT has_function_privilege('anon',
+      'public.pending_sessions_retain_unresolved_generation()', 'EXECUTE')`)).toBe("f");
+  });
+
+  test("duplicate opener is idempotent; stale and unguarded rotations are refused", async () => {
+    const key = keyFor("rotation-guards");
+    await open(key, "guard-head", 1_000, RETURN_TEXT);
+    const generation = await generationOf(key);
+    expect((await open(key, "guard-head", 1_000, RETURN_TEXT)).opened).toBe(true);
+    expect(await generationOf(key)).toBe(generation);
+    expect(await scalar(`SELECT count(*) FROM public.pending_session_ingest
+      WHERE session_key=${q(key)}`)).toBe("1");
+    expect((await open(key, "unguarded-next", 2_000, "next")).opened).toBe(false);
+    expect((await open(key, "stale-next", 2_000, "next",
+      "00000000-0000-0000-0000-000000000001")).opened).toBe(false);
+    expect(await generationOf(key)).toBe(generation);
+    expect(await retired(generation)).toBeNull();
+  });
+
+  test("duplicate and expired-empty outcomes leave no blocking evidence", async () => {
+    for (const status of ["duplicate", "expired_empty_draft"]) {
+      const key = keyFor(status);
+      await open(key, `${status}-head`, 1_000, RETURN_TEXT);
+      const generation = await generationOf(key);
+      await scalar(`UPDATE public.pending_sessions SET finalization_status=${q(status)},
+        terminalized=true WHERE session_key=${q(key)}; SELECT 1`);
+      expect((await open(key, `${status}-next`, 2_000, "next", generation)).opened).toBe(true);
+      expect(await retired(generation)).toBeNull();
+    }
+  });
+
+  test("a refusal stamp belonging to another generation is not copied", async () => {
+    const key = keyFor("wrong-refusal");
+    await open(key, "wrong-refusal-head", 1_000, RETURN_TEXT);
+    const generation = await generationOf(key);
+    await scalar(`UPDATE public.pending_sessions SET close_refused_at=now(),
+      close_refused_session_generation=gen_random_uuid() WHERE session_key=${q(key)}; SELECT 1`);
+    await open(key, "wrong-refusal-next", 2_000, "next", generation);
+    expect((await retired(generation))?.close_refused_at).toBeNull();
+  });
+
+  test("duplicate retention preserves the first evidence instead of overwriting it", async () => {
+    const key = keyFor("first-evidence");
+    await open(key, "first-head", 1_000, RETURN_TEXT);
+    const generation = await generationOf(key);
+    await open(key, "first-next", 2_000, "next", generation);
+    await scalar(`UPDATE public.pending_sessions SET session_generation=${q(generation)}::uuid,
+      accumulated_text='replacement' WHERE session_key=${q(key)};
+      UPDATE public.pending_sessions SET session_generation=gen_random_uuid()
+      WHERE session_key=${q(key)}; SELECT 1`);
+    expect((await retired(generation))?.accumulated_text).toBe(RETURN_TEXT);
+    expect(await scalar(`SELECT count(*) FROM public.pending_session_retired_generations
+      WHERE session_generation=${q(generation)}::uuid`)).toBe("1");
+  });
+
+  test("rotation across exactly 04:00 preserves the old explicit business date", async () => {
+    const key = keyFor("cutoff");
+    await open(key, "cutoff-head", Date.parse("2026-10-07T20:59:59.999Z"), RETURN_TEXT);
+    const generation = await generationOf(key);
+    await scalar(`UPDATE public.pending_sessions SET business_date='2026-10-07',
+      finalization_status='failed_closed' WHERE session_key=${q(key)}; SELECT 1`);
+    await open(key, "cutoff-next", Date.parse("2026-10-07T21:00:00.000Z"),
+      "น้อย-ราชพฤกษ์ เบิก 8/10/2569", generation);
+    expect((await retired(generation))?.business_date).toBe("2026-10-07");
+    expect((await retired(generation))?.accumulated_text).toBe(RETURN_TEXT);
+  });
+
+  test("legacy NULL generation rotates without trigger failure", async () => {
+    const key = keyFor("null-generation");
+    await open(key, "null-head", 1_000, RETURN_TEXT);
+    await scalar(`ALTER TABLE public.pending_sessions ALTER COLUMN session_generation DROP NOT NULL;
+      UPDATE public.pending_sessions SET session_generation=NULL WHERE session_key=${q(key)};
+      UPDATE public.pending_sessions SET session_generation=gen_random_uuid() WHERE session_key=${q(key)};
+      ALTER TABLE public.pending_sessions ALTER COLUMN session_generation SET NOT NULL; SELECT 1`);
+    expect(await scalar(`SELECT count(*) FROM public.pending_session_retired_generations
+      WHERE session_generation IS NULL`)).toBe("0");
   });
 });

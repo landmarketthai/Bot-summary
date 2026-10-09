@@ -1,4 +1,5 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, setSystemTime } from "bun:test";
+import { UNDATED_CUTOFF_REPLY } from "@/lib/produce/plain-text-round-binding";
 import { finalizePendingGeneration } from "./pending-session-finalizer";
 import type { PendingSession } from "./pending-session-service";
 
@@ -260,4 +261,36 @@ describe("additional-batch finalization payload", () => {
     expect(errors).toEqual([]);
     expect((call.args.p_items as Row[]).map((item) => item.item_number)).toEqual([5]);
   });
+});
+
+it("an undated return finalized at/after 04:00 fails closed without binding or real sends", async () => {
+  const text = ["น้อย-ราชพฤกษ์ ชั่งคืน", "1.มะนาว50บาท", "3แพค", "จบรายการชั่งคืน"];
+  const before = Date.parse("2026-10-07T20:55:00.000Z");
+  const originalFetch = globalThis.fetch;
+  let networkAttempts = 0;
+  globalThis.fetch = (() => { networkAttempts++; throw new Error("network forbidden"); }) as unknown as typeof fetch;
+  try {
+    for (const clock of ["2026-10-07T21:00:00.000Z", "2026-10-07T21:05:00.000Z"]) {
+      setSystemTime(new Date(clock));
+      const dbTables = tables();
+      dbTables.pending_session_ingest = text.map((raw_text, index) => ({
+        session_key: SESSION_KEY, session_generation: GENERATION, line_event_id: `cutoff-${index}`,
+        line_timestamp_ms: before + index * 1_000, raw_text,
+      }));
+      const db = new FinalizerDouble(dbTables);
+      db.rpcResult = { status: "failed_closed", reason: "validation_failed" };
+      const snap = { ...snapshot(), accumulated_text: text.join("\n"),
+        created_at: new Date(before).toISOString(), close_requested_at: new Date(before + 3_000).toISOString(),
+        close_event_timestamp_ms: before + 3_000, ingest_revision: text.length };
+      const replies: string[] = [];
+      const result = await finalizePendingGeneration(db as never, snap,
+        async (_to, message) => { replies.push(message); return {}; });
+      const payload = db.rpcCalls.find((c) => c.name === "try_finalize_pending_generation")!.args.p_session as Row;
+      expect(payload.validation_errors).toContain("business date ambiguous: undated document near the 04:00 cutoff");
+      expect(db.rpcCalls.some((c) => c.name === "bind_plain_text_accountability_round")).toBe(false);
+      expect(result.status).toBe("failed_closed");
+      expect(replies).toEqual([UNDATED_CUTOFF_REPLY]);
+    }
+    expect(networkAttempts).toBe(0);
+  } finally { setSystemTime(); globalThis.fetch = originalFetch; }
 });
