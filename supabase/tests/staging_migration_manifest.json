@@ -1,0 +1,522 @@
+[
+  {
+    "name": "0001_initial_schema.sql",
+    "sha256": "6dd6861608ec3182fa21c0d1574e202854e94ae82331f7a5c2de1cb470e6dbdb"
+  },
+  {
+    "name": "0002_produce_weighing.sql",
+    "sha256": "c9e479f5076da86f1a75c7d18ed2cb509bf34a68a79e9586719e7487eafe1b26"
+  },
+  {
+    "name": "0003_drop_weigh_entries.sql",
+    "sha256": "da68eca760ef8aea33fee906cd714dde919381d798dfc92d075e97d563742883"
+  },
+  {
+    "name": "0004_perf_indexes.sql",
+    "sha256": "ad1c21430efe8a8ea9ce04bef882add6e0b1f8cd31683a6cb9a498a73de3513d"
+  },
+  {
+    "name": "0005_produce_transactions_view.sql",
+    "sha256": "2e0a06e92fd0de645d0d81a20081f091af2d167eac00a3d6462141c8cc3512f2"
+  },
+  {
+    "name": "0006_transaction_type.sql",
+    "sha256": "20a72224f3b901bebbe4f5bfad620b503f7a05bbc8f0d3169388b3012bd383da"
+  },
+  {
+    "name": "0007_settlement_entries.sql",
+    "sha256": "ee3140feb0e14b2be5c13836d99b94e94c7b9007e4b386a9a00fc2a2c92e6d0b"
+  },
+  {
+    "name": "0008_settlement_notes.sql",
+    "sha256": "4f48c2890e6def69f20d1c522199d53c7a537f6ac3cc651e89f9711c89f12471"
+  },
+  {
+    "name": "0009_pending_sessions.sql",
+    "sha256": "61c101fc5c5bd454f310c456d7713f93a8a3ffdb136c21e3d369e90feaf5cdd0"
+  },
+  {
+    "name": "0010_daily_summaries.sql",
+    "sha256": "98f8c536ca93f9b0691a6278f815c93c54879760adf9f2a0f1417d15cad993d7"
+  },
+  {
+    "name": "0011_imported_sessions.sql",
+    "sha256": "613d54350b297bb7d3c81eccbf8d5c31584058c70c584117c5416ad9f19efc27"
+  },
+  {
+    "name": "0012_append_pending_session_rpc.sql",
+    "sha256": "2fb1f7377df1ae7cbf34bc28a3a65c951e379b308e28dbe4eeb5c70b5d0008db"
+  },
+  {
+    "name": "0013_add_unit_แพค.sql",
+    "sha256": "cb01b8366193502f5bf5bfc0178dae3311b5902a5898c2587288d95a9fbf75cb"
+  },
+  {
+    "name": "0014_add_expenses_to_settlement.sql",
+    "sha256": "f3e09fafe5c5c30884f5adaa8e4a0c08dfb0afde512a1a8d2cfb7732096ce610"
+  },
+  {
+    "name": "0015_add_labor_to_settlement.sql",
+    "sha256": "49b17c39910b3f78a18b9a209967875bf3686662727b110279e58daeed1d847d"
+  },
+  {
+    "name": "0016_add_unit_กำ.sql",
+    "sha256": "a8f5fce1e1ff63f799917547968dd323170dd1b30e7aebe3f096077cd82a2cca"
+  },
+  {
+    "name": "0017_add_unit_หัว.sql",
+    "sha256": "ecbe1ac5ed4e1114ac777b0880412732c77033ad731776911a96663b530b64bd"
+  },
+  {
+    "name": "0018_add_units_mัด_ถุง.sql",
+    "sha256": "0bb892bfd9a365449a1ad1fcda8cbf6ccee7c8543e38ae8360cf978ffbf35a8f"
+  },
+  {
+    "name": "0019_slip_evidence_ingestion.sql",
+    "sha256": "8f3add899893f4b2ec9af156774e7706f34e0c61ec04fd3f44c1e166e7d27389"
+  },
+  {
+    "name": "0020_slip_checks.sql",
+    "sha256": "7de7d2c6aa273781d5c8e10fb9265da902a2871663c5af201ef93ac7656c6d22"
+  },
+  {
+    "name": "0021_slip_batches.sql",
+    "sha256": "f9192b6397c720214405848586de253385d1634e6fa444ec73526bae326ed8d2"
+  },
+  {
+    "name": "0022_get_or_create_slip_batch.sql",
+    "sha256": "c0631342331393dd6dfedf31ba77d841170e331c402da042e5a8040949e49f73"
+  },
+  {
+    "name": "0023_slip_session_fields.sql",
+    "sha256": "253024e266f8b3df503681a842c191a0d28b98482b461a2b9f49d3f37e941677"
+  },
+  {
+    "name": "0024_slip_batch_closing.sql",
+    "sha256": "d162f65af44f95604fb2859839abe4ebf0a6c4f5b8dc960de6ff0d5acfad9f83"
+  },
+  {
+    "name": "0025_add_unit_หวี.sql",
+    "sha256": "eeea53108e0007c21ac858f68674d1ede69b3a72c96666bdec13a9c45c3a3494"
+  },
+  {
+    "name": "0026_add_units_เครือ_เข่ง_พวง_ลัง.sql",
+    "sha256": "504b2a32274240777f4deacbbbf32f0e8687d4e220ef1d0e0abe7560e84b3f89"
+  },
+  {
+    "name": "0027_manual_slip_session.sql",
+    "sha256": "276c50269c8ae5b3fac3fbb5605df8b32fc52c9f2fea6b0c441120079bd149ba"
+  },
+  {
+    "name": "0028_settlement_entries_source_id.sql",
+    "sha256": "c08bbc5d0d09c9acf3d5b46729743304815581821fb8dd0bf405d521634f976b"
+  },
+  {
+    "name": "0029_settlement_finalizations.sql",
+    "sha256": "da856e5e0124162ea57153de17b7c36e6ed0e219c3701bdf4b2443573d62dfd5"
+  },
+  {
+    "name": "0030_manual_slip_market_key.sql",
+    "sha256": "fdcbd8fa2af3dd924c7e8db507dd573b424ecaa7d9f7067e3828c26e2166900c"
+  },
+  {
+    "name": "0031_pending_session_sender_identity.sql",
+    "sha256": "1f939a34c2603c48603c05e2956429f964491b6843afa53dca45731c7437ca06"
+  },
+  {
+    "name": "0032_pending_session_finalization_barrier.sql",
+    "sha256": "351ea83a9a8a1c9e9f7670117c500fb11a70ad1f4efb31db6bfeeabd32938119"
+  },
+  {
+    "name": "0033_produce_basis_pricing.sql",
+    "sha256": "b4140a1acfd78f7761cd0988dcec0a794ff580c3249d1d6143bd05afde28c1c7"
+  },
+  {
+    "name": "0034_produce_notification_delivery.sql",
+    "sha256": "04474f4befdccf7f6038bad62a9075fcb8058b5f8dc527142a996f695d301d76"
+  },
+  {
+    "name": "0035_fix_notification_retry_schedule.sql",
+    "sha256": "82a0a2b37df2b51939ba4532a72a116436abec7de0f6566f6a212c7ee0a4239b"
+  },
+  {
+    "name": "0036_additional_produce_entries.sql",
+    "sha256": "8fd1595e72bfbd326d52ac88b651ee7f6937181a3ad016f15cc22ff7f764bddc"
+  },
+  {
+    "name": "0037_produce_session_void.sql",
+    "sha256": "89406d94bea6fecde9e59f4cf962bd3e11f1faedfbb7869059d6f2ecb31070de"
+  },
+  {
+    "name": "0038_digital_white_sheet_cash_entries.sql",
+    "sha256": "25fcf0031acdd5bab2867651087eb430a4129d385d43e193e522cb1cf571a66a"
+  },
+  {
+    "name": "0039_slip_evidence_market_attribution.sql",
+    "sha256": "92538d77769aa043bc213a1b78530beb580f7230210bc226dd6f5281b58f0722"
+  },
+  {
+    "name": "0040_central_selling_prices.sql",
+    "sha256": "f65ce6fd1c2e009528c8324a2b1d4de98a956d0e5de3851a596a806595a8fee3"
+  },
+  {
+    "name": "0041_slip_check_reference_resolution.sql",
+    "sha256": "cadf722911bfd80dfa41aad28af4239311dd28bf1bc74297b743f45ebf9dda46"
+  },
+  {
+    "name": "0043_white_sheet_lifecycle.sql",
+    "sha256": "1c982d20bb3f812f9eb43a5fb667d0cf5a54567c1843811d35057958f2b369a7"
+  },
+  {
+    "name": "0044_reconcile_pending_close_baseline.sql",
+    "sha256": "27cf02b1f1b272210e208e42fae5c595953551f2be8057c34fac978270343591"
+  },
+  {
+    "name": "0045_white_sheet_security_hardening.sql",
+    "sha256": "dad607a690924e8c6a3b401f53566346875e4857b277ebf13f7dca8d4db99e19"
+  },
+  {
+    "name": "0047_physical_inventory_capture.sql",
+    "sha256": "09e6d470b2f7dd1814339a1505e88b071ea0482a4e25a3999a3a762bfc577788"
+  },
+  {
+    "name": "0048_pending_session_function_parity.sql",
+    "sha256": "2fdf5fed9b988baa34f9536954da0a52f04e6385a1d96b240b6b859418ee662e"
+  },
+  {
+    "name": "0049_produce_structured_session_foundation.sql",
+    "sha256": "df2ffb294371ae058e105cec7125a149ef0e8a47b521698596eb332299e58f57"
+  },
+  {
+    "name": "0050_produce_finalization_hold.sql",
+    "sha256": "7f79d2dfb1f741ac4d37d2a0ddb748313c7117749cbb047cdc8376c8f9776a60"
+  },
+  {
+    "name": "20260729074617_guided_menu_identity_and_state.sql",
+    "sha256": "7a39709d2af3ff7d4a17a55dd2c8fa21340eafb4d7aa0082667baa5f14fd4a38"
+  },
+  {
+    "name": "20260729084558_purchase_receipt_persistence.sql",
+    "sha256": "0e73b725bf637a5bdbc22a64fa1ac7d2526646eb2512ee12c0e89e0c3893a657"
+  },
+  {
+    "name": "20260729172613_inventory_movement_ledger.sql",
+    "sha256": "3390666864f5d4ccfcba832cef335fd8102e191b9192a9f481ca5551ab972a09"
+  },
+  {
+    "name": "20260730090006_guided_menu_seller_market_catalog.sql",
+    "sha256": "de3d9af9c929a518367d1662d4d4a127961698ef73c3880194bc16e28ad90bec"
+  },
+  {
+    "name": "20260730090937_guided_menu_seller_catalog_strict_cleanup.sql",
+    "sha256": "69e964c0e1dcb3310d669a39de9accd1f74bc37cc82cb63969c2c3eb2ad89207"
+  },
+  {
+    "name": "20260730093019_atomic_guided_owner.sql",
+    "sha256": "7198427226df9c65906732357c7ad3cbeb2479c10381885b90c25e47d6862dce"
+  },
+  {
+    "name": "20260731111743_restore_transfer_reconciliation_source_date_unique.sql",
+    "sha256": "3078acb8f6736916eb49b38deb6db9ae03d61427a119c244259070626f378085"
+  },
+  {
+    "name": "20260801092255_manual_white_sheet_note_sessions.sql",
+    "sha256": "2013c9cf44f9e17e6fb7aff2152442d156014c3ff9abf790e14188dcf29a6d7d"
+  },
+  {
+    "name": "20260801140442_manual_white_sheet_event_ordering.sql",
+    "sha256": "5d3328c6114c0345e2f41dcd6c9ae8d5e3e8feb6742d22cb0232ea7d395c891b"
+  },
+  {
+    "name": "20260803122757_priced_house_stock.sql",
+    "sha256": "5f8a63fd279e78836bcd1364ee36749c03bf861991ad99f92004c726a9f8b360"
+  },
+  {
+    "name": "20260805130000_purchase_capture_sessions.sql",
+    "sha256": "a70124147534190650cf2a9634f3ff9dd6efd789edd6af55e87f24d010ab0c56"
+  },
+  {
+    "name": "20260805140000_purchase_capture_draft_finalization.sql",
+    "sha256": "ce1b47bc9a7d572fed1d1e7c70e98ba5e44be92e3663a08760a2fdff94f71655"
+  },
+  {
+    "name": "20260805150000_purchase_capture_slice_b_contract_hardening.sql",
+    "sha256": "09c855771ec861d119925f2be27eed8ee8b67039f8ca3d9e51187ff75e916fd1"
+  },
+  {
+    "name": "20260805160000_purchase_capture_confirm_post.sql",
+    "sha256": "c78cad366682256efc3c5d4f8bfb0c386fe48fcd511821f5966b732f755bbf6e"
+  },
+  {
+    "name": "20260806111646_pending_session_runtime_environment.sql",
+    "sha256": "b8abfb9d49a6f52b91836651c2519af8d531f4f775724833795dd4ed0fd3de18"
+  },
+  {
+    "name": "20260806112815_claim_due_produce_notifications_require_environment.sql",
+    "sha256": "361911d606f2859f719c8f71f58d9e972a76ab03b346f4ad3c83e204a53113b6"
+  },
+  {
+    "name": "20260809045345_p2e_accountability_round_identity_expand.sql",
+    "sha256": "aa5e1ad2c6b510a2ffbdecbf1efa57d96957bc98a2351a281de2763b6037093f"
+  },
+  {
+    "name": "20260809045849_p2e_accountability_round_identity_contract.sql",
+    "sha256": "9092879cbc3de67b94650478fc38b005341c93ba3753dda876daf9003ab9c0c5"
+  },
+  {
+    "name": "20260809063116_inventory_cost_valuation.sql",
+    "sha256": "f1b5d0e22d1ba7b7966bebcca45a019cfad1ffb2b1541ba6581bc1821662cc47"
+  },
+  {
+    "name": "20260809075951_p3_profitability_snapshots.sql",
+    "sha256": "ab8578d36e44bbb448e93ca9aac9b85fc71e335d98317ead69e5098de08a3330"
+  },
+  {
+    "name": "20260810070313_p4a_produce_entry_validation_gate.sql",
+    "sha256": "3d1f52af81372fc6692453698bd4ba0461025232a03c892049f94afb459fedd7"
+  },
+  {
+    "name": "20260810100414_p4a_plain_text_round_binding.sql",
+    "sha256": "126ad1fec9098340c9d10e3c570bef372206ed17126e9e7c67bb9845fc726ce6"
+  },
+  {
+    "name": "20260810112416_p4a_review_session_generation_uuid.sql",
+    "sha256": "e33731c679cb5b524bc261eea3f942ce9e6da051594591c557de4853f64fe4be"
+  },
+  {
+    "name": "20260811181727_round_market_identity_consistency.sql",
+    "sha256": "7cbb10bc1cec6faca43231b5b212c9408fbb81b20a4469a0c05caaa614183459"
+  },
+  {
+    "name": "20260813115826_produce_product_code_dictionary.sql",
+    "sha256": "82392870df89cc9fa4ce88c55686f584e759cbf218e8c421bad643920bdebe1e"
+  },
+  {
+    "name": "20260814104329_cross_user_accountability_round_binding.sql",
+    "sha256": "867d5aacce28646df53712fc7a10ef076794a5e1ee005b7ec8e57ac601a345f6"
+  },
+  {
+    "name": "20260815094931_produce_out_of_order_admission.sql",
+    "sha256": "b9295ad1fd4511210b4bbda0931dde2b5f57f4546dabb360a50f4b36cf65c6ab"
+  },
+  {
+    "name": "20260815212227_cancel_duplicate_plain_text_round.sql",
+    "sha256": "a8b331e0d3ddd105b6aa7115c65123bd84cae8d1991ffcde2955ac171c770b18"
+  },
+  {
+    "name": "20260815212554_produce_fingerprint_compatibility.sql",
+    "sha256": "3c82bfccc95b7cbf8278cf1d07764a3a8676e03d5366e678c687815cf3b7f848"
+  },
+  {
+    "name": "20260815213206_produce_market_identity_guard.sql",
+    "sha256": "c8f7082b152b051b00afbbe527c2870868ec91832f8b41c9036be65aae2c5add"
+  },
+  {
+    "name": "20260817080247_produce_same_day_round_reuse.sql",
+    "sha256": "4afeb0728ec4897b9081f62973293e4b83c89d4a1e569587741422451821b2c6"
+  },
+  {
+    "name": "20260817080346_produce_withdrawal_containment_guard.sql",
+    "sha256": "86b790d00336a20b56758029b84b026088d57815ad9a2ad1e3441d2786b5089c"
+  },
+  {
+    "name": "20260817080439_produce_pending_supersession_and_close_recovery.sql",
+    "sha256": "dea3826b16049990cab05fe6106dac0d285fadb1322d6e3d342ecd24eeb61ebd"
+  },
+  {
+    "name": "20260817085632_produce_supersession_runtime_environment.sql",
+    "sha256": "48898cbb67a513dcf24b5b6fb37519b61b2b7fc206f4d786a8e1321409b2242a"
+  },
+  {
+    "name": "20260817090858_produce_historical_withdrawal_containment.sql",
+    "sha256": "bd5b069cf07178491a6c6e10ac5bc043c48928ba257f8f0417f576fceac22156"
+  },
+  {
+    "name": "20260818034244_produce_cancel_active_pending_draft.sql",
+    "sha256": "cc1cabecd8f5712f6b3001e815c421ea319647be4fea752d9a844e8cc7ba68f4"
+  },
+  {
+    "name": "20260818105651_produce_product_dictionary_cleanup.sql",
+    "sha256": "9905b4bf42f695d7b81076d1f80cdf2008dbfc640abdb210792da54ed0e21fe5"
+  },
+  {
+    "name": "20260820095934_produce_notification_boundary_lockdown.sql",
+    "sha256": "ce36eb7f9fcd9e08170b07fa28e5a257d0903132aad14a3c361c07477c6d5841"
+  },
+  {
+    "name": "20260821082438_fix_accountability_round_slip_date_parsing.sql",
+    "sha256": "4574ae05020c6ac703d31a1f8703ed07225be56dcc235c8a55426b4a8d73593d"
+  },
+  {
+    "name": "20260824185542_produce_product_dictionary_add_kaeo_khamin_mango.sql",
+    "sha256": "7fc6ac2fe73209b93e43b32ef378dc6182e71e2de3197eefe3fd9fa395e1f3bf"
+  },
+  {
+    "name": "20260825091605_produce_recovery_bundle_durability.sql",
+    "sha256": "1014aa510be73ca14c332897468855583b7d59dfa15fe6ad19e2f6277c25e331"
+  },
+  {
+    "name": "20260825092015_produce_finalized_session_replacement_lifecycle.sql",
+    "sha256": "f378fb8a21df5f5f304e4fba7988239577693c8fa83430bd8965ae2b3f6d2dde"
+  },
+  {
+    "name": "20260825092419_settlement_missing_inputs.sql",
+    "sha256": "7f90e588942dc3ae23e7a9a31d96e834624439d73a820028ae157ba96ae75dfb"
+  },
+  {
+    "name": "20260825092703_data_quality_issues.sql",
+    "sha256": "f9c6ddb2316744847b36d65a2bce34115106208e41865f5e3d3f4c61a0705fb6"
+  },
+  {
+    "name": "20260826102627_house_stock_explicit_empty.sql",
+    "sha256": "5e7bb2f202165eee617adfeb8385e024452ab244cab014262027e79ec5cd3708"
+  },
+  {
+    "name": "20260827055728_produce_product_dictionary_add_fah_lan_mango.sql",
+    "sha256": "e6ba812d82fac5df03f05b751fa29f08f3a2d9b24d2ae403c6a99f8a6d8ce57e"
+  },
+  {
+    "name": "20260827065840_data_quality_atomic_upsert.sql",
+    "sha256": "6c982c949b1847051329545a654e0c89ecfd208a8633d9642dbc7e6848f963e9"
+  },
+  {
+    "name": "20260829090000_produce_pending_inactivity_lifecycle.sql",
+    "sha256": "0fbe38bd9645e70ab550a04983654955bf36d559c092b6849ed578ec1ac4121b"
+  },
+  {
+    "name": "20260831120000_produce_close_validation_race.sql",
+    "sha256": "ac581da9bd4144071afcf9a9bb584127265f84aba791a6131eef4110ce853e54"
+  },
+  {
+    "name": "20260901090000_produce_finalizer_review_presentation.sql",
+    "sha256": "75a24126c535beb1cf2868f5540bcf3fa3914a88119bca2c030da74a82b6bfe8"
+  },
+  {
+    "name": "20260901093000_produce_product_dictionary_add_chinese_jujube.sql",
+    "sha256": "4606d0544fcc8ee0aea7d7380fe95143d7ee84f7daded70af6d8e69d6cc1ffe0"
+  },
+  {
+    "name": "20260904090000_p4a_review_presentation_guard.sql",
+    "sha256": "eeccd983a96addb5be0ffe5dfe70921bec696a3ee290f25554ff02d3783b2999"
+  },
+  {
+    "name": "20260905090000_legacy_anon_surface_lockdown.sql",
+    "sha256": "0d40ce1c41fe70d8c3f8a3af66f1d232dd5427068503a51b1f72b8afd8719f40"
+  },
+  {
+    "name": "20260908090000_produce_product_dictionary_add_unclassified_fruit.sql",
+    "sha256": "50af15c76baf646d0bf941cbf8b02d29fec54f63b374c883d97d5ccf395dfdae"
+  },
+  {
+    "name": "20260909030000_produce_product_dictionary_add_market_vegetable_skus.sql",
+    "sha256": "bfbd4b1f0a622fc951982281443c8d2f4359e8ce9512bc3ef8ebd3677e0ec703"
+  },
+  {
+    "name": "20260909030100_produce_product_dictionary_add_market_fish_sku.sql",
+    "sha256": "6622cdd6b57d22c253dcac4784f129967147ab0aa5b45bfd35c4ae69039ee6ef"
+  },
+  {
+    "name": "20260915170000_pending_inactivity_generation_hardening.sql",
+    "sha256": "3243117bf4f6f2d3eacec1f0d3ae77352382ea37dda19c8b83237d0fbb14aa61"
+  },
+  {
+    "name": "20260915170100_line_webhook_queue_retryable_completion.sql",
+    "sha256": "6ddc08bc5601cf089cec1e8e18b2aebd62dcf5d099c41de69ca38fff9f4a777f"
+  },
+  {
+    "name": "20260918090000_house_stock_unsend_close_cancel.sql",
+    "sha256": "4fe3626bcd19a97620a0a8e5d1b729caad1ddb394b256ae9f31b080740d3af7e"
+  },
+  {
+    "name": "20260918150000_produce_product_dictionary_add_sep18_fruit.sql",
+    "sha256": "9d1e2fd22637fed2ad787a922421a6222801a6fc4e67a2510c01e69ae489cf24"
+  },
+  {
+    "name": "20260919134000_line_webhook_semantic_timestamp_order.sql",
+    "sha256": "fadb9eb805c4debbe815f5fc75cf76a44bcc621484c169b94da03d99001c229b"
+  },
+  {
+    "name": "20260919152000_morning_brief_pdf_bucket.sql",
+    "sha256": "71906adb1ba9644808441ef37e2ffe697a81342d7176260eb1cf71aa0b3694fe"
+  },
+  {
+    "name": "20260922100000_settlement_sheet_ocr_drafts.sql",
+    "sha256": "09194bdccf06a7a44f224833808dccf8023c03d744f106dc0671b55d91745898"
+  },
+  {
+    "name": "20260922103000_slip_quoted_amount_correction.sql",
+    "sha256": "436f28ec46d866a9920a1abedfc84ba3f4efa8dfa3082450952c4defc4b1e93a"
+  },
+  {
+    "name": "20260924032000_morning_brief_ref_json_mime.sql",
+    "sha256": "e617155fe34ab8f3427cc7385a649d36767e0a3484c39a959c9ecb235a96c62b"
+  },
+  {
+    "name": "20260924090000_produce_generation_rotation_carry_forward.sql",
+    "sha256": "407e0a7bbcf8c7b255d52637a21dc97dd3b2015dd8532bc4a2763b5965005671"
+  },
+  {
+    "name": "20260926090000_manual_slip_atomic_append_close.sql",
+    "sha256": "1ddc68746d23252a67e13b5071ba21298fb18e43f010bd7b38cccd66ad89fa1d"
+  },
+  {
+    "name": "20260929102500_raw_messages_lost_produce_trgm_index.sql",
+    "sha256": "5987a5af6db3f23b4c189c8c354d4fb137d7645f7268a406b83900bfab6ca91d"
+  },
+  {
+    "name": "20260929104000_raw_messages_lost_produce_ordered_index.sql",
+    "sha256": "4ed087dd8eb0742ab64ac7f0bf169880d9612bb27ee8ba8830961b33162166ea"
+  },
+  {
+    "name": "20260930090000_line_webhook_stale_queue_review.sql",
+    "sha256": "e5ab2eb9669b086657a11323c2fb85a01945fb230f65f43c85f449c58fb20196"
+  },
+  {
+    "name": "20260930090100_paseo_vegetable_market_aliases.sql",
+    "sha256": "34cf3015c824da7ae4f53e0e7d07843f1a4b92f8bfacf6d60e53701449c96b83"
+  },
+  {
+    "name": "20261001041100_produce_product_dictionary_sync_sep24_fruit_and_add_luk_plun.sql",
+    "sha256": "c1908a9a537a99f7ccb5e08548da52b897d2df07495f52a33acb6b091480c0e6"
+  },
+  {
+    "name": "20261001041200_produce_product_dictionary_sync_sep24_vegetables_and_add_oct1.sql",
+    "sha256": "fcabbd60435abe59ff8d72d521670d7f4fea9fa5f8f89a06b69d607a5864e22e"
+  },
+  {
+    "name": "20261001041300_produce_product_dictionary_sync_sep24_durian.sql",
+    "sha256": "e0a27f74719037c779c27ec12fb50ad7778288a7c95b247ceb7d084d252eb83b"
+  },
+  {
+    "name": "20261001041400_produce_product_dictionary_add_hed_hom.sql",
+    "sha256": "5842c089ba051d308eec5b8b0f6d887fadf2f1dc3cbfbb99b74033d20ad04157"
+  },
+  {
+    "name": "20261001065443_pending_produce_partial_capture.sql",
+    "sha256": "82fd2c5ebed0b3de9de967fe59c704f69bb65cc38275727e5ee39dde4ac69223"
+  },
+  {
+    "name": "20261005100000_produce_product_dictionary_add_oct5_vegetables.sql",
+    "sha256": "d57c4115130a52b33d31bd7fdcd741fe1dc2037dc19a2af4453a044256d6de58"
+  },
+  {
+    "name": "20261005100100_produce_product_dictionary_add_hed_khem_thong.sql",
+    "sha256": "489c6976023f7ad3f625f2cd7c3b2aa2d24926a5669e12c18efe772563a814bf"
+  },
+  {
+    "name": "20261007060911_produce_nonblocking_item_count.sql",
+    "sha256": "55c4cb85c78cd5aa72068fdd43a1c854880fc2d18826ea93401cff0475c17717"
+  },
+  {
+    "name": "20261007120000_white_sheet_review_turns.sql",
+    "sha256": "5d73f1ee684137e7357dc08070bdc79b0d6e6bb42c1f1b6da54f2f3efc37b4a9"
+  },
+  {
+    "name": "20261008090000_white_sheet_review_turns_restrict_service_role.sql",
+    "sha256": "1535604bdf95bf5118b40ee0482b74fcc8c3aff34689564d1986bfa47cc4fd79"
+  },
+  {
+    "name": "20261008150000_pending_session_retired_generations.sql",
+    "sha256": "9c810ecd716b5b68ea3323d67612584326461f6bd6e67f0c0ecc2b6367731e45"
+  }
+]
