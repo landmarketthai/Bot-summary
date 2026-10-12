@@ -28,6 +28,15 @@ const CANONICAL_UNITS = new Set([
   "ชิ้น", "ตัว", "ฝัก", "ฟอง", "ใบ", "ดอก",
   "แผง", "ชุด", "ถาด", "กระสอบ", "ขวด", "กระปุก",
   "ลิตร", "มิลลิลิตร", "เส้น", "คู่",
+  // Food/produce packaging and counted pieces (2026-10-12). Keep each unit distinct:
+  // NEVER infer a conversion between แผ่น/แผง, ต้น/มัด, ถัง/โล, etc.
+  // P0: staff-requested and previously observed raw units.
+  "แผ่น", "หลอด", "ต้น", "ถัง", "หน่อ",
+  // P1: common food packaging and produce selling units.
+  "ตะกร้า", "ซอง", "ห่อ", "กระป๋อง", "ก้อน", "กอ", "พู",
+  // P2: additional food/produce quantities, pre-registered for future use.
+  "อัน", "ก้าน", "ท่อน", "ซีก", "กลีบ", "เม็ด", "เมล็ด",
+  "ไม้", "แก้ว", "ถ้วย", "ปี๊บ", "แกลลอน",
 ]);
 
 // Pure spelling aliases — normalize to a canonical unit, factor 1 (no
