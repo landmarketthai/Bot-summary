@@ -291,13 +291,15 @@ describe("buildWeighSessionSummary — category grouping (presentation only)", (
   });
 
   it("preserves original item numbers when category grouping changes print order", () => {
-    const unknown16 = { ...BORROW_ITEM, item_number: 16, product_name: "ลูกพลุน" };
-    const known19 = { ...BORROW_ITEM, item_number: 19, product_name: "ลูกพลับ" };
-    const result = buildWeighSessionSummary(makeSession({ items: [unknown16, known19] }));
-    expect(result).toContain("19. ลูกพลับ");
-    expect(result).toContain("16. ลูกพลุน");
-    expect(result.indexOf("19. ลูกพลับ")).toBeLessThan(result.indexOf("16. ลูกพลุน"));
-    expect(result).not.toContain("1. ลูกพลับ");
+    // Mushroom is entered first, but the durian category prints first.
+    // Two different fruits need not sort apart by category.
+    const mushroom16 = { ...MUSHROOM_ITEM, item_number: 16 };
+    const durian19 = { ...BORROW_ITEM, item_number: 19 };
+    const result = buildWeighSessionSummary(makeSession({ items: [mushroom16, durian19] }));
+    expect(result).toContain("19. ทุเรียน");
+    expect(result).toContain("16. เห็ดนางฟ้า");
+    expect(result.indexOf("19. ทุเรียน")).toBeLessThan(result.indexOf("16. เห็ดนางฟ้า"));
+    expect(result).not.toContain("1. ทุเรียน");
   });
 
   it("keeps grouping for a document that still fits", () => {
