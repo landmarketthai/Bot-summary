@@ -79,6 +79,8 @@ export function parseWeighSession(
   let mainSessionType: BaseTransactionType | null =
     seeded && sessionKind === "main" ? baseMainTransactionType(currentTxType) : null;
   let mainSegmentClosed = false;
+  // The type a MAIN header names explicitly — never the เบิก default.
+  let headerTxType: BaseTransactionType | null = null;
 
   const items:       WeighSessionItem[]        = [];
   const parseErrors: string[]                  = [];
@@ -469,6 +471,7 @@ export function parseWeighSession(
         sessionTitle = smMatch[2].trim();
         currentTxType = classifyTxType(smMatch[3] as TransactionType);
         mainSessionType = baseMainTransactionType(currentTxType);
+        headerTxType = mainSessionType;
         state = "items";
         continue;
       }
@@ -478,6 +481,8 @@ export function parseWeighSession(
         sessionTitle  = content;
         currentTxType = classifyTxType(content);
         mainSessionType = baseMainTransactionType(currentTxType);
+        const named = detectTxType(content);
+        headerTxType = named ? baseMainTransactionType(named) : null;
         state         = "items";
       }
       continue;
@@ -696,6 +701,7 @@ export function parseWeighSession(
     session_title:    sessionTitle,
     session_kind:     sessionKind,
     declared_transaction_type: declaredTxType,
+    header_transaction_type: headerTxType,
     items:            renumbered,
     parse_errors:     parseErrors,
     ...(failedTargets.length > 0

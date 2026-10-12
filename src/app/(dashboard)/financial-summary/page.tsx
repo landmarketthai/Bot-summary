@@ -12,6 +12,7 @@ import {
 } from "@/lib/summary/transactions";
 import { displayMarketName } from "@/lib/market";
 import { produceFinancialIntegrity } from "@/lib/settlement/produce-financial-integrity";
+import { markUncertifiedProduceNets } from "@/lib/settlement/produce-value-status";
 import Link from "next/link";
 
 interface PageProps {
@@ -149,16 +150,17 @@ async function addSourceIds(
   ));
   if (rawMessageIds.length === 0) return rows;
 
-  const { data, error } = await supabase
-    .from("raw_messages")
-    .select("id, source_id")
-    .in("id", rawMessageIds);
-
-  if (error) throw new Error(error.message);
-
-  const sourceByRawMessageId = new Map(
-    (data ?? []).map(row => [row.id as string, row.source_id as string | null]),
-  );
+  const sourceByRawMessageId = new Map<string, string | null>();
+  // Keep UUID filters below the gateway's request-URI limit.
+  const BATCH = 50;
+  for (let offset = 0; offset < rawMessageIds.length; offset += BATCH) {
+    const { data, error } = await supabase
+      .from("raw_messages")
+      .select("id, source_id")
+      .in("id", rawMessageIds.slice(offset, offset + BATCH));
+    if (error) throw new Error(error.message);
+    for (const row of data ?? []) sourceByRawMessageId.set(row.id, row.source_id);
+  }
 
   return rows.map(row => ({
     ...row,
@@ -185,7 +187,8 @@ async function getPageData(month: string): Promise<{
   if (settlResult.error) throw new Error(settlResult.error.message);
 
   return {
-    groups:      buildGroups(txRows),
+    // P0: a refused/open ชั่งคืน never shows as a certified ยอดส่ง or ขาด/เกิน.
+    groups:      await markUncertifiedProduceNets(supabase, buildGroups(txRows)),
     settlements: (settlResult.data ?? []) as SettlementEntry[],
   };
 }

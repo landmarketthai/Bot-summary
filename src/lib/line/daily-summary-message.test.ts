@@ -156,3 +156,40 @@ describe("buildDailySummaryMessage", () => {
     });
   });
 });
+
+describe("P0: an uncertified ชั่งคืน never pushes a confident ยอดส่ง", () => {
+  const row: DailySummaryMessageRow = {
+    summary_date: "2026-10-07",
+    staff_name: "น้อย",
+    market_name: "ราชพฤกษ์",
+    borrow_total: 13992.17,
+    return_total: 0,
+    bad_return_total: 0,
+    net_sales: 13992.17,
+    transaction_count: 24,
+  };
+
+  it("a blocked verdict shows the net as pending, keeping the observed withdrawal", () => {
+    const flat = buildDailySummaryMessage("2026-10-07", [{ ...row, produce_value_status: "blocked" }]);
+    expect(flat).toContain("เบิกรวม: 13,992.17 บาท");
+    expect(flat).toContain("ยอดส่ง: รอตรวจสอบ");
+    expect(flat).not.toContain("ยอดส่ง: 13,992.17");
+
+    const detailed = buildDailySummaryMessage(
+      "2026-10-07",
+      [{ ...row, produce_value_status: "blocked" }],
+      new Map([[dailySummaryCategoryLedgerKey("น้อย", "ราชพฤกษ์"), [{
+        heading: "🍎 ผลไม้", withdrawnSatang: 1_399_217, goodReturnSatang: 0,
+        badReturnSatang: 0, netSatang: 1_399_217,
+      } as unknown as CategoryLedgerEntry]]]),
+    );
+    expect(detailed).not.toContain("✅ ยอดขายสุทธิ");
+    expect(detailed).not.toContain("ขาย 13,992.17");
+    expect(detailed).toContain("⚠️ ยอดขายสุทธิ: รอตรวจสอบ");
+  });
+
+  it("a complete verdict is byte-identical to the legacy message", () => {
+    expect(buildDailySummaryMessage("2026-10-07", [{ ...row, produce_value_status: "complete" }]))
+      .toBe(buildDailySummaryMessage("2026-10-07", [row]));
+  });
+});

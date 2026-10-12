@@ -244,12 +244,24 @@ export interface MorningBriefFruitMarketSummary {
   marketLabel: string;
   withdrawalValueSatang: number;
   salesValueSatang: number;
+  /**
+   * P0: the part of salesValueSatang that is NOT confirmed — rows whose
+   * quantity or price awaits review, including a withdrawal whose ชั่งคืน was
+   * refused or never recorded (valued as if sold until the return is fixed).
+   */
+  pendingSalesValueSatang?: number;
   goodReturnValueSatang: number;
 }
 
 export interface MorningBriefFruitFinancialSummary {
   withdrawalValueSatang: number;
   salesValueSatang: number;
+  /**
+   * P0: the part of salesValueSatang that is NOT confirmed — rows whose
+   * quantity or price awaits review, including a withdrawal whose ชั่งคืน was
+   * refused or never recorded (valued as if sold until the return is fixed).
+   */
+  pendingSalesValueSatang?: number;
   goodReturnValueSatang: number;
   houseStockValueSatang: number | null;
   readyValueSatang: number | null;

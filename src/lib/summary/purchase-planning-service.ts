@@ -26,6 +26,7 @@ import type { Database } from "@/types/database";
 import { logger } from "@/lib/logger";
 import { fetchSalesProduceRows, loadProduceFailureScan } from "@/lib/sales/load";
 import {
+  activeUnboundReturnIdentities,
   loadRoundReturnStatuses,
   roundsWithIncompleteReturn,
   type RoundReturnState,
@@ -203,12 +204,13 @@ export async function loadPurchasePlanningReport(
   supabase: Supabase,
   businessDate: string,
 ): Promise<PurchasePlanningReport> {
-  const [rows, roundStatuses, failures, houseStock] = await Promise.all([
+  const [rows, failures, houseStock] = await Promise.all([
     fetchSalesProduceRows(supabase, businessDate),
-    loadRoundReturnStatuses(supabase, businessDate),
     loadProduceFailureScan(supabase, businessDate),
     loadHouseStockSignal(supabase, businessDate),
   ]);
+  const roundStatuses = await loadRoundReturnStatuses(supabase, businessDate,
+    activeUnboundReturnIdentities(failures.attempts, failures.classifications, businessDate));
 
   const roundReturnStates = new Map<string, RoundReturnState>(
     roundStatuses.map((round) => [round.accountabilityRoundId, round.state]),

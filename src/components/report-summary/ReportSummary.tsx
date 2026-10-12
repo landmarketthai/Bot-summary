@@ -18,6 +18,8 @@ function fmtNum(n: number): string {
   return r.toFixed(2).replace(/0+$/, "");
 }
 
+const PROVISIONAL_TEXT = "รอตรวจสอบ (ข้อมูลชั่งคืนยังไม่ครบ)";
+
 function fmtSummary(n: number): string {
   const r = Math.round(n * 100) / 100;
   return r.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
@@ -79,10 +81,11 @@ function generateText(g: ReportGroup): string {
   lines.push(`ยอดเบิก = ${fmtSummary(g.ยอดเบิก)}`);
   lines.push(`ยอดคืน = ${fmtSummary(g.ยอดคืน)}`);
   lines.push(`ยอดคืนเสีย = ${fmtSummary(g.ยอดคืนเสีย)}`);
-  lines.push(`ยอดส่ง = ${fmtSummary(g.ยอดส่ง)}`);
+  const money = (n: number) => (g.provisional ? PROVISIONAL_TEXT : fmtSummary(n));
+  lines.push(`ยอดส่ง = ${money(g.ยอดส่ง)}`);
   lines.push(`ยอดโอน = ${fmtSummary(g.ยอดโอน)}`);
-  lines.push(`เงินสดต้องส่งเจ๊ = ${fmtSummary(g.เงินสดต้องส่งเจ๊)}`);
-  lines.push(`ขาด/เกิน = ${fmtSummary(g.ขาดเกิน)}`);
+  lines.push(`เงินสดต้องส่งเจ๊ = ${money(g.เงินสดต้องส่งเจ๊)}`);
+  lines.push(`ขาด/เกิน = ${money(g.ขาดเกิน)}`);
 
   return lines.join("\n");
 }
@@ -121,13 +124,16 @@ export function ReportSummary({
   rows,
   settlements,
   pdfUrl,
+  uncertifiedKeys = [],
 }: {
   rows: ReportRow[];
   settlements: SettlementMap;
   pdfUrl?: string;
+  /** Server verdict: groups whose ชั่งคืน is not certified. */
+  uncertifiedKeys?: string[];
 }) {
   const printRef = useRef<HTMLDivElement>(null);
-  const groups = buildReportGroups(rows, settlements);
+  const groups = buildReportGroups(rows, settlements, uncertifiedKeys);
 
   const allText = groups.map(generateText).join("\n\n");
 

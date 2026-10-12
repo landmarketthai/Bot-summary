@@ -23,6 +23,7 @@
  * failure exactly where it was: active, visible, blocking the day.
  */
 
+import { canonicalMarketLabel } from "@/lib/market";
 import type { TransactionBucket } from "@/lib/summary/transactions";
 
 /**
@@ -50,6 +51,12 @@ export interface ProduceFailureAttempt {
   origin: ProduceFailureOrigin;
   /** The business date the document's OWN evidence names, not its insert time. */
   businessDate: string | null;
+  /**
+   * P0-D: an undated document whose first LINE event sits near the 04:00
+   * cutoff may belong to the adjacent business day as well. It is reported on
+   * both days, and a replacement landing on EITHER day supersedes it.
+   */
+  alternateBusinessDate?: string | null;
   /** LINE source (group) that owns the document. */
   sourceId: string | null;
   /** The seller the produce belongs to — not the person typing. */
@@ -184,11 +191,12 @@ export function classifyProduceFailure(
   }
 
   const successors = outcomes.filter((outcome) => isSuccessorOf(attempt, outcome));
-  if (successors.length === 1) {
+  const released = laterReturnOnEveryCandidateRound(attempt, outcomes);
+  if (released || (released === undefined && successors.length === 1)) {
     return {
       attemptId: attempt.attemptId,
       state: "superseded",
-      supersededByProduceSessionId: successors[0].produceSessionId,
+      supersededByProduceSessionId: released ?? successors[0].produceSessionId,
       ambiguousSuccessor: false,
     };
   }
@@ -199,6 +207,68 @@ export function classifyProduceFailure(
     supersededByProduceSessionId: null,
     ambiguousSuccessor: successors.length > 1,
   };
+}
+
+/**
+ * P0: release an UNBOUND refused return whose identity text drifted (a
+ * mistyped market is the usual reason a close is refused, and the corrected
+ * resend then never matches it exactly).
+ *
+ * The candidate rounds are the day's withdrawal masters (landed เบิก main
+ * batches with a round), narrowed exactly as the report protects them: by
+ * source, then seller, then canonical market, each only where some candidate
+ * shares the value. The attempt is released only when EVERY candidate round
+ * received a later main return of the same kind. A seller who runs several
+ * markets keeps the failure until each of them has its return; a real market
+ * named by the failure narrows to that market alone, so another market's
+ * return never clears it. Withdrawals, bound attempts and unknown kinds are
+ * never released this way.
+ */
+function laterReturnOnEveryCandidateRound(
+  attempt: ProduceFailureAttempt,
+  outcomes: readonly FinalizedProduceOutcome[],
+): string | null | undefined {
+  // Undefined leaves legacy exact-identity proof available; null means incomplete round coverage.
+  if (identityText(attempt.accountabilityRoundId) !== null) return undefined;
+  const kind = attempt.transactionKind;
+  if (kind !== "คืน" && kind !== "คืนเสีย") return undefined;
+  const date = identityText(attempt.businessDate);
+  if (!date || attempt.attemptedAtMs === null) return undefined;
+  const attemptedAtMs = attempt.attemptedAtMs;
+
+  const masters = new Map<string, FinalizedProduceOutcome>();
+  for (const outcome of outcomes) {
+    const round = identityText(outcome.accountabilityRoundId);
+    if (
+      round && outcome.voidedAtMs == null && outcome.transactionKind === "เบิก"
+      && outcome.sessionKind === "main" && identityText(outcome.businessDate) === date
+    ) masters.set(round, outcome);
+  }
+  let candidates = [...masters.entries()];
+  const source = identityText(attempt.sourceId);
+  const staff = identityText(attempt.staffLabel);
+  const market = canonicalMarketLabel(attempt.marketLabel);
+  for (const matches of [
+    ([, master]: [string, FinalizedProduceOutcome]) => source !== null && identityText(master.sourceId) === source,
+    ([, master]: [string, FinalizedProduceOutcome]) => staff !== null && identityText(master.staffLabel) === staff,
+    ([, master]: [string, FinalizedProduceOutcome]) => market !== "" && canonicalMarketLabel(master.marketLabel) === market,
+  ]) {
+    const narrowed = candidates.filter(matches);
+    if (narrowed.length > 0) candidates = narrowed;
+  }
+  if (candidates.length === 0) return undefined;
+
+  let released: string | null = null;
+  for (const [round] of candidates) {
+    const later = outcomes.filter((outcome) =>
+      identityText(outcome.accountabilityRoundId) === round
+      && outcome.sessionKind === "main" && outcome.voidedAtMs == null
+      && outcome.transactionKind === kind
+      && outcome.finalizedAtMs !== null && outcome.finalizedAtMs > attemptedAtMs);
+    if (later.length !== 1) return null;
+    released ??= later[0].produceSessionId;
+  }
+  return released;
 }
 
 export function classifyProduceFailures(

@@ -50,7 +50,13 @@ import {
   deliveredPresentationDigests,
   runProduceFinalizeGate,
 } from "@/lib/produce/entry-validation-gate";
-import { bindPlainTextRound } from "@/lib/produce/plain-text-round-binding";
+import {
+  bindPlainTextRound,
+  isNewRoundDocument,
+  refusedReturnMayBindRound,
+  UNDATED_CUTOFF_REPLY,
+  undatedBusinessDateAmbiguous,
+} from "@/lib/produce/plain-text-round-binding";
 import {
   buildBlockingValidationReply,
   buildPriceAdvisoryNotification,
@@ -549,7 +555,30 @@ export async function finalizePendingGeneration(
   let entryGateDetail: string | null = null;
   let entryGateAdvisories: ProduceValidationAdvisory[] = [];
   let entryGateReconciliation: ProduceValidationReconciliation[] = [];
-  if (validationErrors.length === 0 && !seed && !accountabilityRoundId) {
+  // P0-D: the fallback date above is the FINALIZER's clock, which can run
+  // after 04:00 for a document sent before it. An undated continuation whose
+  // clocks do not pin one business day is refused, never bound by guess.
+  const dateClocks = [
+    Date.parse(snapshot.created_at),
+    snapshot.close_requested_at ? Date.parse(snapshot.close_requested_at) : null,
+    Date.now(),
+  ];
+  if (
+    validationErrors.length === 0 && !seed && !accountabilityRoundId
+    && !isNewRoundDocument(parsed)
+    && undatedBusinessDateAmbiguous(finalText, dateClocks)
+  ) {
+    validationErrors.push("business date ambiguous: undated document near the 04:00 cutoff");
+    entryGateDetail = UNDATED_CUTOFF_REPLY;
+  }
+  // P0: a return can have valid seller/market/date but a malformed ITEM.
+  // Bind that attempted return before failed-closed finalization so the failed
+  // document remains attributable. Never a document that could mint a round,
+  // never a clock-guessed day, and a refusal here never replaces the parse
+  // error the operator must fix.
+  const bindRefusedReturn = validationErrors.length > 0
+    && refusedReturnMayBindRound(finalText, parsed, dateClocks);
+  if ((validationErrors.length === 0 || bindRefusedReturn) && !seed && !accountabilityRoundId) {
     const binding = await bindPlainTextRound(
       supabase,
       {
@@ -560,7 +589,9 @@ export async function finalizePendingGeneration(
       },
       parsed,
     );
-    if (binding.status === "refused") {
+    if (binding.status === "refused" && bindRefusedReturn) {
+      log.warn("produce.round.failed_return_attribution_refused", { reason: binding.reason });
+    } else if (binding.status === "refused") {
       if (binding.reason === "ambiguous") {
         log.warn("produce.round.ambiguous_plain_withdrawal", {
           businessDate: parsed.date,

@@ -1,13 +1,21 @@
-import { describe, expect, it, mock } from "bun:test";
+import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { NextRequest } from "next/server";
+import type { CookieOptions } from "@supabase/ssr";
+
+let sessionUser: { id: string } | null = null;
+let cookieUpdates: { name: string; value: string; options: CookieOptions }[] = [];
+beforeEach(() => { sessionUser = null; cookieUpdates = []; });
 
 // proxy() calls supabase.auth.getUser(), which makes a real network call
 // against Supabase Auth. Stub createServerClient so "no session" resolves
 // instantly without touching the network.
 mock.module("@supabase/ssr", () => ({
-  createServerClient: () => ({
+  createServerClient: (_url: string, _key: string, options: { cookies: { setAll: (list: typeof cookieUpdates) => void } }) => ({
     auth: {
-      getUser: async () => ({ data: { user: null }, error: null }),
+      getUser: async () => {
+        options.cookies.setAll(cookieUpdates);
+        return { data: { user: sessionUser }, error: null };
+      },
     },
   }),
 }));
@@ -37,5 +45,63 @@ describe("proxy — LINE webhook auth bypass", () => {
   it("does not exempt a path that merely starts with the webhook prefix", async () => {
     const res = await proxy(postTo("/api/webhookzzz"));
     expect(res.status).toBe(401);
+  });
+});
+
+describe("proxy — SSR response cookies", () => {
+  it.each([
+    ["/financial-summary", true, 200, null],
+    ["/login", true, 307, "/"],
+    ["/auth/callback", true, 307, "/"],
+    ["/api/settlement", false, 401, null],
+    ["/financial-summary", false, 307, "/login?next=%2Ffinancial-summary"],
+  ] as const)("preserves chunk updates and deletions for %s (authenticated=%s)", async (path, authenticated, status, location) => {
+    sessionUser = authenticated ? { id: "synthetic-user" } : null;
+    const options: CookieOptions = { path: "/", httpOnly: true, secure: true, sameSite: "lax", maxAge: 3600 };
+    cookieUpdates = [
+      { name: "sb-test-auth-token.0", value: authenticated ? "fresh-0" : "", options: { ...options, maxAge: authenticated ? 3600 : 0 } },
+      { name: "sb-test-auth-token.1", value: authenticated ? "fresh-1" : "", options: { ...options, maxAge: authenticated ? 3600 : 0 } },
+      { name: "sb-test-auth-token.2", value: "", options: { ...options, maxAge: 0 } },
+    ];
+    const req = new NextRequest(`http://localhost${path}`, { headers: { cookie: "sb-test-auth-token.0=old; sb-test-auth-token.1=old; sb-test-auth-token.2=stale" } });
+    const res = await proxy(req);
+    expect(res.status).toBe(status);
+    expect(res.headers.get("location")).toBe(location === null ? null : `http://localhost${location}`);
+    if (status === 401) expect(await res.json()).toEqual({ error: "Unauthorized" });
+    expect(res.headers.getSetCookie()).toHaveLength(3);
+    for (const { name, value, options } of cookieUpdates) {
+      expect(req.cookies.get(name)?.value).toBe(value);
+      expect(res.cookies.get(name)).toMatchObject({ name, value, ...options });
+      if (options.maxAge === 0) expect(res.headers.getSetCookie().find(header => header.startsWith(`${name}=`))).toContain("Max-Age=0");
+    }
+    if (status !== 200) expect(res.headers.has("x-middleware-next")).toBe(false);
+  });
+
+  it.each([
+    ["/api/settlement", 401, null],
+    ["/financial-summary", 307, "/login?next=%2Ffinancial-summary"],
+  ] as const)("invalid refresh on %s deletes every auth chunk and the browser's follow-up is denied too", async (path, status, location) => {
+    const deleted: CookieOptions = { path: "/", httpOnly: true, secure: true, sameSite: "lax", maxAge: 0 };
+    const jar = new Map([["sb-test-auth-token.0", "expired-0"], ["sb-test-auth-token.1", "expired-1"], ["theme", "dark"]]);
+    const send = async () => proxy(new NextRequest(`http://localhost${path}`,
+      { headers: { cookie: [...jar].map(([name, value]) => `${name}=${value}`).join("; ") } }));
+    const expectDenied = (res: Response) => {
+      expect(res.status).toBe(status);
+      expect(res.headers.get("location")).toBe(location === null ? null : `http://localhost${location}`);
+    };
+    // GoTrue rejected the refresh token: SSR clears both chunks and reports no user.
+    cookieUpdates = [...jar.keys()].filter((name) => name.startsWith("sb-"))
+      .map((name) => ({ name, value: "", options: deleted }));
+    const first = await send();
+    expectDenied(first);
+    for (const header of first.headers.getSetCookie()) {
+      const [pair] = header.split(";");
+      const name = pair!.slice(0, pair!.indexOf("="));
+      expect(header).toContain("Max-Age=0");
+      jar.delete(name);
+    }
+    expect([...jar.keys()]).toEqual(["theme"]);
+    cookieUpdates = [];
+    expectDenied(await send());
   });
 });

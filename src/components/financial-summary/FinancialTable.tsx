@@ -3,6 +3,7 @@
 import { useState, useRef } from "react";
 import { calculateSettlementTotals } from "@/lib/summary/transactions";
 import { displayMarketName } from "@/lib/market";
+import type { ProduceNetStatus } from "@/lib/settlement/produce-value-status";
 
 export interface GroupRow {
   date:     string;
@@ -14,7 +15,7 @@ export interface GroupRow {
   คืน:      number;
   คืนเสีย:  number;
   ยอดส่ง:   number;
-  produceNetStatus?: "trusted" | "returns_exceed_withdrawal";
+  produceNetStatus?: ProduceNetStatus;
 }
 
 export interface SettlementEntry {
@@ -46,7 +47,7 @@ function fmtNum(n: number, dec = 2): string {
 }
 
 function produceNetTrusted(group: GroupRow): boolean {
-  return group.produceNetStatus !== "returns_exceed_withdrawal";
+  return group.produceNetStatus === undefined || group.produceNetStatus === "trusted";
 }
 
 const NET_REVIEW_TEXT = "ต้องตรวจสอบ";

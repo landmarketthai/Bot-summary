@@ -335,11 +335,12 @@ function DataFooter({ generatedText }: { generatedText: string }) {
   </View>;
 }
 
-function FinancialSummaryPage({ financial, label, businessDate, generatedText }: {
+function FinancialSummaryPage({ financial, label, businessDate, generatedText, valueAuthoritative }: {
   financial: MorningBriefFruitFinancialSummary;
   label: string;
   businessDate: string;
   generatedText: string;
+  valueAuthoritative: boolean;
 }) {
   const marketTotals = financial.markets;
   const dateText = thaiNumericDate(businessDate);
@@ -348,13 +349,16 @@ function FinancialSummaryPage({ financial, label, businessDate, generatedText }:
       <View style={S.header}>
         <Text style={S.title}>{`สรุป${label}คงเหลือเพื่อสั่งซื้อ - ${formatThaiDate(businessDate)}`}</Text>
         <Text style={S.subtitle}>Bot-summary | ข้อมูลวันที่ {dateText} | หมวด{label}</Text>
+        {!valueAuthoritative ? <Text style={S.subtitle}>⚠️ ยอดขายยังไม่ยืนยัน ห้ามใช้ปิดยอดเงินจนกว่าจะตรวจข้อมูลคืนเรียบร้อย</Text> : null}
       </View>
 
       <View style={S.kpiGrid}>
         <View style={S.kpi}><View style={S.kpiBox}>
           <Text style={S.kpiLabel}>ยอดขายรวมเมื่อวาน ({label})</Text>
           <Text style={S.kpiValue}>{financial ? bahtFromSatang(financial.salesValueSatang) : "-"}</Text>
-          <Text style={S.kpiUnit}>บาท</Text>
+          <Text style={S.kpiUnit}>{(financial?.pendingSalesValueSatang ?? 0) > 0
+            ? `บาท · ยังไม่ยืนยัน ${bahtFromSatang(financial.pendingSalesValueSatang ?? 0)} บาท`
+            : "บาท"}</Text>
         </View></View>
         <View style={S.kpi}><View style={S.kpiBox}>
           <Text style={S.kpiLabel}>{label}ที่เบิกออกไปขายเมื่อวาน</Text>
@@ -394,13 +398,13 @@ function FinancialSummaryPage({ financial, label, businessDate, generatedText }:
         {marketTotals.map((market, index) => <View style={S.tr} key={`${market.marketLabel}-${index}`} wrap={false}>
           <MarketCell width="28%" tone="name">{market.marketLabel}</MarketCell>
           <MarketCell width="24%" tone="withdrawal">{bahtFromSatang(market.withdrawalValueSatang)}</MarketCell>
-          <MarketCell width="24%" tone="sales">{bahtFromSatang(market.salesValueSatang)}</MarketCell>
+          <MarketCell width="24%" tone="sales">{`${bahtFromSatang(market.salesValueSatang)}${(market.pendingSalesValueSatang ?? 0) > 0 ? " (รอตรวจ)" : ""}`}</MarketCell>
           <MarketCell width="24%" tone="return">{bahtFromSatang(market.goodReturnValueSatang)}</MarketCell>
         </View>)}
         <View style={S.tr} wrap={false}>
           <MarketCell width="28%" tone="name" total>รวม</MarketCell>
           <MarketCell width="24%" tone="withdrawal" total>{financial ? bahtFromSatang(financial.withdrawalValueSatang) : "-"}</MarketCell>
-          <MarketCell width="24%" tone="sales" total>{financial ? bahtFromSatang(financial.salesValueSatang) : "-"}</MarketCell>
+          <MarketCell width="24%" tone="sales" total>{financial ? `${bahtFromSatang(financial.salesValueSatang)}${(financial.pendingSalesValueSatang ?? 0) > 0 ? " (รอตรวจ)" : ""}` : "-"}</MarketCell>
           <MarketCell width="24%" tone="return" total>{financial ? bahtFromSatang(financial.goodReturnValueSatang) : "-"}</MarketCell>
         </View>
       </View>
@@ -429,6 +433,7 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
     {financialSections.map(({ section, financial }) => <FinancialSummaryPage
       key={section} financial={financial} label={PRODUCE_SECTION_LABEL[section]}
       businessDate={report.businessDate} generatedText={generatedText}
+      valueAuthoritative={report.sales.valueAuthoritative}
     />)}
     {financialSections.length === 0 && !stockItems.some(hasRealStockQuantity) ? <Page size="A4" style={S.page}>
       <Text style={S.title}>สรุปเช้า - {formatThaiDate(report.businessDate)}</Text>
@@ -445,6 +450,7 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
         <View style={S.stockHeader}>
           <Text style={S.title}>{`หมวด${category}${chunks.length > 1 ? ` ${index + 1}/${chunks.length}` : ""} - ${formatThaiDate(report.businessDate)}`}</Text>
           <Text style={S.subtitle}>รวมคงเหลือ = คงเหลือในบ้าน + ในตลาด</Text>
+          {!report.sales.valueAuthoritative ? <Text style={S.subtitle}>⚠️ ข้อมูลสินค้าชั่งคืนและยอดขายบางส่วนยังไม่ยืนยัน กรุณาตรวจสอบก่อนใช้สรุปเงินหรือสั่งซื้อ</Text> : null}
         </View>
         <StockMatrix
           items={items}

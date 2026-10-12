@@ -13,7 +13,11 @@ import type {
   WhiteSheetExpenses,
   WhiteSheetTransactionRow,
 } from "./types";
-import { pendingReferenceVerifiedTransferWarning, unattributedVerifiedTransferWarning } from "./warnings";
+import {
+  pendingReferenceVerifiedTransferWarning,
+  RETURN_EVIDENCE_INCOMPLETE_WARNING_PREFIX,
+  unattributedVerifiedTransferWarning,
+} from "./warnings";
 
 export { normalizedMarketLabel } from "@/lib/market";
 
@@ -333,6 +337,27 @@ export function toDigitalWhiteSheetSummary(
 }
 
 /**
+ * P0: is this scope's produce certified? Answers the Daily Close preflight's
+ * settlement verdict for every round the scope's rows belong to — the same
+ * rule the settlement LINE path uses — so a refused, open or unattributable
+ * ชั่งคืน can never let withdrawn-minus-nothing become expected cash.
+ */
+export type WhiteSheetReturnIntegrity = (
+  businessDate: string,
+  marketLabel: string,
+  rowRoundIds: readonly (string | null)[],
+) => Promise<"complete" | "partial" | "blocked" | "invalid" | "missing">;
+
+export interface WhiteSheetLoadDeps {
+  /**
+   * Server callers get the preflight verdict from ./return-integrity (it
+   * cannot live here: client bundles import this module). Absent means no
+   * verdict, and no verdict certifies nothing.
+   */
+  returnIntegrity?: WhiteSheetReturnIntegrity;
+}
+
+/**
  * Read-only calculation boundary. produce_transactions contains only active
  * persisted produce_items joined to produce_sessions (voided sessions are
  * filtered out by migration 0037). Duplicate main-session detection therefore
@@ -342,6 +367,7 @@ export async function loadDigitalWhiteSheetCalculation(
   supabase: Supabase,
   rawScope: DigitalWhiteSheetScope,
   cashInput: DigitalWhiteSheetCashInput,
+  deps: WhiteSheetLoadDeps = {},
 ): Promise<DigitalWhiteSheetCalculation> {
   const scope: DigitalWhiteSheetScope = {
     sourceId: requireScopeValue(rawScope.sourceId, "sourceId"),
@@ -421,9 +447,24 @@ export async function loadDigitalWhiteSheetCalculation(
     actualCashSubmitted: cashInput.actualCashSubmitted,
   });
 
+  // An empty scope has no produce to certify; anything else must be complete.
+  const returnIntegrity = rows.length === 0
+    ? "missing"
+    : deps.returnIntegrity
+      ? await deps.returnIntegrity(
+          scope.businessDate,
+          targetMarket,
+          rows.map((row) => row.accountability_round_id ?? null),
+        )
+      : "blocked";
+  const returnIntegrityWarnings = returnIntegrity === "complete" || returnIntegrity === "missing"
+    ? []
+    : [`${RETURN_EVIDENCE_INCOMPLETE_WARNING_PREFIX} — ยอดขายที่ควรได้และเงินสดที่ควรส่งเป็นตัวเลขชั่วคราว ห้ามใช้ปิดยอดจนกว่าจะตรวจรายการชั่งคืนเรียบร้อย`];
+
   return {
     ...calculation,
     warnings: [
+      ...returnIntegrityWarnings,
       ...calculation.warnings,
       ...verifiedTransferWarnings,
       ...unresolvedMarketWarnings(sourceRows),
@@ -436,8 +477,9 @@ export async function loadDigitalWhiteSheetSummary(
   supabase: Supabase,
   scope: DigitalWhiteSheetScope,
   cashInput: DigitalWhiteSheetCashInput,
+  deps: WhiteSheetLoadDeps = {},
 ): Promise<DigitalWhiteSheetSummary> {
   return toDigitalWhiteSheetSummary(
-    await loadDigitalWhiteSheetCalculation(supabase, scope, cashInput),
+    await loadDigitalWhiteSheetCalculation(supabase, scope, cashInput, deps),
   );
 }

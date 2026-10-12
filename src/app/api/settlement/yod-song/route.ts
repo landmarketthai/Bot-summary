@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
 import { KNOWN_TX_TYPES, addTransactionAmount, emptyTransactionTotals } from "@/lib/summary/transactions";
+import { loadProduceValueStatusResolver } from "@/lib/settlement/produce-value-status";
 
 export async function GET(req: NextRequest) {
   const date = req.nextUrl.searchParams.get("date");
@@ -31,5 +32,16 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  return NextResponse.json(totals);
+  // P0: ยอดส่ง is only a sale when the settlement verdict certifies this
+  // seller/market's ชั่งคืน. A preview without both cannot be certified.
+  const produceValueStatus = seller && market
+    ? (await loadProduceValueStatusResolver(supabase, [date]))(
+        date, { staffName: seller, marketName: market }, data?.length ?? 0,
+      )
+    : "blocked";
+  return NextResponse.json({
+    ...totals,
+    ยอดส่ง: produceValueStatus === "complete" ? totals.ยอดส่ง : null,
+    produceValueStatus,
+  });
 }

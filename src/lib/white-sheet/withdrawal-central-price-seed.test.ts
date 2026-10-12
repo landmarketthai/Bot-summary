@@ -3,8 +3,10 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { LineMessageEvent } from "@/lib/line/types";
 import { WeighSessionParser } from "@/lib/parsers/weigh-session/parser";
 import type { Database } from "@/types/database";
-import { loadDigitalWhiteSheetCalculation } from "./load";
-import { loadDigitalWhiteSheetPageModel } from "./compose";
+import {
+  loadDigitalWhiteSheetCalculation,
+  loadDigitalWhiteSheetPageModel,
+} from "./test-certified-returns";
 import { SYSTEM_WITHDRAWAL_SEED_ACTOR } from "./pricing";
 import { stubManualSlipTables } from "@/lib/white-sheet/test-manual-slip-db";
 import {

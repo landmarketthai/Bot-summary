@@ -231,3 +231,69 @@ describe("produce failure lifecycle", () => {
     ).toBe("active_failed");
   });
 });
+
+describe("P0: an unbound refused return is released only by every round it could belong to", () => {
+  const master = (round: string, marketLabel: string, overrides: Partial<FinalizedProduceOutcome> = {}) =>
+    outcome({
+      produceSessionId: `withdrawal-${round}`, accountabilityRoundId: round, marketLabel,
+      transactionKind: "เบิก", finalizedAtMs: 500, ...overrides,
+    });
+  const laterReturn = (round: string, marketLabel: string) =>
+    outcome({ produceSessionId: `return-${round}`, accountabilityRoundId: round, marketLabel });
+
+  test("an exact-identity return must cover every candidate round too", () => {
+    const outcomes = [master("r1", "ทรัพย์พัน"), master("r2", "ทรัพย์พัน"), laterReturn("r2", "ทรัพย์พัน")];
+    expect(classifyProduceFailure(attempt(), outcomes).state).toBe("active_failed");
+    expect(classifyProduceFailure(attempt(), [...outcomes, laterReturn("r1", "ทรัพย์พัน")]).state)
+      .toBe("superseded");
+  });
+
+  test("two later main returns on one candidate round remain ambiguous", () => {
+    const result = classifyProduceFailure(attempt(), [master("r1", "ทรัพย์พัน"),
+      laterReturn("r1", "ทรัพย์พัน"), { ...laterReturn("r1", "ทรัพย์พัน"), produceSessionId: "another-return" }]);
+    expect(result.state).toBe("active_failed");
+    expect(result.ambiguousSuccessor).toBe(true);
+  });
+
+  test("a mistyped market is released by the corrected return on the seller's only round", () => {
+    const result = classifyProduceFailure(
+      attempt({ marketLabel: "ทรัพย์พันน" }),
+      [master("r1", "ทรัพย์พัน"), laterReturn("r1", "ทรัพย์พัน")],
+    );
+    expect(result.state).toBe("superseded");
+    expect(result.supersededByProduceSessionId).toBe("return-r1");
+  });
+
+  test("a real market is never released by the seller's other market's return (ต้อม)", () => {
+    const result = classifyProduceFailure(attempt(), [
+      master("r1", "ทรัพย์พัน"), master("r2", "ราชพฤกษ์"), laterReturn("r2", "ราชพฤกษ์"),
+    ]);
+    expect(result.state).toBe("active_failed");
+  });
+
+  test("a typo spanning several of the seller's markets waits for every one of them", () => {
+    const outcomes = [master("r1", "ทรัพย์พัน"), master("r2", "ราชพฤกษ์"), laterReturn("r2", "ราชพฤกษ์")];
+    expect(classifyProduceFailure(attempt({ marketLabel: "ตลาดผิด" }), outcomes).state).toBe("active_failed");
+    expect(classifyProduceFailure(
+      attempt({ marketLabel: "ตลาดผิด" }), [...outcomes, laterReturn("r1", "ทรัพย์พัน")],
+    ).state).toBe("superseded");
+  });
+
+  test("another seller's return on the same market never releases it", () => {
+    const result = classifyProduceFailure(attempt(), [
+      master("r1", "ทรัพย์พัน"), master("r2", "ทรัพย์พัน", { staffLabel: "จิ๋ว" }),
+      { ...laterReturn("r2", "ทรัพย์พัน"), staffLabel: "จิ๋ว" },
+    ]);
+    expect(result.state).toBe("active_failed");
+  });
+
+  test("an earlier return on the round is not a correction; withdrawals are never released", () => {
+    const early = { ...laterReturn("r1", "ทรัพย์พัน"), finalizedAtMs: 900 };
+    expect(classifyProduceFailure(attempt({ marketLabel: "ทรัพย์พันน" }), [master("r1", "ทรัพย์พัน"), early]).state)
+      .toBe("active_failed");
+    expect(classifyProduceFailure(
+      attempt({ marketLabel: "ทรัพย์พันน", transactionKind: "เบิก" }),
+      [master("r1", "ทรัพย์พัน"), { ...master("r1", "ทรัพย์พัน"), produceSessionId: "w2", finalizedAtMs: 2_000 }],
+    ).state).toBe("active_failed");
+  });
+});

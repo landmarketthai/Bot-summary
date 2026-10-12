@@ -4,7 +4,14 @@ import type {
   PreflightIssue,
   PreflightRoundStatus,
 } from "@/lib/produce/daily-close-preflight";
-import { settlementProduceValueStatus, produceComponentProvenance } from "./produce-value-status";
+import {
+  loadProduceValueStatusResolver,
+  markUncertifiedProduceNets,
+  marketProduceValueStatus,
+  settlementProduceValueStatus,
+  produceComponentProvenance,
+  type ProduceNetStatus,
+} from "./produce-value-status";
 
 function preflight(
   rounds: Array<{
@@ -269,5 +276,84 @@ describe("produceComponentProvenance", () => {
       damagedReturn: "unknown",
       net: "unknown",
     });
+  });
+});
+
+describe("P0: White Sheet market scope (no seller)", () => {
+  const ready = (id: string, staffName: string) => ({
+    accountabilityRoundId: id, staffName, marketName: "ราชพฤกษ์", status: "ready" as const,
+  });
+  const unbound = (marketName?: string): PreflightIssue => ({
+    code: "active_failed_produce_session",
+    severity: "blocker",
+    message: "มีรายการที่บันทึกไม่สำเร็จและระบุรอบไม่ได้",
+    ...(marketName ? { marketName } : { sourceMarketScope: ["ราชพฤกษ์"] }),
+  });
+
+  it("every ready round in scope certifies the market", () => {
+    const result = marketProduceValueStatus(
+      preflight([ready("r1", "น้อย"), ready("r2", "แดง")]), "ราชพฤกษ์", ["r1", "r2", "r1"],
+    );
+    expect(result).toBe("complete");
+  });
+
+  it("one blocked round (refused ชั่งคืน) makes the whole market provisional", () => {
+    const result = marketProduceValueStatus(
+      preflight([ready("r1", "น้อย"), { ...ready("r2", "แดง"), status: "blocked" }]),
+      "ราชพฤกษ์", ["r1", "r2"],
+    );
+    expect(result).toBe("blocked");
+  });
+
+  it("a row whose round the preflight does not know is never certified", () => {
+    expect(marketProduceValueStatus(preflight([ready("r1", "น้อย")]), "ราชพฤกษ์", ["ghost"]))
+      .toBe("blocked");
+  });
+
+  it("before round enforcement, only a blocker reaching the market blocks round-less rows", () => {
+    const legacy = (issues: PreflightIssue[]) => ({ ...preflight([], issues), businessDate: "2026-08-01" });
+    expect(marketProduceValueStatus(legacy([unbound()]), "ราชพฤกษ์", [null])).toBe("blocked");
+    expect(marketProduceValueStatus(legacy([unbound("ตลาดไท")]), "ราชพฤกษ์", [null])).toBe("complete");
+  });
+
+  it("from round enforcement on, round-less produce is never certified", () => {
+    expect(marketProduceValueStatus(preflight([]), "ราชพฤกษ์", [null])).toBe("blocked");
+  });
+
+  it("a legacy (pre-round) seller/market is judged by day-level evidence, not 'no round'", () => {
+    const legacy = (issues: PreflightIssue[]) => ({ ...preflight([], issues), businessDate: "2026-08-01" });
+    const identity = { staffName: "น้อย", marketName: "ราชพฤกษ์" };
+    expect(settlementProduceValueStatus(legacy([]), identity, 3)).toBe("complete");
+    expect(settlementProduceValueStatus(legacy([unbound()]), identity, 3)).toBe("blocked");
+    expect(settlementProduceValueStatus(preflight([]), identity, 3)).toBe("blocked");
+  });
+
+  it("an empty scope is missing, not complete", () => {
+    expect(marketProduceValueStatus(preflight([]), "ราชพฤกษ์", [])).toBe("missing");
+  });
+});
+
+describe("P0: legacy-screen verdict resolver fails closed", () => {
+  it("a non-date group key certifies nothing and never queries", async () => {
+    const supabase = { from() { throw new Error("must not query"); } };
+    const resolve = await loadProduceValueStatusResolver(supabase as never, ["ไม่ระบุวันที่"]);
+    expect(resolve("ไม่ระบุวันที่", { staffName: "น้อย", marketName: "ราชพฤกษ์" }, 3)).toBe("blocked");
+  });
+
+  it("a preflight that cannot run certifies nothing for that date", async () => {
+    const supabase = { from() { throw new Error("database unavailable"); } };
+    const resolve = await loadProduceValueStatusResolver(supabase as never, ["2026-10-07"]);
+    expect(resolve("2026-10-07", { staffName: "น้อย", marketName: "ราชพฤกษ์" }, 3)).toBe("blocked");
+  });
+
+  it("an uncertified net becomes return_incomplete; returns_exceed_withdrawal is kept", async () => {
+    const supabase = { from() { throw new Error("database unavailable"); } };
+    const groups: Array<{ date: string; seller: string; market: string; produceNetStatus?: ProduceNetStatus }> = [
+      { date: "2026-10-07", seller: "น้อย", market: "ราชพฤกษ์", produceNetStatus: "trusted" },
+      { date: "2026-10-07", seller: "แดง", market: "ตลาดไท", produceNetStatus: "returns_exceed_withdrawal" },
+    ];
+    const marked = await markUncertifiedProduceNets(supabase as never, groups);
+    expect(marked.map((group) => group.produceNetStatus))
+      .toEqual(["return_incomplete", "returns_exceed_withdrawal"]);
   });
 });

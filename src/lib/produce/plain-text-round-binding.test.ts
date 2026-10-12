@@ -4,8 +4,11 @@ import {
   PLAIN_TEXT_ROUND_ENFORCEMENT_FROM,
   bindPlainTextRound,
   isNewRoundDocument,
+  refusedReturnMayBindRound,
   sourceTypeFromSessionKey,
+  undatedBusinessDateAmbiguous,
 } from "./plain-text-round-binding";
+import { bangkokBusinessDatesNear } from "@/lib/business-date";
 
 const SESSION_KEY = "group:G-1:user:U-typist";
 const GENERATION = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -251,5 +254,64 @@ describe("near-match market refusal", () => {
     ]);
     expect(parsed.date! < PLAIN_TEXT_ROUND_ENFORCEMENT_FROM).toBe(true);
     expect((await bindPlainTextRound(db, REF, parsed)).status).toBe("refused");
+  });
+});
+
+describe("P0: refused documents and the 04:00 cutoff", () => {
+  // 2026-10-07 12:00 Bangkok — far from any cutoff.
+  const MIDDAY = Date.parse("2026-10-07T05:00:00.000Z");
+  // 2026-10-08 03:55 / 04:05 Bangkok — either side of the cutoff.
+  const BEFORE_CUTOFF = Date.parse("2026-10-07T20:55:00.000Z");
+  const AFTER_CUTOFF = Date.parse("2026-10-07T21:05:00.000Z");
+  // Item 22 has no price line: the 7 Oct shape, one bad line among good ones.
+  const DATED_RETURN = "น้อย-ราชพฤกษ์ ชั่งคืน 7/10/2569\n1.มะนาว50บาท\n3แพค\n22.มะม่วง\nจบรายการชั่งคืน";
+  const UNDATED_RETURN = "น้อย-ราชพฤกษ์ ชั่งคืน\n1.มะนาว50บาท\n3แพค\n22.มะม่วง\nจบรายการชั่งคืน";
+  const ALL_LINES_FAILED = "น้อย-ราชพฤกษ์ ชั่งคืน 7/10/2569\n22.มะม่วง\nจบรายการชั่งคืน";
+  const MIXED = "น้อย-ราชพฤกษ์ เบิก 7/10/2569\n1.มะนาว50บาท\n3แพค\nคืน\n2.มะม่วง40บาท\n2โล\n3.ส้ม\nจบรายการ";
+
+  it("a return whose every item line failed is still recognised by its header", () => {
+    const parsed = parseWeighSession(ALL_LINES_FAILED, "2026-10-07");
+    expect(parsed.items).toHaveLength(0);
+    expect(refusedReturnMayBindRound(ALL_LINES_FAILED, parsed, [MIDDAY])).toBe(true);
+  });
+
+  it("a refused dated return may be attached to its round", () => {
+    const parsed = parseWeighSession(DATED_RETURN, "2026-10-07");
+    expect(refusedReturnMayBindRound(DATED_RETURN, parsed, [MIDDAY])).toBe(true);
+    expect(refusedReturnMayBindRound(DATED_RETURN, parsed, [AFTER_CUTOFF])).toBe(true);
+  });
+
+  it("a refused document carrying a withdrawal never binds — it could mint a round", () => {
+    const parsed = parseWeighSession(MIXED, "2026-10-07");
+    expect(isNewRoundDocument(parsed)).toBe(true);
+    expect(refusedReturnMayBindRound(MIXED, parsed, [MIDDAY])).toBe(false);
+  });
+
+  it("a refused withdrawal never binds", () => {
+    const text = "น้อย-ราชพฤกษ์ เบิก 7/10/2569\n1.มะนาว\nจบรายการ";
+    expect(refusedReturnMayBindRound(text, parseWeighSession(text, "2026-10-07"), [MIDDAY])).toBe(false);
+  });
+
+  it("an undated return binds only when every clock names the same business day", () => {
+    const parsed = parseWeighSession(UNDATED_RETURN, "2026-10-07");
+    expect(refusedReturnMayBindRound(UNDATED_RETURN, parsed, [MIDDAY, MIDDAY + 60_000])).toBe(true);
+    expect(refusedReturnMayBindRound(UNDATED_RETURN, parsed, [BEFORE_CUTOFF])).toBe(false);
+    expect(refusedReturnMayBindRound(UNDATED_RETURN, parsed, [AFTER_CUTOFF])).toBe(false);
+    expect(refusedReturnMayBindRound(UNDATED_RETURN, parsed, [MIDDAY, AFTER_CUTOFF])).toBe(false);
+  });
+
+  it("no usable clock is ambiguous, never a default day", () => {
+    expect(undatedBusinessDateAmbiguous(UNDATED_RETURN, [])).toBe(true);
+    expect(undatedBusinessDateAmbiguous(UNDATED_RETURN, [Number.NaN, null])).toBe(true);
+  });
+
+  it("an explicit header date is never second-guessed by a clock", () => {
+    expect(undatedBusinessDateAmbiguous(DATED_RETURN, [BEFORE_CUTOFF, AFTER_CUTOFF])).toBe(false);
+  });
+
+  it("the cutoff window names both adjacent business days", () => {
+    expect(bangkokBusinessDatesNear(BEFORE_CUTOFF)).toEqual(["2026-10-07", "2026-10-08"]);
+    expect(bangkokBusinessDatesNear(AFTER_CUTOFF)).toEqual(["2026-10-07", "2026-10-08"]);
+    expect(bangkokBusinessDatesNear(MIDDAY)).toEqual(["2026-10-07"]);
   });
 });

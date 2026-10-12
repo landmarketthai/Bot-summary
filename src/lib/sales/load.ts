@@ -7,24 +7,28 @@ import {
   legacySubunitPricedSession,
   sessionHashCandidates,
 } from "@/lib/line/session-dedup-service";
-import { bangkokBusinessDateFromTimestamp } from "@/lib/business-date";
+import { bangkokBusinessDateFromTimestamp, bangkokBusinessDatesNear } from "@/lib/business-date";
 import { isStrictBusinessDate } from "./cron";
 import { isQaMarketLabel } from "./qa-scopes";
 import { resolveCentralPricesForDate } from "@/lib/white-sheet/load";
 import { resolveWithdrawalUnitPriceBaht } from "@/lib/white-sheet/calculate";
 import {
+  activeUnboundReturnIdentities,
   loadRoundReturnStatuses,
+  pendingRowCanBeReturn,
+  protectiveUnboundReturnRounds,
+  RESOLVED_PENDING_STATUSES,
   roundsWithIncompleteReturn,
   roundsWithPersistedReturn,
 } from "@/lib/produce/round-return-status";
 import {
   activeFailureIds,
   activeIncompleteReturnRoundIds,
-  classifyProduceFailures,
   type ProduceFailureAttempt,
   type ProduceFailureClassification,
 } from "@/lib/produce/failure-lifecycle";
 import {
+  classifyProduceFailuresAcrossCutoff,
   loadProduceFailureEvidence,
   pendingFailureAttempt,
   rawMessageFailureAttempt,
@@ -61,7 +65,8 @@ type Supabase = SupabaseClient<Database>;
 type ProduceTransactionRow = Database["public"]["Views"]["produce_transactions"]["Row"];
 
 const PAGE_SIZE = 1000;
-const LOOKUP_CHUNK_SIZE = 500;
+// UUID/hash filters must fit within the gateway's request-URI limit.
+const LOOKUP_CHUNK_SIZE = 50;
 
 /**
  * Every column P1 needs. NO transaction-type filter is applied to the query:
@@ -81,16 +86,8 @@ const PRODUCE_SELECT =
  */
 const BLOCKING_PARSE_ERROR_TYPES = ["parser_crash", "timeout", "validation_error"] as const;
 
-/**
- * Pending finalization states that account for the produce: 'finalized' created
- * the produce_session, 'duplicate' proved one already existed, and
- * 'expired_empty_draft' (20260829090000) proves the inactivity sweep found
- * ZERO accepted items — nothing was ever entered, so it is not missing
- * produce. Everything else ('pending', 'processing', 'failed_closed',
- * including the >=1-item 'expired_incomplete' reason on 'failed_closed') is
- * produce that never landed.
- */
-const RESOLVED_PENDING_STATUSES = new Set(["finalized", "duplicate", "expired_empty_draft"]);
+// RESOLVED_PENDING_STATUSES (imported): the one copy shared with the round
+// return classifier, so a new resolved status cannot gate the two differently.
 
 /**
  * Identity columns a failed pending session needs before its lifecycle can be
@@ -493,6 +490,94 @@ function lineEventTimestampMs(payload: unknown, createdAt: string | null | undef
  *    created, and each is attributed by the business date its own text names.
  *    There is no locked rule capping backdating, so P1 imposes no ceiling.
  */
+interface PendingCandidateRow {
+  id: string;
+  session_key?: string | null;
+  session_generation?: string | null;
+  accumulated_text?: string | null;
+  created_at?: string | null;
+  finalization_status?: string | null;
+  business_date?: string | null;
+  source_id?: string | null;
+  staff_label?: string | null;
+  market_label?: string | null;
+  declared_transaction_type?: string | null;
+  accountability_round_id?: string | null;
+}
+
+/** finalization_error reasons that are an operator's decision, not a failure. */
+const DISCARDED_GENERATION_REASONS = new Set(["user_cancelled", "superseded"]);
+
+/**
+ * Refused ชั่งคืน generations a rotation retired (20261008150000).
+ *
+ * pending_sessions keeps one row per LINE user and group, so the user's next
+ * header overwrites a refused return in place. The trigger keeps a copy; this
+ * reads back unresolved non-withdrawal documents, including open returns.
+ * The next header is not cancellation or proof that the return landed.
+ *
+ * The retention migration is required: an absent table cannot prove that
+ * no return generation was erased, so every read error fails closed.
+ */
+async function fetchRetiredRefusedReturns(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  looseClient: SupabaseClient<any>,
+): Promise<PendingCandidateRow[]> {
+  const rows: Array<{
+    session_generation: string;
+    session_key: string | null;
+    accumulated_text: string | null;
+    generation_created_at: string | null;
+    finalization_status: string | null;
+    finalization_error: { reason?: unknown } | null;
+    business_date: string | null;
+    source_id: string | null;
+    staff_label: string | null;
+    market_label: string | null;
+    declared_transaction_type: string | null;
+    accountability_round_id: string | null;
+    close_requested_at: string | null;
+    close_refused_at: string | null;
+  }> = [];
+  for (let page = 0; ; page += 1) {
+    if (page >= SCOPE_SCAN_MAX_PAGES) {
+      throw new SalesDataError(`retired pending generation scan exceeded ${SCOPE_SCAN_MAX_PAGES} pages`);
+    }
+    const from = page * PAGE_SIZE;
+    const { data, error } = await looseClient
+      .from("pending_session_retired_generations")
+      .select(
+        "session_generation, session_key, accumulated_text, generation_created_at, finalization_status, finalization_error, business_date, source_id, staff_label, market_label, declared_transaction_type, accountability_round_id, close_requested_at, close_refused_at",
+      )
+      .order("session_generation", { ascending: true })
+      .range(from, from + PAGE_SIZE - 1);
+    if (error) {
+      throw new SalesDataError(`retired pending generation query failed: ${error.message}`);
+    }
+    rows.push(...(data ?? []));
+    if ((data ?? []).length < PAGE_SIZE) break;
+  }
+  return rows
+    .filter((row) =>
+      !RESOLVED_PENDING_STATUSES.has(row.finalization_status ?? "")
+      && !DISCARDED_GENERATION_REASONS.has(String(row.finalization_error?.reason ?? ""))
+      && pendingRowCanBeReturn(row.declared_transaction_type, row.accumulated_text))
+    .map((row) => ({
+      id: `retired:${row.session_generation}`,
+      session_key: row.session_key,
+      session_generation: row.session_generation,
+      accumulated_text: row.accumulated_text,
+      created_at: row.generation_created_at,
+      finalization_status: row.finalization_status,
+      business_date: row.business_date,
+      source_id: row.source_id,
+      staff_label: row.staff_label,
+      market_label: row.market_label,
+      declared_transaction_type: row.declared_transaction_type,
+      accountability_round_id: row.accountability_round_id,
+    }));
+}
+
 async function scanUnresolvedPendingAttempts(
   supabase: Supabase,
   businessDate: string,
@@ -503,20 +588,7 @@ async function scanUnresolvedPendingAttempts(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const looseClient = supabase as unknown as SupabaseClient<any>;
 
-  const rows = await fetchAllScopeRows<{
-    id: string;
-    session_key?: string | null;
-    session_generation?: string | null;
-    accumulated_text?: string | null;
-    created_at?: string | null;
-    finalization_status?: string | null;
-    business_date?: string | null;
-    source_id?: string | null;
-    staff_label?: string | null;
-    market_label?: string | null;
-    declared_transaction_type?: string | null;
-    accountability_round_id?: string | null;
-  }>("pending session", (from, to) =>
+  const rows = await fetchAllScopeRows<PendingCandidateRow>("pending session", (from, to) =>
     looseClient
       .from("pending_sessions")
       .select(PENDING_FAILURE_SELECT)
@@ -534,9 +606,12 @@ async function scanUnresolvedPendingAttempts(
       .range(from, to),
   );
 
-  const unresolved = rows.filter(
-    (row) => !RESOLVED_PENDING_STATUSES.has(row.finalization_status ?? "pending"),
-  );
+  const unresolved = [
+    ...rows.filter(
+      (row) => !RESOLVED_PENDING_STATUSES.has(row.finalization_status ?? "pending"),
+    ),
+    ...(await fetchRetiredRefusedReturns(looseClient)),
+  ];
   if (unresolved.length === 0) return [];
 
   const eventTimes = await pendingIngestEventTimes(looseClient, unresolved);
@@ -555,10 +630,25 @@ async function scanUnresolvedPendingAttempts(
       ? (firstEventTimestampMs as number)
       : null;
     const date = produceBusinessDate(row.accumulated_text, dateTimestampMs);
+    // P0-D: an undated RETURN sent near 04:00 may be yesterday's late return
+    // or today's. It is evidence for both days — never silently filed under
+    // the clock's choice. A withdrawal opens its day, so the event-time rule
+    // stays authoritative for it.
+    const nearCutoff = !row.business_date
+      && dateTimestampMs !== null
+      && !(row.accumulated_text && parseWeighSession(row.accumulated_text).date)
+      && pendingRowCanBeReturn(row.declared_transaction_type ?? null, row.accumulated_text ?? null)
+      ? bangkokBusinessDatesNear(dateTimestampMs)
+      : [];
+    const ambiguousDay = nearCutoff.length > 1 && nearCutoff.includes(businessDate);
     // No date evidence at all: keep it. Excluding an unresolved session
     // because its date is unknown is the one direction that loses evidence.
-    if (date !== null && date !== businessDate) continue;
-    attempts.push(pendingFailureAttempt(row, attemptedAtMs, date));
+    if (date !== null && date !== businessDate && !ambiguousDay) continue;
+    const attempt = pendingFailureAttempt(row, attemptedAtMs, ambiguousDay ? businessDate : date);
+    if (ambiguousDay) {
+      attempt.alternateBusinessDate = nearCutoff.find((day) => day !== businessDate) ?? null;
+    }
+    attempts.push(attempt);
   }
 
   return attempts;
@@ -580,9 +670,7 @@ export async function countUnresolvedPendingSessions(
     scanUnresolvedPendingAttempts(supabase, businessDate),
     loadProduceFailureEvidence(supabase, businessDate),
   ]);
-  const classifications = classifyProduceFailures(attempts, evidence.outcomes, {
-    cancelledRoundIds: evidence.cancelledRoundIds,
-  });
+  const classifications = await classifyProduceFailuresAcrossCutoff(supabase, attempts, evidence);
   return activeFailureIds(classifications).size;
 }
 
@@ -617,9 +705,7 @@ export async function loadProduceFailureScan(
     ...pendingAttempts,
     ...lostMessages.map((row) => row.attempt),
   ];
-  const classifications = classifyProduceFailures(attempts, evidence.outcomes, {
-    cancelledRoundIds: evidence.cancelledRoundIds,
-  });
+  const classifications = await classifyProduceFailuresAcrossCutoff(supabase, attempts, evidence);
 
   return {
     attempts,
@@ -662,13 +748,24 @@ async function pendingIngestEventTimes(
   }
 
   for (const chunk of chunks([...new Set(keys)], LOOKUP_CHUNK_SIZE)) {
-    const { data, error } = await looseClient
-      .from("pending_session_ingest")
-      .select("session_key, session_generation, line_timestamp_ms")
-      .in("session_key", chunk);
-    if (error) throw new SalesDataError(`pending ingest timestamp query failed: ${error.message}`);
+    // Paged: one row per ingested LINE event, so a chunk of keys easily passes
+    // PostgREST's 1000-row ceiling — and a short read silently falls back to
+    // created_at, which names the wrong business date around 04:00.
+    const ingestRows = await fetchAllScopeRows<{
+      session_key: string;
+      session_generation: string | null;
+      line_timestamp_ms: number | string | null;
+    }>("pending ingest timestamp", (from, to) =>
+      looseClient
+        .from("pending_session_ingest")
+        .select("session_key, session_generation, line_timestamp_ms")
+        .in("session_key", chunk)
+        .order("session_generation", { ascending: true })
+        .order("line_event_id", { ascending: true })
+        .range(from, to),
+    );
 
-    for (const ingest of data ?? []) {
+    for (const ingest of ingestRows) {
       const rowId = byKeyAndGeneration.get(
         `${ingest.session_key}|${ingest.session_generation ?? ""}`,
       );
@@ -1267,7 +1364,28 @@ export async function loadSalesReport(
   // whose ชั่งคืน is unfinished, and the rounds that already have a persisted
   // return. The last one is what stops a withdrawn product omitted from that
   // return from being reported as a confident sold-out sale.
-  const roundStatuses = await loadRoundReturnStatuses(supabase, businessDate);
+  // P0 sales integrity: use the lifecycle scan's ACTIVE verdict, not a raw
+  // stale failed_closed row. A later proven replacement must clear the block.
+  // The attribution below is read-only: it never assigns a database round ID.
+  const activeUnboundReturns = activeUnboundReturnIdentities(
+    failures.attempts, failures.classifications, businessDate, options.includeQaScopes,
+  );
+  const roundStatuses = await loadRoundReturnStatuses(supabase, businessDate, activeUnboundReturns);
+  // Protected even when some return persisted: an ACTIVE failed return means
+  // that persisted document is not the whole story for its round.
+  const protectedUnbound = protectiveUnboundReturnRounds(
+    roundStatuses.map((round) => ({
+      id: round.accountabilityRoundId,
+      source_id: round.sourceId ?? null,
+      business_date: round.businessDate ?? null,
+      seller_label: round.sellerLabel,
+      market_label: round.marketLabel,
+    })),
+    activeUnboundReturns,
+  );
+  // A return that cannot be placed on any round of this day leaves the day's
+  // round-less produce uncertified: never evidence that everything sold out.
+  const unattributableReturnRisk = protectedUnbound.unplaced;
 
   // QA scopes are dropped HERE, before the calculator sees them, so they can
   // never reach a rollup, a trusted/blocked count or a blocker list. Hiding
@@ -1293,7 +1411,9 @@ export async function loadSalesReport(
     incompleteReturnRounds: new Set([
       ...roundsWithIncompleteReturn(roundStatuses),
       ...activeIncompleteReturnRoundIds(failures.attempts, failures.classifications),
+      ...protectedUnbound.roundIds,
     ]),
     persistedReturnRounds: roundsWithPersistedReturn(roundStatuses),
+    unattributableReturnRisk,
   });
 }

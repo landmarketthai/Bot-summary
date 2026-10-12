@@ -18,6 +18,7 @@ import {
 } from "@/lib/summary/transactions";
 import { displayMarketName } from "@/lib/market";
 import { produceFinancialIntegrity } from "@/lib/settlement/produce-financial-integrity";
+import { markUncertifiedProduceNets } from "@/lib/settlement/produce-value-status";
 
 // ── Date helpers ──────────────────────────────────────────────────────────────
 
@@ -120,7 +121,8 @@ export async function GET(req: NextRequest) {
     .lt("settlement_date",  toExclusive);
   if (settlErr) return NextResponse.json({ error: settlErr.message }, { status: 500 });
 
-  const groups      = buildGroups(allTx);
+  // P0: a refused/open ชั่งคืน never prints as a certified ยอดส่ง or ขาด/เกิน.
+  const groups      = await markUncertifiedProduceNets(supabase, buildGroups(allTx));
   const settlements = (settlData ?? []) as SettlementEntry[];
 
   // Generate PDF

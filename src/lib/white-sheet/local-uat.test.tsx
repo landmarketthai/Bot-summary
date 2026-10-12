@@ -5,10 +5,8 @@ import type { Database } from "@/types/database";
 import { DigitalWhiteSheetPanel } from "@/components/white-sheet/DigitalWhiteSheetPanel";
 import { buildWhiteSheetSummaryMessagesFromPageModel } from "@/lib/line/white-sheet-summary";
 import { stubManualSlipTables } from "@/lib/white-sheet/test-manual-slip-db";
-import {
-  loadDigitalWhiteSheetPageModel,
-  requireTrustedWhiteSheetSummary,
-} from "./compose";
+import { requireTrustedWhiteSheetSummary } from "./compose";
+import { loadDigitalWhiteSheetPageModel } from "./test-certified-returns";
 import { normalizedMarketLabel } from "./load";
 import { saveWhiteSheetCashEntry } from "./persist";
 

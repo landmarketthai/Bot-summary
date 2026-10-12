@@ -5,3 +5,8 @@
 # step every pg-tests job ends with, and the file is read byte-for-byte by the
 # source-parity test.
 src/lib/produce/product-code/dictionary.csv text eol=lf
+
+# Staging recovery pins the exact historical SQL blob and deterministic fixtures.
+supabase/tests/staging_*.sql text eol=lf
+supabase/tests/staging_migration_manifest.json text eol=lf
+scripts/staging-baseline-replay*.mjs text eol=lf

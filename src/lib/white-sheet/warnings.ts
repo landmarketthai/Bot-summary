@@ -32,11 +32,21 @@ export const MISSING_CENTRAL_PRICE_WARNING_PREFIX =
 export const CENTRAL_PRICE_CONFLICT_WARNING_PREFIX =
   "ราคากลางขัดแย้งกันสำหรับ";
 
+/**
+ * P0: the Daily Close preflight does not certify this scope's produce — the
+ * same verdict Settlement uses. Usually a ชั่งคืน was refused, is still open
+ * or cannot be attributed (withdrawn minus an unrecorded return is not a
+ * sale); any other settlement blocker on these rounds stops it too.
+ */
+export const RETURN_EVIDENCE_INCOMPLETE_WARNING_PREFIX =
+  "ข้อมูลชั่งคืน/รายการของตลาดนี้ยังไม่ครบหรือยังไม่ผ่านการตรวจ";
+
 export function isHardStopWarning(warning: string): boolean {
   return warning.startsWith(HARD_STOP_WARNING_PREFIX)
     || warning.startsWith(UNATTRIBUTED_VERIFIED_TRANSFER_WARNING)
     || warning.startsWith(PENDING_REFERENCE_VERIFIED_TRANSFER_WARNING)
-    || warning.startsWith(MISSING_CENTRAL_PRICE_WARNING_PREFIX);
+    || warning.startsWith(MISSING_CENTRAL_PRICE_WARNING_PREFIX)
+    || warning.startsWith(RETURN_EVIDENCE_INCOMPLETE_WARNING_PREFIX);
 }
 
 export function hasHardStopWarning(warnings: readonly string[]): boolean {

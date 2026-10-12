@@ -56,6 +56,25 @@ function onlyRow(report: SalesReport): SalesIdentityRow {
 
 const DURIAN_PRICE = prices([["หมอนทอง", "โล", 12_000]]);
 
+describe("P0 unattributable failed return — fail closed", () => {
+  test("never confirms sold-out quantities or money when return evidence has no safe round", () => {
+    const withdrawn = row({
+      quantity: 10, accountabilityRoundId: "round-p0", enteredPriceSatang: 12_000,
+    });
+    const control = onlyRow(build([withdrawn], { centralPrices: DURIAN_PRICE }));
+    expect(control.status).toBe("TRUSTED");
+    expect(control.soldQuantity).toBe(10);
+    const blocked = onlyRow(build([withdrawn], {
+      centralPrices: DURIAN_PRICE, unattributableReturnRisk: true,
+    }));
+    expect(blocked.status).toBe("QUANTITY_BLOCKED");
+    expect(blocked.returnEvidenceIncomplete).toBe(true);
+    expect(blocked.soldQuantity).toBeNull();
+    expect(blocked.expectedSalesSatang).toBeNull();
+    expect(blocked.valueStatus).toBe("PENDING_REVIEW");
+  });
+});
+
 // ── Core formula ────────────────────────────────────────────────────────────
 
 describe("P1 sold quantity — W − R − D", () => {

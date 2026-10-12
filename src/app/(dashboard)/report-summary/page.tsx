@@ -7,7 +7,8 @@ import { DateInput } from "@/components/ui/DateInput";
 import { SearchInput } from "@/components/ui/SearchInput";
 import { ReportSummary } from "@/components/report-summary/ReportSummary";
 import { RemainingFruitSection } from "@/components/report-summary/RemainingFruitSection";
-import type { ReportRow, SettlementMap } from "@/lib/summary/report";
+import { buildReportGroups, type ReportRow, type SettlementMap } from "@/lib/summary/report";
+import { uncertifiedReportGroupKeys } from "@/lib/settlement/produce-value-status";
 import { displayMarketName } from "@/lib/market";
 import { buildRemainingFruitReport, REMAINING_STOCK_REPORT_TITLE } from "@/lib/summary/remaining-fruit";
 import { fetchRemainingFruitRows } from "@/lib/summary/remaining-fruit-data";
@@ -122,6 +123,10 @@ export default async function ReportSummaryPage({ searchParams }: PageProps) {
   const settlements = await timed("report-summary:settlements", () =>
     getSettlements(supabase, uniqueDates),
   );
+  // P0: the settlement verdict decides which ยอดส่ง/ขาด-เกิน may show as money.
+  const uncertifiedKeys = await timed("report-summary:return-integrity", () =>
+    uncertifiedReportGroupKeys(supabase, buildReportGroups(rows, settlements)),
+  );
 
   const pdfParams = new URLSearchParams();
   if (date)   pdfParams.set("date",   date);
@@ -161,7 +166,12 @@ export default async function ReportSummaryPage({ searchParams }: PageProps) {
             </div>
           </CardHeader>
           <CardContent>
-            <ReportSummary rows={rows} settlements={settlements} pdfUrl={pdfUrl} />
+            <ReportSummary
+              rows={rows}
+              settlements={settlements}
+              pdfUrl={pdfUrl}
+              uncertifiedKeys={uncertifiedKeys}
+            />
           </CardContent>
         </Card>
 

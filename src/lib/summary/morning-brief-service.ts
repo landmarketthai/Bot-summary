@@ -150,6 +150,7 @@ export function summarizeProduceFinancial(
 
     let withdrawalValueSatang = 0;
     let salesValueSatang = 0;
+    let pendingSalesValueSatang = 0;
     let goodReturnValueSatang = 0;
     for (const row of sectionRows) {
       const priceSatang = row.enteredPriceSatang ?? row.centralPriceSatang;
@@ -158,18 +159,21 @@ export function summarizeProduceFinancial(
         goodReturnValueSatang += quantityTimesSatang(row.goodReturnQuantity, priceSatang) ?? 0;
       }
       salesValueSatang += (row.expectedSalesSatang ?? 0) + (row.pendingReviewSalesSatang ?? 0);
+      pendingSalesValueSatang += row.pendingReviewSalesSatang ?? 0;
     }
 
     return [{
       marketLabel: market.marketLabel,
       withdrawalValueSatang,
       salesValueSatang,
+      pendingSalesValueSatang,
       goodReturnValueSatang,
     }];
   });
 
   const withdrawalValueSatang = markets.reduce((sum, market) => sum + market.withdrawalValueSatang, 0);
   const salesValueSatang = markets.reduce((sum, market) => sum + market.salesValueSatang, 0);
+  const pendingSalesValueSatang = markets.reduce((sum, market) => sum + market.pendingSalesValueSatang, 0);
   const goodReturnValueSatang = markets.reduce((sum, market) => sum + market.goodReturnValueSatang, 0);
   const houseStockValueSatang = houseStock.status === "available"
     ? (houseStock.items ?? [])
@@ -180,6 +184,7 @@ export function summarizeProduceFinancial(
   return {
     withdrawalValueSatang,
     salesValueSatang,
+    pendingSalesValueSatang,
     goodReturnValueSatang,
     houseStockValueSatang,
     readyValueSatang: houseStockValueSatang == null ? null : goodReturnValueSatang + houseStockValueSatang,

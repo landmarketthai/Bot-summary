@@ -8,8 +8,10 @@ import {
   loadDigitalWhiteSheetSummary,
   normalizedMarketLabel,
   type DigitalWhiteSheetScope,
+  type WhiteSheetLoadDeps,
 } from "./load";
 import { loadWhiteSheetCashEntry, type WhiteSheetCashEntryState } from "./persist";
+import { preflightReturnIntegrity } from "./return-integrity";
 import type { DigitalWhiteSheetSummary, WhiteSheetExpenses } from "./types";
 import { hasHardStopWarning } from "./warnings";
 
@@ -69,8 +71,8 @@ export class WhiteSheetNotSubmittedError extends Error {
 export class WhiteSheetHardStopError extends Error {
   constructor() {
     super(
-      "White Sheet financial result is not trustworthy: multiple completed main produce " +
-        "sessions exist for this source/market/date (see warnings)",
+      "White Sheet financial result is not trustworthy: a hard-stop warning exists " +
+        "for this source/market/date (see warnings)",
     );
     this.name = "WhiteSheetHardStopError";
   }
@@ -98,6 +100,7 @@ export class WhiteSheetHardStopError extends Error {
 export async function loadDigitalWhiteSheetPageModel(
   supabase: Supabase,
   scope: DigitalWhiteSheetScope,
+  deps: WhiteSheetLoadDeps = {},
 ): Promise<DigitalWhiteSheetPageModel> {
   const accountabilityRoundId =
     typeof scope.accountabilityRoundId === "string" &&
@@ -117,7 +120,10 @@ export async function loadDigitalWhiteSheetPageModel(
     ? { expenses: entry.expenses, actualCashSubmitted: entry.actualCashSubmitted }
     : { expenses: ZERO_EXPENSES, actualCashSubmitted: 0 };
 
-  const summary = await loadDigitalWhiteSheetSummary(supabase, validatedScope, cashInput);
+  const summary = await loadDigitalWhiteSheetSummary(supabase, validatedScope, cashInput, {
+    ...deps,
+    returnIntegrity: deps.returnIntegrity ?? preflightReturnIntegrity(supabase),
+  });
   const profitability = await loadProfitabilityReadState(
     supabase,
     accountabilityRoundId,

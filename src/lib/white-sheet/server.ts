@@ -16,6 +16,7 @@ import {
 } from "./persist";
 import {
   loadDigitalWhiteSheetPageModel,
+  requireTrustedWhiteSheetSummary,
   type DigitalWhiteSheetPageModel,
 } from "./compose";
 import {
@@ -28,6 +29,7 @@ import {
   type CentralPriceRecord,
 } from "./pricing";
 import { fetchSalesProduceRows } from "@/lib/sales/load";
+import { preflightReturnIntegrity } from "./return-integrity";
 import {
   buildCentralPriceReview,
   type CentralPriceReviewItem,
@@ -42,7 +44,10 @@ export async function loadServerDigitalWhiteSheetSummary(
   scope: DigitalWhiteSheetScope,
   cashInput: DigitalWhiteSheetCashInput,
 ): Promise<DigitalWhiteSheetSummary> {
-  return loadDigitalWhiteSheetSummary(createServiceClient(), scope, cashInput);
+  const supabase = createServiceClient();
+  return loadDigitalWhiteSheetSummary(supabase, scope, cashInput, {
+    returnIntegrity: preflightReturnIntegrity(supabase),
+  });
 }
 
 export async function loadServerWhiteSheetCashEntry(
@@ -72,7 +77,18 @@ export async function finalizeServerWhiteSheetCashEntry(
   identity: WhiteSheetCashEntryIdentity,
   actorId: string,
 ): Promise<WhiteSheetCashEntryState> {
-  return finalizeWhiteSheetCashEntry(createServiceClient(), identity, actorId);
+  const supabase = createServiceClient();
+  // P0: FINALIZED certifies the money. A hard stop (incomplete ชั่งคืน,
+  // duplicate session, missing price, unresolved slip) must never be locked
+  // in as the day's answer; requireTrustedWhiteSheetSummary throws instead.
+  requireTrustedWhiteSheetSummary(await loadDigitalWhiteSheetPageModel(supabase, {
+    sourceId: identity.sourceId,
+    marketKey: identity.marketLabelNormalized,
+    marketLabel: identity.marketLabelNormalized,
+    businessDate: identity.businessDate,
+    accountabilityRoundId: identity.accountabilityRoundId,
+  }));
+  return finalizeWhiteSheetCashEntry(supabase, identity, actorId);
 }
 
 export async function reopenServerWhiteSheetCashEntry(

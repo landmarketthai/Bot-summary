@@ -3,6 +3,10 @@ import { createServerClient } from "@supabase/ssr";
 
 export async function proxy(req: NextRequest) {
   const res = NextResponse.next();
+  function withCookies(response: NextResponse) {
+    res.cookies.getAll().forEach(cookie => response.cookies.set(cookie));
+    return response;
+  }
 
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -28,7 +32,7 @@ export async function proxy(req: NextRequest) {
   if (pathname.startsWith("/login") || pathname.startsWith("/auth")) {
     // Redirect authenticated users away from login
     if (user) {
-      return NextResponse.redirect(new URL("/", req.url));
+      return withCookies(NextResponse.redirect(new URL("/", req.url)));
     }
     return res;
   }
@@ -54,12 +58,12 @@ export async function proxy(req: NextRequest) {
   // All other routes require a session
   if (!user) {
     if (pathname.startsWith("/api/")) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      return withCookies(NextResponse.json({ error: "Unauthorized" }, { status: 401 }));
     }
 
     const loginUrl = new URL("/login", req.url);
     loginUrl.searchParams.set("next", pathname);
-    return NextResponse.redirect(loginUrl);
+    return withCookies(NextResponse.redirect(loginUrl));
   }
 
   return res;
