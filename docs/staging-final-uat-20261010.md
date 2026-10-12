@@ -29,10 +29,41 @@ real local host evidence; the 10 October narrative below remains historical.
   remains UNTESTED and a prior explicit prohibition on rerun remains in force**.
   The invalid-refresh cookie-deletion and follow-up 401/redirect checks were
   subsequently added and passed on the real local GoTrue/Next host. Detailed
-  PDF financial content verification and repository-wide lint scope still need
-  review.
+  PDF content now has an offline real-renderer gate for all 310 source rows,
+  but the real-host post-patch rerun and repository-wide lint review remain pending.
 - No main merge, Production deployment, Production migration, live LINE event,
   ledger correction, or 04:05 cron fixture was performed by this continuation.
+- PDF content gate (offline only, 12 October): `--month-host` previously
+  checked only `%PDF-` and the content type. It now also runs
+  `assertMonthlyPdf` on every PDF response body. `pdfTextRuns` decodes the
+  actual bytes (xref, Flate page content, Identity-H fonts, ToUnicode
+  bfchar) with `node:zlib` only, tracks `q`/`Q`/`cm` and `Tm` to place each
+  `BT..ET` run on the page, and throws on any unsupported structure, text
+  positioning operator (`Td`, `TD`, `T*`, literal strings) or unmapped glyph.
+  The gate requires `สรุปการเงิน` and `สิงหาคม 2569` runs, then groups runs
+  into table rows by page and shared baseline (within 0.5pt; rows are
+  `wrap={false}`), read left to right. The host reads the 310 seller/date
+  identities from its exact synthetic source rows (no reseed) and requires
+  each one to occur exactly once with all ten financial cells on the same
+  PDF row, including `ตรวจสอบ` at both `ยอดส่ง` and `ขาด/เกิน` and an amount
+  in the other eight. A `ตรวจสอบ` in another row, the footer or a market cell
+  cannot satisfy a protected row. Cells may span several runs (`1 ` +
+  `ส.ค. 69`); only date and seller are concatenated, and only at run
+  boundaries, so prefixes and longer labels fail. The PDF shows dates in Thai
+  (no ISO date) and both `return_incomplete` and `returns_exceed_withdrawal`
+  as `ตรวจสอบ`, so the PDF cannot prove which uncertified status applies;
+  the HTML gate still requires `return_incomplete`. All 310 source rows are
+  bound in the host assertion; the negative real-renderer test also proves a
+  certified middle row fails only when the full source list is supplied. Offline evidence: the real renderer's 31-day fixture decodes Thai
+  exactly, the unbound-return PDF has 622 `ตรวจสอบ` runs (310 × 2 + footer 2)
+  and passes, the resolved PDF is rejected as not provisional, and prefix,
+  longer-label, wrong-month and truncated cases fail. Real-renderer August
+  PDFs whose protected first or last row shows a certified `1,239.00`
+  (while other rows, the footer and that row's market show `ตรวจสอบ`), or
+  that add a certified duplicate of a protected row, are rejected; the
+  pre-correction gate accepted the first case. The new August defaults were
+  not run against the host: **post-patch `--month-host` remains NOT
+  TESTED**.
 
 
 **Host finance passed; real monthly and session gates failed before this patch.
@@ -232,7 +263,8 @@ seeding, not retention/ingestion evidence. No cleanup/delete/reset is included.
 `--month-host` is repeatable and does not seed. It checks SQL counts and real
 service-only PostgREST view count 4,650, then requests actual Next monthly HTML
 and PDF. HTML must contain first/last fixture dates/sellers and the uncertified
-`return_incomplete` status. PDF must have real `%PDF-` bytes and the PDF type.
+`return_incomplete` status. PDF must have real `%PDF-` bytes and the PDF type,
+and its decoded text must pass `assertMonthlyPdf` (see the 12 October section).
 Both endpoints get one separately recorded first request, including any dev
 compilation, then ten sequential complete-body warm timings. Nearest-rank
 p50/p95, every timing/byte count, Node/Next versions and workload counts are
@@ -242,8 +274,8 @@ Expected Exit 0 and `REAL_LOCAL_MONTH31_20261010_MEASURED`. A partial receipt ha
 `passed:false`; do not publish it as completed. Ten local development samples
 provide rough local percentiles, not a Production SLA. Process/DB cache state
 is uncontrolled. The suite does not simulate latency or call the offline mock
-monthly fixture. PDF document-content/layout QA and PostgREST version capture
-remain outside this small timing harness.
+monthly fixture. Visual PDF layout QA and PostgREST version capture remain
+outside this small timing harness.
 
 ## Expired/refresh session gate
 

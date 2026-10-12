@@ -4,7 +4,7 @@ import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { validateFullStack, database } from './staging-full-schema-uat.mjs';
 import { financeFixture } from './staging-final-finance.mjs';
-import { applyCookies, percentile, assertMonthlyHtml } from './staging-session-month.mjs';
+import { applyCookies, percentile, assertMonthlyHtml, pdfTextItems, pdfTextRuns } from './staging-session-month.mjs';
 
 function sample() {
   const network = 'botsummary-uat-loopback-20261009';
@@ -43,6 +43,37 @@ test('monthly HTML guard matches seeded Thai seller digits and requires the full
   // rows rather than relaxing the default Thai seed contract or reseeding.
   assertMonthlyHtml('ผู้ขาย0 ผู้ขาย9 2026-08-01 2026-08-31 return_incomplete', ['ผู้ขาย0', 'ผู้ขาย9']);
   assert.throws(() => assertMonthlyHtml('ผู้ขาย0 2026-08-01 2026-08-31 return_incomplete', ['ผู้ขาย0', 'ผู้ขาย9']));
+});
+function tinyPdf(content, cmap = '1 beginbfchar\n<0001><0E01>\n<0002> <0E32>\nendbfchar', filter = '') {
+  const stream = body => `<< /Length ${Buffer.byteLength(body, 'latin1')}${filter} >>\nstream\n${body}\nendstream`;
+  const objects = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /Resources 4 0 R /Contents 5 0 R >>', '<< /Font << /F1 6 0 R >> >>', stream(content),
+    '<< /Type /Font /Subtype /Type0 /Encoding /Identity-H /ToUnicode 7 0 R >>', stream(cmap)];
+  let pdf = '%PDF-1.3\n';
+  const offsets = objects.map((body, index) => { const at = pdf.length; pdf += `${index + 1} 0 obj\n${body}\nendobj\n`; return at; });
+  const xref = pdf.length;
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n` + offsets.map(at => `${String(at).padStart(10, '0')} 00000 n \n`).join('')
+    + `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(pdf, 'latin1');
+}
+test('PDF text decoder reads Identity-H glyph runs and fails closed on anything it cannot decode', () => {
+  assert.deepEqual(pdfTextRuns(tinyPdf('BT\n/F1 8 Tf\n[<0001> 12 <0002>] TJ\nET\nBT\n/F1 8 Tf\n<0002> Tj\nET')), ['กา', 'า']);
+  // Positions compose cm (q/Q scoped) with the first Tm, as the renderer's rows do.
+  assert.deepEqual(pdfTextItems(tinyPdf('q\n1 0 0 1 10 20 cm\nq\n1 0 0 -1 0 800 cm\nBT\n1 0 0 1 5 790 Tm\n/F1 8 Tf\n<0001> Tj\n'
+    + '1 0 0 1 9 790 Tm\n<0002> Tj\nET\nQ\nQ\nBT\n/F1 8 Tf\n<0002> Tj\nET')),
+  [{ page: 1, x: 15, y: 30, text: 'กา' }, { page: 1, x: 0, y: 0, text: 'า' }]);
+  for (const [bad, message] of [
+    [tinyPdf('BT\n/F1 8 Tf\n<0003> Tj\nET'), /Unmapped PDF glyph 0003/],
+    [tinyPdf('BT\n/F1 8 Tf\n(ok) Tj\nET'), /Unsupported PDF text operator \(/],
+    [tinyPdf('BT\n/F1 8 Tf\n1 2 Td\n<0001> Tj\nET'), /Unsupported PDF text operator Td/],
+    [tinyPdf('q\nBT\n/F1 8 Tf\n<0001> Tj\nET'), /Unbalanced PDF graphics state/],
+    [tinyPdf('1 0 0 1 0 0 Tm\nBT\n/F1 8 Tf\n<0001> Tj\nET'), /PDF Tm outside text object/],
+    [tinyPdf('BT\n/F2 8 Tf\n<0001> Tj\nET'), /F2 reference missing/],
+    [tinyPdf('BT\n/F1 8 Tf\n<0001> Tj\n'), /Unterminated PDF text object/],
+    [tinyPdf('BT\n/F1 8 Tf\n<0001> Tj\nET', undefined, ' /Filter /ASCIIHexDecode'), /Unsupported PDF stream filter/],
+    [tinyPdf('BT\n/F1 8 Tf\nET', '1 beginbfrange\n<0001> <0002> <0E01>\nendbfrange'), /Unsupported ToUnicode bfrange/],
+    [Buffer.from('%PDF-1.3\n%%EOF\n'), /cross-reference/],
+  ]) assert.throws(() => pdfTextRuns(bad), message);
 });
 test('c ownership guard rejects wrong interfaces, database, network members and signing keys', () => {
   const good = sample(); validateFullStack(good.objects, good.bridge, good.config);
