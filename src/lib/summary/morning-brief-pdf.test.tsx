@@ -97,7 +97,7 @@ function collectRenderCallbacks(node: React.ReactNode): PdfRenderCallback[] {
 }
 
 describe("Morning Brief A4 PDF", () => {
-  test("uses explicit section pages and canonical stock identity, classifying durian as fruit", async () => {
+  test("preserves financial category labels and canonical stock identity when packing pages", async () => {
     const empty = { count: 0, productNames: [], items: [] };
     const summary = { withdrawalValueSatang: 200, salesValueSatang: 100, goodReturnValueSatang: 100,
       houseStockValueSatang: 300, readyValueSatang: 400, markets: [] };
@@ -318,7 +318,159 @@ describe("Morning Brief A4 PDF", () => {
     const buffer = await renderToBuffer(
       <MorningBriefA4Doc report={pagedReport} generatedAt={new Date("2026-09-20T08:00:00+07:00")} />,
     );
-    expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(4);
+    // Physical pages are now packed by the PDF layout engine rather than
+    // fixed to one page per category chunk.
+    expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBeLessThanOrEqual(5);
+  });
+
+  test("packs the 11 October shape without empty vegetable-finance pages or lost stock rows", async () => {
+    const zeroFinancial = {
+      withdrawalValueSatang: 0, salesValueSatang: 0, goodReturnValueSatang: 0,
+      houseStockValueSatang: null, readyValueSatang: null,
+      markets: [{ marketLabel: "พาซิโอ้ผลไม้", withdrawalValueSatang: 0, salesValueSatang: 0, goodReturnValueSatang: 0 }],
+    };
+    const marketLabels = ["พาซิโอ้ผลไม้", "ราชพฤกษ์", "โรงถ่าน", "วัดตะกล่ำ", "วัดทุ่งลานนา"];
+    const fruitItems = PRODUCT_CODE_ENTRIES
+      .filter((entry) => entry.enabled && entry.category === "ผลไม้")
+      .slice(0, 25)
+      .map((entry, index) => ({
+        productName: entry.canonicalName, originalProductName: null,
+        category: "ผลไม้", unit: "โล", uncertaintyReasons: [],
+        marketStockQuantity: index + 1, houseStockQuantity: null, totalRemainingQuantity: null,
+      }));
+    const layoutReport: MorningBriefReport = {
+      ...report,
+      businessDate: "2026-10-11",
+      produceFinancial: {
+        fruit: {
+          ...report.fruitFinancial!,
+          markets: marketLabels.map((marketLabel, index) => ({
+            marketLabel, withdrawalValueSatang: 100_000 + index * 1000,
+            salesValueSatang: 25_000 + index * 1000, goodReturnValueSatang: 75_000,
+          })),
+        },
+        vegetable: zeroFinancial,
+        other: {
+          withdrawalValueSatang: 374_000, salesValueSatang: 98_400, goodReturnValueSatang: 275_600,
+          houseStockValueSatang: null, readyValueSatang: null,
+          markets: marketLabels.map((marketLabel) => ({
+            marketLabel, withdrawalValueSatang: 74_800,
+            salesValueSatang: 19_680, goodReturnValueSatang: 55_120,
+          })),
+        },
+      },
+      purchasePlanning: {
+        strong: { count: fruitItems.length, productNames: fruitItems.map((item) => item.productName), items: fruitItems },
+        surplus: { count: 0, productNames: [], items: [] },
+        reduce: { count: 0, productNames: [], items: [] },
+        unknown: { count: 0, productNames: [] },
+      },
+      houseStock: {
+        status: "available", groupCount: 2, totalValueSatang: 0,
+        items: [
+          { productName: "มะเขือราชินี", category: "ผัก", unit: "โล", quantity: 2.2, unitPriceSatang: 0, valueSatang: 0 },
+          { productName: "ปลาทู", category: "ของแห้ง", unit: "ตัว", quantity: 5, unitPriceSatang: 0, valueSatang: 0 },
+        ],
+      },
+    };
+    const doc = MorningBriefA4Doc({ report: layoutReport, generatedAt: new Date("2026-10-12T08:05:00+07:00") });
+    const text = collectText(doc);
+    expect(text).toContain("สรุปผลไม้คงเหลือเพื่อสั่งซื้อ");
+    expect(text).toContain("สรุปอื่นๆคงเหลือเพื่อสั่งซื้อ");
+    expect(text).not.toContain("สรุปผักคงเหลือเพื่อสั่งซื้อ");
+    expect(text).toContain("หมวดผัก");
+    expect(text).toContain("มะเขือราชินี");
+    expect(text).toContain("2.2");
+    expect(text).toContain("หมวดอื่นๆ");
+    expect(text).toContain("ปลาทู");
+    expect(text).toContain("พาซิโอ้ผลไม้");
+    for (const item of fruitItems) expect(text).toContain(item.productName);
+    registerFonts();
+    const buffer = await renderToBuffer(doc);
+    expect(buffer.subarray(0, 4).toString()).toBe("%PDF");
+    const pages = (buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length;
+    expect(pages).toBeLessThanOrEqual(4);
+    expect(pages).toBeGreaterThanOrEqual(2);
+  });
+
+  test("keeps three active financial categories together when space permits", async () => {
+    const small = { withdrawalValueSatang: 1000, salesValueSatang: 300,
+      goodReturnValueSatang: 700, houseStockValueSatang: null, readyValueSatang: null,
+      markets: [{ marketLabel: "ตลาดทดสอบ", withdrawalValueSatang: 1000, salesValueSatang: 300, goodReturnValueSatang: 700 }] };
+    const allActive: MorningBriefReport = {
+      ...report,
+      produceFinancial: { fruit: small, vegetable: small, other: small },
+      purchasePlanning: { strong: { count: 0, productNames: [], items: [] }, surplus: { count: 0, productNames: [], items: [] },
+        reduce: { count: 0, productNames: [], items: [] }, unknown: { count: 0, productNames: [] } },
+      houseStock: { status: "missing" },
+    };
+    const doc = MorningBriefA4Doc({ report: allActive, generatedAt: new Date("2026-09-20T08:00:00+07:00") });
+    const content = collectText(doc);
+    for (const label of ["ผลไม้", "ผัก", "อื่นๆ"]) {
+      expect(content).toContain(`สรุป${label}คงเหลือเพื่อสั่งซื้อ`);
+      expect(content).toMatch(new RegExp(`สรุป\\s*${label}\\s*ตามตลาด`));
+    }
+    registerFonts();
+    const buffer = await renderToBuffer(doc);
+    expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(1);
+  });
+
+  test("paginates unusually long market tables and stock units without dropping rows", async () => {
+    const markets = Array.from({ length: 22 }, (_, i) => ({
+      marketLabel: `ตลาดทดสอบ${i + 1}`, withdrawalValueSatang: 2000,
+      salesValueSatang: 600, goodReturnValueSatang: 1400,
+    }));
+    const items = PRODUCT_CODE_ENTRIES
+      .filter((entry) => entry.enabled && entry.category === "ผลไม้")
+      .slice(0, 20)
+      .map((entry, i) => ({
+        productName: entry.canonicalName, originalProductName: null,
+        category: "ผลไม้", unit: `หน่วย${i}`, uncertaintyReasons: [],
+        marketStockQuantity: i + 1, houseStockQuantity: 0, totalRemainingQuantity: i + 1,
+      }));
+    const busy: MorningBriefReport = {
+      ...report,
+      fruitFinancial: {
+        withdrawalValueSatang: 44_000, salesValueSatang: 13_200,
+        goodReturnValueSatang: 30_800, houseStockValueSatang: null,
+        readyValueSatang: null, markets,
+      },
+      purchasePlanning: {
+        strong: { count: items.length, productNames: items.map((item) => item.productName), items },
+        surplus: { count: 0, productNames: [], items: [] },
+        reduce: { count: 0, productNames: [], items: [] },
+        unknown: { count: 0, productNames: [] },
+      },
+      houseStock: { status: "missing" },
+    };
+    const doc = MorningBriefA4Doc({ report: busy, generatedAt: new Date("2026-09-20T08:00:00+07:00") });
+    const text = collectText(doc);
+    for (const market of markets) expect(text).toContain(market.marketLabel);
+    for (const item of items) expect(text).toContain(item.productName);
+    registerFonts();
+    const pdf = await renderToBuffer(doc);
+    expect(pdf.subarray(0, 4).toString()).toBe("%PDF");
+    expect((pdf.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBeGreaterThan(2);
+  });
+
+  test("falls back to one informational page only when all categories lack real data", async () => {
+    const empty: MorningBriefReport = {
+      ...report,
+      fruitFinancial: undefined,
+      produceFinancial: undefined,
+      purchasePlanning: {
+        strong: { count: 0, productNames: [], items: [] },
+        surplus: { count: 0, productNames: [], items: [] },
+        reduce: { count: 0, productNames: [], items: [] },
+        unknown: { count: 0, productNames: [] },
+      },
+      houseStock: { status: "missing" },
+    };
+    const doc = MorningBriefA4Doc({ report: empty, generatedAt: new Date("2026-09-20T08:00:00+07:00") });
+    expect(collectText(doc)).toContain("ยังไม่มีข้อมูลสินค้าในระบบ");
+    registerFonts();
+    const pdf = await renderToBuffer(doc);
+    expect((pdf.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(1);
   });
 
   test("persists one upserted reference sidecar for the business date", async () => {

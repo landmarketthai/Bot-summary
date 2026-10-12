@@ -32,12 +32,15 @@ const S = StyleSheet.create({
   header: { marginBottom: 8 },
   title: { fontSize: 21.5, fontWeight: "bold" },
   subtitle: { fontSize: 10, color: "#6B7280", marginTop: 2 },
-  kpiGrid: { flexDirection: "row", marginHorizontal: -2.5, marginBottom: 9 },
-  kpi: { width: "20%", paddingHorizontal: 2.5 },
-  kpiBox: { borderWidth: 0.6, borderColor: "#C7C9CE", padding: 7, minHeight: 62 },
-  kpiLabel: { fontSize: 8.8, color: "#6B7280" },
-  kpiValue: { fontSize: 18, fontWeight: "bold", textAlign: "right", marginTop: 4 },
-  kpiUnit: { fontSize: 8.4, color: "#6B7280", textAlign: "right", marginTop: 1 },
+  kpiGrid: { flexDirection: "row", marginHorizontal: -2, marginBottom: 5 },
+  kpi: { width: "20%", paddingHorizontal: 2 },
+  kpiBox: { borderWidth: 0.6, borderColor: "#C7C9CE", padding: 4, minHeight: 43 },
+  kpiLabel: { fontSize: 7.8, color: "#6B7280" },
+  kpiValue: { fontSize: 12.2, fontWeight: "bold", textAlign: "right", marginTop: 2 },
+  kpiUnit: { fontSize: 7.2, color: "#6B7280", textAlign: "right", marginTop: 1 },
+  financialCategory: { marginTop: 10 },
+  financialCategoryTitle: { fontSize: 14, fontWeight: "bold", marginBottom: 5 },
+  summaryTitle: { fontSize: 18, fontWeight: "bold" },
   explanation: {
     borderLeftWidth: 2.5,
     borderLeftColor: "#777B80",
@@ -68,28 +71,28 @@ const S = StyleSheet.create({
   th: { fontWeight: "bold", fontSize: 11.4, backgroundColor: "#E8E8E8" },
   totalRow: { backgroundColor: "#E8E8E8", fontWeight: "bold" },
   marketTitle: {
-    fontSize: 20,
+    fontSize: 12.3,
     fontWeight: "bold",
     borderTopWidth: 0.7,
     borderTopColor: "#B6BAC0",
-    paddingTop: 7,
-    marginBottom: 7,
+    paddingTop: 5,
+    marginBottom: 4,
   },
   marketCell: {
     borderRightWidth: 0.6,
     borderBottomWidth: 0.6,
     borderColor: "#CBD5E1",
-    paddingVertical: 9,
+    paddingVertical: 4,
     paddingHorizontal: 5,
-    fontSize: 13.6,
+    fontSize: 10.2,
     textAlign: "center",
   },
-  marketHeader: { fontWeight: "bold", fontSize: 14.2 },
+  marketHeader: { fontWeight: "bold", fontSize: 10.6 },
   marketName: { backgroundColor: "#F4F5F7" },
   marketWithdrawal: { backgroundColor: "#E5F0FD" },
   marketSales: { backgroundColor: "#F8F0CD" },
   marketReturn: { backgroundColor: "#E4F2E1" },
-  marketTotal: { fontWeight: "bold", fontSize: 14.6 },
+  marketTotal: { fontWeight: "bold", fontSize: 11.1 },
   matrixCell: { paddingVertical: 7.2, paddingHorizontal: 5, fontSize: 13.5 },
   matrixName: { backgroundColor: "#FFFFFF" },
   matrixAlternate: { backgroundColor: "#F4F7F4" },
@@ -118,24 +121,6 @@ const S = StyleSheet.create({
     color: "#6B7280",
   },
 });
-
-function Cell({
-  width,
-  children,
-  header = false,
-  right = false,
-  total = false,
-}: {
-  width: string;
-  children?: React.ReactNode;
-  header?: boolean;
-  right?: boolean;
-  total?: boolean;
-}) {
-  return <View style={[S.cell, header ? S.th : {}, total ? S.totalRow : {}, { width }]}>
-    <Text style={right ? S.right : {}}>{children}</Text>
-  </View>;
-}
 
 function MarketCell({
   width,
@@ -335,20 +320,15 @@ function DataFooter({ generatedText }: { generatedText: string }) {
   </View>;
 }
 
-function FinancialSummaryPage({ financial, label, businessDate, generatedText }: {
+function FinancialSummaryPage({ financial, label, businessDate }: {
   financial: MorningBriefFruitFinancialSummary;
   label: string;
   businessDate: string;
-  generatedText: string;
 }) {
   const marketTotals = financial.markets;
-  const dateText = thaiNumericDate(businessDate);
   return (
-    <Page size="A4" style={S.page} wrap>
-      <View style={S.header}>
-        <Text style={S.title}>{`สรุป${label}คงเหลือเพื่อสั่งซื้อ - ${formatThaiDate(businessDate)}`}</Text>
-        <Text style={S.subtitle}>Bot-summary | ข้อมูลวันที่ {dateText} | หมวด{label}</Text>
-      </View>
+    <View style={S.financialCategory} minPresenceAhead={65}>
+      <Text style={S.financialCategoryTitle}>{`สรุป${label}คงเหลือเพื่อสั่งซื้อ - ${formatThaiDate(businessDate)}`}</Text>
 
       <View style={S.kpiGrid}>
         <View style={S.kpi}><View style={S.kpiBox}>
@@ -378,11 +358,6 @@ function FinancialSummaryPage({ financial, label, businessDate, generatedText }:
         </View></View>
       </View>
 
-      <View style={S.explanation}>
-        <Text style={S.explanationTitle}>คำอธิบายตัวเลข</Text>
-        <Text style={S.explanationText}><Text style={{ fontWeight: "bold" }}>เบิกออกไปขาย</Text> คือมูลค่าสินค้าที่นำออกตลาดก่อนเริ่มขาย ส่วน <Text style={{ fontWeight: "bold" }}>คงเหลือพร้อมขาย</Text> คือของดีที่ชั่งคืนจากตลาดหลังขาย บวกกับของที่ยังอยู่บ้าน จึงอาจมีบางรายการที่คงเหลือน้อยกว่ายอดที่เบิกไปขาย</Text>
-      </View>
-
       <Text style={S.marketTitle}>สรุป{label}ตามตลาด</Text>
       <View style={S.table}>
         <View style={S.tr} fixed>
@@ -404,11 +379,7 @@ function FinancialSummaryPage({ financial, label, businessDate, generatedText }:
           <MarketCell width="24%" tone="return" total>{financial ? bahtFromSatang(financial.goodReturnValueSatang) : "-"}</MarketCell>
         </View>
       </View>
-      <View style={S.noteBox}>
-        <Text style={S.note}><Text style={{ fontWeight: "bold" }}>หมายเหตุ:</Text> รายงานส่วนนี้แสดงเฉพาะหมวด{label} และใช้ข้อมูลจริงจากระบบของวันที่ {dateText}</Text>
-      </View>
-      <DataFooter generatedText={generatedText} />
-    </Page>
+    </View>
   );
 }
 
@@ -421,39 +392,76 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
   const financialBySection = report.produceFinancial ?? (report.fruitFinancial ? { fruit: report.fruitFinancial } : {});
   const financialSections = PRODUCE_SECTIONS.flatMap((section) => {
     const financial = financialBySection[section];
-    return financial ? [{ section, financial }] : [];
+    // No dedicated finance block for a category with only zero-valued data.
+    // This does NOT suppress its physical stock rows later in the document.
+    const hasFinanceActivity = financial && (
+      financial.withdrawalValueSatang !== 0 ||
+      financial.salesValueSatang !== 0 ||
+      financial.goodReturnValueSatang !== 0 ||
+      (financial.houseStockValueSatang ?? 0) !== 0 ||
+      (financial.readyValueSatang ?? 0) !== 0 ||
+      financial.markets.some((market) =>
+        market.withdrawalValueSatang !== 0 || market.salesValueSatang !== 0 || market.goodReturnValueSatang !== 0)
+    );
+    return hasFinanceActivity ? [{ section, financial }] : [];
   });
   const stockItems = stockMatrixItems(report);
+  const stockSections = STOCK_CATEGORIES.flatMap((category) => {
+    const categoryItems = stockItems.filter((item) => stockCategory(item) === category);
+    if (!categoryItems.some(hasRealStockQuantity)) return [];
+    const chunks = categoryChunks(categoryItems);
+    return chunks.map((items, index) => ({
+      category, items, categoryItems, index, chunkCount: chunks.length,
+    }));
+  });
 
   return <Document title={`Morning Brief ${report.businessDate}`}>
-    {financialSections.map(({ section, financial }) => <FinancialSummaryPage
-      key={section} financial={financial} label={PRODUCE_SECTION_LABEL[section]}
-      businessDate={report.businessDate} generatedText={generatedText}
-    />)}
+    {financialSections.length > 0 ? <Page size="A4" style={S.page} wrap>
+      <View style={S.header}>
+        <Text style={S.summaryTitle}>สรุปยอดเพื่อสั่งซื้อ - {formatThaiDate(report.businessDate)}</Text>
+        <Text style={S.subtitle}>Bot-summary | ข้อมูลวันที่ {thaiNumericDate(report.businessDate)} | รวมสรุปเฉพาะหมวดที่มียอดจริง</Text>
+      </View>
+      <View style={S.explanation}>
+        <Text style={S.explanationTitle}>คำอธิบายตัวเลข</Text>
+        <Text style={S.explanationText}><Text style={{ fontWeight: "bold" }}>เบิกออกไปขาย</Text> คือมูลค่าสินค้าที่นำออกตลาดก่อนเริ่มขาย ส่วน <Text style={{ fontWeight: "bold" }}>คงเหลือพร้อมขาย</Text> คือของดีที่ชั่งคืนจากตลาดหลังขาย บวกกับของที่ยังอยู่บ้าน จึงอาจมีบางรายการที่คงเหลือน้อยกว่ายอดที่เบิกไปขาย</Text>
+      </View>
+      {financialSections.map(({ section, financial }) => <FinancialSummaryPage
+        key={section} financial={financial} label={PRODUCE_SECTION_LABEL[section]}
+        businessDate={report.businessDate}
+      />)}
+      <Text style={S.note}>หมายเหตุ: สรุปเฉพาะหมวดที่มียอดทางการเงินจริงของวันที่ {thaiNumericDate(report.businessDate)}</Text>
+      <DataFooter generatedText={generatedText} />
+    </Page> : null}
     {financialSections.length === 0 && !stockItems.some(hasRealStockQuantity) ? <Page size="A4" style={S.page}>
       <Text style={S.title}>สรุปเช้า - {formatThaiDate(report.businessDate)}</Text>
       <Text>ยังไม่มีข้อมูลสินค้าในระบบ</Text>
       <DataFooter generatedText={generatedText} />
     </Page> : null}
 
-    {STOCK_CATEGORIES.flatMap((category) => {
-      const categoryItems = stockItems.filter((item) => stockCategory(item) === category);
-      if (!categoryItems.some(hasRealStockQuantity)) return [];
-
-      const chunks = categoryChunks(categoryItems);
-      return chunks.map((items, index) => <Page key={`${category}-${index}`} size="A4" style={S.page} wrap>
-        <View style={S.stockHeader}>
-          <Text style={S.title}>{`หมวด${category}${chunks.length > 1 ? ` ${index + 1}/${chunks.length}` : ""} - ${formatThaiDate(report.businessDate)}`}</Text>
-          <Text style={S.subtitle}>รวมคงเหลือ = คงเหลือในบ้าน + ในตลาด</Text>
+    {stockSections.length > 0 ? <Page size="A4" style={S.page} wrap>
+      {stockSections.map(({ category, items, categoryItems, index, chunkCount }) =>
+        // A short section may share a page with the next category. Keep a
+        // category's individual table together; react-pdf moves it to a new
+        // physical page only when there is insufficient space.
+        <View key={`${category}-${index}`}
+          // The renderer may split a genuinely oversized category rather than
+          // clipping one large unbreakable block (e.g. many different units).
+          wrap={items.length + (index === chunkCount - 1
+            ? new Set(categoryItems.map((item) => item.unit)).size : 0) > 17}
+          style={{ marginBottom: 10 }}>
+          <View style={S.stockHeader}>
+            <Text style={S.title}>{`หมวด${category}${chunkCount > 1 ? ` ${index + 1}/${chunkCount}` : ""} - ${formatThaiDate(report.businessDate)}`}</Text>
+            <Text style={S.subtitle}>รวมคงเหลือ = คงเหลือในบ้าน + ในตลาด</Text>
+          </View>
+          <StockMatrix
+            items={items}
+            totalsItems={categoryItems}
+            showTotals={index === chunkCount - 1}
+          />
+          <Text style={[S.note, { marginTop: 6 }]}>คงเหลือในบ้าน = ของที่ยังอยู่บ้าน/คลัง • ในตลาด = ของดีชั่งคืนจากตลาด • ถ้าไม่ทราบข้อมูลฝั่งบ้านจะแสดง “-”</Text>
         </View>
-        <StockMatrix
-          items={items}
-          totalsItems={categoryItems}
-          showTotals={index === chunks.length - 1}
-        />
-        <Text style={[S.note, { marginTop: 6 }]}>คงเหลือในบ้าน = ของที่ยังอยู่บ้าน/คลัง • ในตลาด = ของดีชั่งคืนจากตลาด • ถ้าไม่ทราบข้อมูลฝั่งบ้านจะแสดง “-”</Text>
-        <DataFooter generatedText={generatedText} />
-      </Page>);
-    })}
+      )}
+      <DataFooter generatedText={generatedText} />
+    </Page> : null}
   </Document>;
 }
