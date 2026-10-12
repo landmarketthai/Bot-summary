@@ -263,10 +263,15 @@ describe("webhook wiring", () => {
 
   it("only a review_presented decision carries a presentation to prove", async () => {
     const source = await Bun.file(webhookPath).text();
-    const blocking = source.indexOf("refusalText: buildBlockingValidationReply(decision.result,");
-    expect(blocking).toBeGreaterThan(0);
-    // The blocking branch must not carry reviewPresentation.
-    const blockingBranch = source.slice(blocking, blocking + 160);
-    expect(blockingBranch).not.toContain("reviewPresentation");
+    const blockingStart = source.indexOf('if (decision.decision === "blocked")');
+    const reviewingStart = source.indexOf('if (decision.decision === "review_presented")', blockingStart);
+    expect(blockingStart).toBeGreaterThan(0);
+    expect(reviewingStart).toBeGreaterThan(blockingStart);
+    // The blocked decision still builds an explicit refusal but never includes
+    // a review proof; a local variable may now hold the refusal message.
+    const blockedBranch = source.slice(blockingStart, reviewingStart);
+    expect(blockedBranch).toContain("buildBlockingValidationReply(decision.result");
+    expect(blockedBranch).toContain("refusalText:");
+    expect(blockedBranch).not.toContain("reviewPresentation");
   });
 });

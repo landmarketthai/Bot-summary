@@ -11,7 +11,10 @@ const TABLE = "white_sheet_review_turns";
 const MAX_APPLIED_ROWS = 200;
 
 export type TurnOutcome = "applied" | "failed" | "unavailable";
-/** base = first read; turn = one correction; approval = one "ผ่าน" (applied = accepted, failed = refused). */
+/**
+ * base = first read; turn = one correction; approval = one "ผ่าน" (applied = accepted, failed = refused;
+ * a failed approval WITH a parent was refused because that snapshot still had unconfirmed fields).
+ */
 export type TurnKind = "base" | "turn" | "approval";
 export type ReviewScope = { destination: string; sourceId: string; userId: string; sheetImageRawId: string };
 export type StoredTurn = {
@@ -22,13 +25,16 @@ export type StoredTurn = {
   snapshot: WhiteSheetPreview | null;
   /** An applied row whose snapshot no longer validates. */
   corrupt: boolean;
+  /** The applied row this one was evaluated against (null for a base or a refusal without one). */
+  parentRawMessageId: string | null;
 };
 export type AppliedSnapshot = { rawMessageId: string; snapshot: WhiteSheetPreview };
 
 type TurnRow = {
   raw_message_id: string; turn_seq: number; kind: TurnKind; outcome: TurnOutcome; snapshot: Json | null;
+  parent_raw_message_id: string | null;
 };
-const COLUMNS = "raw_message_id,turn_seq,kind,outcome,snapshot";
+const COLUMNS = "raw_message_id,turn_seq,kind,outcome,snapshot,parent_raw_message_id";
 
 function validSnapshot(value: Json | null): WhiteSheetPreview | null {
   if (value === null) return null;
@@ -52,6 +58,7 @@ export async function loadTurn(
   return {
     rawMessageId: row.raw_message_id, kind: row.kind, outcome: row.outcome, snapshot,
     corrupt: row.outcome === "applied" && snapshot === null,
+    parentRawMessageId: row.parent_raw_message_id ?? null,
   };
 }
 
