@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, it, setSystemTime } from "bun:test";
 import type { LineMessageEvent } from "./types";
-import { PREVIEW_TTL_MS, resolveWhiteSheetSession, SESSION_MAX_AGE_MS } from "@/lib/white-sheet-reader/mode";
+import {
+  otherUserWhiteSheetSessionActive, PREVIEW_TTL_MS, resolveWhiteSheetSession, SESSION_MAX_AGE_MS,
+} from "@/lib/white-sheet-reader/mode";
 import {
   applyWhiteSheetCorrection, APPROVAL_RETRY_REPLY, CORRECTION_CAPTURE_FAILED_REPLY, CORRECTION_RETRY_REPLY, MISSING_REVIEW_BASE_REPLY,
   PREVIEW_APPROVED_REPLY, PREVIEW_END_REFUSED_REPLY, PREVIEW_END_REPLY, PREVIEW_PENDING_REVIEW_REPLY,
   PREVIEW_RESTART_REPLY, PREVIEW_START_REPLY, renderWhiteSheetPreview, type WhiteSheetBaseRead,
+  NOT_REVIEW_OWNER_REPLY, REVIEW_OWNER_UNKNOWN_REPLY, uncertainApprovalReply,
 } from "@/lib/white-sheet-reader/reader";
 import { CorrectionInvalidError, CorrectionUnavailableError, type CorrectionPatch } from "@/lib/white-sheet-reader/correction";
 import { readAndRecordSheet, reviewApproval, reviewCorrectionTurn } from "@/lib/white-sheet-reader/review-flow";
@@ -23,6 +26,10 @@ function event(id: string, text?: string, userId = "U1", timestamp = Date.now() 
       : { id, type: "text", quoteToken: id, text } };
 }
 const START = "@Botsummary อ่านใบขาว";
+// VISION below still has unclear cells, so a bare "ผ่าน" is refused with a warning; tests about
+// approval mechanics approve it explicitly.
+const OK = "ยืนยันผ่าน";
+const CONFIRM = { confirmUncertain: true };
 const REAL_CORRECTION = "ตลาดพาสิโอ้ผัก\nวันที่ 6 ตุลาคม 2569\nขวัญ+จ๋า\nค่าใช้จ่าย ให้เจ้ 400 ของไหว้ 25 เทปกาว 40 น้ำแข็ง 200";
 
 // The real Production reading: sales/transfer/cash read, everything else unclear.
@@ -60,7 +67,7 @@ const realPatch = patchOf({
 const labor = (value: number) => patchOf({ laborAmountBaht: { action: "set", value } });
 
 type PatchFor = (text: string, call: number) => Promise<CorrectionPatch>;
-function setup(options: { readerEnabled?: boolean; patchFor?: PatchFor } = {}) {
+function setup(options: { readerEnabled?: boolean; patchFor?: PatchFor; base?: WhiteSheetPreview } = {}) {
   const db = new ReviewDatabase();
   const replies: string[] = [], asked: string[] = [];
   const reads: string[] = [], applied: { base: WhiteSheetPreview; text: string }[] = [];
@@ -74,7 +81,7 @@ function setup(options: { readerEnabled?: boolean; patchFor?: PatchFor } = {}) {
     // The first read returns VISION; any later read would return DRIFTED.
     whiteSheetBaseReader: async (id: string): Promise<WhiteSheetBaseRead> => {
       reads.push(id);
-      const snapshot = parseWhiteSheetPreview(reads.length === 1 ? VISION : DRIFTED);
+      const snapshot = parseWhiteSheetPreview(reads.length === 1 ? options.base ?? VISION : DRIFTED);
       return { outcome: "applied", snapshot, replies: renderWhiteSheetPreview(snapshot, "review") };
     },
     whiteSheetCorrectionApplier: (base: WhiteSheetPreview, text: string) => {
@@ -208,7 +215,7 @@ describe("White Sheet review: each correction is evaluated exactly once", () => 
     await s.send(event("cmd", START), event("img1"), event("fix", REAL_CORRECTION));
     expect(s.replies.at(-1)).toBe(CORRECTION_CAPTURE_FAILED_REPLY);
     expect(s.slipLookups()).toBe(0); expect(s.db.onlyReviewLedgerWrites()).toBe(true);
-    await s.send(event("ok", "ผ่าน")); // the sheet is still under review
+    await s.send(event("ok", OK)); // the sheet is still under review
     expect(s.replies.at(-1)).toBe(PREVIEW_APPROVED_REPLY);
   });
   it("redelivery of a correction or of the image calls neither Vision nor the correction model again", async () => {
@@ -329,7 +336,7 @@ describe("White Sheet review: session rules are unchanged", () => {
     const s = setup();
     await s.send(event("cmd", START), event("img1"), event("fix", "fix"));
     const before = s.db.writes.length;
-    await s.send(event("ok", " ผ่าน "));
+    await s.send(event("ok", ` ${OK} `));
     expect(s.replies.at(-1)).toBe(PREVIEW_APPROVED_REPLY);
     // Only webhook bookkeeping plus the transient accepted-approval row: nothing official.
     expect(s.db.writes.slice(before).every((table) => table === "raw_messages" || table === "white_sheet_review_turns")).toBe(true);
@@ -345,7 +352,7 @@ describe("White Sheet review: session rules are unchanged", () => {
     await s.send(event("cmd", START), event("img1"), event("img2"));
     expect(s.reads).toEqual(["img1"]); expect(s.replies.at(-1)).toBe(PREVIEW_PENDING_REVIEW_REPLY);
     expect(s.slipLookups()).toBe(0);
-    await s.send(event("ok", "ผ่าน"), event("img3"));
+    await s.send(event("ok", OK), event("img3"));
     expect(s.reads).toEqual(["img1", "img3"]);
   });
   it("does not capture another user's messages in the same group", async () => {
@@ -376,7 +383,7 @@ describe("White Sheet review: session rules are unchanged", () => {
     await s.send(event("cmd", START, "U1", at(0)));
     await s.send(event("img1", undefined, "U1", at(6)));
     await s.send(event("fix", "fix", "U1", at(12)));
-    await s.send(event("ok", "ผ่าน", "U1", at(18)));
+    await s.send(event("ok", OK, "U1", at(18)));
     await s.send(event("img2", undefined, "U1", at(24)));
     expect(s.reads).toEqual(["img1", "img2"]); expect(s.applied).toHaveLength(1);
     await s.send(event("late", "late", "U1", at(24 + PREVIEW_TTL_MS / 60_000 + 1)));
@@ -386,7 +393,7 @@ describe("White Sheet review: session rules are unchanged", () => {
   });
   it("จบใบขาว closes an approved session; while a sheet is under review it is refused", async () => {
     const s = setup();
-    await s.send(event("cmd", START), event("img1"), event("ok", "ผ่าน"), event("end", "@Botsummary จบใบขาว"), event("img2"));
+    await s.send(event("cmd", START), event("img1"), event("ok", OK), event("end", "@Botsummary จบใบขาว"), event("img2"));
     expect(s.replies).toContain(PREVIEW_END_REPLY);
     expect(s.reads).toEqual(["img1"]); expect(s.slipLookups()).toBe(1);
     const t = setup();
@@ -490,7 +497,7 @@ describe("White Sheet session replay uses the claim order (LINE timestamp, then 
   it("the service processes a payload in claim order: the earlier-stamped approval wins, the later correction is not applied after it", async () => {
     const s = setup(); const t0 = Date.now() - 30_000;
     await s.send(event("cmd", START, "U1", t0), event("img1", undefined, "U1", t0 + 1000),
-      event("fix", "fix", "U1", t0 + 5000), event("ok", "ผ่าน", "U1", t0 + 3000));
+      event("fix", "fix", "U1", t0 + 5000), event("ok", OK, "U1", t0 + 3000));
     expect(s.applied).toEqual([]); // the correction came after the accepted approval in queue processing order
     expect(s.db.turns().map((row) => [row.kind, row.outcome])).toEqual([["base", "applied"], ["approval", "applied"]]);
     expect(s.replies).toContain(PREVIEW_APPROVED_REPLY);
@@ -499,7 +506,7 @@ describe("White Sheet session replay uses the claim order (LINE timestamp, then 
   it("the service applies an earlier-stamped correction before a later-stamped approval, even if received after it", async () => {
     const s = setup(); const t0 = Date.now() - 30_000;
     await s.send(event("cmd", START, "U1", t0), event("img1", undefined, "U1", t0 + 1000),
-      event("ok", "ผ่าน", "U1", t0 + 5000), event("fix", "fix", "U1", t0 + 3000));
+      event("ok", OK, "U1", t0 + 5000), event("fix", "fix", "U1", t0 + 3000));
     expect(s.applied.map((call) => call.text)).toEqual(["fix"]);
     const [base, first, approval] = s.db.turns();
     expect([base.kind, first.kind, approval.kind]).toEqual(["base", "turn", "approval"]);
@@ -547,17 +554,17 @@ describe("ผ่าน is accepted only for a sheet with a valid persisted appli
   });
   it("a valid applied base is accepted exactly once and then the next image is read", async () => {
     const s = setup();
-    await s.send(event("cmd", START), event("img1"), event("ok", "ผ่าน"));
+    await s.send(event("cmd", START), event("img1"), event("ok", OK));
     expect(s.replies.at(-1)).toBe(PREVIEW_APPROVED_REPLY);
     expect(s.db.turns().filter((row) => row.kind === "approval")).toHaveLength(1);
-    await s.send(event("ok-again", "ผ่าน")); // the session is awaiting the next image: not a review, not claimed
+    await s.send(event("ok-again", OK)); // the session is awaiting the next image: not a review, not claimed
     expect(s.db.turns().filter((row) => row.kind === "approval")).toHaveLength(1);
     await s.send(event("img2"));
     expect(s.reads).toEqual(["img1", "img2"]);
   });
   it("redelivery of an accepted or a refused approval is deterministic and calls no model", async () => {
     const accepted = setup();
-    await accepted.send(event("cmd", START), event("img1"), event("ok", "ผ่าน"));
+    await accepted.send(event("cmd", START), event("img1"), event("ok", OK));
     const rows = accepted.db.turns().length, reads = accepted.reads.length;
     await accepted.reprocess(accepted.rawIdOf("ok"));
     expect(accepted.replies.slice(-2)).toEqual([PREVIEW_APPROVED_REPLY, PREVIEW_APPROVED_REPLY]);
@@ -575,8 +582,8 @@ describe("ผ่าน is accepted only for a sheet with a valid persisted appli
     const scope = { destination: "Ubot", sourceId: "G1", userId: "U1" };
     const snapshot = parseWhiteSheetPreview(VISION);
     await readAndRecordSheet(client, scope, "raw-img", "img", { readBase: async () => ({ outcome: "applied", snapshot, replies: ["base"] }) });
-    expect(await reviewApproval(client, scope, "raw-img", "raw-ok1")).toEqual([PREVIEW_APPROVED_REPLY]);
-    expect(await reviewApproval(client, scope, "raw-img", "raw-ok2")).toEqual([APPROVAL_RETRY_REPLY]);
+    expect(await reviewApproval(client, scope, "raw-img", "raw-ok1", CONFIRM)).toEqual([PREVIEW_APPROVED_REPLY]);
+    expect(await reviewApproval(client, scope, "raw-img", "raw-ok2", CONFIRM)).toEqual([APPROVAL_RETRY_REPLY]);
     expect(db.turns().filter((row) => row.kind === "approval").map((row) => [row.raw_message_id, row.outcome]))
       .toEqual([["raw-ok1", "applied"], ["raw-ok2", "unavailable"]]);
   });
@@ -647,7 +654,7 @@ describe("an applied correction and an accepted approval share one branch guard"
       t.db.beforeTurnInsert = null;
       await reviewCorrectionTurn(t.client, scope, "raw-img", "raw-fix", "ค่าแรงจริง 300", { applyCorrection: t.applyCorrection });
     };
-    const reply = await reviewApproval(t.client, scope, "raw-img", "raw-ok");
+    const reply = await reviewApproval(t.client, scope, "raw-img", "raw-ok", CONFIRM);
     expect(reply).toEqual([APPROVAL_RETRY_REPLY]);
     expect(reply).not.toContain(PREVIEW_APPROVED_REPLY);
     expect(t.db.turns().find((row) => row.raw_message_id === "raw-ok")).toMatchObject({ kind: "approval", outcome: "unavailable", snapshot: null });
@@ -655,9 +662,9 @@ describe("an applied correction and an accepted approval share one branch guard"
     expect(isLinear(t.db)).toBe(true);
     // Replay never treats it as accepted, and a redelivery replies the same way.
     expect((await loadAcceptedApprovals(t.client, scope, ["raw-ok"])).size).toBe(0);
-    expect(await reviewApproval(t.client, scope, "raw-img", "raw-ok")).toEqual([APPROVAL_RETRY_REPLY]);
+    expect(await reviewApproval(t.client, scope, "raw-img", "raw-ok", CONFIRM)).toEqual([APPROVAL_RETRY_REPLY]);
     // A fresh approval accepts the corrected snapshot, continuing the single chain.
-    expect(await reviewApproval(t.client, scope, "raw-img", "raw-ok2")).toEqual([PREVIEW_APPROVED_REPLY]);
+    expect(await reviewApproval(t.client, scope, "raw-img", "raw-ok2", CONFIRM)).toEqual([PREVIEW_APPROVED_REPLY]);
     const accepted = t.db.turns().find((row) => row.raw_message_id === "raw-ok2")!;
     expect(accepted.parent_raw_message_id).toBe("raw-fix");
     expect((accepted.snapshot as WhiteSheetPreview).laborAmountBaht).toBe(300);
@@ -669,7 +676,7 @@ describe("an applied correction and an accepted approval share one branch guard"
     t.db.beforeTurnInsert = async (payload) => {
       if (payload.raw_message_id !== "raw-fix") return;
       t.db.beforeTurnInsert = null;
-      expect(await reviewApproval(t.client, scope, "raw-img", "raw-ok")).toEqual([PREVIEW_APPROVED_REPLY]);
+      expect(await reviewApproval(t.client, scope, "raw-img", "raw-ok", CONFIRM)).toEqual([PREVIEW_APPROVED_REPLY]);
     };
     const reply = await reviewCorrectionTurn(t.client, scope, "raw-img", "raw-fix", "ค่าแรงจริง 300", { applyCorrection: t.applyCorrection });
     expect(reply).toEqual([CORRECTION_RETRY_REPLY]);
@@ -691,9 +698,9 @@ describe("an applied correction and an accepted approval share one branch guard"
     t.db.beforeTurnInsert = async (payload) => {
       if (payload.raw_message_id !== "raw-ok1") return;
       t.db.beforeTurnInsert = null;
-      expect(await reviewApproval(t.client, scope, "raw-img", "raw-ok2")).toEqual([PREVIEW_APPROVED_REPLY]);
+      expect(await reviewApproval(t.client, scope, "raw-img", "raw-ok2", CONFIRM)).toEqual([PREVIEW_APPROVED_REPLY]);
     };
-    expect(await reviewApproval(t.client, scope, "raw-img", "raw-ok1")).toEqual([APPROVAL_RETRY_REPLY]);
+    expect(await reviewApproval(t.client, scope, "raw-img", "raw-ok1", CONFIRM)).toEqual([APPROVAL_RETRY_REPLY]);
     expect(appliedTransitions(t.db).map((row) => row.raw_message_id)).toEqual(["raw-ok2"]);
   });
 });
@@ -775,5 +782,177 @@ describe("session replay has no clock-skew assumption and keeps the 3-hour hard 
     for (let i = 0; i < 300; i++) seed(db, `chat${i}`, 2 + i, now - 40 * MIN + i * 1000, now - 40 * MIN + i * 1000, `chat ${i}`);
     seed(db, "img", 400, now - 10_000, now - 10_000);
     await expect(resolve(db, "img")).rejects.toThrow();
+  });
+  it("a full page of start-like rows that hides the start fails closed instead of 'no session'", async () => {
+    const db = new ReviewDatabase(); const now = Date.now();
+    seed(db, "cmd", 1, now - 9 * MIN, now - 9 * MIN, START);
+    seed(db, "img", 2, now - 8 * MIN, now - 8 * MIN);
+    // Plain review text that merely mentions the command: not a start, but matched by the start query.
+    for (let i = 0; i < 50; i++) seed(db, `say${i}`, 3 + i, now - 7 * MIN + i * 1000, now - 7 * MIN + i * 1000, `อ่านใบขาวแล้ว ${i}`);
+    seed(db, "fix", 60, now - 10_000, now - 10_000, "ค่าแรง 300");
+    await expect(resolve(db, "fix")).rejects.toThrow();
+  });
+});
+
+// ── Production incident 2026-10-10: a tagged field correction was answered as analyst Q&A ──
+describe("incident 2026-10-10: tagged field corrections never reach the analyst during a review", () => {
+  // A's stored base: wrong market/seller read confidently, every expense row unclear.
+  const INCIDENT_BASE: WhiteSheetPreview = {
+    documentType: "white_sheet", market: "วัดมะเกลือ", dateRaw: "9 ต.ค.", dateIso: null, sellerNames: ["มิ"],
+    salesAmountBaht: 2564, transferAmountBaht: 654, cashSentAmountBaht: 1000, laborAmountBaht: null,
+    remainingCashAmountBaht: null,
+    expenses: [{ labelRaw: null, amountBaht: null, confidence: 0.3 }, { labelRaw: null, amountBaht: null, confidence: 0.3 },
+      { labelRaw: null, amountBaht: null, confidence: 0.3 }],
+    lowConfidenceFields: [], overallConfidence: 0.9, notes: [],
+  };
+  // The exact text B sent, with LINE mention metadata for the bot ("@Bot-summary" = 12 UTF-16 units).
+  const FIELD_FIX = "@Bot-summary  \nตลาด วัดตะกล่ำ\n9 ตุลาคม\nคนขาย กี้\n\nค่าใช้จ่าย ค่าที่ 660 ค่าถุง 50 ขนมจีน 200";
+  const STRIPPED = "ตลาด วัดตะกล่ำ\n9 ตุลาคม\nคนขาย กี้\n\nค่าใช้จ่าย ค่าที่ 660 ค่าถุง 50 ขนมจีน 200";
+  const tagged = (id: string, text: string, userId: string, timestamp?: number, groupId?: string): LineMessageEvent => ({
+    ...event(id, text, userId, timestamp, groupId),
+    message: { id, type: "text", quoteToken: id, text, mention: { mentionees: [{ index: 0, length: 12, type: "user", userId: "Ubot" }] } },
+  });
+  const fieldPatch = patchOf({
+    market: { action: "set", value: "วัดตะกล่ำ" },
+    date: { action: "set", raw: "9 ตุลาคม", day: 9, month: 10, year: null },
+    sellerNames: { action: "set", value: ["กี้"] },
+    expenses: { mode: "replace_all", items: [{ position: null, label: "ค่าที่", amount: 660 },
+      { position: null, label: "ค่าถุง", amount: 50 }, { position: null, label: "ขนมจีน", amount: 200 }] },
+  });
+  const incident = () => setup({ base: INCIDENT_BASE, patchFor: async () => fieldPatch });
+
+  it("A start, A image, B tagged field correction, A ผ่าน: B is told it is not their sheet and A's ผ่าน is flagged", async () => {
+    const s = incident();
+    await s.send(event("a-cmd", START, "UA"), event("a-img", undefined, "UA"));
+    const base = snapshotOf(s, "a-img");
+    await s.send(tagged("b-fix", FIELD_FIX, "UB"));
+    expect(s.replies.at(-1)).toBe(NOT_REVIEW_OWNER_REPLY);
+    expect(s.asked).toEqual([]); // never the analyst
+    expect(s.applied).toEqual([]); // never A's review
+    expect(s.slipLookups()).toBe(0);
+    expect(s.db.turns().map((row) => row.raw_message_id)).toEqual([s.rawIdOf("a-img")]); // nothing recorded for B
+    // Redelivery of B's event: same answer, still no analyst and no write into A's review.
+    await s.send(tagged("b-fix", FIELD_FIX, "UB"));
+    expect(s.asked).toEqual([]); expect(s.db.turns()).toHaveLength(1);
+
+    await s.send(event("a-ok", "ผ่าน", "UA"));
+    expect(s.replies.at(-1)).toBe(uncertainApprovalReply(base));
+    expect(s.replies.at(-1)).toContain("ค่าใช้จ่ายข้อ 1 อ่านไม่ชัด");
+    expect(s.replies).not.toContain(PREVIEW_APPROVED_REPLY);
+    const refused = s.db.turns().find((row) => row.raw_message_id === s.rawIdOf("a-ok"))!;
+    expect(refused).toMatchObject({ kind: "approval", outcome: "failed", snapshot: null, parent_raw_message_id: s.rawIdOf("a-img") });
+    expect(snapshotOf(s, "a-img")).toEqual(base); // A's snapshot is unchanged
+    expect(s.db.onlyReviewLedgerWrites()).toBe(true);
+    // The review is still open: a redelivered ผ่าน replays the same warning and an image is still refused.
+    await s.reprocess(s.rawIdOf("a-ok"));
+    expect(s.replies.at(-1)).toBe(uncertainApprovalReply(base));
+    await s.send(event("a-img2", undefined, "UA"));
+    expect(s.replies.at(-1)).toBe(PREVIEW_PENDING_REVIEW_REPLY);
+    // Only an explicit confirmation accepts the unclear sheet as is.
+    await s.send(event("a-confirm", OK, "UA"));
+    expect(s.replies.at(-1)).toBe(PREVIEW_APPROVED_REPLY);
+    expect(s.db.turns().find((row) => row.raw_message_id === s.rawIdOf("a-confirm"))!.snapshot).toEqual(base);
+  });
+
+  it("the owner's own tagged field correction is captured as a correction, mention stripped, never the analyst", async () => {
+    const s = incident();
+    await s.send(event("a-cmd", START, "UA"), event("a-img", undefined, "UA"), tagged("a-fix", FIELD_FIX, "UA"));
+    expect(s.asked).toEqual([]);
+    expect(s.applied.map((call) => call.text)).toEqual([STRIPPED]);
+    const fixed = snapshotOf(s, "a-fix");
+    expect([fixed.market, fixed.sellerNames, fixed.expenses.map((row) => [row.labelRaw, row.amountBaht])])
+      .toEqual(["วัดตะกล่ำ", ["กี้"], [["ค่าที่", 660], ["ค่าถุง", 50], ["ขนมจีน", 200]]]);
+    // 654 + 1000 + 660 + 50 + 200 = 2564: nothing is computed, the read sales figure is untouched.
+    expect([fixed.salesAmountBaht, fixed.transferAmountBaht, fixed.cashSentAmountBaht]).toEqual([2564, 654, 1000]);
+    // Replay counts the tagged correction as review activity, and a retry never calls the model again.
+    await s.reprocess(s.rawIdOf("a-fix"));
+    expect(s.parseCalls.get(STRIPPED)).toBe(1);
+    // Every field is now confirmed, so a plain ผ่าน is accepted on the corrected snapshot.
+    await s.send(event("a-ok", "ผ่าน", "UA"));
+    expect(s.replies.at(-1)).toBe(PREVIEW_APPROVED_REPLY);
+    expect(s.db.turns().find((row) => row.raw_message_id === s.rawIdOf("a-ok"))!.snapshot).toEqual(fixed);
+  });
+
+  it("ordinary @Botsummary questions keep going to the analyst, with or without a review open", async () => {
+    const s = incident();
+    await s.send(tagged("q1", "@Bot-summary ยอดขายวันนี้เท่าไหร่", "UB"));
+    await s.send(tagged("q2", FIELD_FIX, "UB")); // no review anywhere: unchanged analyst route
+    await s.send(event("a-cmd", START, "UA"), event("a-img", undefined, "UA"));
+    await s.send(tagged("q3", "@Bot-summary ยอดขายวันนี้เท่าไหร่", "UB"));
+    await s.send(tagged("q4", "@Bot-summary ตลาดไหนขายดี", "UA")); // the reviewing owner's own question
+    expect(s.asked).toEqual(["ยอดขายวันนี้เท่าไหร่", STRIPPED, "ยอดขายวันนี้เท่าไหร่", "ตลาดไหนขายดี"]);
+    expect(s.applied).toEqual([]);
+  });
+
+  it("another group, an expired review or a closed review does not intercept the tagged correction", async () => {
+    const s = incident(); const t0 = Date.parse("2026-10-10T07:15:00Z");
+    const at = (minutes: number) => { setSystemTime(new Date(t0 + minutes * 60_000)); return Date.now() - 1000; };
+    await s.send(event("a-cmd", START, "UA", at(0)), event("a-img", undefined, "UA", at(1)));
+    await s.send(tagged("g2", FIELD_FIX, "UB", at(2), "G2")); // same bot, other group
+    expect(s.asked).toEqual([STRIPPED]);
+    await s.send(tagged("late", FIELD_FIX, "UB", at(1 + PREVIEW_TTL_MS / 60_000 + 1))); // A's review expired
+    expect(s.asked).toEqual([STRIPPED, STRIPPED]);
+    expect(s.applied).toEqual([]);
+  });
+
+  it("fails closed when another user's review cannot be checked", async () => {
+    const s = incident();
+    await s.send(event("a-cmd", START, "UA"), event("a-img", undefined, "UA"));
+    const broken = new WebhookService(s.db.client(), { ...s.dependencies,
+      whiteSheetOtherOwnerCheck: async () => { throw new Error("db down"); } });
+    await broken.processEvents([tagged("b-fix", FIELD_FIX, "UB")], "Ubot");
+    expect(s.replies.at(-1)).toBe(REVIEW_OWNER_UNKNOWN_REPLY);
+    expect(s.asked).toEqual([]); expect(s.applied).toEqual([]);
+  });
+
+  // ── Start-command floods cannot hide another user's open review ──
+  const t0 = Date.parse("2026-10-10T07:15:00Z");
+  /** LINE timestamp at t0 + seconds, with the ledger clock (created_at) moved there too. */
+  const at = (seconds: number) => { setSystemTime(new Date(t0 + seconds * 1000)); return Date.now() - 500; };
+  const flood = async (s: ReturnType<typeof setup>, userId: string, from: number, count = 55) => {
+    for (let i = 0; i < count; i++) await s.send(event(`${userId}-start${i}`, START, userId, at(from + i)));
+  };
+
+  it("B's own 50+ start commands after A's start cannot push A's open review out of the check", async () => {
+    const s = incident();
+    await s.send(event("a-cmd", START, "UA", at(0)), event("a-img", undefined, "UA", at(30)));
+    await flood(s, "UB", 60);
+    await s.send(tagged("b-fix", FIELD_FIX, "UB", at(180)));
+    expect(s.replies.at(-1)).toBe(NOT_REVIEW_OWNER_REPLY);
+    expect(s.asked).toEqual([]); expect(s.applied).toEqual([]);
+    // The real owner still corrects their own sheet.
+    await s.send(tagged("a-fix", FIELD_FIX, "UA", at(190)));
+    expect(s.applied.map((call) => call.text)).toEqual([STRIPPED]); expect(s.asked).toEqual([]);
+    // Once A's review is closed, B's tagged text goes to the analyst again.
+    await s.send(event("a-cancel", "@Botsummary ยกเลิกอ่านใบขาว", "UA", at(200)));
+    await s.send(tagged("b-fix2", FIELD_FIX, "UB", at(210)));
+    expect(s.asked).toEqual([STRIPPED]);
+  });
+
+  it("a third user's 50+ start commands make the check unknown, never a pass to the analyst", async () => {
+    const s = incident();
+    await s.send(event("a-cmd", START, "UA", at(0)), event("a-img", undefined, "UA", at(30)));
+    await flood(s, "UC", 60);
+    await s.send(tagged("b-fix", FIELD_FIX, "UB", at(180)));
+    expect(s.replies.at(-1)).toBe(REVIEW_OWNER_UNKNOWN_REPLY); // not proven to be A's: unknown, not "not yours"
+    expect(s.asked).toEqual([]); expect(s.applied).toEqual([]);
+  });
+
+  it("a saturated check fails closed even when no review is open; the sender's own flood never saturates it", async () => {
+    const s = incident();
+    await flood(s, "UC", 0); // every C session expires long before B writes
+    await s.send(tagged("b-fix", FIELD_FIX, "UB", at(3600)));
+    expect(s.replies.at(-1)).toBe(REVIEW_OWNER_UNKNOWN_REPLY);
+    expect(s.asked).toEqual([]);
+    // C's own tagged correction excludes C's rows: no other session, so the analyst answers.
+    await s.send(tagged("c-fix", FIELD_FIX, "UC", at(3610)));
+    expect(s.asked).toEqual([STRIPPED]);
+  });
+
+  it("a failing start-command query is unknown, not 'nobody is reviewing'", async () => {
+    const broken: unknown = new Proxy({}, { get: (_target, key) => key === "then"
+      ? (ok: (value: unknown) => unknown) => ok({ data: null, error: { message: "db down" } }) : () => broken });
+    await expect(otherUserWhiteSheetSessionActive({ from: () => broken } as never, tagged("b-fix", FIELD_FIX, "UB"), "Ubot"))
+      .rejects.toThrow();
   });
 });

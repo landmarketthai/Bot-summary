@@ -18,6 +18,7 @@ type QueryMode = "select" | "insert" | "update" | "upsert" | "delete";
 
 export class FakeQuery {
   private readonly filters: Array<(row: Row) => boolean> = [];
+  private readonly orders: Array<{ column: string; ascending: boolean; nullsFirst: boolean }> = [];
   private maxRows: number | null = null;
   private rangeFrom: number | null = null;
   private rangeTo: number | null = null;
@@ -37,6 +38,12 @@ export class FakeQuery {
 
   eq(column: string, value: unknown): this {
     this.filters.push((row) => row[column] === value);
+    return this;
+  }
+
+  /** PostgREST `neq` is SQL `<>`: a NULL column never matches. */
+  neq(column: string, value: unknown): this {
+    this.filters.push((row) => (row[column] ?? null) !== null && row[column] !== value);
     return this;
   }
 
@@ -85,7 +92,10 @@ export class FakeQuery {
     return this;
   }
 
-  order(): this {
+  /** PostgreSQL defaults: NULLS LAST ascending, NULLS FIRST descending; ties keep insertion order. */
+  order(column: string, options: { ascending?: boolean; nullsFirst?: boolean } = {}): this {
+    this.orders.push({ column, ascending: options.ascending ?? true,
+      nullsFirst: options.nullsFirst ?? !(options.ascending ?? true) });
     return this;
   }
 
@@ -129,6 +139,13 @@ export class FakeQuery {
 
     if (this.mode === "select") {
       const matched = matches();
+      for (const { column, ascending, nullsFirst } of [...this.orders].reverse()) {
+        matched.sort((a, b) => {
+          const x = a[column] ?? null, y = b[column] ?? null;
+          if (x === null || y === null) return x === y ? 0 : (x === null) === nullsFirst ? -1 : 1;
+          return (x < y ? -1 : x > y ? 1 : 0) * (ascending ? 1 : -1);
+        });
+      }
       let selected = matched;
       if (this.rangeFrom !== null && this.rangeTo !== null) {
         selected = matched.slice(this.rangeFrom, this.rangeTo + 1);

@@ -9,6 +9,7 @@ import {
   FIELD_LABELS, MONEY_FIELDS, READ_CONFIDENCE, WHITE_SHEET_PREVIEW_JSON_SCHEMA,
   parseWhiteSheetPreview, type WhiteSheetPreview,
 } from "./schema";
+import { CONFIRM_UNCERTAIN_APPROVAL_TEXT } from "./mode";
 
 export const PREVIEW_DISCLAIMER = "ข้อมูลนี้ยังไม่ได้บันทึกลงระบบ เป็นเพียงผลอ่านจากภาพครับ";
 export const PREVIEW_RETRY_REPLY = "ตอนนี้อ่านใบขาวจากรูปนี้ไม่สำเร็จครับ ลองถ่ายให้เห็นทั้งแผ่นและชัดขึ้น แล้วพิมพ์ @Botsummary อ่านใบขาว ก่อนส่งรูปใหม่ได้เลย\n\n" + PREVIEW_DISCLAIMER;
@@ -21,6 +22,10 @@ export const PREVIEW_END_REPLY = "ปิดโหมดอ่านใบขา�
 export const PREVIEW_END_REFUSED_REPLY = "ยังมีใบขาวที่รอตรวจอยู่ครับ\nพิมพ์ \"ผ่าน\" ก่อน หรือพิมพ์ @Botsummary ยกเลิกอ่านใบขาว เพื่อยกเลิกใบนี้";
 export const CORRECTION_CAPTURE_FAILED_REPLY = "ยังจับข้อมูลที่แก้ไม่ได้ครับ ลองพิมพ์ใหม่แบบภาษาปกติได้เลย\nเช่น:\nวันที่ 6 ตุลาคม\nขวัญ+จ๋า\nค่าแรง 300";
 export const CORRECTION_RETRY_REPLY = "ตอนนี้อ่านข้อความที่แก้ไม่สำเร็จครับ ใบที่รอตรวจยังอยู่เหมือนเดิม ลองส่งข้อความอีกครั้งได้เลย\n\n" + PREVIEW_DISCLAIMER;
+/** A field correction sent to the bot by someone other than the user whose sheet is under review. */
+export const NOT_REVIEW_OWNER_REPLY = "ข้อความนี้ยังไม่ได้ใช้แก้ใบขาวครับ ใบขาวที่รอตรวจในกลุ่มนี้แก้ได้เฉพาะคนที่ส่งรูปใบนั้น\nให้คนที่ส่งรูปพิมพ์ข้อมูลที่ต้องแก้เองก่อนพิมพ์ \"ผ่าน\" หรือถ้าจะตรวจใบนี้เอง พิมพ์ @Botsummary อ่านใบขาว แล้วส่งรูปใหม่\n\n" + PREVIEW_DISCLAIMER;
+/** Same message, but whether a review is open could not be checked: nothing was used or recorded. */
+export const REVIEW_OWNER_UNKNOWN_REPLY = "ตอนนี้ตรวจสถานะใบขาวในกลุ่มไม่สำเร็จครับ ข้อความนี้ยังไม่ได้ใช้แก้ใบขาวและยังไม่ได้บันทึก ลองส่งอีกครั้งได้เลย\n\n" + PREVIEW_DISCLAIMER;
 export const PREVIEW_REVIEW_PROMPT = "ถ้าถูกต้องพิมพ์ \"ผ่าน\" ครับ หรือพิมพ์ข้อมูลที่ต้องแก้ได้เลย เช่น ค่าแรง 300";
 export const PREVIEW_CORRECTED_PROMPT = "ตรวจอีกครั้ง ถ้าถูกแล้วพิมพ์ \"ผ่าน\" ครับ";
 export const PREVIEW_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -128,6 +133,30 @@ export function renderWhiteSheetPreview(input: unknown, mode?: "review" | "corre
     ...(mode === "review" ? [PREVIEW_REVIEW_PROMPT] : mode === "corrected" ? [PREVIEW_CORRECTED_PROMPT] : []),
     PREVIEW_DISCLAIMER,
   ], LINE_MESSAGE_MAX_CODE_POINTS);
+}
+
+/**
+ * Why "ผ่าน" on this snapshot would approve something nobody has confirmed: every unclear cell,
+ * every unresolved expense row, and the key fields (market, date, seller, sales) that are missing.
+ */
+export function approvalConcerns(input: WhiteSheetPreview): string[] {
+  const preview = parseWhiteSheetPreview(input);
+  const uncertain = new Set(preview.lowConfidenceFields);
+  const concerns = preview.lowConfidenceFields.map((path) => `${reviewLabel(path)} อ่านไม่ชัด`);
+  const missing = (key: keyof typeof FIELD_LABELS, absent: boolean) => {
+    if (absent && !uncertain.has(key)) concerns.push(`${FIELD_LABELS[key]} ไม่พบ`);
+  };
+  missing("market", !preview.market);
+  missing("dateRaw", !preview.dateRaw && !uncertain.has("dateIso"));
+  missing("sellerNames", !preview.sellerNames.length);
+  missing("salesAmountBaht", preview.salesAmountBaht === null);
+  return [...new Set(concerns)];
+}
+export function uncertainApprovalReply(snapshot: WhiteSheetPreview): string {
+  return ["ใบนี้ยังไม่ผ่านครับ ยังมีจุดที่ยังไม่ได้ยืนยัน:", ...approvalConcerns(snapshot).map((concern) => `- ${concern}`),
+    "", "พิมพ์ข้อมูลที่ถูกต้องเพื่อแก้ก่อน (เช่น ค่าใช้จ่าย ค่าที่ 660 ค่าถุง 50)",
+    `หรือถ้าตรวจกับใบจริงแล้วว่าถูกทั้งหมด พิมพ์ "${CONFIRM_UNCERTAIN_APPROVAL_TEXT}"`,
+    "", PREVIEW_DISCLAIMER].join("\n");
 }
 
 export const MISSING_REVIEW_BASE_REPLY = "ข้อมูลใบนี้สำหรับตรวจต่อไม่ครบครับ พิมพ์ @Botsummary อ่านใบขาว แล้วส่งรูปนี้ใหม่อีกครั้ง";
