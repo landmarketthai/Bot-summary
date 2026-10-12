@@ -80,8 +80,8 @@ describe("parsePhysicalInventoryDocument — Fixture A (26/7/69)", () => {
     expect(bySeq[1]!.rawProductDescription).toBe("พุทรา");
     expect(bySeq[1]!.quantity).toBe(3);
     expect(bySeq[1]!.rawUnit).toBe("ตะกร้า");
-    expect(bySeq[1]!.normalizedUnit).toBeNull();
-    expect(bySeq[1]!.resolutionStatus).toBe("ACCEPTED_RAW");
+    expect(bySeq[1]!.normalizedUnit).toBe("ตะกร้า");
+    expect(bySeq[1]!.resolutionStatus).toBe("ACCEPTED_NORMALIZED");
 
     expect(bySeq[2]!.rawProductDescription).toBe("แก้วมังกร");
     expect(bySeq[2]!.quantity).toBe(15);
@@ -211,10 +211,10 @@ describe("resolution and rejection cases", () => {
   test("unknown unit → ACCEPTED_RAW", () => {
     const session = parsePhysicalInventoryDocument(`สตอกผลไม้คงเหลือ
 26/7/69
-1พุทรา3ตะกร้า
+1พุทรา3กระติ๊บ
 จบ`);
     expect(session.items[0]!.resolutionStatus).toBe("ACCEPTED_RAW");
-    expect(session.items[0]!.rawUnit).toBe("ตะกร้า");
+    expect(session.items[0]!.rawUnit).toBe("กระติ๊บ");
     expect(session.items[0]!.normalizedUnit).toBeNull();
   });
 
