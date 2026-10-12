@@ -62,7 +62,7 @@ test('child environment clears inherited and dotenv app secrets, fixes local key
 });
 function isolated(code, clock = '') {
   const result = spawnSync(process.execPath, ['-e', code], { encoding: 'utf8', timeout: 10000,
-    cwd: fileURLToPath(new URL('..', import.meta.url)), env: { ...process.env, NODE_OPTIONS: '', STAGING_UAT_CLOCK: clock } });
+    cwd: fileURLToPath(new URL('..', import.meta.url)), env: { ...process.env, NODE_OPTIONS: '', STAGING_UAT_CLOCK: clock, STAGING_UAT_RUN_ID: '' } });
   assert.equal(result.status, 0, result.stderr);
 }
 test('preload denies external fetch, sockets, DNS, UDP and wrong local ports before transport', () => {
@@ -98,9 +98,34 @@ test('preload accepts embedded WASM and captures only synthetic LINE POSTs with 
         assert.equal(res.status,200);
       }
       await assert.rejects(fetch('https://api.line.me/v2/bot/message/push',{method:'POST',body:JSON.stringify({to:'real-target',messages:[]})}),/transport denied/);
-      const log=fs.readFileSync('.tmp-staging-uat-20261009/auth-finance/transport-'+process.pid+'.jsonl','utf8');
+      const log=fs.readFileSync('.tmp-staging-uat-20261009/auth-finance/transport/'+process.env.STAGING_UAT_RUN_ID+'/transport-'+process.pid+'.jsonl','utf8');
       assert.ok(!log.includes('secret-credential')); assert.ok(!log.includes('secret-reply'));
       assert.equal(log.split('line-captured').length-1,2);
+    })().catch(e=>{console.error(e);process.exitCode=1;});`);
+});
+
+test('preload returns manual local 302 headers and never follows a redirect', () => {
+  isolated(`const assert=require('node:assert/strict'); const http=require('node:http');
+    require('./scripts/staging-auth-finance-preload.cjs');
+    let targetHits=0;
+    const server=http.createServer((req,res)=>{
+      if(req.url==='/target') { targetHits++; res.end('unexpected follow'); return; }
+      res.writeHead(302,{Location:'/target','Set-Cookie':'synthetic=refreshed; Path=/; HttpOnly'}); res.end();
+    });
+    (async()=>{
+      await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(56300,'127.0.0.1',resolve);});
+      try {
+        const url='http://127.0.0.1:56300/redirect';
+        for(const input of [url,new Request(url,{redirect:'manual'})]) {
+          const res=await fetch(input,typeof input==='string'?{redirect:'manual'}:undefined);
+          assert.equal(res.status,302); assert.equal(res.headers.get('location'),'/target');
+          assert.deepEqual(res.headers.getSetCookie(),['synthetic=refreshed; Path=/; HttpOnly']);
+          await res.arrayBuffer();
+        }
+        for(const init of [{redirect:'follow'},{},{redirect:'error'}]) await assert.rejects(fetch(url,init));
+        await assert.rejects(fetch(new Request(url,{redirect:'follow'})));
+        assert.equal(targetHits,0);
+      } finally {server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
     })().catch(e=>{console.error(e);process.exitCode=1;});`);
 });
 test('all cutoff process clocks preserve explicit dates and monotonic elapsed time', () => {
@@ -117,4 +142,15 @@ test('all cutoff process clocks preserve explicit dates and monotonic elapsed ti
       assert.equal(Date.UTC(2020,0,1),1577836800000);
       assert.ok(performance.now()>=started);`, clock);
   }
+});
+
+test('guard run identity is inherited by a real child process and rejects unsafe paths', () => {
+  isolated(`const assert=require('node:assert/strict'); const cp=require('node:child_process');
+    const {runId}=require('./scripts/staging-auth-finance-preload.cjs');
+    const child=cp.spawnSync(process.execPath,['-e',"process.stdout.write(require('./scripts/staging-auth-finance-preload.cjs').runId)"],
+      {env:process.env,encoding:'utf8',timeout:5000});
+    assert.equal(child.status,0); assert.equal(child.stdout,runId);
+    const invalid=cp.spawnSync(process.execPath,['-e',"require('./scripts/staging-auth-finance-preload.cjs')"],
+      {env:{...process.env,STAGING_UAT_RUN_ID:'../../escape'},encoding:'utf8',timeout:5000});
+    assert.notEqual(invalid.status,0);`);
 });

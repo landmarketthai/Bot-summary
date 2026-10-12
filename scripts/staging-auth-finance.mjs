@@ -6,6 +6,7 @@ import { readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { transportMark, settleTransport } from './staging-transport-audit.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const output = join(root, '.tmp-staging-uat-20261009/auth-finance');
@@ -20,6 +21,7 @@ export const names = {
 const network = 'botsummary-uat-loopback-20261009';
 const api = 'http://127.0.0.1:56321';
 const app = 'http://127.0.0.1:56300';
+let serverRunId;
 const source = 'uat-20261009-finance';
 const round = '61090000-0000-4000-8000-000000000001';
 const scope = { sourceId: source, market: 'ราชพฤกษ์', date: '2026-10-07', accountabilityRoundId: round };
@@ -196,7 +198,7 @@ COMMIT;`);
   verify();
   console.log('Original Compose Auth/REST rewired to b. Real health/login still require smoke; standalone REST unchanged.');
 }
-function appEnvNames() {
+export function appEnvNames() {
   const keys = new Set();
   function walk(dir) {
     for (const item of readdirSync(dir, { withFileTypes: true })) {
@@ -240,6 +242,7 @@ async function serve(clock) {
 }
 async function server() {
   assert.equal(process.env.STAGING_UAT_CHILD, '1', 'Start only through --serve');
+  const { runId } = require('./staging-auth-finance-preload.cjs');
   const { createServer } = await import('node:http');
   const next = require('next');
   const nextApp = next({ dev: true, dir: root, hostname: '127.0.0.1', port: 56300,
@@ -248,6 +251,7 @@ async function server() {
   const handle = nextApp.getRequestHandler();
   const httpServer = createServer((req, res) => {
     res.setHeader('x-local-staging-uat', process.env.STAGING_UAT_CLOCK || 'real');
+    res.setHeader('x-local-staging-uat-run', runId);
     const pathname = new URL(req.url, app).pathname;
     // Local harness boundary; no application debug/clock endpoint is added.
     if (pathname.startsWith('/api/webhook') ||
@@ -264,7 +268,11 @@ async function server() {
   for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => {
     httpServer.close(); await nextApp.close(); process.exit(0);
   });
-  httpServer.listen(56300, '127.0.0.1', () => console.log('LOCAL_UAT_NEXT_READY 127.0.0.1:56300 development; outbound guard active'));
+  httpServer.listen(56300, '127.0.0.1', () => {
+    writeFileSync(join(output, 'server-state.json'), JSON.stringify({ runId, pid: process.pid,
+      clock: process.env.STAGING_UAT_CLOCK || 'real' }) + '\n', { mode: 0o600 });
+    console.log('LOCAL_UAT_NEXT_READY 127.0.0.1:56300 development; outbound guard active');
+  });
 }
 async function main() {
   assert.equal(resolve(process.cwd()), root, 'Stay in the authorized worktree');
@@ -294,6 +302,7 @@ async function request(path, cookie = '', body, headers = {}) {
   const bytes = Buffer.from(await response.arrayBuffer());
   console.log(`REAL_LOCAL_NEXT_HTTP ${path.split('?')[0]} status=${response.status} bytes=${bytes.length}`);
   assert.ok(response.headers.get('x-local-staging-uat'), 'Refuse another Next process');
+  if (serverRunId) assert.equal(response.headers.get('x-local-staging-uat-run'), serverRunId, 'Server changed during UAT');
   return { response, bytes, json: () => JSON.parse(bytes.toString('utf8')) };
 }
 async function expectJson(path, cookie, body, status) {
@@ -304,14 +313,6 @@ async function expectJson(path, cookie, body, status) {
 function snapshot(tables) {
   return JSON.parse(sql(sqlGuard + 'SELECT jsonb_build_object(' + tables.map(table =>
     `'${table}',(SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY id),'[]'::jsonb) FROM public.${table} t)`).join(',') + ');'));
-}
-function transportMark() {
-  return Object.fromEntries(readdirSync(output).filter(name => /^transport-\d+\.jsonl$/.test(name)).map(name =>
-    [name, readFileSync(join(output, name), 'utf8').trim().split('\n').filter(Boolean).length]));
-}
-function transportRows(mark = {}) {
-  return readdirSync(output).filter(name => /^transport-\d+\.jsonl$/.test(name)).flatMap(name =>
-    readFileSync(join(output, name), 'utf8').trim().split('\n').filter(Boolean).slice(mark[name] ?? 0).map(line => JSON.parse(line)));
 }
 async function authCookies(config, label, trusted = false, spoof = false) {
   const { createClient } = require('@supabase/supabase-js');
@@ -346,7 +347,10 @@ async function smokeHost() {
   const { rest } = verify();
   assert.equal(config.jwtSecret, rest.PGRST_JWT_SECRET);
   installGuard();
-  const transportBefore = transportMark();
+  const state = JSON.parse(readFileSync(join(output, 'server-state.json'), 'utf8'));
+  const runIds = [process.env.STAGING_UAT_RUN_ID, state.runId];
+  const transportBefore = transportMark(output, runIds);
+  serverRunId = state.runId;
   phase('real-auth-health-and-rest-acl');
   const health = await fetch(api + '/auth/v1/health', { redirect: 'error', signal: AbortSignal.timeout(10000) });
   assert.equal(health.status, 200); await health.arrayBuffer();
@@ -440,8 +444,7 @@ async function smokeHost() {
       assert.equal(res.bytes.subarray(0, 5).toString(), '%PDF-');
     } else assert.match(res.response.headers.get('content-type'), /text\/html/);
   }
-  await new Promise(resolve => setTimeout(resolve, 1500));
-  const transport = transportRows(transportBefore);
+  const transport = await settleTransport(output, runIds, transportBefore);
   assert.equal(transport.filter(row => row.kind === 'line-captured').length, 0);
   assert.equal(transport.filter(row => row.kind === 'denied').length, 0);
   console.log('REAL_LOCAL_AUTH_FINANCE_SMOKE_PASSED; small seeded fixture, no LINE delivery or monthly performance claim.');
@@ -453,6 +456,10 @@ async function cutoffHost() {
   const config = runtimeConfig();
   const { rest } = verify(); assert.equal(config.jwtSecret, rest.PGRST_JWT_SECRET);
   installGuard();
+  const state = JSON.parse(readFileSync(join(output, 'server-state.json'), 'utf8'));
+  const runIds = [process.env.STAGING_UAT_RUN_ID, state.runId];
+  const transportBefore = transportMark(output, runIds);
+  serverRunId = state.runId;
   const readiness = await request('/api/settlement?month=2026-10');
   const clock = readiness.response.headers.get('x-local-staging-uat');
   assert.ok(['2026-10-08T20:59:00.000Z', '2026-10-08T21:00:00.000Z', '2026-10-08T21:05:00.000Z'].includes(clock));
@@ -478,7 +485,6 @@ async function cutoffHost() {
   assert.equal(sql(sqlGuard + "SELECT clock_timestamp() > timestamptz '2026-10-08T20:00:30Z';").trim(), 't',
     'Real SQL close deadline must already have elapsed');
   const before = snapshot(moneyTables);
-  const transportBefore = transportMark();
   // Named RPC creates genuine admission/ingest/close authority; dates do not fake SQL now().
   const opened = JSON.parse(sql(sqlGuard + `BEGIN;
     INSERT INTO public.raw_messages(line_event_id,destination,event_type,source_type,source_id,user_id,message_type,raw_text,payload,is_processed,created_at)
@@ -514,17 +520,15 @@ async function cutoffHost() {
   assert.equal(pending.finalized_produce_session_id, null);
   assert.ok(JSON.stringify(pending.finalization_error).includes('business date ambiguous: undated document near the 04:00 cutoff'));
   // Capture remains active during Next after(); a short bounded settle precedes inventory/snapshot checks.
-  await new Promise(resolve => setTimeout(resolve, 1500));
+  let transport = await settleTransport(output, runIds, transportBefore, 1);
   inventory([]); assert.deepEqual(snapshot(moneyTables), before);
-  let transport = transportRows(transportBefore);
   assert.equal(transport.filter(row => row.kind === 'denied').length, 0);
   const messages = transport.filter(row => row.kind === 'line-captured' && row.to === cutoffSource);
   assert.equal(messages.length, 1); assert.ok(JSON.stringify(messages[0].messages).includes('04:00'));
   const repeated = await request(cron, '', undefined, { Authorization: `Bearer ${config.cronSecret}` });
   assert.equal(repeated.response.status, 200); assert.equal(repeated.json().due, 0);
-  await new Promise(resolve => setTimeout(resolve, 1500));
+  transport = await settleTransport(output, runIds, transportBefore, 1);
   inventory([]); assert.deepEqual(snapshot(moneyTables), before);
-  transport = transportRows(transportBefore);
   assert.equal(transport.filter(row => row.kind === 'line-captured').length, 1);
   assert.equal(transport.filter(row => row.kind === 'denied').length, 0);
   writeFileSync(join(output, `cutoff-${suffix}-result.json`), JSON.stringify({ passed: true, clock,

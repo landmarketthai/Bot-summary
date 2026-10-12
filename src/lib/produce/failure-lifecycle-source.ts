@@ -25,7 +25,8 @@ import {
 type AnyClient = SupabaseClient<any>;
 
 const PAGE = 1000;
-const CHUNK = 500;
+// Keep raw-message UUID filters below the gateway's request-URI limit.
+const CHUNK = 50;
 
 function chunks<T>(values: readonly T[], size: number): T[][] {
   const out: T[][] = [];

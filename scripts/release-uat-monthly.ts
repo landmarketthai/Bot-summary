@@ -39,7 +39,7 @@ for (const date of dates) {
     }
     for (let generation = 0; generation < 2; generation++) {
       tables.pending_session_retired_generations.push({ session_generation: `${round}-g${generation}`,
-        session_key: `group:Cuat:user:U${seller}:draft${generation}`, source_id: "Cuat",
+        session_key: `group:Cuat:user:U${seller}:draft${round}-g${generation}`, source_id: "Cuat",
         staff_label: staff, market_label: "ราชพฤกษ์", business_date: date,
         declared_transaction_type: "คืน", finalization_status: "failed_closed", finalization_error: null,
         accountability_round_id: null, generation_created_at: `${date}T15:00:00Z`,
@@ -72,7 +72,10 @@ export function fixtureClient(delayMs: number, options: { resolved?: boolean; mi
         eq(column: string, value: unknown) { rows = rows.filter((r) => r[column] === value); return node; },
         gte(column: string, value: string) { rows = rows.filter((r) => String(r[column]) >= value); return node; },
         lt(column: string, value: string) { rows = rows.filter((r) => String(r[column]) < value); return node; },
-        in(column: string, values: unknown[]) { rows = rows.filter((r) => values.includes(r[column])); return node; },
+        in(column: string, values: unknown[]) {
+          assert.ok(values.length <= 50, `oversized ${table}.${column} lookup`);
+          rows = rows.filter((r) => values.includes(r[column])); return node;
+        },
         is(column: string, value: unknown) { rows = rows.filter((r) => (r[column] ?? null) === value); return node; },
         not(column: string, op: string, value: unknown) {
           assert.equal(op, "is");

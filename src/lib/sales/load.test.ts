@@ -3,7 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 import { computeItemHash, computeSessionHash } from "@/lib/line/session-dedup-service";
 import { parseWeighSession } from "@/lib/parsers/weigh-session/parser";
-import { bangkokBusinessDateWindow, loadSalesReport, SalesDataError } from "./load";
+import { bangkokBusinessDateWindow, loadProduceFailureScan, loadSalesReport, SalesDataError } from "./load";
 
 const DATE = "2026-07-25";
 const SOURCE_A = "Csource000000aaaaaa";
@@ -24,6 +24,7 @@ interface Fixture {
   deferredProduce?: Record<string, unknown>[];
   errors?: Partial<Record<string, string>>;
   errorCodes?: Partial<Record<string, string>>;
+  ingestFailureBatch?: number;
 }
 
 /**
@@ -33,9 +34,12 @@ interface Fixture {
  * fixture readable — every table returns the rows the test declared.
  */
 const filterLog: string[] = [];
+const inLog: { table: string; column: string; values: unknown[] }[] = [];
 
 function fakeSupabase(fixture: Fixture): SupabaseClient<Database> {
   filterLog.length = 0;
+  inLog.length = 0;
+  let ingestBatches = 0;
   const rowsFor = (table: string): Record<string, unknown>[] => {
     switch (table) {
       case "produce_transactions": return fixture.produce ?? [];
@@ -56,7 +60,8 @@ function fakeSupabase(fixture: Fixture): SupabaseClient<Database> {
 
   const client = {
     from(table: string) {
-      const error = fixture.errors?.[table];
+      const error = fixture.errors?.[table]
+        ?? (table === "pending_session_ingest" && ++ingestBatches === fixture.ingestFailureBatch ? "ingest batch failed" : undefined);
       const result = () => ({
         data: error ? null : rowsFor(table),
         error: error ? { message: error, code: fixture.errorCodes?.[table] } : null,
@@ -70,7 +75,10 @@ function fakeSupabase(fixture: Fixture): SupabaseClient<Database> {
         filterLog.push(`${table}.eq:${column}=${String(value)}`);
         return node;
       };
-      node.in = self;
+      node.in = (column: string, values: unknown[]) => {
+        inLog.push({ table, column, values });
+        return node;
+      };
       node.not = self;
       node.or = (filter: string) => {
         filterLog.push(`${table}.or:${filter}`);
@@ -242,6 +250,22 @@ describe("P0 loader: failed return without round binding", () => {
     business_date: DATE, source_id: SOURCE_A, staff_label: "เสือ", market_label: "ตลาดกี้",
     declared_transaction_type: "คืน", accountability_round_id: null,
     ...overrides,
+  });
+
+  test("620 retired-generation ingest keys are bounded and any failed batch rejects classification", async () => {
+    const retiredGenerations = Array.from({ length: 620 }, (_, i) => retired({
+      session_key: `group:${SOURCE_A}:user:${String(i).padStart(36, "0")}`,
+      session_generation: `generation-${i}`,
+    }));
+    const fixture = incidentFixture({ pending: [], retiredGenerations });
+    const scan = await loadProduceFailureScan(fakeSupabase(fixture), DATE);
+    const lookups = inLog.filter(query => query.table === "pending_session_ingest");
+    expect(lookups.map(query => query.values.length)).toEqual([...Array(12).fill(50), 20]);
+    expect(lookups.flatMap(query => query.values)).toEqual(retiredGenerations.map(row => row.session_key));
+    expect(scan.attempts).toHaveLength(620);
+    await expect(loadProduceFailureScan(fakeSupabase({ ...fixture, ingestFailureBatch: 2 }), DATE))
+      .rejects.toThrow("ingest batch failed");
+    expect(inLog.filter(query => query.table === "pending_session_ingest")).toHaveLength(2);
   });
 
   test("the seller's next header cannot erase the refused return (retired generation)", async () => {

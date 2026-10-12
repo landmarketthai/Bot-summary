@@ -65,7 +65,8 @@ type Supabase = SupabaseClient<Database>;
 type ProduceTransactionRow = Database["public"]["Views"]["produce_transactions"]["Row"];
 
 const PAGE_SIZE = 1000;
-const LOOKUP_CHUNK_SIZE = 500;
+// UUID/hash filters must fit within the gateway's request-URI limit.
+const LOOKUP_CHUNK_SIZE = 50;
 
 /**
  * Every column P1 needs. NO transaction-type filter is applied to the query:

@@ -8,10 +8,14 @@ const tls = require('node:tls');
 const dns = require('node:dns');
 const dgram = require('node:dgram');
 const http2 = require('node:http2');
-const capture = path.resolve(__dirname, '../.tmp-staging-uat-20261009/auth-finance');
+const runId = process.env.STAGING_UAT_RUN_ID || require('node:crypto').randomUUID();
+assert.match(runId, /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
+process.env.STAGING_UAT_RUN_ID = runId;
+module.exports = { runId };
+const capture = path.resolve(__dirname, '../.tmp-staging-uat-20261009/auth-finance/transport', runId);
 fs.mkdirSync(capture, { recursive: true });
 const log = path.join(capture, `transport-${process.pid}.jsonl`);
-function record(event) { fs.appendFileSync(log, JSON.stringify(event) + '\n'); }
+function record(event) { fs.appendFileSync(log, JSON.stringify({ ...event, runId, pid: process.pid }) + '\n'); }
 function deny() {
   record({ kind: 'denied' });
   throw new Error('Local staging transport denied');
@@ -93,7 +97,7 @@ globalThis.fetch = async function (input, init) {
   if (url.protocol !== 'http:' || url.username || url.password) deny();
   check(url.hostname, url.port);
   const request = new Request(input, init);
-  if (request.redirect !== 'error') {
+  if (request.redirect === 'follow') {
     return realFetch.call(this, new Request(request, { redirect: 'error' }));
   }
   return realFetch.call(this, request);

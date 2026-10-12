@@ -37,6 +37,8 @@ for (const resolved of [false, true]) {
       expect(pdf.length).toBeGreaterThan(1000);
       expect(renderedGroups).toHaveLength(310);
       expect(renderedGroups.every((group) => group.produceNetStatus === (resolved ? "trusted" : "return_incomplete"))).toBe(true);
+      expect(fake.queries.accountability_rounds).toBe(93);
+      if (!resolved) expect(fake.queries.pending_session_ingest).toBe(31 * 13);
       expect(networkAttempts).toBe(0);
       console.log(JSON.stringify({ monthlyPdf: resolved ? "resolved" : "pending", ms: performance.now() - start,
         bytes: pdf.length, groups: renderedGroups.length, queries: fake.queries,
