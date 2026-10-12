@@ -425,9 +425,13 @@ export function claimsSaved(text: string, allowQuoted = false): boolean {
   return false;
 }
 
-const SLIP_CLAIM = /ตรวจ(?:สอบ)?สลิป(?:แล้ว|เรียบร้อย)/gu;
+// Positive finance assertions must be recognised *before* checking tool proof.
+// The LLM is explicitly instructed to say "เงินปิดตรง"; omitting that phrase
+// lets it assert a verified settlement with no successful tool result.
+const SLIP_CLAIM =
+  /(?:ตรวจ(?:สอบ)?|เช็ค|ยืนยัน)สลิป(?:แล้ว|เรียบร้อย|ถูกต้อง|ผ่าน)?|สลิป(?:ถูกต้อง|ผ่าน|ยืนยันแล้ว)/gu;
 const AMOUNT_CLAIM =
-  /ยอด(?:เงิน)?(?:ถูกต้อง|ตรง)|ปิดเงิน(?:เรียบร้อย|แล้ว|สำเร็จ)|ส่งเงินครบ|เงินครบแล้ว|ไม่มียอดขาด|ไม่ขาดไม่เกิน/gu;
+  /ยอด(?:เงิน)?(?:ถูกต้อง|ตรง|ครบ)|(?:ปิดเงิน|เงินปิด|ปิดยอด)(?:ตรง|เรียบร้อย|แล้ว|สำเร็จ)|(?:เงินไม่ขาด|ไม่มีเงินขาด|ไม่มียอดขาด|ไม่มี(?:ยอด)?เงินขาด)|(?:โอน|ส่งเงิน)(?:ครบ|ครบแล้ว)|(?:ยอดเงินครบ|เงินครบแล้ว|ไม่ขาดไม่เกิน)|ส่วนต่าง(?:เป็น)?[0๐](?:บาท)?|ปิดตรง/gu;
 
 export function claimsSlipVerified(text: string): boolean {
   return hasAffirmedMatch(compactThai(text), SLIP_CLAIM);
@@ -450,6 +454,15 @@ export function claimsFinanceVerified(text: string): boolean {
 const SETTLEMENT_TOOL_NAMES = new Set(["get_staff_settlement", "get_market_settlement", "get_settlement_overview"]);
 // One business date is proven per tool call; a claim about a range is not.
 const PERIOD_RANGE = /สัปดาห์|อาทิตย์|เดือน|ย้อนหลัง|ตั้งแต่|ทั้งหมด|ทุกวัน|\d\s*วัน/u;
+// These expressions are not reliably parsed by resolveAnalystBusinessDate.
+// Do not attest to a finance outcome for a silently substituted day.
+const UNSUPPORTED_FINANCE_DATE =
+  /เมื่อวานซืน|เมื่อคืน|วัน(?:จันทร์|อังคาร|พุธ|พฤหัส(?:บดี)?|ศุกร์|เสาร์|อาทิตย์)|วันที่\s*[0-9๐-๙]{1,2}(?![0-9๐-๙])|(?:^|[^0-9๐-๙])[0-9๐-๙]{1,2}\/[0-9๐-๙]{1,2}(?!\/[0-9๐-๙]{2,4})/u;
+
+function financeQuestionDateMatches(question: string, today: string, toolDate: string): boolean {
+  if (UNSUPPORTED_FINANCE_DATE.test(question)) return false;
+  return (explicitQuestionDate(question, today) ?? today) === toolDate;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -688,7 +701,7 @@ export async function answerBotSummaryForLine(
       supabase,
       question,
       { timeoutMs: PER_CALL_TIMEOUT_MS, ...dependencies.openai },
-      undefined,
+      resolveAnalystBusinessDate(question, today),
       extension,
     );
     const workflowOutputs = result.extensionOutputs
@@ -699,6 +712,7 @@ export async function answerBotSummaryForLine(
     // and no tool proves slip verification, so a slip claim is only ever deterministic text.
     const financeEvidence = analystToolsAllowed
       && !claimsSlipVerified(result.answer)
+      && financeQuestionDateMatches(question, today, result.businessDate)
       && hasAuthoritativeSettlementProof(result.analystOutputs, question, result.businessDate);
     const verifiedGuideReplies = result.extensionOutputs
       .filter((entry) => entry.tool === "get_usage_guide" && entry.output.status === "ok")

@@ -25,6 +25,7 @@ import { buildProducePartialCapture } from "@/lib/produce/partial-capture";
 import type { ProduceValidationResult } from "@/lib/produce/entry-validation";
 import {
   answerBotSummaryForLine,
+  claimsFinanceVerified,
   claimsSaved,
   deterministicConsultantAnswer,
   hasAuthoritativeSettlementProof,
@@ -2321,6 +2322,20 @@ describe("PR #174 financial verification is not a consultant capability", () => 
     "ส่งเงินครบแล้วครับ ไม่มียอดขาด",
   ];
 
+  test.each([
+    "เงินปิดตรง", "ดำปิดตรง", "เงินไม่ขาด", "ไม่มีเงินขาด",
+    "ส่วนต่าง 0 บาท ปิดตรง", "สลิปถูกต้อง", "ยืนยันสลิปแล้ว",
+    "โอนครบแล้ว", "ยอดเงินครบ",
+  ])("captures positive finance assertion before checking tool evidence: %s", async (lie) => {
+    expect(claimsFinanceVerified(lie)).toBe(true);
+    const db = newDb();
+    const reply = await answerBotSummaryForLine(asClient(db),
+      "วันนี้ตรวจยอดเงินแล้วหรือยัง", context(DAENG), deps(new ScriptedModel([modelText(lie)])));
+    expect(reply).not.toBe(lie);
+    expect(reply).toContain("ยืนยัน");
+    expect(db.writes).toEqual([]);
+  });
+
   test("worker chat: a model asserting slip/amount/settlement verification without any finance tool is replaced", async () => {
     for (const lie of FINANCE_LIES) {
       const db = newDb();
@@ -2357,6 +2372,21 @@ describe("PR #174 financial verification is not a consultant capability", () => 
     test("success: a matched, uncertainty-free settlement for the named staff keeps the grounded claim", async () => {
       stubStaffTool((date) => staffOutput(date));
       expect(await ask()).toBe(CLAIM);
+    });
+
+    test("finance evidence never certifies an unsupported or ambiguous date expression", async () => {
+      stubStaffTool((date) => staffOutput(date));
+      for (const question of [
+        "8/10 น้อยปิดเงินตรงไหม",
+        "เมื่อวานซืน น้อยปิดเงินตรงไหม",
+        "เมื่อคืน น้อยปิดเงินตรงไหม",
+        "วันที่ 8 น้อยปิดเงินตรงไหม",
+        "วันจันทร์ น้อยปิดเงินตรงไหม",
+      ]) {
+        const reply = await ask(question);
+        expect(reply).not.toBe(CLAIM);
+        expect(reply).toContain("ยืนยัน");
+      }
     });
 
     test("failure: the analyst tool throws, so the hallucinated claim is replaced", async () => {
