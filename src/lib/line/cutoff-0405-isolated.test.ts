@@ -55,21 +55,30 @@ const DATED_FAILED_RETURN = [
   `${SELLER}-${MARKET} ชั่งคืน 14/11/2569`, "1.มะนาว50บาท", "3แพค", "22.มะม่วง", "จบรายการชั่งคืน",
 ];
 
-/** Finalizer double; the bind RPC is idempotent per (session_key, generation) like SQL. */
+/**
+ * Finalizer double; the bind RPC is idempotent per (session_key, generation)
+ * like SQL. Strict: an unknown table or RPC throws, and every write is
+ * recorded so tests assert the exact write set instead of silently accepting it.
+ */
 class FinalizerDouble {
   rpcCalls: Array<{ name: string; args: Row }> = [];
+  writes: string[] = [];
   private bound = new Map<string, string>();
 
-  constructor(private readonly tables: Record<string, Row[]>) {}
+  constructor(private readonly tables: Record<string, Row[]>, private readonly bindError = false) {}
 
   from = (table: string) => {
-    const rows = this.tables[table] ?? [];
+    if (!(table in this.tables)) throw new Error(`Unexpected table: ${table}`);
+    const rows = this.tables[table]!;
     const filters: Array<(row: Row) => boolean> = [];
     const matching = () => rows.filter((row) => filters.every((f) => f(row)));
+    const write = (op: string) => () => { this.writes.push(`${table}.${op}`); return builder; };
     const builder = {
       select: () => builder,
-      upsert: () => builder,
-      update: () => builder,
+      insert: write("insert"),
+      upsert: write("upsert"),
+      update: write("update"),
+      delete: write("delete"),
       eq: (column: string, value: unknown) => { filters.push((row) => row[column] === value); return builder; },
       lte: (column: string, value: unknown) => { filters.push((row) => Number(row[column]) <= Number(value)); return builder; },
       not: () => builder,
@@ -90,13 +99,14 @@ class FinalizerDouble {
       return { data: { status: "failed_closed", reason: "validation_failed" }, error: null };
     }
     if (name === "bind_plain_text_accountability_round") {
+      if (this.bindError) return { data: null, error: { message: "bind RPC unavailable" } };
       const key = `${args.p_session_key}|${args.p_session_generation}`;
       const existing = this.bound.get(key);
       if (existing) return { data: { outcome: "already_bound", accountability_round_id: existing, market_label: MARKET }, error: null };
       this.bound.set(key, ROUND_D);
       return { data: { outcome: "bound", accountability_round_id: ROUND_D, market_label: MARKET }, error: null };
     }
-    return { data: null, error: null };
+    throw new Error(`Unexpected RPC: ${name}`);
   };
 
   calls(name: string) { return this.rpcCalls.filter((call) => call.name === name); }

@@ -30,7 +30,7 @@ from them (sales, ยอดส่ง, expected cash, ขาด/เกิน) are
 | # | Sev | Defect | Fix |
 |---|-----|--------|-----|
 | A1 | P0 | Exact 4-field match: a typo/unreviewed-alias/wrong-group refused return matched no round and the round stayed `none` (silent sold-out). `normalizedMarketLabel` ignored reviewed aliases. | Narrowing attribution: start from all rounds of the date, narrow by source → seller → canonical market only where some round shares the value; protect every survivor. Exact evidence still protects only its own round. |
-| A2 | P0 | Rotation erasure: `open_pending_plain_text_generation` rewrites the single `pending_sessions` row, wiping a failed_closed return (status, text, round) when the same LINE user sends the next header — before the 08:00 reports. | Migration `20261008150000_pending_session_retired_generations.sql` (append-only table + AFTER UPDATE trigger, evidence only). Sales scan reads retired `failed_closed` non-withdrawal generations (not `user_cancelled`/`superseded`); a database without the table reads as empty, any other read error fails closed. |
+| A2 | P0 | Rotation erasure: `open_pending_plain_text_generation` rewrites the single `pending_sessions` row, wiping a failed_closed return (status, text, round) when the same LINE user sends the next header — before the 08:00 reports. | Migration `20261008150000_pending_session_retired_generations.sql` (append-only table + AFTER UPDATE trigger, evidence only). Sales scan reads retired `failed_closed` non-withdrawal generations (not `user_cancelled`/`superseded`); a database without the table now fails closed; migration is mandatory BEFORE deploying this code. |
 | A3 | P1 | Mixed document (เบิก + คืน section) with errors bound with `p_is_new_round=true` → could mint/reuse a round from a refused document. | `refusedReturnMayBindRound`: never a new-round document; return kind from header or items. |
 | A4 | P1 | Refused return bound with the fallback date = processing clock (`bangkokBusinessDateNow`), not the event; across 04:00 → wrong round (D+1 blocked, D sold-out). | `undatedBusinessDateAmbiguous` (±30 min of 04:00 or clocks disagree): refused documents are not bound; valid undated continuations are refused at close gate and finalizer with `UNDATED_CUTOFF_REPLY`. |
 | A5 | P1 | Finalizer replaced the parse-error reply with the bind refusal text. | Attribution-only bind refusal is logged, never shown. |
@@ -46,7 +46,7 @@ from them (sales, ยอดส่ง, expected cash, ขาด/เกิน) are
 | R1b | P1 | Retaining refusals made every typo-corrected return a permanent block (exact-identity supersession only). | Lifecycle release for unbound **return** attempts: released only when EVERY withdrawal round it could belong to (narrowed source → seller → canonical market) got a later main return of the same kind. Another market's return of the same seller (ต้อม) or another seller's return never releases it. |
 | R2 | P1 | Cross-cutoff: next day's ordinary return superseded yesterday's failed return. | Earlier-day-only cross-cutoff supersession. |
 | R3 | P1 | Legacy screens blocked every pre-round date ("no round" → blocked). | Before `PLAIN_TEXT_ROUND_ENFORCEMENT_FROM` (2026-08-11) a seller/market with no round is judged by day-level blockers; from that date on round-less produce is never certified (also for White Sheet round-less rows). |
-| R5 | P2 | Missing-table tolerance matched on message text. | Only PostgREST `PGRST205` / `42P01` on the first page. |
+| R5 | P2 | Missing-table tolerance initially matched error message text. | Current release code refuses ALL retired-evidence read errors, including `PGRST205` / `42P01`; table and PostgREST visibility are required before application deployment. |
 | R6 | P2 | A preflight error returned 500 for the whole White Sheet. | Verdict error → `blocked` (hard stop), page still renders. |
 | R7 | P2 | NULL `session_generation` would make the trigger fail the rotation. | `WHEN (OLD.session_generation IS NOT NULL AND …)`. |
 | R10 | P2 | Ingest timestamp lookup unpaged (>1000 rows → silent created_at fallback near 04:00). | Paged with stable order. |
@@ -93,8 +93,7 @@ compared by **test identity** (not counts).
 
 ## Remaining risks / NOT PRODUCTION READY
 1. **Migration not applied anywhere but a local PostgreSQL 17.** Production needs
-   `20261008150000` before code relying on it gives the erasure protection (code tolerates
-   its absence = today's behaviour). Retained evidence starts only from application; past
+   `20261008150000` before code relying on it can safely run. Missing retired-generation table is now a hard stop for Sales and dependent financial reports (never an empty-history fallback). Retained evidence starts only from application; past
    erased generations are not recoverable by this change.
 2. **Legacy screens run one preflight per date** (financial summary month view ≈ 31
    sequential preflights). Correct but possibly slow; not measured.
@@ -201,6 +200,8 @@ no production or runtime integration evidence. The prior missing-env `/overview`
 build failure is still relevant when no configuration is supplied.
 
 ### Exact release order for a separately authorized operator
+
+**12 October 2026 production read-only check:** `pending_session_retired_generations`, its retention trigger, and the backing function were ABSENT in Production; prerequisite columns in `pending_sessions` were present. **NO-GO** until the migration is applied and verified before any new application code is deployed. Existing historical erased records are not restored by this migration.
 
 1. Keep financial certification and scheduled financial delivery withheld while
    capability checks are unresolved. Preserve the currently deployed artifact,
