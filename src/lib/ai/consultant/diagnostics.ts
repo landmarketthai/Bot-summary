@@ -136,14 +136,22 @@ export function thaiShortDate(isoDate: string | null): string | null {
   return month ? `${Number(match[3])} ${month}` : null;
 }
 
-/** "รายการชั่งคืนของน้อย–ราชพฤกษ์ วันที่ 7 ต.ค." */
+/** Worker-typed labels are data, never instructions: keep only Thai, digits and simple punctuation. */
+export function safeLabel(value: string | null | undefined): string | null {
+  if (!value) return null;
+  return value.replace(/[^฀-๿0-9 .\-/()]/gu, "").trim().slice(0, 40) || null;
+}
+
+/** "รายการชั่งคืนของน้อย–ราชพฤกษ์ วันที่ 7 ต.ค." Labels are sanitized here because this text reaches the model as suggestedReply. */
 export function documentSubject(header: SubmissionHeader): string {
+  const staff = safeLabel(header.staff);
+  const market = safeLabel(header.market);
   let subject = header.transactionKind
     ? `รายการ${TRANSACTION_KIND_THAI[header.transactionKind]}`
     : "รายการ";
-  if (header.staff && header.market) subject += `ของ${header.staff}–${header.market}`;
-  else if (header.staff) subject += `ของ${header.staff}`;
-  else if (header.market) subject += ` ตลาด${header.market}`;
+  if (staff && market) subject += `ของ${staff}–${market}`;
+  else if (staff) subject += `ของ${staff}`;
+  else if (market) subject += ` ตลาด${market}`;
   const date = thaiShortDate(header.businessDate);
   if (date) subject += ` วันที่ ${date}`;
   return subject;

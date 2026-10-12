@@ -51,6 +51,8 @@ export type ReadonlyAnalystResult = {
   toolExecutions: AnalystToolExecution[];
   /** Outputs of extension tools, for deterministic guards and fallbacks. */
   extensionOutputs: Array<{ tool: string; output: Record<string, unknown> }>;
+  /** Raw analyst-tool results, failures included (`output.error`), so callers can tell success from error. */
+  analystOutputs: Array<{ tool: string; output: Record<string, unknown> }>;
   answer: string;
 };
 
@@ -430,6 +432,7 @@ async function runToolCalls(
   executions: AnalystToolExecution[],
   extension: AnalystToolExtension | undefined,
   extensionOutputs: ReadonlyAnalystResult["extensionOutputs"],
+  analystOutputs: ReadonlyAnalystResult["analystOutputs"],
 ): Promise<Array<Record<string, unknown>>> {
   const calls = extractOpenAIFunctionCalls(payload);
   const remaining = MAX_TOOL_CALLS_TOTAL - executions.length;
@@ -449,6 +452,7 @@ async function runToolCalls(
         executions.push({ tool: call.name, arguments: args });
       } else if (extension?.exclusive) {
         output = { error: `tool ${call.name} is not available in this chat` };
+        analystOutputs.push({ tool: call.name, output });
       } else {
         const request = toolRequestFromCall(call.name, args, businessDate);
         const data = await executeReadonlyAnalystTool(supabase, request);
@@ -457,11 +461,13 @@ async function runToolCalls(
           tool: request.tool,
           arguments: args,
         });
+        analystOutputs.push({ tool: request.tool, output });
       }
     } catch (error) {
       output = {
         error: error instanceof Error ? error.message : "tool execution failed",
       };
+      analystOutputs.push({ tool: call.name, output });
     }
 
     outputs.push({
@@ -495,6 +501,7 @@ export async function answerWithReadonlyTools(
 
   const executions: AnalystToolExecution[] = [];
   const extensionOutputs: ReadonlyAnalystResult["extensionOutputs"] = [];
+  const analystOutputs: ReadonlyAnalystResult["analystOutputs"] = [];
   const baseInstructions = extension?.exclusive
     ? BOT_SUMMARY_ANALYST_INSTRUCTIONS
     : analystInstructions(businessDate);
@@ -534,7 +541,7 @@ ${extension.context}` : trimmed;
     if (calls.length === 0) {
       const answer = extractOpenAIOutputText(payload);
       if (!answer) throw new Error("OpenAI analyst returned an empty answer.");
-      return { businessDate, toolExecutions: executions, extensionOutputs, answer };
+      return { businessDate, toolExecutions: executions, extensionOutputs, analystOutputs, answer };
     }
 
     const toolOutputs = await runToolCalls(
@@ -544,6 +551,7 @@ ${extension.context}` : trimmed;
       executions,
       extension,
       extensionOutputs,
+      analystOutputs,
     );
     history.push(...(payload.output ?? []), ...toolOutputs);
 

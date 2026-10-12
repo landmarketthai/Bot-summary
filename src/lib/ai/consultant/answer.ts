@@ -29,6 +29,7 @@ import {
   type ScopeResolutionOptions,
 } from "./authorization";
 import { loadRecentBotSummaryQuestions } from "./conversation";
+import { safeLabel } from "./diagnostics";
 import {
   CONSULTANT_ACTION_GUIDES,
   CONSULTANT_KNOWLEDGE,
@@ -99,14 +100,10 @@ const REPLY_IDENTITY_UNVERIFIED =
   "ยังยืนยันตัวผู้ถามไม่ได้ จึงดูสถานะรายการให้ไม่ได้ครับ กรุณาถามจากบัญชีไลน์ที่ใช้ส่งรายการครับ";
 const REPLY_NONE =
   "ไม่พบรายการผักที่ตรงกับคำถามในช่วง 3 วันนี้ครับ ถ้าเพิ่งส่ง กรุณาดูข้อความตอบกลับของบอทหรือถามใหม่อีกครั้งครับ";
+const REPLY_FINANCE_UNVERIFIED =
+  "ตอนนี้ยังยืนยันเรื่องยอดเงินหรือสลิปจากระบบไม่ได้ครับ กรุณาสอบถามผู้ดูแลครับ";
 const REPLY_CANNOT_CONFIRM =
   "ยังยืนยันจากระบบไม่ได้ว่ารายการบันทึกแล้วหรือยังครับ กรุณาถามสถานะอีกครั้ง เช่น “รายการชั่งคืนล่าสุดของผมเข้าหรือยัง” ครับ";
-
-/** Worker-typed labels reach the model as data: keep only Thai, digits and simple punctuation. */
-function safeLabel(value: string | null): string | null {
-  if (!value) return null;
-  return value.replace(/[^\u0E00-\u0E7F0-9 .\-/()]/gu, "").trim().slice(0, 40) || null;
-}
 
 function candidateLine(candidate: SubmissionCandidate): string {
   return [
@@ -428,6 +425,83 @@ export function claimsSaved(text: string, allowQuoted = false): boolean {
   return false;
 }
 
+const SLIP_CLAIM = /ตรวจ(?:สอบ)?สลิป(?:แล้ว|เรียบร้อย)/gu;
+const AMOUNT_CLAIM =
+  /ยอด(?:เงิน)?(?:ถูกต้อง|ตรง)|ปิดเงิน(?:เรียบร้อย|แล้ว|สำเร็จ)|ส่งเงินครบ|เงินครบแล้ว|ไม่มียอดขาด|ไม่ขาดไม่เกิน/gu;
+
+export function claimsSlipVerified(text: string): boolean {
+  return hasAffirmedMatch(compactThai(text), SLIP_CLAIM);
+}
+
+function hasAffirmedMatch(compact: string, pattern: RegExp): boolean {
+  for (const match of compact.matchAll(pattern)) {
+    if (/(?:ยัง|ไม่|ไม่ได้)$/u.test(compact.slice(Math.max(0, match.index - 6), match.index))) continue;
+    return true;
+  }
+  return false;
+}
+
+/** Does the text assert that a slip / amount / settlement was verified? A negated mention is not a claim. */
+export function claimsFinanceVerified(text: string): boolean {
+  const compact = compactThai(text);
+  return hasAffirmedMatch(compact, SLIP_CLAIM) || hasAffirmedMatch(compact, AMOUNT_CLAIM);
+}
+
+const SETTLEMENT_TOOL_NAMES = new Set(["get_staff_settlement", "get_market_settlement", "get_settlement_overview"]);
+// One business date is proven per tool call; a claim about a range is not.
+const PERIOD_RANGE = /สัปดาห์|อาทิตย์|เดือน|ย้อนหลัง|ตั้งแต่|ทั้งหมด|ทุกวัน|\d\s*วัน/u;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** One settlement row proves a match only when every input is present, nothing is uncertain, and cash equals the formula. */
+function isMatchedSettlement(row: unknown): boolean {
+  return isRecord(row)
+    && row.status === "CLOSED_MATCHED"
+    && Array.isArray(row.missingInputs) && row.missingInputs.length === 0
+    && Array.isArray(row.uncertainty) && row.uncertainty.length === 0
+    && row.cashDifferenceBaht === 0
+    && typeof row.expectedCashBaht === "number" && typeof row.actualCashBaht === "number";
+}
+
+/** The tool was asked about the staff/market the question names (it is model-chosen, so never trusted blindly). */
+function settlementTargetNamedInQuestion(output: Record<string, unknown>, compactQuestion: string): boolean {
+  if (output.tool === "get_settlement_overview") return true;
+  const target = output.tool === "get_staff_settlement" ? output.requestedStaff : output.requestedMarket;
+  const name = typeof target === "string" ? compactThai(target) : "";
+  return name.length > 0 && compactQuestion.includes(name);
+}
+
+/**
+ * Deterministic finance proof from the analyst's REAL tool results. An attempted
+ * call is not evidence: every settlement call must have succeeded (no `error`),
+ * covered the question's business date and target, found rows, and returned only
+ * fully-matched settlements with no missing inputs and no uncertainty notes.
+ * Any failed, empty, incomplete, differing or unrelated result fails closed.
+ */
+export function hasAuthoritativeSettlementProof(
+  analystOutputs: Array<{ tool: string; output: Record<string, unknown> }>,
+  question: string,
+  businessDate: string,
+): boolean {
+  const compactQuestion = compactThai(question);
+  if (PERIOD_RANGE.test(compactQuestion)) return false;
+  const finance = analystOutputs.filter((entry) => SETTLEMENT_TOOL_NAMES.has(entry.tool));
+  if (finance.length === 0) return false;
+  return finance.every(({ tool, output }) => {
+    if ("error" in output || output.tool !== tool || output.businessDate !== businessDate) return false;
+    if (output.found === false) return false;
+    if (tool === "get_staff_settlement"
+      && !(typeof output.matchedProduceRows === "number" && output.matchedProduceRows > 0
+        && output.unresolvedSourceRows === 0)) return false;
+    const settlements = output.settlements;
+    if (!Array.isArray(settlements) || settlements.length === 0) return false;
+    if (tool === "get_settlement_overview" && output.settlementCount !== settlements.length) return false;
+    return settlementTargetNamedInQuestion(output, compactQuestion) && settlements.every(isMatchedSettlement);
+  });
+}
+
 /** Only complete verified text can explain persistence without live workflow proof. */
 export function claimsUngroundedSaved(answer: string, groundingTexts: string[]): boolean {
   return claimsSaved(answer)
@@ -620,6 +694,20 @@ export async function answerBotSummaryForLine(
     const workflowOutputs = result.extensionOutputs
       .filter((entry) => WORKFLOW_TOOL_NAMES.has(entry.tool))
       .map((entry) => entry.output as ToolOutput);
+    // Amount / settlement verification needs a SUCCESSFUL, fully-matched settlement result
+    // from a management-chat analyst tool. Consultant tools and failed calls never prove it,
+    // and no tool proves slip verification, so a slip claim is only ever deterministic text.
+    const financeEvidence = analystToolsAllowed
+      && !claimsSlipVerified(result.answer)
+      && hasAuthoritativeSettlementProof(result.analystOutputs, question, result.businessDate);
+    const verifiedGuideReplies = result.extensionOutputs
+      .filter((entry) => entry.tool === "get_usage_guide" && entry.output.status === "ok")
+      .map((entry) => entry.output.suggestedReply)
+      .filter((reply): reply is string => typeof reply === "string");
+    if (claimsFinanceVerified(result.answer) && !financeEvidence
+      && !verifiedGuideReplies.some((reply) => compactThai(reply) === compactThai(result.answer))) {
+      return workflowOutputs.at(-1)?.suggestedReply ?? REPLY_FINANCE_UNVERIFIED;
+    }
     if (workflowOutputs.length > 0) return guardConsultantAnswer(result.answer, workflowOutputs);
     // A selected Analyst/guide tool cannot satisfy a document-status request.
     // Apply the same intent and scoped evidence policy on success and outage.
