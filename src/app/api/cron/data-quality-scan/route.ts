@@ -12,7 +12,7 @@ function isIsoDate(value: string): boolean {
 }
 
 /**
- * Data Quality Inbox — cron-compatible scan (no schedule is activated here).
+ * Data Quality Inbox — daily Production scan, plus an idempotent manual/backfill endpoint.
  * Idempotent: re-running for a date that
  * already has issues on file only refreshes last_seen / reopens / touches
  * IGNORED rows — see src/lib/data-quality/inbox.ts. Safe to re-run, safe to
