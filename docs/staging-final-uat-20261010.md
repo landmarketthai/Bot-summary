@@ -1,5 +1,34 @@
 # Isolated Staging UAT continuation — 10 October 2026
 
+## Follow-up — 12 October 2026, offline cutoff and independent PDF gates
+
+**Still Production NO-GO.** Offline in-process evidence only; the staging
+`--cutoff-host` 04:05 fixture was **not run** and remains UNTESTED as HTTP/DB
+evidence. No host, Docker, database, LINE or Production operation occurred.
+
+- `src/lib/line/cutoff-0405-isolated.test.ts` (new, 20 tests): Bun fake clock
+  at Bangkok 03:59:59.999 / 04:00:00.000 / 04:05:00.000 for new synthetic
+  business date 2026-11-14, global fetch forbidden. Undated return sent 03:55:
+  real finalizer fails closed with the ambiguity error, never calls the bind
+  RPC, same idempotency key on retry. Dated failed return: bind args identical
+  on retry, explicit header date, idempotent `already_bound` round id. The
+  finalizer's resulting row keeps real Sales, Daily Close preflight, yod-song
+  verdict and the White Sheet cash adapter provisional on both D and D+1;
+  10:00 and clean-day controls certify; an evidence read error is a hard stop.
+  Margin edges 03:29:59.999/03:30/04:29:59.999/04:30 are pinned. Two
+  temporary mutants (gate disabled; cross-cutoff dual-day attribution removed)
+  failed 11 and 3 tests, then were reverted.
+- Monthly PDF: the real route's 31-day synthetic PDF is also read by an
+  independent extractor (`pdftotext -layout`, Xpdf 4.00). Each of 310
+  date/seller rows occurs once with `ตรวจสอบ` at ยอดส่ง and ขาด/เกิน and amounts
+  elsewhere; footer likewise; 622 markers; the resolved PDF has none. Skipped
+  (named BLOCKED) where `pdftotext` is absent. A mutant printing ยอดส่ง for
+  provisional rows was rejected.
+- Proxy: invalid refresh deletes every auth chunk (`Max-Age=0`) and the
+  follow-up request is denied again (API 401, page login redirect); a mutant
+  dropping cookie copy failed both.
+- Post-patch host `--month-host` remains NOT TESTED.
+
 ## Follow-up evidence — 12 October 2026 (supersedes the host-test status below)
 
 **Sales Integrity P0 remains Production NO-GO.** This section records later,

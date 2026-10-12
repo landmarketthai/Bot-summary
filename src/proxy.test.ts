@@ -76,4 +76,32 @@ describe("proxy — SSR response cookies", () => {
     }
     if (status !== 200) expect(res.headers.has("x-middleware-next")).toBe(false);
   });
+
+  it.each([
+    ["/api/settlement", 401, null],
+    ["/financial-summary", 307, "/login?next=%2Ffinancial-summary"],
+  ] as const)("invalid refresh on %s deletes every auth chunk and the browser's follow-up is denied too", async (path, status, location) => {
+    const deleted: CookieOptions = { path: "/", httpOnly: true, secure: true, sameSite: "lax", maxAge: 0 };
+    const jar = new Map([["sb-test-auth-token.0", "expired-0"], ["sb-test-auth-token.1", "expired-1"], ["theme", "dark"]]);
+    const send = async () => proxy(new NextRequest(`http://localhost${path}`,
+      { headers: { cookie: [...jar].map(([name, value]) => `${name}=${value}`).join("; ") } }));
+    const expectDenied = (res: Response) => {
+      expect(res.status).toBe(status);
+      expect(res.headers.get("location")).toBe(location === null ? null : `http://localhost${location}`);
+    };
+    // GoTrue rejected the refresh token: SSR clears both chunks and reports no user.
+    cookieUpdates = [...jar.keys()].filter((name) => name.startsWith("sb-"))
+      .map((name) => ({ name, value: "", options: deleted }));
+    const first = await send();
+    expectDenied(first);
+    for (const header of first.headers.getSetCookie()) {
+      const [pair] = header.split(";");
+      const name = pair!.slice(0, pair!.indexOf("="));
+      expect(header).toContain("Max-Age=0");
+      jar.delete(name);
+    }
+    expect([...jar.keys()]).toEqual(["theme"]);
+    cookieUpdates = [];
+    expectDenied(await send());
+  });
 });

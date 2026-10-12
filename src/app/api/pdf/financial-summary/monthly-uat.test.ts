@@ -1,4 +1,8 @@
 import { expect, mock, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createElement } from "react";
 import { NextRequest } from "next/server";
 import type { GroupRow } from "@/components/financial-summary/FinancialTable";
@@ -78,6 +82,50 @@ for (const resolved of [false, true]) {
     } finally { globalThis.fetch = originalFetch; }
   }, 30_000);
 }
+
+// Independent cross-check of the in-house decoder: an external extractor
+// (Xpdf/Poppler `pdftotext -layout`) reads the same route bytes. It may reorder
+// Thai combining marks, so cells compare on spacing/mark-free skeletons.
+const pdftotext = Bun.which("pdftotext");
+const skeleton = (text: string) => text.replace(/[\sัิ-ฺ็-๎]/g, "");
+const amount = String.raw`-?[\d,]+\.\d{2}`;
+const rowTail = (status: string) => new RegExp(String.raw`(?:${amount}\s+){3}${status}(?:\s+${amount}){5}\s+${status}\s*$`);
+
+function pdftotextLines(pdf: Buffer): string[] {
+  const dir = mkdtempSync(join(tmpdir(), "financial-pdf-"));
+  try {
+    writeFileSync(join(dir, "report.pdf"), pdf);
+    const out = spawnSync(pdftotext!, ["-layout", "-enc", "UTF-8", join(dir, "report.pdf"), "-"], { encoding: "utf8" });
+    expect(out.status).toBe(0);
+    return out.stdout.split(/\r?\n/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+
+// ponytail: skipped, not failed, where CI lacks pdftotext; the in-house decoder test above still runs.
+test.skipIf(!pdftotext)("BLOCKED without pdftotext — independent extractor: every seller/date row of the route PDF", async () => {
+  for (const resolved of [false, true]) {
+    fake = fixtureClient(0, { resolved });
+    const response = await GET(new NextRequest("http://localhost/api/pdf/financial-summary?month=2026-10"));
+    expect(response.status).toBe(200);
+    const lines = pdftotextLines(Buffer.from(await response.arrayBuffer()));
+    const all = skeleton(lines.join(""));
+    for (const heading of ["สรุปการเงิน", "ตุลาคม 2569"]) expect(all).toContain(skeleton(heading));
+    // Pending: ยอดส่ง and ขาด/เกิน are ตรวจสอบ; resolved: both are amounts.
+    const tail = rowTail(resolved ? amount : "ตรวจสอบ");
+    for (let day = 1; day <= 31; day++) {
+      for (let seller = 0; seller < 10; seller++) {
+        const identity = skeleton(`${day} ต.ค. 69 ผู้ขาย${seller} ราชพฤกษ์`);
+        const matches = lines.filter((line) => skeleton(line).startsWith(identity));
+        expect(matches).toHaveLength(1);
+        expect(matches[0]!).toMatch(tail);
+      }
+    }
+    const footer = lines.filter((line) => skeleton(line).startsWith(skeleton("รวม 310 กลุ่ม")));
+    expect(footer).toHaveLength(1);
+    expect(footer[0]!).toMatch(tail);
+    expect(lines.join("\n").match(/ตรวจสอบ/g)?.length ?? 0).toBe(resolved ? 0 : 310 * 2 + 2);
+  }
+}, 60_000);
 
 // Real-renderer PDFs for the host gate's August defaults (1/31 ส.ค. 69, ผู้ขาย๐/๙).
 // [date, seller, provisional, market]; other rows and the footer still show ตรวจสอบ.
