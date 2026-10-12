@@ -14,6 +14,8 @@ import { loadAcceptedApprovals } from "./review-turns";
 export const PREVIEW_TTL_MS = 10 * 60_000;
 export const SESSION_MAX_AGE_MS = 3 * 60 * 60_000;
 export const APPROVAL_TEXT = "ผ่าน";
+/** Explicit approval of a sheet that still has unclear or missing key fields. */
+export const CONFIRM_UNCERTAIN_APPROVAL_TEXT = "ยืนยันผ่าน";
 // ponytail: cap replay at 300 of the user's own text/image rows received inside the 3-hour
 // session window; fail closed on overflow. Add paging only if a session really needs it.
 const MAX_SESSION_ROWS = 300;
@@ -32,7 +34,36 @@ export function whiteSheetReadCommand(message: LineTextMessage, destination: str
     : question === "จบใบขาว" ? "end" : null;
 }
 export function isWhiteSheetApproval(text: string): boolean {
-  return text.trim() === APPROVAL_TEXT;
+  return text.trim() === APPROVAL_TEXT || isUncertainApprovalConfirmation(text);
+}
+export function isUncertainApprovalConfirmation(text: string): boolean {
+  return text.trim() === CONFIRM_UNCERTAIN_APPROVAL_TEXT;
+}
+
+// A line that starts with a white-sheet field label followed by its value ("ตลาด วัดตะกล่ำ",
+// "ค่าแรง 300", "คนขาย: กี้"). A label glued to other words ("ยอดขายวันนี้") is not a field.
+const FIELD_LINE = /^(?:ตลาด|วันที่|คนขาย|ผู้ขาย|ยอดขาย|เงินโอน|โอน|ส่งเงินสด|เงินสด|ค่าแรง|เหลือเงินสด|ค่าใช้จ่าย)(?:\s*[:：]\s*|\s+|(?=\d))\S/u;
+const QUESTION = /[?？]|เท่าไ[หร]|ไหม|มั้ย|หรือเปล่า|หรือยัง|อะไร|ยังไง|อย่างไร|บ้าง|ใคร|ไหน|เมื่อไ[หร]|ทำไม|เทียบ|กี่/u;
+/**
+ * Deterministic: text addressed to @Botsummary that is shaped like a white-sheet field
+ * correction, not a question. Used only to keep such text away from the analyst while a
+ * review is open; the correction model still decides what (if anything) it corrects.
+ */
+export function isWhiteSheetCorrectionText(text: string): boolean {
+  if (QUESTION.test(text)) return false;
+  return text.split(/\r?\n/u).some((line) => FIELD_LINE.test(line.trim()));
+}
+
+/**
+ * The text a message contributes to its sender's own review, or null when it is not review
+ * input. Plain text always is; @Botsummary text only when it is the approval or field-shaped
+ * (the mention stripped), so ordinary analyst questions and the read commands are never review input.
+ */
+export function whiteSheetReviewInput(message: LineTextMessage, destination: string): string | null {
+  const question = extractBotSummaryQuestion(message, destination);
+  if (question === null) return message.text;
+  if (whiteSheetReadCommand(message, destination)) return null;
+  return isWhiteSheetApproval(question) || isWhiteSheetCorrectionText(question) ? question : null;
 }
 /** Only a single LINE-hosted image can be read; anything else never advances the session. */
 export function isReadableWhiteSheetImage(message: LineImageMessage): boolean {
@@ -130,9 +161,10 @@ function replayKindFromRow(row: SessionRow, destination: string): ReplayEvent["k
   if (row.message_type === "text" && raw.message.type === "text") {
     const command = whiteSheetReadCommand(raw.message, destination);
     if (command) return command;
-    // Other @Botsummary messages (analyst Q&A) are never corrections.
-    if (extractBotSummaryQuestion(raw.message, destination) !== null) return null;
-    return isWhiteSheetApproval(raw.message.text) ? "approval" : "text";
+    // Other @Botsummary messages (analyst Q&A) are never corrections; the webhook routes with the same rule.
+    const input = whiteSheetReviewInput(raw.message, destination);
+    if (input === null) return null;
+    return isWhiteSheetApproval(input) ? "approval" : "text";
   }
   return null;
 }
@@ -169,12 +201,24 @@ export async function resolveWhiteSheetSession(
     if (event.message.type === "image") throw new Error("Session ordering unavailable");
     return NO_WHITE_SHEET_SESSION;
   }
-  const mine = () => db.from("raw_messages").select("id,message_type,payload,is_processed,created_at")
-    .eq("destination", destination).eq("source_type", "group").eq("source_id", sourceId).eq("user_id", userId);
-  const { data: self, error: selfError } = await mine().eq("id", rawMessageId).maybeSingle();
+  const { data: self, error: selfError } = await userRows(db, { destination, sourceId, userId })
+    .eq("id", rawMessageId).maybeSingle();
   if (selfError || !self) throw new Error("Session context unavailable");
   const currentKey = semanticKey(payloadTimestamp(self.payload), current.received_at, current.receive_order);
+  return resolveUserSession(db, { destination, sourceId, userId }, currentKey, now);
+}
 
+type UserScope = { destination: string; sourceId: string; userId: string };
+const userRows = (db: SupabaseClient<Database>, { destination, sourceId, userId }: UserScope) =>
+  db.from("raw_messages").select("id,message_type,payload,is_processed,created_at")
+    .eq("destination", destination).eq("source_type", "group").eq("source_id", sourceId).eq("user_id", userId);
+
+/** One user's session as seen by an event at currentKey (claim order). Throws when unknown. */
+async function resolveUserSession(
+  db: SupabaseClient<Database>, scope: UserScope, currentKey: SemanticKey, now: number,
+): Promise<WhiteSheetSession> {
+  const { destination, sourceId } = scope;
+  const mine = () => userRows(db, scope);
   const queued = async (rows: SessionRow[]): Promise<Map<string, SemanticKey>> => {
     if (!rows.length) return new Map();
     const { data, error } = await db.from("line_webhook_event_queue").select("raw_message_id,receive_order,received_at")
@@ -195,6 +239,8 @@ export async function resolveWhiteSheetSession(
     .filter((row) => replayKindFromRow(row, destination) === "start" && candidateKeys.has(row.id)
       && compareSemantic(candidateKeys.get(row.id)!, currentKey) < 0)
     .sort((a, b) => compareSemantic(candidateKeys.get(b.id)!, candidateKeys.get(a.id)!))[0];
+  // A full page without a usable start may hide an older one: unknown, not "no session".
+  if (!start && candidates.length >= MAX_START_CANDIDATES) throw new Error("Session context unavailable");
   if (!start) return NO_WHITE_SHEET_SESSION;
   const startKey = candidateKeys.get(start.id)!;
 
@@ -219,8 +265,41 @@ export async function resolveWhiteSheetSession(
     events.push({ rawId: row.id, kind, timestamp: keys.get(row.id)!.ms });
   }
   // 3. Which approvals were ACCEPTED (a refused one never advances the session).
-  const accepted = await loadAcceptedApprovals(db, { destination, sourceId, userId },
+  const accepted = await loadAcceptedApprovals(db, scope,
     events.filter((replay) => replay.kind === "approval").map((replay) => replay.rawId));
   for (const replay of events) if (replay.kind === "approval") replay.acceptedSheet = accepted.get(replay.rawId) ?? null;
   return replayWhiteSheetSession(events, currentKey.ms, now);
+}
+
+/**
+ * Does ANOTHER LINE user have a White Sheet session open right now in this destination +
+ * group? Read-only and used only to answer, never to route text into that user's review.
+ * Throws when the answer is unknown (callers fail closed).
+ */
+export async function otherUserWhiteSheetSessionActive(
+  db: SupabaseClient<Database>, event: LineMessageEvent, destination: string, now = Date.now(),
+): Promise<boolean> {
+  const userId = getUserId(event.source);
+  if (event.source.type !== "group" || !userId) return false;
+  const sourceId = getSourceId(event.source);
+  // The sender is excluded IN the query (neq also drops NULL user_id), so their own flood of
+  // start commands cannot push another user's start out of the window. A full page means rows
+  // may be missing (someone else flooded): that is unknown, never "nobody is reviewing".
+  // ponytail: one page of 50; saturation fails closed for tagged corrections only, page if a
+  // real group ever posts 50 read commands in 3 hours.
+  const { data, error } = await db.from("raw_messages").select("id,user_id,message_type,payload,is_processed")
+    .eq("destination", destination).eq("source_type", "group").eq("source_id", sourceId).neq("user_id", userId)
+    .eq("message_type", "text").ilike("raw_text", "%อ่านใบขาว%")
+    .gte("created_at", new Date(now - SESSION_MAX_AGE_MS).toISOString())
+    .order("created_at", { ascending: false }).limit(MAX_START_CANDIDATES);
+  if (error || !data || data.length >= MAX_START_CANDIDATES) throw new Error("Session context unavailable");
+  const owners = new Set(data.filter((row) => typeof row.user_id === "string" && row.user_id !== userId
+    && replayKindFromRow(row, destination) === "start").map((row) => row.user_id as string));
+  for (const owner of owners) {
+    // "Now" sorts after every stored event of that user.
+    const session = await resolveUserSession(db, { destination, sourceId, userId: owner },
+      { ms: now, order: Number.MAX_SAFE_INTEGER }, now);
+    if (session.state !== "none") return true;
+  }
+  return false;
 }

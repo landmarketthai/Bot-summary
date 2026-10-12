@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
-  compareSemantic, isWhiteSheetApproval, PREVIEW_TTL_MS, replayWhiteSheetSession, semanticKey, whiteSheetReadCommand,
-  type ReplayEvent,
+  compareSemantic, isWhiteSheetApproval, isWhiteSheetCorrectionText, PREVIEW_TTL_MS, replayWhiteSheetSession, semanticKey,
+  whiteSheetReadCommand, whiteSheetReviewInput, type ReplayEvent,
 } from "./mode";
 import { renderWhiteSheetPreview, PREVIEW_REVIEW_PROMPT, PREVIEW_CORRECTED_PROMPT, PREVIEW_DISCLAIMER } from "./reader";
 import type { LineTextMessage } from "@/lib/line/types";
@@ -130,5 +130,23 @@ describe("claim-order semantics (claim_line_webhook_event)", () => {
     expect(replayWhiteSheetSession(history, correction.ms, correction.ms + 1000).state).toBe("approved_waiting_next_image");
     // And the approval, processed first, sees only the image: still reviewing.
     expect(replayWhiteSheetSession(history.slice(0, 2), approval.ms, approval.ms + 1000).state).toBe("reviewing");
+  });
+});
+
+describe("@Botsummary text is review input only when it is the approval or field-shaped", () => {
+  const msg = (text: string): LineTextMessage => ({ id: "m", type: "text", quoteToken: "q", text });
+  it("strips the mention from a field correction and keeps questions and commands out", () => {
+    const incident = "@Bot-summary  \nตลาด วัดตะกล่ำ\n9 ตุลาคม\nคนขาย กี้\n\nค่าใช้จ่าย ค่าที่ 660 ค่าถุง 50 ขนมจีน 200";
+    expect(whiteSheetReviewInput(msg(incident), "Ubot")).toBe(incident.replace(/^@Bot-summary\s*/u, ""));
+    for (const text of ["@Botsummary ค่าแรง 300", "@Botsummary ยอดขาย: 2564", "@Botsummary ค่าแรง300", "@Botsummary ผ่าน",
+      "@Botsummary ยืนยันผ่าน"]) expect(whiteSheetReviewInput(msg(text), "Ubot")).not.toBeNull();
+    for (const text of ["@Botsummary ยอดขายวันนี้", "@Botsummary ยอดขายวันนี้เท่าไหร่", "@Botsummary ตลาด วัดตะกล่ำ ขายได้เท่าไร",
+      "@Botsummary คนขาย กี้ ขายอะไรบ้าง", "@Botsummary ค่าแรง 300 ถูกไหม?", "@Botsummary เทียบยอดขายวันนี้กับเมื่อวาน",
+      "@Botsummary อ่านใบขาว", "@Botsummary จบใบขาว", "@Botsummary ยกเลิกอ่านใบขาว", "@Botsummary"]) {
+      expect(whiteSheetReviewInput(msg(text), "Ubot")).toBeNull();
+    }
+    expect(whiteSheetReviewInput(msg("ค่าแรงจริง 300"), "Ubot")).toBe("ค่าแรงจริง 300"); // plain text unchanged
+    expect(isWhiteSheetCorrectionText("ค่าใช้จ่าย ค่าที่ 660")).toBe(true);
+    expect(isWhiteSheetApproval(" ยืนยันผ่าน ")).toBe(true);
   });
 });

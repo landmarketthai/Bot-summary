@@ -198,13 +198,14 @@ import {
 } from "@/lib/ai/consultant/answer";
 import { parseConsultantSourceIds } from "@/lib/ai/consultant/authorization";
 import {
-  isReadableWhiteSheetImage, isWhiteSheetApproval, isWhiteSheetReaderEnabled, resolveWhiteSheetSession,
-  whiteSheetReadCommand, whiteSheetSessionMayBeActive, PREVIEW_TTL_MS,
+  isReadableWhiteSheetImage, isUncertainApprovalConfirmation, isWhiteSheetApproval, isWhiteSheetReaderEnabled,
+  otherUserWhiteSheetSessionActive, resolveWhiteSheetSession, whiteSheetReadCommand, whiteSheetReviewInput,
+  whiteSheetSessionMayBeActive, PREVIEW_TTL_MS,
 } from "@/lib/white-sheet-reader/mode";
 import {
   readWhiteSheetBase, applyWhiteSheetCorrection, PREVIEW_START_REPLY, PREVIEW_RESTART_REPLY,
   PREVIEW_PENDING_REVIEW_REPLY, PREVIEW_END_REPLY, PREVIEW_END_REFUSED_REPLY,
-  PREVIEW_RETRY_REPLY, CORRECTION_RETRY_REPLY,
+  PREVIEW_RETRY_REPLY, CORRECTION_RETRY_REPLY, NOT_REVIEW_OWNER_REPLY, REVIEW_OWNER_UNKNOWN_REPLY,
 } from "@/lib/white-sheet-reader/reader";
 import { readAndRecordSheet, reviewApproval, reviewCorrectionTurn } from "@/lib/white-sheet-reader/review-flow";
 import {
@@ -594,6 +595,7 @@ interface WebhookServiceDependencies {
   whiteSheetBaseReader?: typeof readWhiteSheetBase;
   whiteSheetCorrectionApplier?: typeof applyWhiteSheetCorrection;
   whiteSheetSessionResolver?: typeof resolveWhiteSheetSession;
+  whiteSheetOtherOwnerCheck?: typeof otherUserWhiteSheetSessionActive;
 }
 
 export interface WebhookProcessResult {
@@ -797,6 +799,7 @@ export class WebhookService {
   private readonly whiteSheetBaseReader: typeof readWhiteSheetBase;
   private readonly whiteSheetCorrectionApplier: typeof applyWhiteSheetCorrection;
   private readonly whiteSheetSessionResolver: typeof resolveWhiteSheetSession;
+  private readonly whiteSheetOtherOwnerCheck: typeof otherUserWhiteSheetSessionActive;
   private orderedQueueAvailable: boolean | null = null;
 
   constructor(
@@ -869,6 +872,7 @@ export class WebhookService {
     this.whiteSheetBaseReader = dependencies.whiteSheetBaseReader ?? readWhiteSheetBase;
     this.whiteSheetCorrectionApplier = dependencies.whiteSheetCorrectionApplier ?? applyWhiteSheetCorrection;
     this.whiteSheetSessionResolver = dependencies.whiteSheetSessionResolver ?? resolveWhiteSheetSession;
+    this.whiteSheetOtherOwnerCheck = dependencies.whiteSheetOtherOwnerCheck ?? otherUserWhiteSheetSessionActive;
   }
 
   async processEvents(
@@ -1091,6 +1095,57 @@ export class WebhookService {
       message as LineTextMessage,
       destination,
     );
+
+    // ── 3.0w. White Sheet review ownership (BEFORE the analyst) ─────────────
+    // While THIS user has a sheet under review in THIS group, every plain text of
+    // theirs, and every @Botsummary text shaped like "ผ่าน" or a field correction
+    // (mention stripped), is a correction or the approval. It is answered here and
+    // never reaches the analyst, produce, slip, white-sheet-note or any legacy parser.
+    // The same rule (whiteSheetReviewInput) classifies history for session replay.
+    if (this.botSummaryAnalystEnabled && this.whiteSheetReaderEnabled && msgEvent.source.type === "group"
+      && lineUserId && this.botSummaryAnalystSourceAllowed(sourceId)) {
+      const reviewInput = whiteSheetReviewInput(message as LineTextMessage, destination);
+      let reviewReplies: string[] | null = null;
+      if (reviewInput !== null) {
+        let session: Awaited<ReturnType<typeof resolveWhiteSheetSession>> | null = null;
+        try {
+          session = await this.whiteSheetSessionResolver(this.supabase, msgEvent, rawMessageId, destination);
+        } catch {
+          // Ownership unknown: a queued text may belong to a review, so never guess.
+          reviewReplies = [CORRECTION_RETRY_REPLY];
+        }
+        if (session?.state === "reviewing" && session.sheet) {
+          const reviewScope = { destination, sourceId, userId: lineUserId };
+          reviewReplies = await (isWhiteSheetApproval(reviewInput)
+            ? reviewApproval(this.supabase, reviewScope, session.sheet.imageRawId, rawMessageId,
+              { confirmUncertain: isUncertainApprovalConfirmation(reviewInput) })
+            : reviewCorrectionTurn(
+              this.supabase, reviewScope, session.sheet.imageRawId, rawMessageId,
+              reviewInput, { applyCorrection: this.whiteSheetCorrectionApplier },
+            )).catch(() => [CORRECTION_RETRY_REPLY]);
+        } else if (session && botSummaryQuestion !== null) {
+          // An explicit field correction addressed to the bot by someone who owns no review.
+          // Another user's review is never touched (scope is destination + group + LINE user);
+          // the sender is told who can correct it instead of getting an analyst answer.
+          try {
+            if (await this.whiteSheetOtherOwnerCheck(this.supabase, msgEvent, destination)) {
+              reviewReplies = [NOT_REVIEW_OWNER_REPLY];
+            }
+          } catch {
+            reviewReplies = [REVIEW_OWNER_UNKNOWN_REPLY];
+          }
+        }
+      }
+      if (reviewReplies) {
+        await this.markRawMessageProcessed(rawMessageId, log);
+        if (replyToken) {
+          if (reviewReplies.length === 1) await replyMessage(replyToken, reviewReplies[0]);
+          else await replyMessages(replyToken, reviewReplies);
+        }
+        return { eventId, eventType: event.type, status: "saved", parsed: false };
+      }
+    }
+
     if (botSummaryQuestion !== null) {
       await this.markRawMessageProcessed(rawMessageId, log);
       const analystAllowed = this.botSummaryAnalystEnabled
@@ -1149,40 +1204,6 @@ export class WebhookService {
         }
       }
       return { eventId, eventType: event.type, status: "saved", parsed: true };
-    }
-
-    // ── 3.0w. White Sheet review ownership ──────────────────────────────────
-    // While THIS user has a sheet under review in THIS group, every plain text of
-    // theirs is a correction or the approval. It is answered here and never reaches
-    // the produce, slip, white-sheet-note or any other legacy parser.
-    if (this.botSummaryAnalystEnabled && this.whiteSheetReaderEnabled && msgEvent.source.type === "group"
-      && lineUserId && this.botSummaryAnalystSourceAllowed(sourceId)) {
-      let session: Awaited<ReturnType<typeof resolveWhiteSheetSession>> | null = null;
-      let reviewReplies: string[] | null = null;
-      try {
-        session = await this.whiteSheetSessionResolver(this.supabase, msgEvent, rawMessageId, destination);
-      } catch {
-        // Ownership unknown: a queued text may belong to a review, so never guess.
-        reviewReplies = [CORRECTION_RETRY_REPLY];
-      }
-      if (session?.state === "reviewing" && session.sheet) {
-        const messageText = (message as LineTextMessage).text;
-        const reviewScope = { destination, sourceId, userId: lineUserId };
-        reviewReplies = await (isWhiteSheetApproval(messageText)
-          ? reviewApproval(this.supabase, reviewScope, session.sheet.imageRawId, rawMessageId)
-          : reviewCorrectionTurn(
-            this.supabase, reviewScope, session.sheet.imageRawId, rawMessageId,
-            messageText, { applyCorrection: this.whiteSheetCorrectionApplier },
-          )).catch(() => [CORRECTION_RETRY_REPLY]);
-      }
-      if (reviewReplies) {
-        await this.markRawMessageProcessed(rawMessageId, log);
-        if (replyToken) {
-          if (reviewReplies.length === 1) await replyMessage(replyToken, reviewReplies[0]);
-          else await replyMessages(replyToken, reviewReplies);
-        }
-        return { eventId, eventType: event.type, status: "saved", parsed: false };
-      }
     }
 
     const quotedSlipResult = await this.tryProcessQuotedSlipAmountCorrection(

@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 import {
-  applyWhiteSheetCorrection, readWhiteSheetBase, renderWhiteSheetPreview,
+  applyWhiteSheetCorrection, approvalConcerns, readWhiteSheetBase, renderWhiteSheetPreview, uncertainApprovalReply,
   APPROVAL_RETRY_REPLY, CORRECTION_CAPTURE_FAILED_REPLY, CORRECTION_RETRY_REPLY, MISSING_REVIEW_BASE_REPLY,
   PREVIEW_APPROVED_REPLY, PREVIEW_RETRY_REPLY, PREVIEW_UNKNOWN_REPLY,
 } from "./reader";
@@ -25,8 +25,13 @@ function replayBase(turn: StoredTurn): string[] {
   return [turn.outcome === "failed" ? PREVIEW_UNKNOWN_REPLY : PREVIEW_RETRY_REPLY];
 }
 
-function replayApproval(turn: StoredTurn): string[] {
+async function replayApproval(db: SupabaseClient<Database>, sheet: ReviewScope, turn: StoredTurn): Promise<string[]> {
   if (turn.outcome === "applied") return [PREVIEW_APPROVED_REPLY];
+  if (turn.outcome === "failed" && turn.parentRawMessageId) {
+    // Refused for unconfirmed fields: show the same warning for the snapshot it was refused on.
+    const parent = await loadTurn(db, sheet, turn.parentRawMessageId);
+    return parent?.snapshot ? [uncertainApprovalReply(parent.snapshot)] : [MISSING_REVIEW_BASE_REPLY];
+  }
   return [turn.outcome === "unavailable" ? APPROVAL_RETRY_REPLY : MISSING_REVIEW_BASE_REPLY];
 }
 
@@ -66,21 +71,31 @@ export async function readAndRecordSheet(
  * "ผ่าน" while a sheet is under review. Accepted ONLY when the sheet has a valid persisted applied
  * snapshot; the decision (accepted or refused) is recorded under the approval's raw_message_id,
  * which is what session replay reads, so a refused approval can never advance the session.
+ * A snapshot with unclear cells or missing key fields is refused with a warning unless the user
+ * explicitly typed "ยืนยันผ่าน" (confirmUncertain); the review stays open either way.
  */
 export async function reviewApproval(
   db: SupabaseClient<Database>, scope: ReviewEventScope, imageRawId: string, approvalRawId: string,
+  options: { confirmUncertain?: boolean } = {},
 ): Promise<string[]> {
   const sheet: ReviewScope = { ...scope, sheetImageRawId: imageRawId };
   const recorded = await loadTurn(db, sheet, approvalRawId);
-  if (recorded) return replayApproval(recorded);
+  if (recorded) return replayApproval(db, sheet, recorded);
   const latest = await loadLatestApplied(db, sheet);
+  if (latest && !options.confirmUncertain && approvalConcerns(latest.snapshot).length) {
+    const refused = await recordTurn(db, sheet, { rawMessageId: approvalRawId, kind: "approval", outcome: "failed",
+      parentRawMessageId: latest.rawMessageId });
+    if (refused === "recorded") return [uncertainApprovalReply(latest.snapshot)];
+    const winner = await loadTurn(db, sheet, approvalRawId);
+    return winner ? replayApproval(db, sheet, winner) : [MISSING_REVIEW_BASE_REPLY];
+  }
   const status = latest
     ? await recordTurn(db, sheet, { rawMessageId: approvalRawId, kind: "approval", outcome: "applied",
       snapshot: latest.snapshot, parentRawMessageId: latest.rawMessageId })
     : await recordTurn(db, sheet, { rawMessageId: approvalRawId, kind: "approval", outcome: "failed" });
   if (status === "duplicate") {
     const winner = await loadTurn(db, sheet, approvalRawId);
-    return winner ? replayApproval(winner) : [MISSING_REVIEW_BASE_REPLY];
+    return winner ? replayApproval(db, sheet, winner) : [MISSING_REVIEW_BASE_REPLY];
   }
   if (status === "conflict") {
     // Another applied transition (a correction, or another approval) already consumed this
