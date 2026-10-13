@@ -153,6 +153,31 @@ describe("Morning Brief A4 PDF", () => {
     expect(text).toContain("7 วัน");
   });
 
+  test("shows the missing House Stock as pending without fabricating Stock plus good returns", async () => {
+    const missingStock: MorningBriefReport = {
+      ...report,
+      houseStock: { status: "missing" },
+      fruitFinancial: { ...report.fruitFinancial!, houseStockValueSatang: null, readyValueSatang: null },
+    };
+    const doc = MorningBriefA4Doc({ report: missingStock, generatedAt: new Date("2026-10-13T08:00:00+07:00") });
+    const text = collectText(doc);
+    expect(text).toContain("รอข้อมูล");
+    expect(text).toContain("รอยอดบ้าน");
+    expect(text).toContain("ไม่ใช่ 0 บาท");
+    expect(text).toContain("ยังไม่มี Stock บ้านที่ปิดยืนยัน");
+    expect(text).toContain("60,755.83");
+    expect(text).toContain("ยอดพร้อมขายยังสรุปไม่ได้");
+    registerFonts();
+    const buffer = await renderToBuffer(doc);
+    expect(buffer.subarray(0, 4).toString()).toBe("%PDF");
+  });
+
+  test("still shows financial Stock and ready totals when an authoritative snapshot exists", () => {
+    const text = collectText(MorningBriefA4Doc({ report, generatedAt: new Date("2026-09-20T08:00:00+07:00") }));
+    expect(text).toContain("10,033.20");
+    expect(text).toContain("70,789.03");
+    expect(text).not.toContain("ยอดพร้อมขายยังสรุปไม่ได้");
+  });
   test("shows yesterday sales total in the top KPI row", () => {
     const text = collectText(MorningBriefA4Doc({ report, generatedAt: new Date("2026-09-19T08:00:00+07:00") }));
     expect(text).toContain("ยอดขายรวมเมื่อวาน");

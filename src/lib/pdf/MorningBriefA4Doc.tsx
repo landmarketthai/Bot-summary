@@ -34,12 +34,19 @@ const S = StyleSheet.create({
   subtitle: { fontSize: 10, color: "#6B7280", marginTop: 2 },
   kpiGrid: { flexDirection: "row", marginHorizontal: -2, marginBottom: 5 },
   kpi: { width: "20%", paddingHorizontal: 2 },
-  kpiBox: { borderWidth: 0.6, borderColor: "#C7C9CE", padding: 4, minHeight: 43 },
+  kpiBox: { borderWidth: 0.9, borderColor: "#C7C9CE", padding: 4, minHeight: 51, borderRadius: 3 },
+  kpiSales: { backgroundColor: "#FFF0BF", borderColor: "#D7AC3D" },
+  kpiWithdrawal: { backgroundColor: "#DFEDFA", borderColor: "#6EACD5" },
+  kpiReturn: { backgroundColor: "#DDF2DC", borderColor: "#6CAD76" },
+  kpiHouse: { backgroundColor: "#FFE7C4", borderColor: "#E8AD65" },
+  kpiReady: { backgroundColor: "#E6E4F7", borderColor: "#9E98D4" },
+  kpiUnknownValue: { fontSize: 9.5, fontWeight: "bold", color: "#92400E", textAlign: "right", marginTop: 3 },
+  stockWarning: { backgroundColor: "#FFF8E8", borderLeftWidth: 2, borderLeftColor: "#D09A39", padding: 5, marginTop: 4 },
   kpiLabel: { fontSize: 7.8, color: "#6B7280" },
   kpiValue: { fontSize: 12.2, fontWeight: "bold", textAlign: "right", marginTop: 2 },
   kpiUnit: { fontSize: 7.2, color: "#6B7280", textAlign: "right", marginTop: 1 },
   financialCategory: { marginTop: 10 },
-  financialCategoryTitle: { fontSize: 14, fontWeight: "bold", marginBottom: 5 },
+  financialCategoryTitle: { fontSize: 14, fontWeight: "bold", marginBottom: 5, backgroundColor: "#E9EFF7", borderLeftWidth: 4, borderLeftColor: "#477FA8", paddingVertical: 3, paddingHorizontal: 6 },
   summaryTitle: { fontSize: 18, fontWeight: "bold" },
   explanation: {
     borderLeftWidth: 2.5,
@@ -320,10 +327,11 @@ function DataFooter({ generatedText }: { generatedText: string }) {
   </View>;
 }
 
-function FinancialSummaryPage({ financial, label, businessDate }: {
+function FinancialSummaryPage({ financial, label, businessDate, stockStatus }: {
   financial: MorningBriefFruitFinancialSummary;
   label: string;
   businessDate: string;
+  stockStatus: MorningBriefReport["houseStock"]["status"];
 }) {
   const marketTotals = financial.markets;
   return (
@@ -331,32 +339,41 @@ function FinancialSummaryPage({ financial, label, businessDate }: {
       <Text style={S.financialCategoryTitle}>{`สรุป${label}คงเหลือเพื่อสั่งซื้อ - ${formatThaiDate(businessDate)}`}</Text>
 
       <View style={S.kpiGrid}>
-        <View style={S.kpi}><View style={S.kpiBox}>
+        <View style={S.kpi}><View style={[S.kpiBox, S.kpiSales]}>
           <Text style={S.kpiLabel}>ยอดขายรวมเมื่อวาน ({label})</Text>
           <Text style={S.kpiValue}>{financial ? bahtFromSatang(financial.salesValueSatang) : "-"}</Text>
           <Text style={S.kpiUnit}>บาท</Text>
         </View></View>
-        <View style={S.kpi}><View style={S.kpiBox}>
+        <View style={S.kpi}><View style={[S.kpiBox, S.kpiWithdrawal]}>
           <Text style={S.kpiLabel}>{label}ที่เบิกออกไปขายเมื่อวาน</Text>
           <Text style={S.kpiValue}>{financial ? bahtFromSatang(financial.withdrawalValueSatang) : "-"}</Text>
           <Text style={S.kpiUnit}>บาท</Text>
         </View></View>
-        <View style={S.kpi}><View style={S.kpiBox}>
+        <View style={S.kpi}><View style={[S.kpiBox, S.kpiReturn]}>
           <Text style={S.kpiLabel}>ของชั่งคืนดีจากตลาด</Text>
           <Text style={S.kpiValue}>{financial ? bahtFromSatang(financial.goodReturnValueSatang) : "-"}</Text>
           <Text style={S.kpiUnit}>บาท</Text>
         </View></View>
-        <View style={S.kpi}><View style={S.kpiBox}>
+        <View style={S.kpi}><View style={[S.kpiBox, S.kpiHouse]}>
           <Text style={S.kpiLabel}>Stock {label}ที่บ้าน</Text>
-          <Text style={S.kpiValue}>{financial?.houseStockValueSatang == null ? "-" : bahtFromSatang(financial.houseStockValueSatang)}</Text>
-          <Text style={S.kpiUnit}>บาท</Text>
+          <Text style={financial.houseStockValueSatang == null ? S.kpiUnknownValue : S.kpiValue}>{financial.houseStockValueSatang == null ? "รอข้อมูล" : bahtFromSatang(financial.houseStockValueSatang)}</Text>
+          <Text style={S.kpiUnit}>{financial.houseStockValueSatang == null ? "ไม่ใช่ 0 บาท" : "บาท"}</Text>
         </View></View>
-        <View style={S.kpi}><View style={S.kpiBox}>
+        <View style={S.kpi}><View style={[S.kpiBox, S.kpiReady]}>
           <Text style={S.kpiLabel}>คงเหลือพร้อมขาย</Text>
-          <Text style={S.kpiValue}>{financial?.readyValueSatang == null ? "-" : bahtFromSatang(financial.readyValueSatang)}</Text>
+          <Text style={financial.readyValueSatang == null ? S.kpiUnknownValue : S.kpiValue}>{financial.readyValueSatang == null ? "รอยอดบ้าน" : bahtFromSatang(financial.readyValueSatang)}</Text>
           <Text style={S.kpiUnit}>ชั่งคืนดีจากตลาด + Stock บ้าน</Text>
         </View></View>
       </View>
+
+      {(financial.houseStockValueSatang == null || financial.readyValueSatang == null) ?
+        <View style={S.stockWarning}>
+          <Text style={S.note}>
+            {stockStatus === "unavailable" ? "ดึงข้อมูล Stock บ้านไม่สำเร็จ" : "ยังไม่มี Stock บ้านที่ปิดยืนยันสำหรับวันที่นี้"}
+            {" • ชั่งคืนดีที่ทราบแล้ว " + bahtFromSatang(financial.goodReturnValueSatang) + " บาท"}
+            {" • ยอดพร้อมขายยังสรุปไม่ได้จนกว่าจะมี Stock บ้านที่ยืนยัน"}
+          </Text>
+        </View> : null}
 
       <Text style={S.marketTitle}>สรุป{label}ตามตลาด</Text>
       <View style={S.table}>
@@ -427,7 +444,7 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
       </View>
       {financialSections.map(({ section, financial }) => <FinancialSummaryPage
         key={section} financial={financial} label={PRODUCE_SECTION_LABEL[section]}
-        businessDate={report.businessDate}
+        businessDate={report.businessDate} stockStatus={report.houseStock.status}
       />)}
       <Text style={S.note}>หมายเหตุ: สรุปเฉพาะหมวดที่มียอดทางการเงินจริงของวันที่ {thaiNumericDate(report.businessDate)}</Text>
       <DataFooter generatedText={generatedText} />
