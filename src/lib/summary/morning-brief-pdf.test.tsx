@@ -231,7 +231,7 @@ describe("Morning Brief A4 PDF", () => {
     expect(buffer.subarray(0, 4).toString()).toBe("%PDF");
   });
 
-  test("puts every daily money field and combined market columns on page one without an other-category box", async () => {
+  test("places fruit and vegetable money fields directly above their own stock table, never on the overview cover", async () => {
     const fruit = {
       withdrawalValueSatang: 4_832_434, salesValueSatang: 1_548_075, goodReturnValueSatang: 3_284_382,
       houseStockValueSatang: null, readyValueSatang: null,
@@ -250,30 +250,49 @@ describe("Morning Brief A4 PDF", () => {
       produceFinancial: { fruit, vegetable },
       fruitFinancial: fruit,
       houseStock: { status: "missing" },
+      purchasePlanning: {
+        ...report.purchasePlanning,
+        strong: { count: 2, productNames: ["มังคุด", "มะเขือราชินี"], items: [
+          { productName: "มังคุด", originalProductName: null, category: "ผลไม้", unit: "โล",
+            uncertaintyReasons: [], marketStockQuantity: 3, houseStockQuantity: null, totalRemainingQuantity: null },
+          { productName: "มะเขือราชินี", originalProductName: null, category: "ผัก", unit: "โล",
+            uncertaintyReasons: [], marketStockQuantity: 2.2, houseStockQuantity: null, totalRemainingQuantity: null },
+        ] },
+        surplus: { count: 0, productNames: [], items: [] },
+      },
     };
     const doc = MorningBriefA4Doc({ report: data, generatedAt: new Date("2026-10-12T08:00:00+07:00") });
     const fragment = (doc as React.ReactElement<{ children: React.ReactNode }>).props.children;
     const pages = React.Children.toArray((fragment as React.ReactElement<{ children: React.ReactNode }>).props.children);
     expect(pages).toHaveLength(2);
-    const first = collectText(pages[0]).replace(/\s+/g, " ");
-    const rest = collectText(pages[1]).replace(/\s+/g, " ");
-    for (const amount of ["15,980.75", "15,480.75", "48,324.34", "32,843.82",
-      "48,824.34", "500.00"]) expect(first).toContain(amount);
-    for (const phrase of ["ยอดขายรวมเมื่อวาน (ผลไม้)", "ผลไม้ที่เบิกออกไปขายเมื่อวาน",
-      "ของชั่งคืนดีจากตลาด", "Stock ผลไม้ที่บ้าน", "คงเหลือพร้อมขาย",
-      "รอข้อมูล", "รอยอดบ้าน", "สรุปยอดตามตลาด (ทุกสินค้า)", "เบิกไปขาย", "ชั่งคืนดี"]) {
-      expect(first).toContain(phrase);
+    const cover = collectText(pages[0]).replace(/\s+/g, " ");
+    const detail = collectText(pages[1]).replace(/\s+/g, " ");
+    for (const amount of ["15,980.75", "48,824.34", "32,843.82"]) expect(cover).toContain(amount);
+    for (const phrase of ["ยอดขายรวมเมื่อวาน (ผลไม้)", "ยอดขายรวมเมื่อวาน (ผัก)", "หมวดผลไม้", "หมวดผัก"]) {
+      expect(cover).not.toContain(phrase);
+      expect(detail).toContain(phrase);
     }
-    expect(first).not.toContain("คำอธิบายตัวเลข");
-    expect(first).not.toContain("สรุปอื่นๆ");
-    expect(first).not.toContain("รอตรวจ");
-    expect(first).not.toContain("ยืนยันแล้ว");
-    expect(rest).toContain("รายละเอียดการตรวจข้อมูล");
-    expect(rest).not.toContain("คำอธิบายตัวเลข");
-    expect(rest).not.toContain("สรุปผลไม้คงเหลือเพื่อสั่งซื้อ");
+    const fruitHeader = detail.indexOf("หมวดผลไม้ -");
+    const fruitKpis = detail.indexOf("ยอดขายรวมเมื่อวาน (ผลไม้)");
+    const fruitTable = detail.indexOf("รายการ (ผลไม้)");
+    const vegHeader = detail.indexOf("หมวดผัก -");
+    const vegKpis = detail.indexOf("ยอดขายรวมเมื่อวาน (ผัก)");
+    const vegTable = detail.indexOf("รายการ (ผัก)");
+    expect(fruitHeader).toBeGreaterThanOrEqual(0);
+    expect(fruitKpis).toBeGreaterThan(fruitHeader);
+    expect(fruitTable).toBeGreaterThan(fruitKpis);
+    expect(vegHeader).toBeGreaterThan(fruitTable);
+    expect(vegKpis).toBeGreaterThan(vegHeader);
+    expect(vegTable).toBeGreaterThan(vegKpis);
+    for (const phrase of ["48,324.34", "32,843.82", "Stock ผลไม้ที่บ้าน", "รอข้อมูล",
+      "รอยอดบ้าน", "คงเหลือพร้อมขาย", "500.00", "0.00"]) expect(detail).toContain(phrase);
+    expect(cover).not.toContain("ยืนยันแล้ว");
+    expect(cover).not.toContain("รอตรวจ");
+    expect(detail).toContain("รายละเอียดการตรวจข้อมูล");
+    expect(detail).not.toContain("คำอธิบายตัวเลข");
     registerFonts();
-    const bytes = await renderToBuffer(doc);
-    expect(bytes.subarray(0, 4).toString()).toBe("%PDF");
+    const buffer = await renderToBuffer(doc);
+    expect(buffer.subarray(0, 4).toString()).toBe("%PDF");
   });
 
   test("keeps verification status and warnings off the executive cover but visible in the detail pages", () => {
@@ -559,7 +578,7 @@ describe("Morning Brief A4 PDF", () => {
     expect(text).toContain("ยอดขายรวมเมื่อวาน (ผลไม้)");
     expect(text).toContain("มูลค่าสินค้ารอจัดหมวด");
     expect(text).not.toContain("สรุปอื่นๆคงเหลือเพื่อสั่งซื้อ");
-    expect(text).not.toContain("ยอดขายรวมเมื่อวาน (ผัก)");
+    expect(text).toContain("ยอดขายรวมเมื่อวาน (ผัก)");
     expect(text).toContain("หมวดผัก");
     expect(text).toContain("มะเขือราชินี");
     expect(text).toContain("2.2");
@@ -793,7 +812,7 @@ describe("Morning Brief A4 PDF", () => {
       const props = element.props as { wrap?: boolean; minPresenceAhead?: number; children?: React.ReactNode };
       const text = collectText(props.children);
       if (props.wrap === false) unbreakable.push(text);
-      if (props.wrap === false && text.includes("รวมคงเหลือ =")) headingPresence.push(props.minPresenceAhead ?? 0);
+      if (props.wrap === false && props.minPresenceAhead != null && text.includes("รวมคงเหลือ =")) headingPresence.push(props.minPresenceAhead);
       walk(props.children);
     };
     walk(doc);
@@ -802,7 +821,9 @@ describe("Morning Brief A4 PDF", () => {
     // one huge container that could clip later pages.
     expect(unbreakable.some((text) => text.includes("ทรัพย์พันธ์2") && text.includes("พาซิโอ้ผลไม้"))).toBe(false);
     expect(headingPresence.length).toBeGreaterThanOrEqual(1);
-    expect(headingPresence.every((points) => points >= 70)).toBe(true);
+    // Finance-only categories legitimately have minPresenceAhead=0 (no stock table).
+    expect(headingPresence.some((points) => points >= 70)).toBe(true);
+    expect(headingPresence.every((points) => points === 0 || points >= 70)).toBe(true);
 
     const warnings: string[] = [];
     const originalWarn = console.warn;

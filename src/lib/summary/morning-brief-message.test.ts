@@ -286,7 +286,7 @@ describe("Morning Brief LINE layout — Production 2026-09-07 regression", () =>
 
   test("the PDF shows daily money and real stock but skips zero-quantity review placeholders", () => {
     const text = pdfText(MorningBriefA4Doc({ report: heavy, generatedAt: new Date("2026-09-08T01:00:00Z") }));
-    expect(text).toContain("ยอดขายรวมที่คำนวณได้ (บางส่วน)");
+    expect(text).toContain("ยอดขายตามข้อมูลที่มี");
     expect(text).toContain("22,460.74");
     // Pending-return names with no proven stock quantity are not inventory rows.
     for (const name of unknownNames) expect(text).not.toContain(name);

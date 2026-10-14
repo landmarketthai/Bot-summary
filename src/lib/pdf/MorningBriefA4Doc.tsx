@@ -332,13 +332,14 @@ function DataFooter({ generatedText }: { generatedText: string }) {
 }
 
 /**
- * Five operational money fields live together on the FIRST page.
- * Null house/ready values stay unknown; never use zero as a placeholder.
- * This is a reusable daily template, not a date-specific PDF patch.
+ * The same five money fields are reused for the daily headline and for each
+ * produce category immediately above its physical-stock table.
+ * Null house/ready values stay unknown, never fabricated as zero.
  */
-function CoverFinancialKpis({ label, financial }: {
+function FinancialKpis({ label, financial, showTitle = true }: {
   label: string;
   financial: MorningBriefFruitFinancialSummary;
+  showTitle?: boolean;
 }) {
   const cards = [
     { label: `ยอดขายรวมเมื่อวาน (${label})`, value: bahtFromSatang(financial.salesValueSatang), hint: "บาท", tone: S.kpiSales },
@@ -350,7 +351,7 @@ function CoverFinancialKpis({ label, financial }: {
       hint: "ชั่งคืนดีจากตลาด + Stock บ้าน", tone: S.kpiReady, unknown: financial.readyValueSatang == null },
   ];
   return <View wrap={false} style={{ marginTop: 5 }}>
-    <Text style={S.coverSectionTitle}>{label === "รวมทุกสินค้า" ? "ภาพรวมมูลค่าทุกหมวด" : `หมวด${label}`}</Text>
+    {showTitle ? <Text style={S.coverSectionTitle}>{label === "รวมทุกสินค้า" ? "ภาพรวมมูลค่าทุกหมวด" : `หมวด${label}`}</Text> : null}
     <View style={S.kpiGrid}>
       {cards.map((card, i) => <View style={S.kpi} key={i}>
         <View style={[S.kpiBox, card.tone]}>
@@ -401,7 +402,6 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
     readyValueSatang: knownTotal("readyValueSatang"),
     markets: [],
   };
-  const coverSections = financialSections.filter(({ section }) => section !== "other");
   const unclassified = financialSections.find(({ section }) => section === "other")?.financial;
   const coverMarketTotals = new Map<string, { withdrawal: number; goodReturn: number; sales: number }>();
   for (const { financial } of financialSections) {
@@ -440,7 +440,13 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
     && sectionSalesTotalSatang !== report.sales.totalSalesSatang;
   const stockSections = STOCK_CATEGORIES.flatMap((category) => {
     const items = stockItems.filter((item) => stockCategory(item) === category);
-    return items.some(hasRealStockQuantity) ? [{ category, items }] : [];
+    const financial = category === "ผลไม้" ? financialBySection.fruit
+      : category === "ผัก" ? financialBySection.vegetable : undefined;
+    // Money summaries appear over the matching stock table, not on the cover.
+    // Still show a financial category even when there is no physical stock.
+    const hasStock = items.some(hasRealStockQuantity);
+    const hasFinance = category !== "อื่นๆ" && financialSections.some(({ section }) => PRODUCE_SECTION_LABEL[section] === category);
+    return hasStock || hasFinance ? [{ category, items, financial, hasStock }] : [];
   });
 
   return <Document title={`Morning Brief ${report.businessDate}`}>
@@ -458,9 +464,7 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
         <Text style={S.dailyOverviewTotal}>{bahtFromSatang(report.sales.totalSalesSatang)} บาท</Text>
         <Text style={S.dailyOverviewDetails}>รวมยอดที่คำนวณได้จากทุกหมวดสินค้าและทุกตลาด</Text>
       </View>
-      <CoverFinancialKpis label="รวมทุกสินค้า" financial={combined} />
-      {coverSections.map(({ section, financial }) =>
-        <CoverFinancialKpis key={section} label={PRODUCE_SECTION_LABEL[section]} financial={financial} />)}
+      <FinancialKpis label="รวมทุกสินค้า" financial={combined} />
       {marketRows.length > 0 ? <View style={{ marginTop: 4 }}>
         <Text style={S.coverSectionTitle}>สรุปยอดตามตลาด (ทุกสินค้า)</Text>
         <View style={S.table}>
@@ -527,15 +531,18 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
           physical page. Headings are siblings of their tables so
           minPresenceAhead keeps each heading with its first rows; tables
           split between rows (never clipped) and repeat their fixed header. */}
-      {stockSections.map(({ category, items }, index) => <React.Fragment key={category}>
-        <View style={[S.stockHeader, { marginTop: 12 }]} wrap={false} minPresenceAhead={120}>
-          <Text style={S.title}>{`หมวด${category} - ${formatThaiDate(report.businessDate)}`}</Text>
-          <Text style={S.subtitle}>รวมคงเหลือ = คงเหลือในบ้าน + ในตลาด</Text>
-          {index === 0 ? <Text style={[S.note, { marginTop: 3 }]}>
-            บ้านเจ๊ = คงเหลือในบ้าน/คลัง • ในตลาด = ของดีชั่งคืน • ไม่ทราบยอดฝั่งบ้านแสดง “-”
-          </Text> : null}
+      {stockSections.map(({ category, items, financial, hasStock }, index) => <React.Fragment key={category}>
+        <View wrap={false} minPresenceAhead={hasStock ? 100 : 0}>
+          <View style={[S.stockHeader, { marginTop: 12 }]}>
+            <Text style={S.title}>{`หมวด${category} - ${formatThaiDate(report.businessDate)}`}</Text>
+            <Text style={S.subtitle}>รวมคงเหลือ = คงเหลือในบ้าน + ในตลาด</Text>
+            {index === 0 ? <Text style={[S.note, { marginTop: 3 }]}>
+              บ้านเจ๊ = คงเหลือในบ้าน/คลัง • ในตลาด = ของดีชั่งคืน • ไม่ทราบยอดฝั่งบ้านแสดง “-”
+            </Text> : null}
+          </View>
+          {financial ? <FinancialKpis label={category} financial={financial} showTitle={false} /> : null}
         </View>
-        <StockMatrix items={items} category={category} />
+        {hasStock ? <StockMatrix items={items} category={category} /> : null}
       </React.Fragment>)}
       <DataFooter generatedText={generatedText} />
     </Page></> : <Page size="A4" style={S.page}>
