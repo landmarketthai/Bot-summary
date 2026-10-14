@@ -110,6 +110,7 @@ const S = StyleSheet.create({
   marketTotal: { fontWeight: "bold", fontSize: 11.1 },
   // Keep stock rows legible without forcing a fourth page for a stray note.
   matrixCell: { paddingVertical: 5.0, paddingHorizontal: 5, fontSize: 11.7 },
+  stockUnit: { fontSize: 9.2, color: "#4B5563" },
   matrixName: { backgroundColor: "#FFFFFF" },
   matrixAlternate: { backgroundColor: "#F4F7F4" },
   matrixTotal: { backgroundColor: "#DCEBD5" },
@@ -276,11 +277,6 @@ function displayUnit(unit: string): string {
 }
 
 function StockMatrix({ items, category }: { items: ReturnType<typeof stockMatrixItems>; category: StockPageCategory }) {
-  const duplicateNames = new Map<string, number>();
-  for (const item of items) {
-    duplicateNames.set(item.productName, (duplicateNames.get(item.productName) ?? 0) + 1);
-  }
-
   return <View style={S.table}>
     <View style={S.tr} fixed>
       {/* The fixed table header repeats when a category spans pages, preserving context. */}
@@ -290,12 +286,13 @@ function StockMatrix({ items, category }: { items: ReturnType<typeof stockMatrix
       <MatrixCell width="20%" header tone="total" center>รวมคงเหลือ</MatrixCell>
     </View>
     {items.map((item, index) => {
-      const showUnit = (duplicateNames.get(item.productName) ?? 0) > 1;
-      const name = showUnit ? `${item.productName} (${displayUnit(item.unit)})` : item.productName;
+      const unitLabel = displayUnit(item.unit) || "ไม่ระบุหน่วย";
       return <View style={S.tr} key={`${item.productName}-${item.unit}-${index}`} wrap={false}
         // Never strand the รวม rows alone at the top of a new page.
         minPresenceAhead={index === items.length - 1 ? 35 : 0}>
-        <MatrixCell width="40%" center alternate={index % 2 === 1}>{name}</MatrixCell>
+        <MatrixCell width="40%" center alternate={index % 2 === 1}>
+          {item.productName} <Text style={S.stockUnit}>{`(${unitLabel})`}</Text>
+        </MatrixCell>
         <MatrixCell width="20%" tone="house" center>{stockQuantity(item.houseStockQuantity, true)}</MatrixCell>
         <MatrixCell width="20%" tone="market" center>{stockQuantity(item.marketStockQuantity, true)}</MatrixCell>
         <MatrixCell width="20%" tone="total" center>{stockQuantity(item.totalRemainingQuantity)}</MatrixCell>

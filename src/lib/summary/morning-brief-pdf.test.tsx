@@ -652,9 +652,28 @@ describe("Morning Brief A4 PDF", () => {
     };
     const normalized = collectText(MorningBriefA4Doc({ report: split, generatedAt: new Date("2026-09-20T08:00:00+07:00") }))
       .replace(/\s+/g, " ");
-    expect(normalized).toContain("มังคุด 5.75 5.75");
+    expect(normalized).toContain("มังคุด (กก.) 5.75 5.75");
     expect(normalized).not.toContain("มังคุด 2.25");
     expect((normalized.match(/มังคุด/g) ?? []).length).toBe(1);
+  });
+
+  test("labels every stock product row with its own unit, including unknown units", () => {
+    const empty = { count: 0, productNames: [], items: [] };
+    const labeled: MorningBriefReport = {
+      ...report,
+      purchasePlanning: { strong: empty, surplus: empty, reduce: empty, unknown: empty },
+      houseStock: { status: "available", groupCount: 3, totalValueSatang: 0, items: [
+        { productName: "แตงไทย", category: "ผลไม้", unit: "ลูก", quantity: 3, unitPriceSatang: 0, valueSatang: 0 },
+        { productName: "มะเขือราชินี", category: "ผัก", unit: "โล", quantity: 2.2, unitPriceSatang: 0, valueSatang: 0 },
+        { productName: "สินค้าทดสอบไม่ทราบหน่วย", category: "อื่นๆ", unit: "", quantity: 1, unitPriceSatang: 0, valueSatang: 0 },
+      ] },
+    };
+    const normalized = collectText(MorningBriefA4Doc({
+      report: labeled, generatedAt: new Date("2026-09-20T08:00:00+07:00"),
+    })).replace(/\s+/g, " ");
+    expect(normalized).toContain("แตงไทย (ลูก) 3 3");
+    expect(normalized).toContain("มะเขือราชินี (กก.) 2.2 2.2");
+    expect(normalized).toContain("สินค้าทดสอบไม่ทราบหน่วย (ไม่ระบุหน่วย) 1 1");
   });
 
   test("totals โล and กก. rows in one รวม (กก.) row, never two partial rows", () => {
