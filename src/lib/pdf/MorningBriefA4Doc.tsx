@@ -232,24 +232,28 @@ function stockMatrixItems(report: MorningBriefReport): StockMatrixItem[] {
   }
 
   if (report.houseStock.status === "available") {
+    // House groups are split by unit price, so one product can arrive as
+    // several groups. Sum them (in milli-units) before filling the matrix.
+    const houseMilliByKey = new Map<string, number>();
     for (const item of report.houseStock.items ?? []) {
       const key = stockMatrixKey(item.productName, item.unit);
-      const existing = byKey.get(key);
-      if (existing) {
-        if (existing.houseStockQuantity == null) {
-          existing.houseStockQuantity = item.quantity;
-          existing.totalRemainingQuantity = item.quantity + existing.marketStockQuantity;
-        }
-        continue;
+      houseMilliByKey.set(key, (houseMilliByKey.get(key) ?? 0) + Math.round(item.quantity * 1000));
+      if (!byKey.has(key)) {
+        byKey.set(key, {
+          productName: item.productName,
+          category: item.category,
+          unit: item.unit,
+          houseStockQuantity: null,
+          marketStockQuantity: 0,
+          totalRemainingQuantity: null,
+        });
       }
-      byKey.set(key, {
-        productName: item.productName,
-        category: item.category,
-        unit: item.unit,
-        houseStockQuantity: item.quantity,
-        marketStockQuantity: 0,
-        totalRemainingQuantity: item.quantity,
-      });
+    }
+    for (const [key, milli] of houseMilliByKey) {
+      const row = byKey.get(key)!;
+      if (row.houseStockQuantity != null) continue;
+      row.houseStockQuantity = milli / 1000;
+      row.totalRemainingQuantity = (milli + Math.round(row.marketStockQuantity * 1000)) / 1000;
     }
   }
 
@@ -270,15 +274,7 @@ function displayUnit(unit: string): string {
   return unit === "โล" ? "กก." : unit;
 }
 
-function StockMatrix({
-  items,
-  totalsItems = items,
-  showTotals = true,
-}: {
-  items: ReturnType<typeof stockMatrixItems>;
-  totalsItems?: ReturnType<typeof stockMatrixItems>;
-  showTotals?: boolean;
-}) {
+function StockMatrix({ items }: { items: ReturnType<typeof stockMatrixItems> }) {
   const duplicateNames = new Map<string, number>();
   for (const item of items) {
     duplicateNames.set(item.productName, (duplicateNames.get(item.productName) ?? 0) + 1);
@@ -291,41 +287,34 @@ function StockMatrix({
       <MatrixCell width="20%" header tone="market" center>ในตลาด</MatrixCell>
       <MatrixCell width="20%" header tone="total" center>รวมคงเหลือ</MatrixCell>
     </View>
-    {items.length === 0
-      ? <View style={S.tr}><MatrixCell width="100%">ยังไม่มีข้อมูลสินค้า</MatrixCell></View>
-      : items.map((item, index) => {
-        const showUnit = (duplicateNames.get(item.productName) ?? 0) > 1;
-        const name = showUnit ? `${item.productName} (${displayUnit(item.unit)})` : item.productName;
-        return <View style={S.tr} key={`${item.productName}-${item.unit}-${index}`} wrap={false}>
-          <MatrixCell width="40%" center alternate={index % 2 === 1}>{name}</MatrixCell>
-          <MatrixCell width="20%" tone="house" center>{stockQuantity(item.houseStockQuantity, true)}</MatrixCell>
-          <MatrixCell width="20%" tone="market" center>{stockQuantity(item.marketStockQuantity, true)}</MatrixCell>
-          <MatrixCell width="20%" tone="total" center>{stockQuantity(item.totalRemainingQuantity)}</MatrixCell>
-        </View>;
-      })}
-    {showTotals ? Array.from(new Set(totalsItems.map((item) => item.unit))).map((unit) => {
-      const unitItems = totalsItems.filter((item) => item.unit === unit);
+    {items.map((item, index) => {
+      const showUnit = (duplicateNames.get(item.productName) ?? 0) > 1;
+      const name = showUnit ? `${item.productName} (${displayUnit(item.unit)})` : item.productName;
+      return <View style={S.tr} key={`${item.productName}-${item.unit}-${index}`} wrap={false}
+        // Never strand the รวม rows alone at the top of a new page.
+        minPresenceAhead={index === items.length - 1 ? 35 : 0}>
+        <MatrixCell width="40%" center alternate={index % 2 === 1}>{name}</MatrixCell>
+        <MatrixCell width="20%" tone="house" center>{stockQuantity(item.houseStockQuantity, true)}</MatrixCell>
+        <MatrixCell width="20%" tone="market" center>{stockQuantity(item.marketStockQuantity, true)}</MatrixCell>
+        <MatrixCell width="20%" tone="total" center>{stockQuantity(item.totalRemainingQuantity)}</MatrixCell>
+      </View>;
+    })}
+    {Array.from(new Set(items.map((item) => displayUnit(item.unit)))).map((unit) => {
+      // โล and กก. are one unit; never print two partial "รวม (กก.)" rows.
+      const unitItems = items.filter((item) => displayUnit(item.unit) === unit);
       const houseKnown = unitItems.every((item) => item.houseStockQuantity != null);
       const sum = (key: "houseStockQuantity" | "marketStockQuantity" | "totalRemainingQuantity") =>
         unitItems.every((item) => item[key] != null)
           ? qty(unitItems.reduce((total, item) => total + item[key]!, 0))
           : "-";
       return <View style={S.tr} key={`total-${unit}`} wrap={false}>
-        <MatrixCell width="40%" tone="total" center>{`รวม (${displayUnit(unit)})`}</MatrixCell>
+        <MatrixCell width="40%" tone="total" center>{`รวม (${unit})`}</MatrixCell>
         <MatrixCell width="20%" tone="total" center>{houseKnown ? sum("houseStockQuantity") : "-"}</MatrixCell>
         <MatrixCell width="20%" tone="total" center>{sum("marketStockQuantity")}</MatrixCell>
         <MatrixCell width="20%" tone="total" center>{houseKnown ? sum("totalRemainingQuantity") : "-"}</MatrixCell>
       </View>;
-    }) : null}
+    })}
   </View>;
-}
-
-function categoryChunks(items: ReturnType<typeof stockMatrixItems>) {
-  const chunks: typeof items[] = [];
-  for (let index = 0; index < items.length; index += 15) {
-    chunks.push(items.slice(index, index + 15));
-  }
-  return chunks.length ? chunks : [[]];
 }
 
 function DataFooter({ generatedText }: { generatedText: string }) {
@@ -342,8 +331,11 @@ function FinancialSummaryPage({ financial, label, businessDate, stockStatus }: {
   stockStatus: MorningBriefReport["houseStock"]["status"];
 }) {
   const marketTotals = financial.markets;
-  return (
-    <View style={S.financialCategory} minPresenceAhead={65}>
+  // Siblings, not one wrapper View: react-pdf only honours minPresenceAhead
+  // between siblings, so the heading block can never be orphaned at a page
+  // bottom while the (possibly long) market table still splits row by row.
+  return (<>
+    <View style={S.financialCategory} wrap={false} minPresenceAhead={70}>
       <Text style={S.financialCategoryTitle}>{`สรุป${label}คงเหลือเพื่อสั่งซื้อ - ${formatThaiDate(businessDate)}`}</Text>
 
       <View style={S.kpiGrid}>
@@ -384,28 +376,30 @@ function FinancialSummaryPage({ financial, label, businessDate, stockStatus }: {
         </View> : null}
 
       <Text style={S.marketTitle}>สรุป{label}ตามตลาด</Text>
-      <View style={S.table}>
-        <View style={S.tr} fixed>
-          <MarketCell width="28%" tone="name" header>ตลาด</MarketCell>
-          <MarketCell width="24%" tone="withdrawal" header>มูลค่าที่เบิกไปขาย</MarketCell>
-          <MarketCell width="24%" tone="sales" header>ยอดขาย</MarketCell>
-          <MarketCell width="24%" tone="return" header>ของชั่งคืนดี</MarketCell>
-        </View>
-        {marketTotals.map((market, index) => <View style={S.tr} key={`${market.marketLabel}-${index}`} wrap={false}>
-          <MarketCell width="28%" tone="name">{market.marketLabel}</MarketCell>
-          <MarketCell width="24%" tone="withdrawal">{bahtFromSatang(market.withdrawalValueSatang)}</MarketCell>
-          <MarketCell width="24%" tone="sales">{bahtFromSatang(market.salesValueSatang)}</MarketCell>
-          <MarketCell width="24%" tone="return">{bahtFromSatang(market.goodReturnValueSatang)}</MarketCell>
-        </View>)}
-        <View style={S.tr} wrap={false}>
-          <MarketCell width="28%" tone="name" total>รวม</MarketCell>
-          <MarketCell width="24%" tone="withdrawal" total>{financial ? bahtFromSatang(financial.withdrawalValueSatang) : "-"}</MarketCell>
-          <MarketCell width="24%" tone="sales" total>{financial ? bahtFromSatang(financial.salesValueSatang) : "-"}</MarketCell>
-          <MarketCell width="24%" tone="return" total>{financial ? bahtFromSatang(financial.goodReturnValueSatang) : "-"}</MarketCell>
-        </View>
+    </View>
+    <View style={S.table}>
+      <View style={S.tr} fixed>
+        <MarketCell width="28%" tone="name" header>ตลาด</MarketCell>
+        <MarketCell width="24%" tone="withdrawal" header>มูลค่าที่เบิกไปขาย</MarketCell>
+        <MarketCell width="24%" tone="sales" header>ยอดขาย</MarketCell>
+        <MarketCell width="24%" tone="return" header>ของชั่งคืนดี</MarketCell>
+      </View>
+      {marketTotals.map((market, index) => <View style={S.tr} key={`${market.marketLabel}-${index}`} wrap={false}
+        // Never strand the รวม row alone at the top of a new page.
+        minPresenceAhead={index === marketTotals.length - 1 ? 30 : 0}>
+        <MarketCell width="28%" tone="name">{market.marketLabel}</MarketCell>
+        <MarketCell width="24%" tone="withdrawal">{bahtFromSatang(market.withdrawalValueSatang)}</MarketCell>
+        <MarketCell width="24%" tone="sales">{bahtFromSatang(market.salesValueSatang)}</MarketCell>
+        <MarketCell width="24%" tone="return">{bahtFromSatang(market.goodReturnValueSatang)}</MarketCell>
+      </View>)}
+      <View style={S.tr} wrap={false}>
+        <MarketCell width="28%" tone="name" total>รวม</MarketCell>
+        <MarketCell width="24%" tone="withdrawal" total>{financial ? bahtFromSatang(financial.withdrawalValueSatang) : "-"}</MarketCell>
+        <MarketCell width="24%" tone="sales" total>{financial ? bahtFromSatang(financial.salesValueSatang) : "-"}</MarketCell>
+        <MarketCell width="24%" tone="return" total>{financial ? bahtFromSatang(financial.goodReturnValueSatang) : "-"}</MarketCell>
       </View>
     </View>
-  );
+  </>);
 }
 
 export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBriefReport; generatedAt: Date }) {
@@ -445,12 +439,8 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
     && financialSections.length > 0
     && sectionSalesTotalSatang !== report.sales.totalSalesSatang;
   const stockSections = STOCK_CATEGORIES.flatMap((category) => {
-    const categoryItems = stockItems.filter((item) => stockCategory(item) === category);
-    if (!categoryItems.some(hasRealStockQuantity)) return [];
-    const chunks = categoryChunks(categoryItems);
-    return chunks.map((items, index) => ({
-      category, items, categoryItems, index, chunkCount: chunks.length,
-    }));
+    const items = stockItems.filter((item) => stockCategory(item) === category);
+    return items.some(hasRealStockQuantity) ? [{ category, items }] : [];
   });
 
   return <Document title={`Morning Brief ${report.businessDate}`}>
@@ -494,38 +484,23 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
         businessDate={report.businessDate} stockStatus={report.houseStock.status}
       />)}
       <Text style={S.note}>หมายเหตุ: ยอดขายรวมอ้างอิงรายงานยอดขายทุกตลาด ส่วนยอดแยกหมวดแสดงเฉพาะหมวดที่มีข้อมูล วันที่ {thaiNumericDate(report.businessDate)}</Text>
+      {/* Stock flows straight after the summary instead of forcing a new
+          physical page. Headings are siblings of their tables so
+          minPresenceAhead keeps each heading with its first rows; tables
+          split between rows (never clipped) and repeat their fixed header. */}
+      {stockSections.map(({ category, items }) => <React.Fragment key={category}>
+        <View style={[S.stockHeader, { marginTop: 12 }]} wrap={false} minPresenceAhead={100}>
+          <Text style={S.title}>{`หมวด${category} - ${formatThaiDate(report.businessDate)}`}</Text>
+          <Text style={S.subtitle}>รวมคงเหลือ = คงเหลือในบ้าน + ในตลาด</Text>
+        </View>
+        <StockMatrix items={items} />
+        <Text style={[S.note, { marginTop: 6 }]}>คงเหลือในบ้าน = ของที่ยังอยู่บ้าน/คลัง • ในตลาด = ของดีชั่งคืนจากตลาด • ถ้าไม่ทราบข้อมูลฝั่งบ้านจะแสดง “-”</Text>
+      </React.Fragment>)}
       <DataFooter generatedText={generatedText} />
-    </Page> : null}
-    {!hasDailyActivity ? <Page size="A4" style={S.page}>
+    </Page> : <Page size="A4" style={S.page}>
       <Text style={S.title}>สรุปเช้า - {formatThaiDate(report.businessDate)}</Text>
       <Text>ยังไม่มีข้อมูลสินค้าในระบบ</Text>
       <DataFooter generatedText={generatedText} />
-    </Page> : null}
-
-    {stockSections.length > 0 ? <Page size="A4" style={S.page} wrap>
-      {stockSections.map(({ category, items, categoryItems, index, chunkCount }) =>
-        // A short section may share a page with the next category. Keep a
-        // category's individual table together; react-pdf moves it to a new
-        // physical page only when there is insufficient space.
-        <View key={`${category}-${index}`}
-          // The renderer may split a genuinely oversized category rather than
-          // clipping one large unbreakable block (e.g. many different units).
-          wrap={items.length + (index === chunkCount - 1
-            ? new Set(categoryItems.map((item) => item.unit)).size : 0) > 17}
-          style={{ marginBottom: 10 }}>
-          <View style={S.stockHeader}>
-            <Text style={S.title}>{`หมวด${category}${chunkCount > 1 ? ` ${index + 1}/${chunkCount}` : ""} - ${formatThaiDate(report.businessDate)}`}</Text>
-            <Text style={S.subtitle}>รวมคงเหลือ = คงเหลือในบ้าน + ในตลาด</Text>
-          </View>
-          <StockMatrix
-            items={items}
-            totalsItems={categoryItems}
-            showTotals={index === chunkCount - 1}
-          />
-          <Text style={[S.note, { marginTop: 6 }]}>คงเหลือในบ้าน = ของที่ยังอยู่บ้าน/คลัง • ในตลาด = ของดีชั่งคืนจากตลาด • ถ้าไม่ทราบข้อมูลฝั่งบ้านจะแสดง “-”</Text>
-        </View>
-      )}
-      <DataFooter generatedText={generatedText} />
-    </Page> : null}
+    </Page>}
   </Document>;
 }

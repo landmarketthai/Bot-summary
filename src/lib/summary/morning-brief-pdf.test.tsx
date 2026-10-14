@@ -383,15 +383,16 @@ describe("Morning Brief A4 PDF", () => {
     registerFonts();
     const buffer = await renderToBuffer(doc);
     const totalPages = (buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length;
-    expect(totalPages).toBe(2);
+    // Summary and the short fruit stock table share one physical page.
+    expect(totalPages).toBe(1);
 
+    // One fixed footer is repeated on every physical page of the single flow.
     const footerRenders = collectRenderCallbacks(doc);
-    expect(footerRenders).toHaveLength(totalPages);
-    expect(footerRenders[0]?.({ pageNumber: 1, totalPages })).toBe("หน้า 1/2");
-    expect(footerRenders.at(-1)?.({ pageNumber: totalPages, totalPages })).toBe("หน้า 2/2");
+    expect(footerRenders).toHaveLength(1);
+    expect(footerRenders[0]?.({ pageNumber: 1, totalPages })).toBe("หน้า 1/1");
   });
 
-  test("splits a long category after every 15 item rows", async () => {
+  test("flows a long category as one table with every row exactly once", async () => {
     const items = Array.from({ length: 31 }, (_, index) => ({
       productName: PRODUCT_CODE_ENTRIES.filter((entry) => entry.enabled && entry.category === "ผลไม้")[index]!.canonicalName,
       originalProductName: null,
@@ -413,9 +414,14 @@ describe("Morning Brief A4 PDF", () => {
       houseStock: { status: "missing" },
     };
     const text = collectText(MorningBriefA4Doc({ report: pagedReport, generatedAt: new Date("2026-09-20T08:00:00+07:00") }));
-    expect(text).toContain("หมวดผลไม้ 1/3 - 19 กันยายน 2569");
-    expect(text).toContain("หมวดผลไม้ 2/3 - 19 กันยายน 2569");
-    expect(text).toContain("หมวดผลไม้ 3/3 - 19 กันยายน 2569");
+    // One heading per category; the fixed column header repeats on each
+    // physical page instead of artificial 15-row "1/3" sections.
+    expect((text.match(/หมวดผลไม้ - 19 กันยายน 2569/g) ?? []).length).toBe(1);
+    expect(text).not.toContain("หมวดผลไม้ 1/");
+    const tokens = text.split(/\s+/);
+    for (const item of items) {
+      expect(tokens.filter((token) => token === item.productName)).toHaveLength(1);
+    }
     expect((text.match(/รวม \(กก\.\)/g) ?? []).length).toBe(1);
     expect(text.replace(/\s+/g, " ")).toContain("รวม (กก.) 0 496 496");
 
@@ -423,9 +429,8 @@ describe("Morning Brief A4 PDF", () => {
     const buffer = await renderToBuffer(
       <MorningBriefA4Doc report={pagedReport} generatedAt={new Date("2026-09-20T08:00:00+07:00")} />,
     );
-    // Physical pages are now packed by the PDF layout engine rather than
-    // fixed to one page per category chunk.
-    expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBeLessThanOrEqual(5);
+    // Summary + 31 rows: stock starts on the summary page, not a new one.
+    expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBeLessThanOrEqual(3);
   });
 
   test("packs the 11 October shape without empty vegetable-finance pages or lost stock rows", async () => {
@@ -494,7 +499,9 @@ describe("Morning Brief A4 PDF", () => {
     const buffer = await renderToBuffer(doc);
     expect(buffer.subarray(0, 4).toString()).toBe("%PDF");
     const pages = (buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length;
-    expect(pages).toBeLessThanOrEqual(5);
+    // 25 fruit rows need two pages of stock; the summary overflow shares a
+    // page with stock instead of leaving a near-empty page behind.
+    expect(pages).toBeLessThanOrEqual(3);
     expect(pages).toBeGreaterThanOrEqual(2);
   });
 
@@ -623,13 +630,97 @@ describe("Morning Brief A4 PDF", () => {
     expect(artifact.referencePath).toBe("2026-09-19/morning-brief-2026-09-19.ref.json");
   });
 
-  test("renders the fruit summary page followed only by categories with real quantities", async () => {
+  test("flows a short stock table onto the summary page instead of forcing a new page", async () => {
     registerFonts();
     const buffer = await renderToBuffer(
       <MorningBriefA4Doc report={report} generatedAt={new Date("2026-09-19T08:00:00+07:00")} />,
     );
     expect(buffer.subarray(0, 4).toString("ascii")).toBe("%PDF");
     expect(buffer.length).toBeGreaterThan(5_000);
-    expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(2);
+    expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(1);
+  });
+
+  test("sums house Stock groups split by unit price instead of keeping only the first", () => {
+    const empty = { count: 0, productNames: [], items: [] };
+    const split: MorningBriefReport = {
+      ...report,
+      purchasePlanning: { strong: empty, surplus: empty, reduce: empty, unknown: empty },
+      houseStock: { status: "available", groupCount: 2, totalValueSatang: 0, items: [
+        { productName: "มังคุด", category: "ผลไม้", unit: "กก.", quantity: 2.25, unitPriceSatang: 8_000, valueSatang: 18_000 },
+        { productName: "มังคุด", category: "ผลไม้", unit: "โล", quantity: 3.5, unitPriceSatang: 9_000, valueSatang: 31_500 },
+      ] },
+    };
+    const normalized = collectText(MorningBriefA4Doc({ report: split, generatedAt: new Date("2026-09-20T08:00:00+07:00") }))
+      .replace(/\s+/g, " ");
+    expect(normalized).toContain("มังคุด 5.75 5.75");
+    expect(normalized).not.toContain("มังคุด 2.25");
+    expect((normalized.match(/มังคุด/g) ?? []).length).toBe(1);
+  });
+
+  test("totals โล and กก. rows in one รวม (กก.) row, never two partial rows", () => {
+    const planned: MorningBriefReport = {
+      ...report,
+      houseStock: { status: "available", groupCount: 1, totalValueSatang: 0, items: [
+        { productName: "มังคุด", category: "ผลไม้", unit: "กก.", quantity: 4, unitPriceSatang: 100, valueSatang: 400 },
+      ] },
+    };
+    const normalized = collectText(MorningBriefA4Doc({ report: planned, generatedAt: new Date("2026-09-20T08:00:00+07:00") }))
+      .replace(/\s+/g, " ");
+    // พุทราจีน 0+10.1, แก้วมังกร 0+170 (both โล) and house-only มังคุด 4 กก.
+    expect((normalized.match(/รวม \(กก\.\)/g) ?? []).length).toBe(1);
+    expect(normalized).toContain("รวม (กก.) 4 180.1 184.1");
+    expect(normalized).toContain("รวม (ลูก) 40 372 412");
+  });
+
+  test("never clips stock rows: tall tables split across pages and headings keep their rows", async () => {
+    const empty = { count: 0, productNames: [], items: [] };
+    const items = Array.from({ length: 15 }, (_, i) => ({
+      productName: `สินค้าทดสอบ${i} ชื่อยาวมากเป็นพิเศษสำหรับทดสอบการตัดบรรทัดในตาราง`,
+      originalProductName: null, category: "อื่นๆ", unit: "ถุง", uncertaintyReasons: [],
+      marketStockQuantity: i + 1, houseStockQuantity: null, totalRemainingQuantity: null,
+    }));
+    const tall: MorningBriefReport = {
+      ...report,
+      purchasePlanning: { strong: { count: items.length, productNames: [], items }, surplus: empty, reduce: empty, unknown: empty },
+      houseStock: { status: "missing" },
+    };
+    const doc = MorningBriefA4Doc({ report: tall, generatedAt: new Date("2026-09-20T08:00:00+07:00") });
+
+    // Structure: no unbreakable block contains a stock or market table, and
+    // every section heading asks react-pdf to keep rows after it.
+    const unbreakable: string[] = [];
+    const headingPresence: number[] = [];
+    const walk = (node: React.ReactNode): void => {
+      if (node == null || typeof node === "boolean" || typeof node === "string" || typeof node === "number") return;
+      if (Array.isArray(node)) return node.forEach(walk);
+      if (!React.isValidElement(node)) return;
+      const element = node as React.ReactElement<Record<string, unknown>>;
+      if (typeof element.type === "function") {
+        return walk((element.type as (props: Record<string, unknown>) => React.ReactNode)(element.props));
+      }
+      const props = element.props as { wrap?: boolean; minPresenceAhead?: number; children?: React.ReactNode };
+      const text = collectText(props.children);
+      if (props.wrap === false) unbreakable.push(text);
+      if (props.wrap === false && /^\s*(หมวด|สรุป)/.test(text)) headingPresence.push(props.minPresenceAhead ?? 0);
+      walk(props.children);
+    };
+    walk(doc);
+    expect(unbreakable.some((text) => text.includes("สินค้าทดสอบ0") && text.includes("สินค้าทดสอบ1"))).toBe(false);
+    expect(unbreakable.some((text) => text.includes("ทรัพย์พันธ์2") && text.includes("พาซิโอ้ผลไม้"))).toBe(false);
+    expect(headingPresence.length).toBeGreaterThanOrEqual(2);
+    expect(headingPresence.every((points) => points >= 70)).toBe(true);
+
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => { warnings.push(args.join(" ")); };
+    try {
+      registerFonts();
+      const pdf = await renderToBuffer(doc);
+      expect((pdf.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(2);
+    } finally {
+      console.warn = originalWarn;
+    }
+    expect(warnings.filter((warning) => warning.includes("can't wrap"))).toEqual([]);
+    for (const item of items) expect(collectText(doc)).toContain(item.productName);
   });
 });
