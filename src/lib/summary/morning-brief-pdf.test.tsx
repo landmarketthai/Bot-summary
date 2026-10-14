@@ -220,13 +220,36 @@ describe("Morning Brief A4 PDF", () => {
     expect(text.indexOf("14,501.52")).toBeLessThan(text.indexOf("สรุปผลไม้คงเหลือ"));
     expect(normalized).toContain("ยืนยันแล้ว 14,001.52 บาท");
     expect(normalized).toContain("รอตรวจ 500.00 บาท");
-    expect(text).toContain("ผลไม้ 11,753.52 บาท");
-    expect(text).toContain("ผัก 110.00 บาท");
-    expect(text).toContain("อื่นๆ 2,638.00 บาท");
+    expect(normalized).toContain("ผลไม้ 11,753.52 บาท");
+    expect(normalized).toContain("ผัก 110.00 บาท");
+    expect(normalized).toContain("ยังไม่จัดหมวด / สินค้าอื่น 2,638.00 บาท");
     expect(text).not.toContain("ต่างจากยอดขายรวมในระบบ");
     registerFonts();
     const buffer = await renderToBuffer(doc);
     expect(buffer.subarray(0, 4).toString()).toBe("%PDF");
+  });
+
+  test("keeps verification status and warnings off the executive cover but visible in the detail pages", () => {
+    const withPending: MorningBriefReport = {
+      ...report,
+      sales: { ...report.sales, excludedFromSalesCount: 2, valueAuthoritative: false },
+      produceFinancial: { fruit: report.fruitFinancial! },
+    };
+    const doc = MorningBriefA4Doc({ report: withPending, generatedAt: new Date("2026-10-14T08:00:00+07:00") });
+    const fragment = (doc as React.ReactElement<{ children: React.ReactNode }>).props.children;
+    const pages = React.Children.toArray((fragment as React.ReactElement<{ children: React.ReactNode }>).props.children);
+    expect(pages).toHaveLength(2);
+    const cover = collectText(pages[0]);
+    const details = collectText(pages[1]);
+    expect(cover).toContain("ยอดขายตามข้อมูลที่มี");
+    expect(cover).toContain("1,304.56");
+    for (const text of ["ยืนยันแล้ว", "รอตรวจ", "ปรับราคา", "รายละเอียดการตรวจข้อมูล"]) {
+      expect(cover).not.toContain(text);
+    }
+    expect(details).toContain("ยอดขายยืนยันแล้ว");
+    expect(details).toContain("ยอดรอตรวจ");
+    expect(details).toContain("ยอดปรับราคา");
+    expect(details.replace(/\s+/g, " ")).toContain("มี 2 รายการที่คำนวณยอดขายไม่ได้");
   });
 
   test("warns when category sums disagree with the authoritative daily sales instead of silently replacing it", () => {
@@ -383,13 +406,14 @@ describe("Morning Brief A4 PDF", () => {
     registerFonts();
     const buffer = await renderToBuffer(doc);
     const totalPages = (buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length;
-    // Summary and the short fruit stock table share one physical page.
-    expect(totalPages).toBe(1);
+    // The clean executive summary has its own page; stock follows on page two.
+    expect(totalPages).toBe(2);
 
-    // One fixed footer is repeated on every physical page of the single flow.
+    // Both document sections have page-number footers with the same total.
     const footerRenders = collectRenderCallbacks(doc);
-    expect(footerRenders).toHaveLength(1);
-    expect(footerRenders[0]?.({ pageNumber: 1, totalPages })).toBe("หน้า 1/1");
+    expect(footerRenders).toHaveLength(2);
+    expect(footerRenders[0]?.({ pageNumber: 1, totalPages })).toBe("หน้า 1/2");
+    expect(footerRenders[1]?.({ pageNumber: 2, totalPages })).toBe("หน้า 2/2");
   });
 
   test("flows a long category as one table with every row exactly once", async () => {
@@ -429,7 +453,7 @@ describe("Morning Brief A4 PDF", () => {
     const buffer = await renderToBuffer(
       <MorningBriefA4Doc report={pagedReport} generatedAt={new Date("2026-09-20T08:00:00+07:00")} />,
     );
-    // Summary + 31 rows: stock starts on the summary page, not a new one.
+    // Executive cover comes first; detail tables still flow without a new page per category.
     expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBeLessThanOrEqual(3);
   });
 
@@ -499,9 +523,9 @@ describe("Morning Brief A4 PDF", () => {
     const buffer = await renderToBuffer(doc);
     expect(buffer.subarray(0, 4).toString()).toBe("%PDF");
     const pages = (buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length;
-    // 25 fruit rows need two pages of stock; the summary overflow shares a
-    // page with stock instead of leaving a near-empty page behind.
-    expect(pages).toBeLessThanOrEqual(3);
+    // One executive cover plus flow-paginated financial and stock details.
+    // No extra standalone page is forced for the small vegetable stock.
+    expect(pages).toBeLessThanOrEqual(4);
     expect(pages).toBeGreaterThanOrEqual(2);
   });
 
@@ -524,7 +548,7 @@ describe("Morning Brief A4 PDF", () => {
     }
     registerFonts();
     const buffer = await renderToBuffer(doc);
-    expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBeLessThanOrEqual(2);
+    expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBeLessThanOrEqual(3);
   });
 
   test("paginates unusually long market tables and stock units without dropping rows", async () => {
@@ -630,14 +654,14 @@ describe("Morning Brief A4 PDF", () => {
     expect(artifact.referencePath).toBe("2026-09-19/morning-brief-2026-09-19.ref.json");
   });
 
-  test("flows a short stock table onto the summary page instead of forcing a new page", async () => {
+  test("keeps the clean daily summary separate from the short stock table", async () => {
     registerFonts();
     const buffer = await renderToBuffer(
       <MorningBriefA4Doc report={report} generatedAt={new Date("2026-09-19T08:00:00+07:00")} />,
     );
     expect(buffer.subarray(0, 4).toString("ascii")).toBe("%PDF");
     expect(buffer.length).toBeGreaterThan(5_000);
-    expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(1);
+    expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(2);
   });
 
   test("sums house Stock groups split by unit price instead of keeping only the first", () => {
@@ -737,7 +761,7 @@ describe("Morning Brief A4 PDF", () => {
     try {
       registerFonts();
       const pdf = await renderToBuffer(doc);
-      expect((pdf.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(2);
+      expect((pdf.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(3);
     } finally {
       console.warn = originalWarn;
     }

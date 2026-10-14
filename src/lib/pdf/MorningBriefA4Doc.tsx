@@ -56,6 +56,14 @@ const S = StyleSheet.create({
   dailyOverviewTotal: { fontSize: 23, fontWeight: "bold", color: "#111827", marginTop: 2 },
   dailyOverviewDetails: { fontSize: 10, marginTop: 4, color: "#374151" },
   dailyOverviewWarning: { fontSize: 9.2, marginTop: 4, color: "#92400E" },
+  coverSectionTitle: { fontSize: 13, fontWeight: "bold", marginTop: 12, marginBottom: 6 },
+  coverCategory: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 5, paddingHorizontal: 8, borderBottomWidth: 0.6, borderBottomColor: "#DEE3E9" },
+  coverCategoryName: { fontSize: 11.3 },
+  coverCategoryValue: { fontSize: 11.3, fontWeight: "bold" },
+  coverMarketHeader: { flexDirection: "row", paddingVertical: 5, paddingHorizontal: 8, backgroundColor: "#E9EFF7" },
+  coverMarketRow: { flexDirection: "row", paddingVertical: 4, paddingHorizontal: 8, borderBottomWidth: 0.6, borderBottomColor: "#DEE3E9" },
+  coverMarketName: { width: "65%", fontSize: 10.3 },
+  coverMarketAmount: { width: "35%", fontSize: 10.3, textAlign: "right" },
   explanation: {
     borderLeftWidth: 2.5,
     borderLeftColor: "#777B80",
@@ -443,37 +451,42 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
   });
 
   return <Document title={`Morning Brief ${report.businessDate}`}>
-    {hasDailyActivity ? <Page size="A4" style={S.page} wrap>
+    {hasDailyActivity ? <><Page size="A4" style={S.page} wrap>
       <View style={S.header}>
-        <Text style={S.summaryTitle}>สรุปยอดเพื่อสั่งซื้อ - {formatThaiDate(report.businessDate)}</Text>
+        <Text style={S.summaryTitle}>สรุปยอดขายประจำวัน - {formatThaiDate(report.businessDate)}</Text>
         <Text style={S.subtitle}>Bot-summary | ข้อมูลวันที่ {thaiNumericDate(report.businessDate)} | ภาพรวมยอดขายทุกหมวดและรายละเอียดตามตลาด</Text>
       </View>
       <View style={S.dailyOverview} wrap={false}>
         <Text style={S.dailyOverviewTitle}>
           {report.sales.excludedFromSalesCount > 0
-            ? "ยอดขายรวมที่คำนวณได้ (บางส่วน)"
+            ? "ยอดขายตามข้อมูลที่มี"
             : "ยอดขายรวมทั้งวัน"} — {thaiNumericDate(report.businessDate)}
         </Text>
         <Text style={S.dailyOverviewTotal}>{bahtFromSatang(report.sales.totalSalesSatang)} บาท</Text>
-        <Text style={S.dailyOverviewDetails}>
-          ยืนยันแล้ว {bahtFromSatang(report.sales.confirmedSalesSatang)} บาท
-          {"  •  "}รอตรวจ {bahtFromSatang(report.sales.pendingReviewSalesSatang)} บาท
-        </Text>
-        {report.sales.adjustmentSatang !== 0
-          ? <Text style={S.dailyOverviewDetails}>ปรับราคา {bahtFromSatang(report.sales.adjustmentSatang)} บาท</Text>
-          : null}
-        {financialSections.length > 0 ? <Text style={S.dailyOverviewDetails}>
-          {financialSections.map(({ section, financial }) =>
-            `${PRODUCE_SECTION_LABEL[section]} ${bahtFromSatang(financial.salesValueSatang)} บาท`).join("  •  ")}
-        </Text> : null}
-        {salesBreakdownDiffers ? <Text style={S.dailyOverviewWarning}>
-          ยอดแยกหมวดรวม {bahtFromSatang(sectionSalesTotalSatang)} บาท ต่างจากยอดขายรวมในระบบ
-          {"  "}— โปรดตรวจสอบความครบถ้วนของข้อมูล ห้ามถือว่าเป็นยอดยืนยันเพิ่ม
-        </Text> : null}
-        {!report.sales.valueAuthoritative || report.sales.excludedFromSalesCount > 0
-          ? <Text style={S.dailyOverviewWarning}>ยอดขายมีรายการที่ยังไม่ครบหรือรอตรวจ กรุณาดูยอดยืนยันแล้วแยกต่างหาก</Text>
-          : null}
+        <Text style={S.dailyOverviewDetails}>รวมยอดที่คำนวณได้จากทุกหมวดสินค้าและทุกตลาด</Text>
       </View>
+      {report.produceFinancial != null && financialSections.length > 0 && !salesBreakdownDiffers ? <View wrap={false}>
+        <Text style={S.coverSectionTitle}>ยอดขายแยกตามหมวด</Text>
+        {financialSections.map(({ section, financial }) =>
+          <View key={section} style={S.coverCategory}>
+            <Text style={S.coverCategoryName}>{section === "other" ? "ยังไม่จัดหมวด / สินค้าอื่น" : PRODUCE_SECTION_LABEL[section]}</Text>
+            <Text style={S.coverCategoryValue}>{bahtFromSatang(financial.salesValueSatang)} บาท</Text>
+          </View>)}
+      </View> : null}
+      {(report.sales.markets ?? []).length > 0 ? <View>
+        <Text style={S.coverSectionTitle}>ยอดขายแยกตามตลาด</Text>
+        <View style={S.coverMarketHeader} wrap={false}>
+          <Text style={[S.coverMarketName, { fontWeight: "bold" }]}>ตลาด</Text>
+          <Text style={[S.coverMarketAmount, { fontWeight: "bold" }]}>ยอดขาย (บาท)</Text>
+        </View>
+        {report.sales.markets!.map((market, index) => <View style={S.coverMarketRow} key={`${market.marketLabel}-${index}`} wrap={false}>
+          <Text style={S.coverMarketName}>{market.marketLabel}</Text>
+          <Text style={S.coverMarketAmount}>{bahtFromSatang(market.totalSalesSatang)}</Text>
+        </View>)}
+      </View> : null}
+      <DataFooter generatedText={generatedText} />
+    </Page>
+    <Page size="A4" style={S.page} wrap>
       <View style={S.explanation}>
         <Text style={S.explanationTitle}>คำอธิบายตัวเลข</Text>
         <Text style={S.explanationText}><Text style={{ fontWeight: "bold" }}>เบิกออกไปขาย</Text> คือมูลค่าสินค้าที่นำออกตลาดก่อนเริ่มขาย ส่วน <Text style={{ fontWeight: "bold" }}>คงเหลือพร้อมขาย</Text> คือของดีที่ชั่งคืนจากตลาดหลังขาย บวกกับของที่ยังอยู่บ้าน จึงอาจมีบางรายการที่คงเหลือน้อยกว่ายอดที่เบิกไปขาย</Text>
@@ -489,6 +502,14 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
           ? <View key={section} wrap={false} minPresenceAhead={70}>{summary}</View>
           : <React.Fragment key={section}>{summary}</React.Fragment>;
       })}
+      <View style={[S.explanation, { marginTop: 9 }]} wrap={false}>
+        <Text style={S.explanationTitle}>รายละเอียดการตรวจข้อมูล</Text>
+        <Text style={S.explanationText}>ยอดขายยืนยันแล้ว {bahtFromSatang(report.sales.confirmedSalesSatang)} บาท • ยอดรอตรวจ {bahtFromSatang(report.sales.pendingReviewSalesSatang)} บาท</Text>
+        {report.sales.adjustmentSatang !== 0 ? <Text style={S.explanationText}>ยอดปรับราคา {bahtFromSatang(report.sales.adjustmentSatang)} บาท</Text> : null}
+        {report.sales.excludedFromSalesCount > 0 ? <Text style={S.dailyOverviewWarning}>มี {report.sales.excludedFromSalesCount} รายการที่คำนวณยอดขายไม่ได้ รวมอยู่ในยอดรายงานไม่ได้</Text> : null}
+        {salesBreakdownDiffers ? <Text style={S.dailyOverviewWarning}>ยอดแยกหมวดรวม {bahtFromSatang(sectionSalesTotalSatang)} บาท ต่างจากยอดขายรวมในระบบ {bahtFromSatang(report.sales.totalSalesSatang)} บาท — โปรดตรวจสอบความครบถ้วนของข้อมูล ห้ามถือว่าเป็นยอดยืนยันเพิ่ม</Text> : null}
+        {!report.sales.valueAuthoritative || report.sales.excludedFromSalesCount > 0 ? <Text style={S.dailyOverviewWarning}>ยอดขายมีรายการที่ยังไม่ครบหรือรอตรวจ กรุณาดูยอดยืนยันแล้วแยกต่างหาก</Text> : null}
+      </View>
       <Text style={S.note}>หมายเหตุ: ยอดขายรวมอ้างอิงรายงานยอดขายทุกตลาด ส่วนยอดแยกหมวดแสดงเฉพาะหมวดที่มีข้อมูล วันที่ {thaiNumericDate(report.businessDate)}</Text>
       {/* Stock flows straight after the summary instead of forcing a new
           physical page. Headings are siblings of their tables so
@@ -505,7 +526,7 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
         <StockMatrix items={items} category={category} />
       </React.Fragment>)}
       <DataFooter generatedText={generatedText} />
-    </Page> : <Page size="A4" style={S.page}>
+    </Page></> : <Page size="A4" style={S.page}>
       <Text style={S.title}>สรุปเช้า - {formatThaiDate(report.businessDate)}</Text>
       <Text>ยังไม่มีข้อมูลสินค้าในระบบ</Text>
       <DataFooter generatedText={generatedText} />

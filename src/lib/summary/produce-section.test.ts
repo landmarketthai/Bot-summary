@@ -17,6 +17,15 @@ describe("produceSectionOf — explicit classification, never fruit by eliminati
     // ordinary fruit and vegetables, from the code table and the stock map
     ["มังคุด", "fruit"], ["เมล่อน", "fruit"], ["กะหล่ำปลี", "vegetable"], ["คะน้า", "vegetable"],
     ["ใบกุยช่าย", "vegetable"], ["เห็ดเข็มทอง", "vegetable"],
+    // Read-only 30-day field audit: classification only, never identity merge.
+    ["แก้วขมิ้น", "fruit"], ["ส้มสายน้ำผึ้ง", "fruit"], ["ส้มจีน", "fruit"],
+    ["ฝรั่งแดงตำหนิ", "fruit"], ["ผลไม้กลอ่ง", "fruit"],
+    ["มะเขือราชีนี", "vegetable"], ["มะเขือเทสราชีนี", "vegetable"],
+    ["หน่อไม้ฝรั่ง", "vegetable"], ["กะหล่ำปลีม่วง", "vegetable"],
+    ["พริกชีฟ้าแดง", "vegetable"], ["พริกชีฟ้าเขียว", "vegetable"],
+    ["ต้นหอมยี่ปุ่น", "vegetable"], ["บอคเคอรี่", "vegetable"],
+    ["มะเขือยาวมว่ง", "vegetable"], ["ใบโหรพา", "vegetable"],
+    ["ขนมจีน", "other"], ["ปลาทูนึ่ง", "other"], ["เครื่องยาจีน", "other"],
   ] as const)("%s → %s", (name, section) => {
     expect(produceSectionOf(name)).toBe(section);
   });
