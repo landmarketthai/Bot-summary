@@ -108,7 +108,8 @@ const S = StyleSheet.create({
   marketSales: { backgroundColor: "#F8F0CD" },
   marketReturn: { backgroundColor: "#E4F2E1" },
   marketTotal: { fontWeight: "bold", fontSize: 11.1 },
-  matrixCell: { paddingVertical: 7.2, paddingHorizontal: 5, fontSize: 13.5 },
+  // Keep stock rows legible without forcing a fourth page for a stray note.
+  matrixCell: { paddingVertical: 5.0, paddingHorizontal: 5, fontSize: 11.7 },
   matrixName: { backgroundColor: "#FFFFFF" },
   matrixAlternate: { backgroundColor: "#F4F7F4" },
   matrixTotal: { backgroundColor: "#DCEBD5" },
@@ -274,7 +275,7 @@ function displayUnit(unit: string): string {
   return unit === "โล" ? "กก." : unit;
 }
 
-function StockMatrix({ items }: { items: ReturnType<typeof stockMatrixItems> }) {
+function StockMatrix({ items, category }: { items: ReturnType<typeof stockMatrixItems>; category: StockPageCategory }) {
   const duplicateNames = new Map<string, number>();
   for (const item of items) {
     duplicateNames.set(item.productName, (duplicateNames.get(item.productName) ?? 0) + 1);
@@ -282,7 +283,8 @@ function StockMatrix({ items }: { items: ReturnType<typeof stockMatrixItems> }) 
 
   return <View style={S.table}>
     <View style={S.tr} fixed>
-      <MatrixCell width="40%" header center>รายการ</MatrixCell>
+      {/* The fixed table header repeats when a category spans pages, preserving context. */}
+      <MatrixCell width="40%" header center>{`รายการ (${category})`}</MatrixCell>
       <MatrixCell width="20%" header tone="house" center>บ้านเจ๊</MatrixCell>
       <MatrixCell width="20%" header tone="market" center>ในตลาด</MatrixCell>
       <MatrixCell width="20%" header tone="total" center>รวมคงเหลือ</MatrixCell>
@@ -479,22 +481,31 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
         <Text style={S.explanationTitle}>คำอธิบายตัวเลข</Text>
         <Text style={S.explanationText}><Text style={{ fontWeight: "bold" }}>เบิกออกไปขาย</Text> คือมูลค่าสินค้าที่นำออกตลาดก่อนเริ่มขาย ส่วน <Text style={{ fontWeight: "bold" }}>คงเหลือพร้อมขาย</Text> คือของดีที่ชั่งคืนจากตลาดหลังขาย บวกกับของที่ยังอยู่บ้าน จึงอาจมีบางรายการที่คงเหลือน้อยกว่ายอดที่เบิกไปขาย</Text>
       </View>
-      {financialSections.map(({ section, financial }) => <FinancialSummaryPage
-        key={section} financial={financial} label={PRODUCE_SECTION_LABEL[section]}
-        businessDate={report.businessDate} stockStatus={report.houseStock.status}
-      />)}
+      {financialSections.map(({ section, financial }) => {
+        const summary = <FinancialSummaryPage
+          financial={financial} label={PRODUCE_SECTION_LABEL[section]}
+          businessDate={report.businessDate} stockStatus={report.houseStock.status}
+        />;
+        // Small sections must stay intact, including their market total row.
+        // Large market tables remain splittable between rows.
+        return financial.markets.length <= 6
+          ? <View key={section} wrap={false} minPresenceAhead={70}>{summary}</View>
+          : <React.Fragment key={section}>{summary}</React.Fragment>;
+      })}
       <Text style={S.note}>หมายเหตุ: ยอดขายรวมอ้างอิงรายงานยอดขายทุกตลาด ส่วนยอดแยกหมวดแสดงเฉพาะหมวดที่มีข้อมูล วันที่ {thaiNumericDate(report.businessDate)}</Text>
       {/* Stock flows straight after the summary instead of forcing a new
           physical page. Headings are siblings of their tables so
           minPresenceAhead keeps each heading with its first rows; tables
           split between rows (never clipped) and repeat their fixed header. */}
-      {stockSections.map(({ category, items }) => <React.Fragment key={category}>
-        <View style={[S.stockHeader, { marginTop: 12 }]} wrap={false} minPresenceAhead={100}>
+      {stockSections.map(({ category, items }, index) => <React.Fragment key={category}>
+        <View style={[S.stockHeader, { marginTop: 12 }]} wrap={false} minPresenceAhead={120}>
           <Text style={S.title}>{`หมวด${category} - ${formatThaiDate(report.businessDate)}`}</Text>
           <Text style={S.subtitle}>รวมคงเหลือ = คงเหลือในบ้าน + ในตลาด</Text>
+          {index === 0 ? <Text style={[S.note, { marginTop: 3 }]}>
+            บ้านเจ๊ = คงเหลือในบ้าน/คลัง • ในตลาด = ของดีชั่งคืน • ไม่ทราบยอดฝั่งบ้านแสดง “-”
+          </Text> : null}
         </View>
-        <StockMatrix items={items} />
-        <Text style={[S.note, { marginTop: 6 }]}>คงเหลือในบ้าน = ของที่ยังอยู่บ้าน/คลัง • ในตลาด = ของดีชั่งคืนจากตลาด • ถ้าไม่ทราบข้อมูลฝั่งบ้านจะแสดง “-”</Text>
+        <StockMatrix items={items} category={category} />
       </React.Fragment>)}
       <DataFooter generatedText={generatedText} />
     </Page> : <Page size="A4" style={S.page}>

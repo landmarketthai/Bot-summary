@@ -280,7 +280,7 @@ describe("Morning Brief A4 PDF", () => {
     const normalized = text.replace(/\s+/g, " ").trim();
     expect(normalized).toContain("หมวดผลไม้ - 22 กันยายน 2569");
 
-    expect(normalized).toContain("รายการ บ้านเจ๊ ในตลาด รวมคงเหลือ");
+    expect(normalized).toContain("รายการ (ผลไม้) บ้านเจ๊ ในตลาด รวมคงเหลือ");
 
     const apple = text.indexOf("แอปเปิ้ล");
     const house = text.indexOf("40", apple);
@@ -706,7 +706,9 @@ describe("Morning Brief A4 PDF", () => {
     };
     walk(doc);
     expect(unbreakable.some((text) => text.includes("สินค้าทดสอบ0") && text.includes("สินค้าทดสอบ1"))).toBe(false);
-    expect(unbreakable.some((text) => text.includes("ทรัพย์พันธ์2") && text.includes("พาซิโอ้ผลไม้"))).toBe(false);
+    // A short market summary may stay together to avoid a table breaking at
+    // the bottom of a page. Larger market summaries must still paginate.
+    expect(unbreakable.some((text) => text.includes("ทรัพย์พันธ์2") && text.includes("พาซิโอ้ผลไม้"))).toBe(true);
     expect(headingPresence.length).toBeGreaterThanOrEqual(2);
     expect(headingPresence.every((points) => points >= 70)).toBe(true);
 
