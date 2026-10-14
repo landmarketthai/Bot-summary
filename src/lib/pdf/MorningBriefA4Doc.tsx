@@ -331,82 +331,36 @@ function DataFooter({ generatedText }: { generatedText: string }) {
   </View>;
 }
 
-function FinancialSummaryPage({ financial, label, businessDate, stockStatus }: {
-  financial: MorningBriefFruitFinancialSummary;
+/**
+ * Five operational money fields live together on the FIRST page.
+ * Null house/ready values stay unknown; never use zero as a placeholder.
+ * This is a reusable daily template, not a date-specific PDF patch.
+ */
+function CoverFinancialKpis({ label, financial }: {
   label: string;
-  businessDate: string;
-  stockStatus: MorningBriefReport["houseStock"]["status"];
+  financial: MorningBriefFruitFinancialSummary;
 }) {
-  const marketTotals = financial.markets;
-  // Siblings, not one wrapper View: react-pdf only honours minPresenceAhead
-  // between siblings, so the heading block can never be orphaned at a page
-  // bottom while the (possibly long) market table still splits row by row.
-  return (<>
-    <View style={S.financialCategory} wrap={false} minPresenceAhead={70}>
-      <Text style={S.financialCategoryTitle}>{`สรุป${label}คงเหลือเพื่อสั่งซื้อ - ${formatThaiDate(businessDate)}`}</Text>
-
-      <View style={S.kpiGrid}>
-        <View style={S.kpi}><View style={[S.kpiBox, S.kpiSales]}>
-          <Text style={S.kpiLabel}>ยอดขายรวมเมื่อวาน ({label})</Text>
-          <Text style={S.kpiValue}>{financial ? bahtFromSatang(financial.salesValueSatang) : "-"}</Text>
-          <Text style={S.kpiUnit}>บาท</Text>
-        </View></View>
-        <View style={S.kpi}><View style={[S.kpiBox, S.kpiWithdrawal]}>
-          <Text style={S.kpiLabel}>{label}ที่เบิกออกไปขายเมื่อวาน</Text>
-          <Text style={S.kpiValue}>{financial ? bahtFromSatang(financial.withdrawalValueSatang) : "-"}</Text>
-          <Text style={S.kpiUnit}>บาท</Text>
-        </View></View>
-        <View style={S.kpi}><View style={[S.kpiBox, S.kpiReturn]}>
-          <Text style={S.kpiLabel}>ของชั่งคืนดีจากตลาด</Text>
-          <Text style={S.kpiValue}>{financial ? bahtFromSatang(financial.goodReturnValueSatang) : "-"}</Text>
-          <Text style={S.kpiUnit}>บาท</Text>
-        </View></View>
-        <View style={S.kpi}><View style={[S.kpiBox, S.kpiHouse]}>
-          <Text style={S.kpiLabel}>Stock {label}ที่บ้าน</Text>
-          <Text style={financial.houseStockValueSatang == null ? S.kpiUnknownValue : S.kpiValue}>{financial.houseStockValueSatang == null ? "รอข้อมูล" : bahtFromSatang(financial.houseStockValueSatang)}</Text>
-          <Text style={S.kpiUnit}>{financial.houseStockValueSatang == null ? "ไม่ใช่ 0 บาท" : "บาท"}</Text>
-        </View></View>
-        <View style={S.kpi}><View style={[S.kpiBox, S.kpiReady]}>
-          <Text style={S.kpiLabel}>คงเหลือพร้อมขาย</Text>
-          <Text style={financial.readyValueSatang == null ? S.kpiUnknownValue : S.kpiValue}>{financial.readyValueSatang == null ? "รอยอดบ้าน" : bahtFromSatang(financial.readyValueSatang)}</Text>
-          <Text style={S.kpiUnit}>ชั่งคืนดีจากตลาด + Stock บ้าน</Text>
-        </View></View>
-      </View>
-
-      {(financial.houseStockValueSatang == null || financial.readyValueSatang == null) ?
-        <View style={S.stockWarning}>
-          <Text style={S.note}>
-            {stockStatus === "unavailable" ? "ดึงข้อมูล Stock บ้านไม่สำเร็จ" : "ยังไม่มี Stock บ้านที่ปิดยืนยันสำหรับวันที่นี้"}
-            {" • ชั่งคืนดีที่ทราบแล้ว " + bahtFromSatang(financial.goodReturnValueSatang) + " บาท"}
-            {" • ยอดพร้อมขายยังสรุปไม่ได้จนกว่าจะมี Stock บ้านที่ยืนยัน"}
-          </Text>
-        </View> : null}
-
-      <Text style={S.marketTitle}>สรุป{label}ตามตลาด</Text>
-    </View>
-    <View style={S.table}>
-      <View style={S.tr} fixed>
-        <MarketCell width="28%" tone="name" header>ตลาด</MarketCell>
-        <MarketCell width="24%" tone="withdrawal" header>มูลค่าที่เบิกไปขาย</MarketCell>
-        <MarketCell width="24%" tone="sales" header>ยอดขาย</MarketCell>
-        <MarketCell width="24%" tone="return" header>ของชั่งคืนดี</MarketCell>
-      </View>
-      {marketTotals.map((market, index) => <View style={S.tr} key={`${market.marketLabel}-${index}`} wrap={false}
-        // Never strand the รวม row alone at the top of a new page.
-        minPresenceAhead={index === marketTotals.length - 1 ? 30 : 0}>
-        <MarketCell width="28%" tone="name">{market.marketLabel}</MarketCell>
-        <MarketCell width="24%" tone="withdrawal">{bahtFromSatang(market.withdrawalValueSatang)}</MarketCell>
-        <MarketCell width="24%" tone="sales">{bahtFromSatang(market.salesValueSatang)}</MarketCell>
-        <MarketCell width="24%" tone="return">{bahtFromSatang(market.goodReturnValueSatang)}</MarketCell>
+  const cards = [
+    { label: `ยอดขายรวมเมื่อวาน (${label})`, value: bahtFromSatang(financial.salesValueSatang), hint: "บาท", tone: S.kpiSales },
+    { label: `${label}ที่เบิกออกไปขายเมื่อวาน`, value: bahtFromSatang(financial.withdrawalValueSatang), hint: "บาท", tone: S.kpiWithdrawal },
+    { label: "ของชั่งคืนดีจากตลาด", value: bahtFromSatang(financial.goodReturnValueSatang), hint: "บาท", tone: S.kpiReturn },
+    { label: `Stock ${label}ที่บ้าน`, value: financial.houseStockValueSatang == null ? "รอข้อมูล" : bahtFromSatang(financial.houseStockValueSatang),
+      hint: financial.houseStockValueSatang == null ? "ไม่ใช่ 0 บาท" : "บาท", tone: S.kpiHouse, unknown: financial.houseStockValueSatang == null },
+    { label: "คงเหลือพร้อมขาย", value: financial.readyValueSatang == null ? "รอยอดบ้าน" : bahtFromSatang(financial.readyValueSatang),
+      hint: "ชั่งคืนดีจากตลาด + Stock บ้าน", tone: S.kpiReady, unknown: financial.readyValueSatang == null },
+  ];
+  return <View wrap={false} style={{ marginTop: 5 }}>
+    <Text style={S.coverSectionTitle}>{label === "รวมทุกสินค้า" ? "ภาพรวมมูลค่าทุกหมวด" : `หมวด${label}`}</Text>
+    <View style={S.kpiGrid}>
+      {cards.map((card, i) => <View style={S.kpi} key={i}>
+        <View style={[S.kpiBox, card.tone]}>
+          <Text style={S.kpiLabel}>{card.label}</Text>
+          <Text style={card.unknown ? S.kpiUnknownValue : S.kpiValue}>{card.value}</Text>
+          <Text style={S.kpiUnit}>{card.hint}</Text>
+        </View>
       </View>)}
-      <View style={S.tr} wrap={false}>
-        <MarketCell width="28%" tone="name" total>รวม</MarketCell>
-        <MarketCell width="24%" tone="withdrawal" total>{financial ? bahtFromSatang(financial.withdrawalValueSatang) : "-"}</MarketCell>
-        <MarketCell width="24%" tone="sales" total>{financial ? bahtFromSatang(financial.salesValueSatang) : "-"}</MarketCell>
-        <MarketCell width="24%" tone="return" total>{financial ? bahtFromSatang(financial.goodReturnValueSatang) : "-"}</MarketCell>
-      </View>
     </View>
-  </>);
+  </View>;
 }
 
 export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBriefReport; generatedAt: Date }) {
@@ -431,6 +385,45 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
     );
     return hasFinanceActivity ? [{ section, financial }] : [];
   });
+  // Unclassified/other money is included in these totals, but NEVER forced into
+  // fruit or vegetable to make the front page look clean.
+  const financialTotal = (key: "withdrawalValueSatang" | "goodReturnValueSatang") =>
+    financialSections.reduce((total, entry) => total + entry.financial[key], 0);
+  const knownTotal = (key: "houseStockValueSatang" | "readyValueSatang"): number | null =>
+    financialSections.length > 0 && financialSections.every(({ financial }) => financial[key] != null)
+      ? financialSections.reduce((total, { financial }) => total + financial[key]!, 0)
+      : null;
+  const combined: MorningBriefFruitFinancialSummary = {
+    salesValueSatang: report.sales.totalSalesSatang,
+    withdrawalValueSatang: financialTotal("withdrawalValueSatang"),
+    goodReturnValueSatang: financialTotal("goodReturnValueSatang"),
+    houseStockValueSatang: knownTotal("houseStockValueSatang"),
+    readyValueSatang: knownTotal("readyValueSatang"),
+    markets: [],
+  };
+  const coverSections = financialSections.filter(({ section }) => section !== "other");
+  const unclassified = financialSections.find(({ section }) => section === "other")?.financial;
+  const coverMarketTotals = new Map<string, { withdrawal: number; goodReturn: number; sales: number }>();
+  for (const { financial } of financialSections) {
+    for (const market of financial.markets) {
+      const current = coverMarketTotals.get(market.marketLabel) ?? { withdrawal: 0, goodReturn: 0, sales: 0 };
+      current.withdrawal += market.withdrawalValueSatang;
+      current.goodReturn += market.goodReturnValueSatang;
+      current.sales += market.salesValueSatang;
+      coverMarketTotals.set(market.marketLabel, current);
+    }
+  }
+  // Fall back to section market data only when older reports lack daily market rows.
+  const marketRows = report.sales.markets?.length
+    ? report.sales.markets
+    : [...coverMarketTotals.entries()].map(([marketLabel, totals]) => ({
+        marketLabel, totalSalesSatang: totals.sales,
+      }));
+  // The five money-field summaries stay on one A4 page even on busy days.
+  // Extra market rows continue AFTER the cover.
+  const COVER_MARKET_LIMIT = 7;
+  const firstPageMarkets = marketRows.slice(0, COVER_MARKET_LIMIT);
+  const remainingMarkets = marketRows.slice(COVER_MARKET_LIMIT);
   const stockItems = stockMatrixItems(report);
   // The day-wide sales report is the source of truth for the headline. Section
   // totals remain a breakdown, never a substitute for the whole-day result.
@@ -465,53 +458,72 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
         <Text style={S.dailyOverviewTotal}>{bahtFromSatang(report.sales.totalSalesSatang)} บาท</Text>
         <Text style={S.dailyOverviewDetails}>รวมยอดที่คำนวณได้จากทุกหมวดสินค้าและทุกตลาด</Text>
       </View>
-      {report.produceFinancial != null && financialSections.length > 0 && !salesBreakdownDiffers ? <View wrap={false}>
-        <Text style={S.coverSectionTitle}>ยอดขายแยกตามหมวด</Text>
-        {financialSections.map(({ section, financial }) =>
-          <View key={section} style={S.coverCategory}>
-            <Text style={S.coverCategoryName}>{section === "other" ? "ยังไม่จัดหมวด / สินค้าอื่น" : PRODUCE_SECTION_LABEL[section]}</Text>
-            <Text style={S.coverCategoryValue}>{bahtFromSatang(financial.salesValueSatang)} บาท</Text>
-          </View>)}
-      </View> : null}
-      {(report.sales.markets ?? []).length > 0 ? <View>
-        <Text style={S.coverSectionTitle}>ยอดขายแยกตามตลาด</Text>
-        <View style={S.coverMarketHeader} wrap={false}>
-          <Text style={[S.coverMarketName, { fontWeight: "bold" }]}>ตลาด</Text>
-          <Text style={[S.coverMarketAmount, { fontWeight: "bold" }]}>ยอดขาย (บาท)</Text>
+      <CoverFinancialKpis label="รวมทุกสินค้า" financial={combined} />
+      {coverSections.map(({ section, financial }) =>
+        <CoverFinancialKpis key={section} label={PRODUCE_SECTION_LABEL[section]} financial={financial} />)}
+      {marketRows.length > 0 ? <View style={{ marginTop: 4 }}>
+        <Text style={S.coverSectionTitle}>สรุปยอดตามตลาด (ทุกสินค้า)</Text>
+        <View style={S.table}>
+          <View style={S.tr} fixed>
+            <MarketCell width="28%" tone="name" header>ตลาด</MarketCell>
+            <MarketCell width="24%" tone="withdrawal" header>เบิกไปขาย</MarketCell>
+            <MarketCell width="24%" tone="sales" header>ยอดขาย</MarketCell>
+            <MarketCell width="24%" tone="return" header>ชั่งคืนดี</MarketCell>
+          </View>
+          {firstPageMarkets.map((market, index) => {
+            const totals = coverMarketTotals.get(market.marketLabel);
+            return <View key={`${market.marketLabel}-${index}`} style={S.tr} wrap={false}>
+              <MarketCell width="28%" tone="name">{market.marketLabel}</MarketCell>
+              <MarketCell width="24%" tone="withdrawal">{totals ? bahtFromSatang(totals.withdrawal) : "-"}</MarketCell>
+              <MarketCell width="24%" tone="sales">{bahtFromSatang(market.totalSalesSatang)}</MarketCell>
+              <MarketCell width="24%" tone="return">{totals ? bahtFromSatang(totals.goodReturn) : "-"}</MarketCell>
+            </View>;
+          })}
+          <View style={S.tr} wrap={false}>
+            <MarketCell width="28%" tone="name" total>รวมทุกตลาด</MarketCell>
+            <MarketCell width="24%" tone="withdrawal" total>{bahtFromSatang(combined.withdrawalValueSatang)}</MarketCell>
+            <MarketCell width="24%" tone="sales" total>{bahtFromSatang(report.sales.totalSalesSatang)}</MarketCell>
+            <MarketCell width="24%" tone="return" total>{bahtFromSatang(combined.goodReturnValueSatang)}</MarketCell>
+          </View>
         </View>
-        {report.sales.markets!.map((market, index) => <View style={S.coverMarketRow} key={`${market.marketLabel}-${index}`} wrap={false}>
-          <Text style={S.coverMarketName}>{market.marketLabel}</Text>
-          <Text style={S.coverMarketAmount}>{bahtFromSatang(market.totalSalesSatang)}</Text>
-        </View>)}
+        {remainingMarkets.length > 0 ? <Text style={[S.note, { marginTop: 4 }]}>
+          รายละเอียดอีก {remainingMarkets.length} ตลาดต่อในหน้าถัดไป (ยอดรวมด้านบนรวมทุกตลาดแล้ว)
+        </Text> : null}
       </View> : null}
       <DataFooter generatedText={generatedText} />
     </Page>
     <Page size="A4" style={S.page} wrap>
-      <View style={S.explanation}>
-        <Text style={S.explanationTitle}>คำอธิบายตัวเลข</Text>
-        <Text style={S.explanationText}><Text style={{ fontWeight: "bold" }}>เบิกออกไปขาย</Text> คือมูลค่าสินค้าที่นำออกตลาดก่อนเริ่มขาย ส่วน <Text style={{ fontWeight: "bold" }}>คงเหลือพร้อมขาย</Text> คือของดีที่ชั่งคืนจากตลาดหลังขาย บวกกับของที่ยังอยู่บ้าน จึงอาจมีบางรายการที่คงเหลือน้อยกว่ายอดที่เบิกไปขาย</Text>
-      </View>
-      {financialSections.map(({ section, financial }) => {
-        const summary = <FinancialSummaryPage
-          financial={financial} label={PRODUCE_SECTION_LABEL[section]}
-          businessDate={report.businessDate} stockStatus={report.houseStock.status}
-        />;
-        // Small sections must stay intact, including their market total row.
-        // Large market tables remain splittable between rows.
-        return financial.markets.length <= 6
-          ? <View key={section} wrap={false} minPresenceAhead={70}>{summary}</View>
-          : <React.Fragment key={section}>{summary}</React.Fragment>;
-      })}
+      {remainingMarkets.length > 0 ? <View style={{ marginBottom: 10 }}>
+        <Text style={S.coverSectionTitle}>ตลาดเพิ่มเติม (ยอดรวมอยู่หน้าแรกแล้ว)</Text>
+        <View style={S.table}>
+          <View style={S.tr} fixed>
+            <MarketCell width="28%" tone="name" header>ตลาด</MarketCell>
+            <MarketCell width="24%" tone="withdrawal" header>เบิกไปขาย</MarketCell>
+            <MarketCell width="24%" tone="sales" header>ยอดขาย</MarketCell>
+            <MarketCell width="24%" tone="return" header>ชั่งคืนดี</MarketCell>
+          </View>
+          {remainingMarkets.map((market, index) => {
+            const totals = coverMarketTotals.get(market.marketLabel);
+            return <View style={S.tr} key={`${market.marketLabel}-${index}`} wrap={false}>
+              <MarketCell width="28%" tone="name">{market.marketLabel}</MarketCell>
+              <MarketCell width="24%" tone="withdrawal">{totals ? bahtFromSatang(totals.withdrawal) : "-"}</MarketCell>
+              <MarketCell width="24%" tone="sales">{bahtFromSatang(market.totalSalesSatang)}</MarketCell>
+              <MarketCell width="24%" tone="return">{totals ? bahtFromSatang(totals.goodReturn) : "-"}</MarketCell>
+            </View>;
+          })}
+        </View>
+      </View> : null}
       <View style={[S.explanation, { marginTop: 9 }]} wrap={false}>
         <Text style={S.explanationTitle}>รายละเอียดการตรวจข้อมูล</Text>
+        {unclassified && unclassified.salesValueSatang !== 0 ? <Text style={S.explanationText}>มูลค่าสินค้ารอจัดหมวด {bahtFromSatang(unclassified.salesValueSatang)} บาท (รวมในยอดขายหน้าแรกแล้ว ไม่เพิ่มยอดซ้ำ)</Text> : null}
         <Text style={S.explanationText}>ยอดขายยืนยันแล้ว {bahtFromSatang(report.sales.confirmedSalesSatang)} บาท • ยอดรอตรวจ {bahtFromSatang(report.sales.pendingReviewSalesSatang)} บาท</Text>
         {report.sales.adjustmentSatang !== 0 ? <Text style={S.explanationText}>ยอดปรับราคา {bahtFromSatang(report.sales.adjustmentSatang)} บาท</Text> : null}
         {report.sales.excludedFromSalesCount > 0 ? <Text style={S.dailyOverviewWarning}>มี {report.sales.excludedFromSalesCount} รายการที่คำนวณยอดขายไม่ได้ รวมอยู่ในยอดรายงานไม่ได้</Text> : null}
         {salesBreakdownDiffers ? <Text style={S.dailyOverviewWarning}>ยอดแยกหมวดรวม {bahtFromSatang(sectionSalesTotalSatang)} บาท ต่างจากยอดขายรวมในระบบ {bahtFromSatang(report.sales.totalSalesSatang)} บาท — โปรดตรวจสอบความครบถ้วนของข้อมูล ห้ามถือว่าเป็นยอดยืนยันเพิ่ม</Text> : null}
         {!report.sales.valueAuthoritative || report.sales.excludedFromSalesCount > 0 ? <Text style={S.dailyOverviewWarning}>ยอดขายมีรายการที่ยังไม่ครบหรือรอตรวจ กรุณาดูยอดยืนยันแล้วแยกต่างหาก</Text> : null}
       </View>
-      <Text style={S.note}>หมายเหตุ: ยอดขายรวมอ้างอิงรายงานยอดขายทุกตลาด ส่วนยอดแยกหมวดแสดงเฉพาะหมวดที่มีข้อมูล วันที่ {thaiNumericDate(report.businessDate)}</Text>
-      {/* Stock flows straight after the summary instead of forcing a new
+
+      {/* Product stocks follow the audit, never duplicating the cover totals. A new
           physical page. Headings are siblings of their tables so
           minPresenceAhead keeps each heading with its first rows; tables
           split between rows (never clipped) and repeat their fixed header. */}
