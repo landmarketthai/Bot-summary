@@ -178,6 +178,86 @@ describe("Morning Brief A4 PDF", () => {
     expect(text).toContain("70,789.03");
     expect(text).not.toContain("ยอดพร้อมขายยังสรุปไม่ได้");
   });
+  test("restores whole-day sales on page one before splitting the 13 October categories", async () => {
+    const fruit = {
+      withdrawalValueSatang: 4_378_553,
+      salesValueSatang: 1_175_352,
+      goodReturnValueSatang: 3_235_524,
+      houseStockValueSatang: null, readyValueSatang: null, markets: [],
+    };
+    const vegetable = {
+      withdrawalValueSatang: 37_000,
+      salesValueSatang: 11_000,
+      goodReturnValueSatang: 26_000,
+      houseStockValueSatang: null, readyValueSatang: null, markets: [],
+    };
+    const other = {
+      withdrawalValueSatang: 875_200,
+      salesValueSatang: 263_800,
+      goodReturnValueSatang: 611_400,
+      houseStockValueSatang: null, readyValueSatang: null, markets: [],
+    };
+    const daily: MorningBriefReport = {
+      ...report,
+      businessDate: "2026-10-13",
+      sales: {
+        ...report.sales,
+        totalSalesSatang: 1_450_152,
+        confirmedSalesSatang: 1_400_152,
+        pendingReviewSalesSatang: 50_000,
+        valueAuthoritative: false,
+      adjustmentSatang: 0,
+      },
+      produceFinancial: { fruit, vegetable, other },
+      fruitFinancial: fruit,
+      houseStock: { status: "missing" },
+    };
+    const doc = MorningBriefA4Doc({ report: daily, generatedAt: new Date("2026-10-14T08:05:00+07:00") });
+    const text = collectText(doc);
+    const normalized = text.replace(/\s+/g, " ").trim();
+    expect(text).toContain("ยอดขายรวมทั้งวัน");
+    expect(text).toContain("14,501.52");
+    expect(text.indexOf("14,501.52")).toBeLessThan(text.indexOf("สรุปผลไม้คงเหลือ"));
+    expect(normalized).toContain("ยืนยันแล้ว 14,001.52 บาท");
+    expect(normalized).toContain("รอตรวจ 500.00 บาท");
+    expect(text).toContain("ผลไม้ 11,753.52 บาท");
+    expect(text).toContain("ผัก 110.00 บาท");
+    expect(text).toContain("อื่นๆ 2,638.00 บาท");
+    expect(text).not.toContain("ต่างจากยอดขายรวมในระบบ");
+    registerFonts();
+    const buffer = await renderToBuffer(doc);
+    expect(buffer.subarray(0, 4).toString()).toBe("%PDF");
+  });
+
+  test("warns when category sums disagree with the authoritative daily sales instead of silently replacing it", () => {
+    const daily: MorningBriefReport = {
+      ...report,
+      produceFinancial: {
+        fruit: { ...report.fruitFinancial!, salesValueSatang: 1_000 },
+        vegetable: { ...report.fruitFinancial!, salesValueSatang: 2_000 },
+        other: { ...report.fruitFinancial!, salesValueSatang: 3_000 },
+      },
+      sales: { ...report.sales, totalSalesSatang: 7_000 },
+    };
+    const text = collectText(MorningBriefA4Doc({ report: daily, generatedAt: new Date("2026-10-14T08:05:00+07:00") }));
+    expect(text).toContain("ยอดขายรวมทั้งวัน");
+    expect(text.replace(/\s+/g, " ")).toContain("ยอดแยกหมวดรวม 60.00 บาท ต่างจากยอดขายรวมในระบบ");
+    expect(text.replace(/\s+/g, " ")).toContain("70.00 บาท");
+  });
+
+  test("retains the daily sales headline when no financial section is available", () => {
+    const daily: MorningBriefReport = {
+      ...report,
+      produceFinancial: {},
+      fruitFinancial: undefined,
+      sales: { ...report.sales, totalSalesSatang: 12_345 },
+    };
+    const text = collectText(MorningBriefA4Doc({ report: daily, generatedAt: new Date("2026-10-14T08:05:00+07:00") }));
+    expect(text).toContain("ยอดขายรวมทั้งวัน");
+    expect(text.replace(/\s+/g, " ")).toContain("123.45 บาท");
+    expect(text).not.toContain("ยังไม่มีข้อมูลสินค้าในระบบ");
+  });
+
   test("shows yesterday sales total in the top KPI row", () => {
     const text = collectText(MorningBriefA4Doc({ report, generatedAt: new Date("2026-09-19T08:00:00+07:00") }));
     expect(text).toContain("ยอดขายรวมเมื่อวาน");
@@ -414,7 +494,7 @@ describe("Morning Brief A4 PDF", () => {
     const buffer = await renderToBuffer(doc);
     expect(buffer.subarray(0, 4).toString()).toBe("%PDF");
     const pages = (buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length;
-    expect(pages).toBeLessThanOrEqual(4);
+    expect(pages).toBeLessThanOrEqual(5);
     expect(pages).toBeGreaterThanOrEqual(2);
   });
 
@@ -437,7 +517,7 @@ describe("Morning Brief A4 PDF", () => {
     }
     registerFonts();
     const buffer = await renderToBuffer(doc);
-    expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(1);
+    expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBeLessThanOrEqual(2);
   });
 
   test("paginates unusually long market tables and stock units without dropping rows", async () => {
@@ -483,6 +563,11 @@ describe("Morning Brief A4 PDF", () => {
       ...report,
       fruitFinancial: undefined,
       produceFinancial: undefined,
+      sales: {
+        ...report.sales,
+        totalSalesSatang: 0, confirmedSalesSatang: 0,
+        pendingReviewSalesSatang: 0, adjustmentSatang: 0,
+      },
       purchasePlanning: {
         strong: { count: 0, productNames: [], items: [] },
         surplus: { count: 0, productNames: [], items: [] },

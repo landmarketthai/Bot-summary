@@ -284,9 +284,12 @@ describe("Morning Brief LINE layout — Production 2026-09-07 regression", () =>
     expect(messages.join("\n")).not.toContain("รายละเอียดมากเกินขีดจำกัด LINE");
   });
 
-  test("the PDF keeps purchase status but omits internal review dumps", () => {
+  test("the PDF shows daily money and real stock but skips zero-quantity review placeholders", () => {
     const text = pdfText(MorningBriefA4Doc({ report: heavy, generatedAt: new Date("2026-09-08T01:00:00Z") }));
-    for (const name of unknownNames) expect(text).toContain(name);
+    expect(text).toContain("ยอดขายรวมที่คำนวณได้ (บางส่วน)");
+    expect(text).toContain("22,460.74");
+    // Pending-return names with no proven stock quantity are not inventory rows.
+    for (const name of unknownNames) expect(text).not.toContain(name);
     expect(text).not.toContain("สาลี่");
     for (const forbidden of [
       "⚠️ ข้อมูลที่ต้องตรวจ",

@@ -48,6 +48,14 @@ const S = StyleSheet.create({
   financialCategory: { marginTop: 10 },
   financialCategoryTitle: { fontSize: 14, fontWeight: "bold", marginBottom: 5, backgroundColor: "#E9EFF7", borderLeftWidth: 4, borderLeftColor: "#477FA8", paddingVertical: 3, paddingHorizontal: 6 },
   summaryTitle: { fontSize: 18, fontWeight: "bold" },
+  dailyOverview: {
+    borderWidth: 1, borderColor: "#D6A84B", borderRadius: 4,
+    backgroundColor: "#FFF9E9", padding: 9, marginBottom: 8,
+  },
+  dailyOverviewTitle: { fontSize: 13, fontWeight: "bold", color: "#704C15" },
+  dailyOverviewTotal: { fontSize: 23, fontWeight: "bold", color: "#111827", marginTop: 2 },
+  dailyOverviewDetails: { fontSize: 10, marginTop: 4, color: "#374151" },
+  dailyOverviewWarning: { fontSize: 9.2, marginTop: 4, color: "#92400E" },
   explanation: {
     borderLeftWidth: 2.5,
     borderLeftColor: "#777B80",
@@ -423,6 +431,19 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
     return hasFinanceActivity ? [{ section, financial }] : [];
   });
   const stockItems = stockMatrixItems(report);
+  // The day-wide sales report is the source of truth for the headline. Section
+  // totals remain a breakdown, never a substitute for the whole-day result.
+  const sectionSalesTotalSatang = financialSections.reduce(
+    (sum, { financial }) => sum + financial.salesValueSatang, 0,
+  );
+  const hasDailyActivity = financialSections.length > 0
+    || stockItems.some(hasRealStockQuantity)
+    || report.sales.totalSalesSatang !== 0
+    || report.sales.confirmedSalesSatang !== 0
+    || report.sales.pendingReviewSalesSatang !== 0;
+  const salesBreakdownDiffers = report.produceFinancial != null
+    && financialSections.length > 0
+    && sectionSalesTotalSatang !== report.sales.totalSalesSatang;
   const stockSections = STOCK_CATEGORIES.flatMap((category) => {
     const categoryItems = stockItems.filter((item) => stockCategory(item) === category);
     if (!categoryItems.some(hasRealStockQuantity)) return [];
@@ -433,10 +454,36 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
   });
 
   return <Document title={`Morning Brief ${report.businessDate}`}>
-    {financialSections.length > 0 ? <Page size="A4" style={S.page} wrap>
+    {hasDailyActivity ? <Page size="A4" style={S.page} wrap>
       <View style={S.header}>
         <Text style={S.summaryTitle}>สรุปยอดเพื่อสั่งซื้อ - {formatThaiDate(report.businessDate)}</Text>
-        <Text style={S.subtitle}>Bot-summary | ข้อมูลวันที่ {thaiNumericDate(report.businessDate)} | รวมสรุปเฉพาะหมวดที่มียอดจริง</Text>
+        <Text style={S.subtitle}>Bot-summary | ข้อมูลวันที่ {thaiNumericDate(report.businessDate)} | ภาพรวมยอดขายทุกหมวดและรายละเอียดตามตลาด</Text>
+      </View>
+      <View style={S.dailyOverview} wrap={false}>
+        <Text style={S.dailyOverviewTitle}>
+          {report.sales.excludedFromSalesCount > 0
+            ? "ยอดขายรวมที่คำนวณได้ (บางส่วน)"
+            : "ยอดขายรวมทั้งวัน"} — {thaiNumericDate(report.businessDate)}
+        </Text>
+        <Text style={S.dailyOverviewTotal}>{bahtFromSatang(report.sales.totalSalesSatang)} บาท</Text>
+        <Text style={S.dailyOverviewDetails}>
+          ยืนยันแล้ว {bahtFromSatang(report.sales.confirmedSalesSatang)} บาท
+          {"  •  "}รอตรวจ {bahtFromSatang(report.sales.pendingReviewSalesSatang)} บาท
+        </Text>
+        {report.sales.adjustmentSatang !== 0
+          ? <Text style={S.dailyOverviewDetails}>ปรับราคา {bahtFromSatang(report.sales.adjustmentSatang)} บาท</Text>
+          : null}
+        {financialSections.length > 0 ? <Text style={S.dailyOverviewDetails}>
+          {financialSections.map(({ section, financial }) =>
+            `${PRODUCE_SECTION_LABEL[section]} ${bahtFromSatang(financial.salesValueSatang)} บาท`).join("  •  ")}
+        </Text> : null}
+        {salesBreakdownDiffers ? <Text style={S.dailyOverviewWarning}>
+          ยอดแยกหมวดรวม {bahtFromSatang(sectionSalesTotalSatang)} บาท ต่างจากยอดขายรวมในระบบ
+          {"  "}— โปรดตรวจสอบความครบถ้วนของข้อมูล ห้ามถือว่าเป็นยอดยืนยันเพิ่ม
+        </Text> : null}
+        {!report.sales.valueAuthoritative || report.sales.excludedFromSalesCount > 0
+          ? <Text style={S.dailyOverviewWarning}>ยอดขายมีรายการที่ยังไม่ครบหรือรอตรวจ กรุณาดูยอดยืนยันแล้วแยกต่างหาก</Text>
+          : null}
       </View>
       <View style={S.explanation}>
         <Text style={S.explanationTitle}>คำอธิบายตัวเลข</Text>
@@ -446,10 +493,10 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
         key={section} financial={financial} label={PRODUCE_SECTION_LABEL[section]}
         businessDate={report.businessDate} stockStatus={report.houseStock.status}
       />)}
-      <Text style={S.note}>หมายเหตุ: สรุปเฉพาะหมวดที่มียอดทางการเงินจริงของวันที่ {thaiNumericDate(report.businessDate)}</Text>
+      <Text style={S.note}>หมายเหตุ: ยอดขายรวมอ้างอิงรายงานยอดขายทุกตลาด ส่วนยอดแยกหมวดแสดงเฉพาะหมวดที่มีข้อมูล วันที่ {thaiNumericDate(report.businessDate)}</Text>
       <DataFooter generatedText={generatedText} />
     </Page> : null}
-    {financialSections.length === 0 && !stockItems.some(hasRealStockQuantity) ? <Page size="A4" style={S.page}>
+    {!hasDailyActivity ? <Page size="A4" style={S.page}>
       <Text style={S.title}>สรุปเช้า - {formatThaiDate(report.businessDate)}</Text>
       <Text>ยังไม่มีข้อมูลสินค้าในระบบ</Text>
       <DataFooter generatedText={generatedText} />
