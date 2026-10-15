@@ -92,7 +92,7 @@ describe("loadMorningBriefReport", () => {
     });
   });
 
-  test("house-only sections are explicit and empty fruit is hidden", async () => {
+  test("house-only sections include canonical fruit, vegetable, and other stock", async () => {
     const db = new FakeDatabase()
       .seed("physical_inventory_snapshots", [snapshot("stock-sections")])
       .seed("physical_inventory_items", ["เห็ดนางฟ้า", "หมอนทอง", "ปลาทู", "สินค้าใหม่"].map((name, index) => ({
@@ -102,10 +102,11 @@ describe("loadMorningBriefReport", () => {
         unit_price_satang: 100, raw_text: name + " 2 โล 1 บาท", resolution_status: "AUTO_RESOLVED",
       })));
     const report = await loadMorningBriefReport(client(db), BUSINESS_DATE);
-    expect(Object.keys(report.produceFinancial!)).toEqual(["vegetable", "other"]);
-    expect(report.fruitFinancial).toBeUndefined();
+    // หมอนทอง is a fruit; do not drop that financial/house-stock section.
+    expect(Object.keys(report.produceFinancial!)).toEqual(["fruit", "vegetable", "other"]);
+    expect(report.fruitFinancial).toMatchObject({ houseStockValueSatang: 200, readyValueSatang: 200, markets: [] });
     expect(report.produceFinancial?.vegetable).toMatchObject({ houseStockValueSatang: 200, readyValueSatang: 200, markets: [] });
-    expect(report.produceFinancial?.other).toMatchObject({ houseStockValueSatang: 600, readyValueSatang: 600, markets: [] });
+    expect(report.produceFinancial?.other).toMatchObject({ houseStockValueSatang: 400, readyValueSatang: 400, markets: [] });
     expect(report.houseStock.status === "available" && report.houseStock.items?.find((item) => item.productName === "เห็ดนางฟ้า")?.category)
       .not.toBe("ไม่ระบุหมวด");
   });

@@ -36,6 +36,29 @@ const BUSINESS_FRUIT: ReadonlySet<string> = new Set([
 ]);
 const BUSINESS_VEGETABLE: ReadonlySet<string> = new Set(["กันจอง"]);
 
+/**
+ * Field-observed classification-only spellings (14 Sep–13 Oct 2026).
+ * These are not product identity aliases: do not rewrite source transactions,
+ * dedup fingerprints, or merge different grades. A reviewed alias belongs in
+ * PRODUCT_ALIASES only after identical-SKU evidence and compatibility tests.
+ */
+const FIELD_FRUIT: ReadonlySet<string> = new Set([
+  "แก้วขมิ้น", "ส้มสายน้ำผึ้ง", "ส้มจีน", "ฝรั่งแด", "ฝรั่งแดงตำหนิ",
+  "เซียนทัอ", "สัปปรด", "ผลไม้กลอ่ง", "มะขามปัอม", "แตงโมง",
+  "สาลีาหิมะ", "น้อบหน่า", "กล้วยเล็บ",
+]);
+const FIELD_VEGETABLE: ReadonlySet<string> = new Set([
+  "มะเขือราชีนี", "มะเขือเทสราชีนี", "หน่อไม้ฝรั่ง", "กะหล่ำปลีม่วง",
+  "พริกชีฟ้าแดง", "พริกชีฟ้าเขียว", "ต้นหอมยี่ปุ่น", "ต้มหอมญี่ปุ่น",
+  "บอคเคอรี่", "ใบโหรพา", "สาระแหน่", "ใบสาระแหน่",
+  "ดอกสโหน", "กวางตุ้งดอกเหลือ", "มะเขือยาวมว่ง",
+  "ไชยเท้า", "พริกกระเหรี่ยง", "ผักกาดสลัดหอม",
+  "ขนุนอ่อน", "มะกอกส้มตำ", "น้ำเต้าลูกกลม", "น้ำเต้าลูกยาว",
+  "น้ำเต้ายาว", "น้ำเต้าใหญ่",
+  "ฝักกระทิน", "ฝักกระฐิน", "ฝักกะฐิน", "ใบก๋วยฉ่าย",
+  "ใบก๋วยเล้ง", "ดอกกะกล่ำ", "กระเจียบแพค",
+]);
+
 export type ProduceSection = "fruit" | "vegetable" | "other";
 export const PRODUCE_SECTIONS: readonly ProduceSection[] = ["fruit", "vegetable", "other"];
 export const PRODUCE_SECTION_LABEL: Record<ProduceSection, string> = {
@@ -44,7 +67,8 @@ export const PRODUCE_SECTION_LABEL: Record<ProduceSection, string> = {
 
 export function produceSectionOf(productName: string): ProduceSection {
   if (BUSINESS_FRUIT.has(productName)) return "fruit";
-  if (BUSINESS_VEGETABLE.has(productName)) return "vegetable";
+  if (BUSINESS_VEGETABLE.has(productName) || FIELD_VEGETABLE.has(productName)) return "vegetable";
+  if (FIELD_FRUIT.has(productName)) return "fruit";
 
   const category = CATEGORY_BY_EXACT_NAME.get(productName);
   if (category === "ผลไม้" || category === "ทุเรียน") return "fruit";
