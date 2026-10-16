@@ -81,6 +81,9 @@ function buildPurchaseBlocks(report: MorningBriefReport): string[] {
 
 /** Money only, and always the first body block so it lands in Part 1. Zero lines are omitted. */
 function buildSalesBlock(report: MorningBriefReport): string {
+  if (report.produceReadiness?.transactionCount === 0) {
+    return "💰 ภาพรวมเงิน\nยังไม่มีข้อมูลเบิก–ชั่งคืนสำหรับคำนวณยอดขาย";
+  }
   const sales = report.sales;
   const totalLabel = sales.excludedFromSalesCount > 0
     ? "ยอดขายรวมที่คำนวณได้ (บางส่วน)"
@@ -97,6 +100,7 @@ function buildSalesBlock(report: MorningBriefReport): string {
 }
 
 function buildProduceFinancialBlocks(report: MorningBriefReport): string[] {
+  if (report.produceReadiness?.transactionCount === 0) return [];
   return PRODUCE_SECTIONS.flatMap((section) => {
     const financial = report.produceFinancial?.[section];
     if (!financial) return [];
@@ -142,12 +146,51 @@ function buildHouseStockBlock(report: MorningBriefReport): string {
   return [header, ...sections].join("\n\n");
 }
 
+/** Never conflate observed documents with markets verified complete. */
+function buildDataReadinessBlock(report: MorningBriefReport): string | null {
+  const evidence = report.produceReadiness;
+  if (!evidence) return null;
+  if (evidence.transactionCount === 0) {
+    const stockStatus = report.houseStock.status === "available" ? "มีข้อมูลแล้ว"
+      : report.houseStock.status === "unavailable" ? "ตรวจสอบไม่ได้ขณะนี้" : "ยังไม่มีข้อมูล";
+    const whiteStatus = report.whiteSheetStatus === "entered" ? "มีข้อมูลแล้ว"
+      : report.whiteSheetStatus === "unavailable" ? "ตรวจสอบไม่ได้ขณะนี้" : "ยังไม่มีข้อมูล";
+    return [
+      "⚠️ ยังไม่มีข้อมูลรายการเบิก–คืนสำหรับสรุปยอดขาย",
+      "รายการเบิกสินค้า: ยังไม่มีข้อมูล",
+      "รายการชั่งคืน: ยังไม่มีข้อมูล",
+      `ใบขาว: ${whiteStatus}`,
+      `สต็อกบ้าน: ${stockStatus}`,
+      "ยังสรุปยอดขายไม่ได้ (ไม่ใช่ยอดขาย 0 บาท)",
+    ].join("\n");
+  }
+  const missing = evidence.markets.flatMap((market) => {
+    if (!market.hasWithdrawal) return [`${market.marketLabel}: ไม่พบรายการเบิก`];
+    if (!market.hasReturn) return [`${market.marketLabel}: ไม่พบรายการชั่งคืน`];
+    return [];
+  });
+  return [
+    "📋 สถานะข้อมูลตลาด",
+    ...(missing.length > 0 ? missing : ["ตลาดที่มีข้อมูล: พบทั้งเบิกและชั่งคืน"]),
+    "หมายเหตุ: ยังไม่ได้รับการยืนยันว่าครบทุกตลาด",
+  ].join("\n");
+}
+
 export function buildMorningBriefBlocks(report: MorningBriefReport): string[] {
   const whiteSheetDataBlock = buildWhiteSheetDataBlock(report);
+  const readinessBlock = buildDataReadinessBlock(report);
+  if (report.produceReadiness?.transactionCount === 0) {
+    return [
+      `${MORNING_BRIEF_TITLE} — ${formatThaiDate(report.businessDate)}`,
+      readinessBlock!,
+      ...(report.houseStock.status === "available" ? [buildHouseStockBlock(report)] : []),
+    ];
+  }
   return [
     `${MORNING_BRIEF_TITLE} — ${formatThaiDate(report.businessDate)}`,
     buildSalesBlock(report),
     ...buildProduceFinancialBlocks(report),
+    ...(readinessBlock ? [readinessBlock] : []),
     ...(whiteSheetDataBlock ? [whiteSheetDataBlock] : []),
     ...buildPurchaseBlocks(report),
     buildHouseStockBlock(report),

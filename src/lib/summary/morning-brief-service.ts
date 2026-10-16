@@ -6,7 +6,9 @@ import {
   fetchAuthoritativeHouseStockItems,
 } from "@/lib/physical-inventory/house-stock-report";
 import { quantityTimesSatang, toMilliQuantity } from "@/lib/sales/calculate";
-import { loadSalesReport } from "@/lib/sales/load";
+import { fetchSalesProduceRows, loadSalesReport } from "@/lib/sales/load";
+import { canonicalMarketLabel } from "@/lib/market";
+import { isQaMarketLabel } from "@/lib/sales/qa-scopes";
 import { fetchReconciliationReport } from "@/lib/reconciliation-report-service";
 import { loadPurchasePlanningReport } from "@/lib/summary/purchase-planning-service";
 import {
@@ -17,6 +19,7 @@ import {
   type MorningBriefHouseStockItem,
   type MorningBriefReconciliation,
   type MorningBriefReport,
+  type MorningBriefProduceReadiness,
   type MorningBriefWhiteSheetStatus,
 } from "@/lib/summary/morning-brief";
 
@@ -187,16 +190,34 @@ export function summarizeProduceFinancial(
   };
 }
 
+/** Recorded documents are evidence, not confirmation of completeness. */
+export function summarizeReadiness(rows: readonly Pick<Awaited<ReturnType<typeof fetchSalesProduceRows>>[number], "market_name" | "base_transaction_type">[]): MorningBriefProduceReadiness {
+  const markets = new Map<string, MorningBriefProduceReadiness["markets"][number]>();
+  let transactionCount = 0;
+  for (const row of rows) {
+    const label = canonicalMarketLabel(row.market_name) || "ตลาดไม่ชัด";
+    if (isQaMarketLabel(label)) continue;
+    transactionCount += 1;
+    const entry = markets.get(label) ?? { marketLabel: label, hasWithdrawal: false, hasReturn: false };
+    if (row.base_transaction_type === "เบิก") entry.hasWithdrawal = true;
+    // Damaged returns ("เสีย") are not evidence of a good-return weighing sheet.
+    if (row.base_transaction_type === "คืน") entry.hasReturn = true;
+    markets.set(label, entry);
+  }
+  return { transactionCount, markets: [...markets.values()].sort((a,b) => a.marketLabel.localeCompare(b.marketLabel, "th")) };
+}
+
 export async function loadMorningBriefReport(
   supabase: Supabase,
   businessDate: string,
 ): Promise<MorningBriefReport> {
-  const [purchasePlanning, sales, houseStock, reconciliation, whiteSheetStatus] = await Promise.all([
+  const [purchasePlanning, sales, houseStock, reconciliation, whiteSheetStatus, produceRows] = await Promise.all([
     loadPurchasePlanningReport(supabase, businessDate),
     loadSalesReport(supabase, businessDate),
     loadHouseStock(supabase, businessDate),
     loadReconciliation(supabase, businessDate),
     loadWhiteSheetStatus(supabase, businessDate),
+    fetchSalesProduceRows(supabase, businessDate),
   ]);
 
   const produceFinancial: NonNullable<MorningBriefReport["produceFinancial"]> = {};
@@ -218,6 +239,7 @@ export async function loadMorningBriefReport(
     produceFinancial,
     houseStock,
     whiteSheetStatus,
+    produceReadiness: summarizeReadiness(produceRows),
     reconciliation,
   };
 }

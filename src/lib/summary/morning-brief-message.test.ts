@@ -71,6 +71,34 @@ function report(overrides: Partial<MorningBriefReport> = {}): MorningBriefReport
   };
 }
 describe("Morning Decision Brief", () => {
+  test("missing all recorded produce never displays a fake zero-sales day", () => {
+    const text = buildMorningBriefMessage(report({
+      produceReadiness: { transactionCount: 0, markets: [] },
+      sales: { ...report().sales, totalSalesSatang: 0, confirmedSalesSatang: 0, pendingReviewSalesSatang: 0 },
+      whiteSheetStatus: "missing",
+      houseStock: { status: "missing" },
+    }));
+    for (const item of ["รายการเบิกสินค้า: ยังไม่มีข้อมูล", "รายการชั่งคืน: ยังไม่มีข้อมูล",
+      "ใบขาว: ยังไม่มีข้อมูล", "สต็อกบ้าน: ยังไม่มีข้อมูล"]) {
+      expect(text).toContain(item);
+    }
+    expect(text).toContain("ไม่ใช่ยอดขาย 0 บาท");
+    expect(text).not.toContain("ยอดขายรวม 0.00 บาท");
+    expect(text).not.toContain("ควรซื้อเพิ่ม");
+  });
+
+  test("missing return documents are identified by market but never claim complete", () => {
+    const text = buildMorningBriefMessage(report({
+      produceReadiness: { transactionCount: 3, markets: [
+        { marketLabel: "เฉลิมฯ72", hasWithdrawal: true, hasReturn: false },
+        { marketLabel: "ราชพฤกษ์", hasWithdrawal: true, hasReturn: true },
+      ] },
+    }));
+    expect(text).toContain("เฉลิมฯ72: ไม่พบรายการชั่งคืน");
+    expect(text).toContain("ยังไม่ได้รับการยืนยันว่าครบทุกตลาด");
+    expect(text).not.toContain("ราชพฤกษ์: ไม่พบรายการชั่งคืน");
+  });
+
   test("shows every actionable purchase item without unknown diagnostic details", () => {
     const message = buildMorningBriefMessage(report());
     expect(message).toContain("🟢 ควรซื้อเพิ่ม — 12 รายการ");

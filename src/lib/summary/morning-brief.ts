@@ -256,6 +256,16 @@ export interface MorningBriefFruitFinancialSummary {
   markets: MorningBriefFruitMarketSummary[];
 }
 
+/** Observed evidence only: both messages existing never proves a market is complete. */
+export interface MorningBriefProduceReadiness {
+  transactionCount: number;
+  markets: {
+    marketLabel: string;
+    hasWithdrawal: boolean;
+    hasReturn: boolean;
+  }[];
+}
+
 export type MorningBriefWhiteSheetStatus = "entered" | "missing" | "unavailable";
 
 export interface MorningBriefReport {
@@ -264,6 +274,7 @@ export interface MorningBriefReport {
   sales: MorningBriefSales;
   houseStock: MorningBriefHouseStock;
   whiteSheetStatus?: MorningBriefWhiteSheetStatus;
+  produceReadiness?: MorningBriefProduceReadiness;
   fruitFinancial?: MorningBriefFruitFinancialSummary;
   /** Only populated sections; each total includes exclusively that section. */
   produceFinancial?: Partial<Record<ProduceSection, MorningBriefFruitFinancialSummary>>;
