@@ -1,0 +1,67 @@
+name: manual-data-quality-alert
+
+on:
+  workflow_dispatch:
+    inputs:
+      debug:
+        description: "Preview only. First real test-group push requires explicit approval."
+        required: true
+        type: boolean
+        default: true
+      date:
+        description: "Optional exact business date (YYYY-MM-DD); blank uses previous Bangkok business day."
+        required: false
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: manual-data-quality-alert
+  cancel-in-progress: false
+
+jobs:
+  alert:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call protected DQ alert endpoint
+        env:
+          ALERT_BASE_URL: ${{ vars.DQ_ALERT_BASE_URL }}
+          ALERT_DATE: ${{ inputs.date }}
+          ALERT_DEBUG: ${{ inputs.debug }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import datetime, os, urllib.parse
+          date = os.environ['ALERT_DATE']
+          if date and (len(date) != 10 or datetime.date.fromisoformat(date).isoformat() != date):
+              raise SystemExit('Invalid date: expected a real YYYY-MM-DD')
+          url = urllib.parse.urlsplit(os.environ['ALERT_BASE_URL'])
+          if url.scheme != 'https' or not url.hostname or url.username or url.password or url.query or url.fragment or url.path not in ('', '/'):
+              raise SystemExit('Configure DQ_ALERT_BASE_URL as an approved HTTPS deployment origin')
+          if not os.environ['CRON_SECRET']:
+              raise SystemExit('CRON_SECRET is required')
+          if os.environ['ALERT_DEBUG'] not in ('true', 'false'):
+              raise SystemExit('Invalid debug setting')
+          PY
+          args=(--get --data-urlencode "debug=$([ "$ALERT_DEBUG" = true ] && echo 1 || echo 0)")
+          if [ -n "$ALERT_DATE" ]; then args+=(--data-urlencode "date=$ALERT_DATE"); fi
+          curl --fail --silent --show-error --max-time 60 \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "${args[@]}" --output "$RUNNER_TEMP/dq-alert-response.json" \
+            "${ALERT_BASE_URL%/}/api/cron/daily-data-quality-alert"
+          python3 - <<'PY'
+          import json, os
+          with open(os.path.join(os.environ['RUNNER_TEMP'], 'dq-alert-response.json')) as f:
+              result = json.load(f)
+          print(json.dumps({k: result.get(k) for k in ('ok', 'status', 'sent', 'businessDate')}, ensure_ascii=False))
+          if result.get('ok') is not True:
+              raise SystemExit('Alert request failed')
+          if os.environ['ALERT_DEBUG'] == 'true':
+              if result.get('status') != 'preview' or result.get('previewOnly') is not True or result.get('sent') is not False:
+                  raise SystemExit('Expected a non-sending preview')
+              print(json.dumps(result.get('counts', {}), ensure_ascii=False))
+              print(result.get('text', ''))
+          elif result.get('sent') is not True or result.get('status') not in ('delivered', 'already_accepted'):
+              raise SystemExit('LINE test alert was not sent; check the explicit activation gate')
+          PY

@@ -1,3 +1,8 @@
 {
-  "crons": []
+  "crons": [],
+  "git": {
+    "deploymentEnabled": {
+      "codex/dq-alert-testgroup-20261016": false
+    }
+  }
 }
