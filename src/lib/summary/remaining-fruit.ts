@@ -24,17 +24,6 @@ export const UNIDENTIFIED_MARKET_SECTION = "\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25
  * so an alias can never merge incompatible units.
  */
 export const PRODUCT_ALIASES: Record<string, string> = {
-  // Production review 2026-10-16: exact typos of the same product only.
-  "เซียนทัอ": "เซียนท้อ",
-  "เซัยนท้อ": "เซียนท้อ",
-  "สัปปรด": "สับปะรด",
-  "แก้งมังกรแดง": "แก้วมังกรแดง",
-  "อง่นคิมสัน": "องุ่นคิมสัน",
-  "สาลึ่หิมะ": "สาลี่หิมะ",
-  "แตงโมง": "แตงโม",
-  "ผลไม้กลอ่ง": "ผลไม้กล่อง",
-  "ว้มโอ": "ส้มโอ",
-
   // \u2500\u2500 pre-existing, deployed \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
   "\u0E40\u0E1E\u0E34\u0E48\u0E21\u0E16\u0E31\u0E48\u0E27\u0E1E\u0E39": "\u0E16\u0E31\u0E48\u0E27\u0E1E\u0E39",
   "\u0E16\u0E31\u0E48\u0E27\u0E1E\u0E4D": "\u0E16\u0E31\u0E48\u0E27\u0E1E\u0E39",

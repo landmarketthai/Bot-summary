@@ -20,9 +20,13 @@ describe("Production fruit category coverage", () => {
     },
   );
 
-  test("special pack typo classifies after reviewed alias normalization", () => {
-    expect(stockCategoryFor(normalizeProductName("ผลไม้กลอ่ง"))).toBe("ผลไม้");
-  });
+  test.each(["เซียนทัอ", "เซัยนท้อ", "สัปปรด", "แก้งมังกรแดง",
+    "อง่นคิมสัน", "สาลึ่หิมะ", "แตงโมง", "ผลไม้กลอ่ง", "ว้มโอ"])(
+    "field typo %s has fruit category without financial identity normalization", (name) => {
+      expect(stockCategoryFor(name)).toBe("ผลไม้");
+      expect(normalizeProductName(name)).toBe(name);
+    },
+  );
 
   test("dictionary fallback does not infer other categories or special packs", () => {
     for (const name of ["ไข่ปลา", "แม่มด", "ส้มจีนเก่า", "ม103", "พ01", "ผลไม้กล่องใหญ่",

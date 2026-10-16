@@ -6,67 +6,6 @@ import {
   type RemainingFruitSourceRow,
   normalizeProductName,
 } from "./remaining-fruit";
-import { dictionaryEntryFor } from "@/lib/produce/product-code/category";
-import { resolveSafeAutoCorrectProductName } from "@/lib/produce/product-vocabulary";
-
-describe("Production fruit vocabulary review 2026-10-16", () => {
-  test.each([
-    ["เซียนทัอ", "เซียนท้อ", "ม12"],
-    ["เซัยนท้อ", "เซียนท้อ", "ม12"],
-    ["สัปปรด", "สับปะรด", "ม49"],
-    ["แก้งมังกรแดง", "แก้วมังกรแดง", "ม07"],
-    ["อง่นคิมสัน", "องุ่นคิมสัน", "ม68"],
-    ["สาลึ่หิมะ", "สาลี่หิมะ", "ม83"],
-    ["แตงโมง", "แตงโม", "ม14"],
-    ["ผลไม้กลอ่ง", "ผลไม้กล่อง", "พ01"],
-    ["ว้มโอ", "ส้มโอ", "ม47"],
-  ])("reviewed exact typo %s resolves to %s (%s)", (typo, canonical, code) => {
-    expect(normalizeProductName(typo)).toBe(canonical);
-    expect(normalizeProductName(`เพิ่ม${typo}`)).toBe(canonical);
-    expect(dictionaryEntryFor(normalizeProductName(typo))?.code).toBe(code);
-    expect(resolveSafeAutoCorrectProductName(typo)).toEqual({
-      productCode: code, canonicalName: canonical, reason: "reviewed_alias",
-    });
-    // No substring expansion to unreviewed grades or spellings.
-    expect(normalizeProductName(`${typo}เก่า`)).toBe(`${typo}เก่า`);
-  });
-
-  test.each([
-    ["ส้มจีน", "ส้มสายน้ำผึ้ง", "ส้มเขียวหวาน", "ส้มไต้หวัน", "ส้มแมนดาริน", "ส้มโอ"],
-    ["แก้วขมิ้น", "มะม่วงแก้วขมิ้น", "มะม่วงจิ๋ว", "มะม่วงจิ้ว"],
-    ["ฝรั่งแดงตำหนิ", "ฝรั่งแดง", "ฝรั่ง"],
-    ["มังกรแดง", "แก้วมังกรแดง", "แก้วมังกรขาว", "แก้วมังกรเก่า"],
-    ["ไซมัส", "ไซมัสเก่า"],
-    ["มะม่วงฟ้าลั่น", "มะม่วงฟ้าลั่นเก่า"],
-    ["สาลี่", "สาลี่หิมะ", "สาลี่หอม"],
-  ].map((names) => ({ names })))("keeps distinct varieties, grades and unconfirmed identities: %j", ({ names }) => {
-    expect(names.map((name) => normalizeProductName(name))).toEqual(names);
-    for (const name of names) expect(resolveSafeAutoCorrectProductName(name)).toBeNull();
-    const source = names.map((product_name, i) => row({
-      product_name, quantity: i + 1, transaction_type: TX_RETURN,
-    }));
-    const before = structuredClone(source);
-    const report = buildRemainingFruitReport(source);
-    expect(report.overall).toHaveLength(names.length);
-    for (const [i, name] of names.entries()) {
-      expect(report.overall.find((item) => item.fruitName === name)?.totalRemainingForResale).toBe(i + 1);
-    }
-    expect(source).toEqual(before);
-  });
-
-  test("reviewed aliases retain separate unit buckets and raw rows", () => {
-    const source = [
-      row({ product_name: "แตงโมง", quantity: 2, unit: UNIT_PIECE, transaction_type: TX_RETURN }),
-      row({ product_name: "แตงโม", quantity: 3, unit: UNIT_KG, transaction_type: TX_RETURN }),
-    ];
-    const before = structuredClone(source);
-    const report = buildRemainingFruitReport(source);
-    expect(report.overall).toHaveLength(2);
-    expect(report.overall.map((item) => item.fruitName)).toEqual(["แตงโม", "แตงโม"]);
-    expect(report.overall.map((item) => item.totalRemainingForResale).sort()).toEqual([2, 3]);
-    expect(source).toEqual(before);
-  });
-});
 
 const TX_WITHDRAW = "\u0E40\u0E1A\u0E34\u0E01";
 const TX_RETURN = "\u0E04\u0E37\u0E19";

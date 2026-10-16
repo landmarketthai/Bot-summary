@@ -79,6 +79,10 @@ const FRUIT: readonly string[] = [
   "มะม่วงจิ๋ว",
   "ฝรั่งแดงตำหนิ",
   "มังกรแดง",
+  // Observed typos are classified as fruit, but intentionally NOT alias-normalized:
+  // historical transaction fingerprints and financial matching must not change.
+  "เซียนทัอ", "เซัยนท้อ", "สัปปรด", "แก้งมังกรแดง",
+  "อง่นคิมสัน", "สาลึ่หิมะ", "แตงโมง", "ผลไม้กลอ่ง", "ว้มโอ",
   // Same approved exact fruit packs as produce-section.ts; never infer all พ rows.
   "ผลไม้กล่อง",
   "ขนุนแพ็ค",

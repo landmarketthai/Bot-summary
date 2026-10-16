@@ -18,16 +18,23 @@ regenerates the runtime module. Repository totals become 327 codes, including
 102 fruit codes. Existing codes, names, grades and orange varieties retain their
 identities. No historical rows or financial arithmetic are changed.
 
-Reviewed exact aliases only:
+Classification-only field spellings (NOT product aliases):
 
-- เซียนทัอ / เซัยนท้อ → เซียนท้อ (ม12)
-- สัปปรด → สับปะรด (ม49)
-- แก้งมังกรแดง → แก้วมังกรแดง (ม07)
-- อง่นคิมสัน → องุ่นคิมสัน (ม68)
-- สาลึ่หิมะ → สาลี่หิมะ (ม83)
-- แตงโมง → แตงโม (ม14)
-- ผลไม้กลอ่ง → ผลไม้กล่อง (พ01)
-- ว้มโอ → ส้มโอ (ม47)
+- เซียนทัอ / เซัยนท้อ (possible เซียนท้อ)
+- สัปปรด (possible สับปะรด)
+- แก้งมังกรแดง (possible แก้วมังกรแดง)
+- อง่นคิมสัน (possible องุ่นคิมสัน)
+- สาลึ่หิมะ (possible สาลี่หิมะ)
+- แตงโมง (possible แตงโม)
+- ผลไม้กลอ่ง (possible ผลไม้กล่อง)
+- ว้มโอ (possible ส้มโอ)
+
+These spellings retain their ORIGINAL distinct business identities. Independent
+P1 review found that adding global product aliases immediately could bypass
+old session dedup fingerprints on replay and alter historical calculated values.
+Do not enable aliases until backwards-compatible dedup reservations and financial
+parity have been implemented and separately reviewed. This release changes only
+fruit classification for these observed spellings.
 
 The 51 observations of แก้วขมิ้น establish usage, without enough supplied
 same-SKU evidence for an identity alias to มะม่วงแก้วขมิ้น (ม72). It remains
@@ -67,9 +74,10 @@ dependency cycle back through summary or identity normalization.
 
 ## Validation and remaining risk
 
-- Focused Bun run: 801 passed across 14 files (`--timeout 20000`), including
-  dictionary/CSV/migration parity, parser price and quantity parity, aliases,
-  distinct variants, stock reports, validation and fingerprint compatibility.
+- Focused Bun tests cover dictionary/CSV/migration parity, parser price and
+  quantity parity, distinct varieties, stock classification and validation.
+  The original run before the P1 safety adjustment had 801 passes; verify the
+  final classification-only release separately before applying to Production.
 - Disposable local PostgreSQL 17: 24 passed, including full migration composition,
   exact rerun, partial application, all target-field conflicts, duplicate identity,
   baseline drift and forced postflight failure with atomic rollback. Historical
@@ -82,10 +90,8 @@ dependency cycle back through summary or identity normalization.
   for their own fixes. The initial 5-second pathological reply timeout passes in
   the focused run with a 20-second test timeout.
 
-Aliases affect in-memory report aggregation, validation and business fingerprints,
-including reads of older raw names. Stored evidence and monetary values remain
-untouched, but displayed grouping may change. Existing product-alias fingerprint
-compatibility does not cover replays of documents hashed before a newly added
-alias; coordinate replay/recovery across the release boundary. No new compatibility
-scheme is introduced here. Production execution and deployed smoke checks remain
-the owner's responsibility.
+No new product identity aliases are activated in this release. Historical
+business fingerprints and financial matching remain unchanged. Stock category
+headings will improve, including exact known fruit names; displayed historical
+category totals may shift. Production SQL and deployment must be verified with
+read-back and smoke checks. Alias compatibility remains separate future work.
