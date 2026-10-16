@@ -137,7 +137,7 @@ describe("2026-08-14 production products no longer fall into ไม่จัด�
   ];
 
   test.each(classified)("%s → dictionary %s (was uncategorized on the stock-category list)", (name, id) => {
-    expect(stockCategoryFor(name)).toBe("ไม่จัดหมวด");
+    expect(stockCategoryFor(name)).toBe(id === "ม" ? "ผลไม้" : "ไม่จัดหมวด");
     expect(dictionaryCategoryFor(name)).toBe(id);
     expect(dictionaryEntryFor(name)?.canonicalName).toBe(name);
   });

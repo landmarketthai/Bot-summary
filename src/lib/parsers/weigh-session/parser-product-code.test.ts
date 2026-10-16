@@ -33,6 +33,17 @@ function identity(item: WeighSessionItem) {
 // ── CASE A — a coded withdrawal parses as its canonical product ──────────────
 
 describe("CASE A — coded withdrawal", () => {
+  it.each([
+    ["ม99", "ส้มจีน"], ["ม100", "ส้มสายน้ำผึ้ง"],
+    ["ม101", "กล้วยเล็บมือนาง"], ["ม102", "มะขามป้อม"],
+  ])("Production fruit %s parses identically to %s with price and quantity intact", (code, name) => {
+    const coded = parseWeighSession(doc(HEADER, `${code} 35 บาท`, "5 โล", CLOSER));
+    const words = parseWeighSession(doc(HEADER, `${name} 35 บาท`, "5 โล", CLOSER));
+    expect(coded.parse_errors).toEqual([]);
+    expect(coded.items.map(identity)).toEqual(words.items.map(identity));
+    expect(identity(coded.items[0])).toMatchObject({ product_name: name, price_per_unit: 35, quantity: 5, unit: "โล" });
+  });
+
   it("resolves each code to the approved canonical product name", () => {
     const parsed = parseWeighSession(doc(
       HEADER,

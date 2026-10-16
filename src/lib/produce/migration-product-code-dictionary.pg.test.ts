@@ -12,7 +12,7 @@
  *     produce history byte-for-byte where it was.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { PRODUCT_CODE_ENTRIES } from "./product-code/dictionary";
@@ -76,6 +76,9 @@ const OCT5_VEGETABLE_MIGRATION = join(
 );
 const OCT5_MUSHROOM_MIGRATION = join(
   ROOT, "supabase", "migrations", "20261005100100_produce_product_dictionary_add_hed_khem_thong.sql",
+);
+const OCT16_FRUIT_MIGRATION = join(
+  ROOT, "supabase", "migrations", "20261016113744_produce_product_dictionary_add_production_fruit_vocabulary.sql",
 );
 const MARKET_VEGETABLE_SKUS_MIGRATION = join(
   ROOT, "supabase", "migrations", "20260909030000_produce_product_dictionary_add_market_vegetable_skus.sql",
@@ -184,6 +187,7 @@ describe.skipIf(!pgAvailable)("Produce Product Code Dictionary on PostgreSQL 17"
     await apply(OCT1_MUSHROOM_MIGRATION);
     await apply(OCT5_VEGETABLE_MIGRATION);
     await apply(OCT5_MUSHROOM_MIGRATION);
+    await apply(OCT16_FRUIT_MIGRATION);
   });
 
   afterAll(async () => {
@@ -193,11 +197,11 @@ describe.skipIf(!pgAvailable)("Produce Product Code Dictionary on PostgreSQL 17"
 
   // ── The seed is the approved dictionary ───────────────────────────────────
 
-  test("seeds exactly the 323 approved codes after the Oct 5 extensions, all enabled", async () => {
-    expect(await scalar("SELECT count(*)::text FROM public.produce_product_codes")).toBe("323");
+  test("seeds exactly the 327 approved codes after the Oct 16 extension, all enabled", async () => {
+    expect(await scalar("SELECT count(*)::text FROM public.produce_product_codes")).toBe("327");
     expect(await scalar(
       "SELECT count(*)::text FROM public.produce_product_codes WHERE code_enabled",
-    )).toBe("323");
+    )).toBe("327");
   });
 
   test("keeps the approved namespace ranges", async () => {
@@ -207,7 +211,7 @@ describe.skipIf(!pgAvailable)("Produce Product Code Dictionary on PostgreSQL 17"
         SELECT category_code, count(*) AS n
         FROM public.produce_product_codes GROUP BY category_code
       ) t`);
-    expect(rows).toBe("ท=27,ป=37,ผ=148,พ=7,ม=98,ห=6");
+    expect(rows).toBe("ท=27,ป=37,ผ=148,พ=7,ม=102,ห=6");
   });
 
   test("stores the canonical name of every code exactly as approved", async () => {
@@ -231,6 +235,8 @@ describe.skipIf(!pgAvailable)("Produce Product Code Dictionary on PostgreSQL 17"
     for (const [code, name] of [
       ["ม02", "กล้วยน้ำว้า"], ["ม72", "มะม่วงแก้วขมิ้น"], ["ม73", "มะม่วงฟ้าลั่น"],
       ["ม81", "องุ่นไร้แดง"], ["ม84", "ไซมัสเก่า"], ["ม91", "ทับทิมเก่า"],
+      ["ม99", "ส้มจีน"], ["ม100", "ส้มสายน้ำผึ้ง"],
+      ["ม101", "กล้วยเล็บมือนาง"], ["ม102", "มะขามป้อม"],
       ["ผ129", "มะเขือม่วง"], ["ป37", "ปลาทู"],
       ["ท26", "ภูเขาไฟลูกค้าเคลม"], ["ห04", "เห็ดออรินจิ"], ["พ07", "มะระถุง"],
     ]) {
@@ -247,7 +253,7 @@ describe.skipIf(!pgAvailable)("Produce Product Code Dictionary on PostgreSQL 17"
       "DELETE FROM public.produce_product_codes WHERE product_code = 'ม02'",
     );
     expect(error).toContain("must not be deleted");
-    expect(await scalar("SELECT count(*)::text FROM public.produce_product_codes")).toBe("323");
+    expect(await scalar("SELECT count(*)::text FROM public.produce_product_codes")).toBe("327");
   });
 
   test("refuses to repoint a code at a different product", async () => {
@@ -261,10 +267,10 @@ describe.skipIf(!pgAvailable)("Produce Product Code Dictionary on PostgreSQL 17"
   });
 
   test("refuses to renumber a code", async () => {
-    // ม63-ม71 are now issued (20260818100000), so ม99 — genuinely unissued — is
+    // ม01-ม102 are now issued, so ม103 — genuinely unissued — is
     // the target here; either way the guard fires before any target is checked.
     const error = await expectFailure(
-      "UPDATE public.produce_product_codes SET product_code = 'ม99' WHERE product_code = 'ม02'",
+      "UPDATE public.produce_product_codes SET product_code = 'ม103' WHERE product_code = 'ม02'",
     );
     expect(error).toContain("identity is immutable");
   });
@@ -288,11 +294,11 @@ describe.skipIf(!pgAvailable)("Produce Product Code Dictionary on PostgreSQL 17"
       INSERT INTO public.produce_product_codes (product_code, category_code, category_name, canonical_name)
       VALUES ('ก01', 'ก', 'ผลไม้', 'ทดสอบ')`)).toContain("violates check constraint");
 
-    // ม99 (genuinely unissued past ม63-ม71) rather than ม63, which
+    // ม103 (genuinely unissued past ม102) rather than ม63, which
     // 20260818100000 now issues.
     expect(await expectFailure(`
       INSERT INTO public.produce_product_codes (product_code, category_code, category_name, canonical_name)
-      VALUES ('ม99', 'ผ', 'ผลไม้', 'ทดสอบ')`)).toContain("produce_product_codes_category_prefix");
+      VALUES ('ม103', 'ผ', 'ผลไม้', 'ทดสอบ')`)).toContain("produce_product_codes_category_prefix");
   });
 
   test("refuses a duplicate code", async () => {
@@ -345,6 +351,13 @@ describe.skipIf(!pgAvailable)("Produce Product Code Dictionary on PostgreSQL 17"
     expect(after).toBe(historyFingerprint);
   });
 
+  test("Oct 16 extension is exactly idempotent on the real dictionary schema", async () => {
+    const snapshot = "SELECT jsonb_agg(to_jsonb(p) ORDER BY product_code)::text FROM public.produce_product_codes p";
+    const before = await scalar(snapshot);
+    await apply(OCT16_FRUIT_MIGRATION);
+    expect(await scalar(snapshot)).toBe(before);
+  });
+
   test("is readable by service_role and nobody else", async () => {
     expect(await scalar(`
       SELECT privilege_type FROM information_schema.role_table_grants
@@ -358,5 +371,72 @@ describe.skipIf(!pgAvailable)("Produce Product Code Dictionary on PostgreSQL 17"
     expect(await scalar(`
       SELECT relrowsecurity::text FROM pg_class
       WHERE oid = 'public.produce_product_codes'::regclass`)).toBe("true");
+  });
+});
+
+const FRUIT_EXTENSION_CODES = new Set(["ม99", "ม100", "ม101", "ม102"]);
+const CATALOG_SNAPSHOT = "SELECT jsonb_agg(to_jsonb(p) ORDER BY product_code)::text FROM public.produce_product_codes p";
+
+// A disposable five-column catalog lets fixtures model drift that the real
+// immutable-identity trigger correctly prevents normal writers from creating.
+async function withFruitBaseline(setup: string, check: (database: string) => Promise<void>): Promise<void> {
+  assertSafe();
+  const database = `pcd_${randomBytes(4).toString("hex")}`;
+  if (!DB_NAME_PATTERN.test(database)) throw new Error(`refusing database=${database}`);
+  const created = await psql(["-d", "postgres", "-c", `CREATE DATABASE ${database}`], "postgres");
+  expect(created.code, created.stderr).toBe(0);
+  try {
+    const quote = (value: string) => `'${value.replace(/'/g, "''")}'`;
+    const seed = PRODUCT_CODE_ENTRIES.filter((entry) => !FRUIT_EXTENSION_CODES.has(entry.code))
+      .map((entry) => `(${[entry.code, entry.categoryCode, entry.category, entry.canonicalName].map(quote).join(",")},${entry.enabled})`)
+      .join(",\n");
+    const result = await run(`
+      CREATE TABLE public.produce_product_codes (
+        product_code text PRIMARY KEY, category_code text NOT NULL,
+        category_name text NOT NULL, canonical_name text NOT NULL, code_enabled boolean NOT NULL
+      );
+      INSERT INTO public.produce_product_codes VALUES ${seed};
+      ${setup}`, database);
+    expect(result.code, result.stderr).toBe(0);
+    await check(database);
+  } finally {
+    const dropped = await psql(["-d", "postgres", "-c", `DROP DATABASE ${database} WITH (FORCE)`], "postgres");
+    expect(dropped.code, dropped.stderr).toBe(0);
+  }
+}
+
+describe.skipIf(!pgAvailable)("Oct 16 fruit migration guards on disposable PostgreSQL 17", () => {
+  test("accepts a partial exact application and inserts only the missing codes", async () => {
+    await withFruitBaseline("INSERT INTO public.produce_product_codes VALUES ('ม100','ม','ผลไม้','ส้มสายน้ำผึ้ง',true);", async (database) => {
+      await apply(OCT16_FRUIT_MIGRATION, database);
+      expect(await scalar("SELECT count(*) FROM public.produce_product_codes", database)).toBe("327");
+      const before = await scalar(CATALOG_SNAPSHOT, database);
+      await apply(OCT16_FRUIT_MIGRATION, database);
+      expect(await scalar(CATALOG_SNAPSHOT, database)).toBe(before);
+    });
+  });
+
+  test.each([
+    ["conflicting canonical name", "INSERT INTO public.produce_product_codes VALUES ('ม102','ม','ผลไม้','สินค้าอื่น',true);", "different identity"],
+    ["conflicting category code", "INSERT INTO public.produce_product_codes VALUES ('ม100','พ','ผลไม้','ส้มสายน้ำผึ้ง',true);", "different identity"],
+    ["conflicting category name", "INSERT INTO public.produce_product_codes VALUES ('ม101','ม','รายการพิเศษ','กล้วยเล็บมือนาง',true);", "different identity"],
+    ["disabled reserved code", "INSERT INTO public.produce_product_codes VALUES ('ม99','ม','ผลไม้','ส้มจีน',false);", "enabled state"],
+    ["duplicate identity under another code", "INSERT INTO public.produce_product_codes VALUES ('พ08','พ','รายการพิเศษ','ส้มจีน',true);", "another code"],
+    ["missing predecessor", "DELETE FROM public.produce_product_codes WHERE product_code = 'ม98';", "predecessor mismatch"],
+    ["missing earlier code", "DELETE FROM public.produce_product_codes WHERE product_code = 'ม01';", "catalog drift"],
+    ["unexpected extra fruit code", "INSERT INTO public.produce_product_codes VALUES ('ม103','ม','ผลไม้','สินค้าอื่น',true);", "catalog drift"],
+    ["postflight mismatch", `
+      CREATE FUNCTION skip_last_fruit() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN IF NEW.product_code = 'ม102' THEN RETURN NULL; END IF; RETURN NEW; END $$;
+      CREATE TRIGGER skip_last_fruit BEFORE INSERT ON public.produce_product_codes
+        FOR EACH ROW EXECUTE FUNCTION skip_last_fruit();`, "mapping mismatch"],
+  ])("aborts atomically for %s", async (_label, setup, error) => {
+    await withFruitBaseline(setup, async (database) => {
+      const before = await scalar(CATALOG_SNAPSHOT, database);
+      const result = await run(readFileSync(OCT16_FRUIT_MIGRATION, "utf8"), database);
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toContain(error);
+      expect(await scalar(CATALOG_SNAPSHOT, database)).toBe(before);
+    });
   });
 });

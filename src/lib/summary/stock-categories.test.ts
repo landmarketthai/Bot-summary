@@ -1,6 +1,38 @@
 import { describe, expect, test } from "bun:test";
 import { stockCategoryFor, stockCategoryEntries } from "./stock-categories";
 import { normalizeProductName } from "./remaining-fruit";
+import { PRODUCT_CODE_ENTRIES } from "@/lib/produce/product-code/dictionary";
+
+describe("Production fruit category coverage", () => {
+  test.each(PRODUCT_CODE_ENTRIES.filter((entry) => entry.categoryCode === "ม"))(
+    "exact dictionary fruit $code ($canonicalName) is fruit",
+    ({ canonicalName }) => {
+      expect(stockCategoryFor(canonicalName)).toBe("ผลไม้");
+    },
+  );
+
+  test.each(["แก้วขมิ้น", "มะม่วงจิ๋ว", "ฝรั่งแดงตำหนิ", "มังกรแดง",
+    "ผลไม้กล่อง", "ขนุนแพ็ค", "ส้มโอแพ็ค", "สับปะรดแบบหัว"])(
+    "%s is classified exactly without changing identity", (name) => {
+      expect(stockCategoryFor(name)).toBe("ผลไม้");
+      expect(normalizeProductName(name)).toBe(name);
+      expect(stockCategoryFor(`${name}XYZ`)).toBe("ไม่จัดหมวด");
+    },
+  );
+
+  test("special pack typo classifies after reviewed alias normalization", () => {
+    expect(stockCategoryFor(normalizeProductName("ผลไม้กลอ่ง"))).toBe("ผลไม้");
+  });
+
+  test("dictionary fallback does not infer other categories or special packs", () => {
+    for (const name of ["ไข่ปลา", "แม่มด", "ส้มจีนเก่า", "ม103", "พ01", "ผลไม้กล่องใหญ่",
+      "มะระถุง", "บวบหอมแพ็ค", "แตงร้านถุง", "ขนมจีน", "กระเทียมกลีบ", "ปลาทู"]) {
+      expect(stockCategoryFor(name)).toBe("ไม่จัดหมวด");
+    }
+    expect(stockCategoryFor("มะนาว")).toBe("ผัก");
+    expect(stockCategoryFor("หมอนทอง")).toBe("ทุเรียน");
+  });
+});
 
 describe("stockCategoryFor", () => {
   test("maps durian varieties", () => {
@@ -116,7 +148,7 @@ describe("stockCategoryFor", () => {
   });
 
   test("fruit shorthand is untouched by the vegetable pass", () => {
-    for (const name of ["ไข่ปลา", "แม่มด", "ไซมัส"]) {
+    for (const name of ["ไข่ปลา", "แม่มด"]) {
       expect(stockCategoryFor(name)).toBe("ไม่จัดหมวด");
     }
   });

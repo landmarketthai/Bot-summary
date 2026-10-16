@@ -67,6 +67,10 @@ const OCT5_MUSHROOM_MIGRATION = join(
   HERE, "..", "..", "..", "..",
   "supabase", "migrations", "20261005100100_produce_product_dictionary_add_hed_khem_thong.sql",
 );
+const OCT16_FRUIT_MIGRATION = join(
+  HERE, "..", "..", "..", "..",
+  "supabase", "migrations", "20261016113744_produce_product_dictionary_add_production_fruit_vocabulary.sql",
+);
 const MARKET_VEGETABLE_SKUS_MIGRATION = join(
   HERE, "..", "..", "..", "..",
   "supabase", "migrations", "20260909030000_produce_product_dictionary_add_market_vegetable_skus.sql",
@@ -191,6 +195,7 @@ const APPLIED_MIGRATIONS: AppliedMigration[] = [
     file: OCT5_MUSHROOM_MIGRATION,
     insertAfterCode: "ห05",
   },
+  { file: OCT16_FRUIT_MIGRATION, insertAfterCode: "ม98" },
 ];
 
 /**
@@ -232,11 +237,11 @@ const moduleRows = (): Row[] =>
   }));
 
 describe("the approved dictionary is the source of truth", () => {
-  it("carries exactly the 323 approved codes", () => {
-    expect(PRODUCT_CODE_COUNT).toBe(323);
-    expect(PRODUCT_CODE_ENABLED_COUNT).toBe(323);
-    expect(PRODUCT_CODE_ENTRIES).toHaveLength(323);
-    expect(csvRows()).toHaveLength(323);
+  it("carries exactly the 327 approved codes", () => {
+    expect(PRODUCT_CODE_COUNT).toBe(327);
+    expect(PRODUCT_CODE_ENABLED_COUNT).toBe(327);
+    expect(PRODUCT_CODE_ENTRIES).toHaveLength(327);
+    expect(csvRows()).toHaveLength(327);
   });
 
   it("matches the CSV row for row, in the approved order and numbering", () => {
@@ -259,7 +264,7 @@ describe("the approved dictionary is the source of truth", () => {
       counts.set(entry.categoryCode, (counts.get(entry.categoryCode) ?? 0) + 1);
     }
     expect(Object.fromEntries(counts)).toEqual({
-      ม: 98, ผ: 148, ป: 37, ท: 27, ห: 6, พ: 7,
+      ม: 102, ผ: 148, ป: 37, ท: 27, ห: 6, พ: 7,
     });
   });
 
@@ -294,6 +299,10 @@ describe("real mappings from the approved CSV resolve", () => {
     ["ท26", "ภูเขาไฟลูกค้าเคลม"],
     ["ห01", "เห็ดนางฟ้า"],
     ["ม98", "ลูกพลุน"],
+    ["ม99", "ส้มจีน"],
+    ["ม100", "ส้มสายน้ำผึ้ง"],
+    ["ม101", "กล้วยเล็บมือนาง"],
+    ["ม102", "มะขามป้อม"],
     ["ผ142", "หน่อไม้ต้มแท่ง"],
     ["ผ148", "ใบกะเพราแดง"],
     ["ท27", "ทุเรียนแพค"],
@@ -319,7 +328,7 @@ describe("real mappings from the approved CSV resolve", () => {
 describe("unregistered codes do not resolve", () => {
   // Use the first code immediately past each currently issued namespace where
   // practical, plus distant examples, so future extensions fail loudly here.
-  for (const code of ["ม99", "ม999", "ผ149", "ผ999", "ป38", "ป99", "ท28", "ท99", "ห07", "ห99", "พ08", "พ99"]) {
+  for (const code of ["ม103", "ม999", "ผ149", "ผ999", "ป38", "ป99", "ท28", "ท99", "ห07", "ห99", "พ08", "พ99"]) {
     it(`${code} is unknown`, () => {
       expect(resolveProductCode(code)).toBeNull();
       expect(resolveItemLineProductCode(`${code} 50 บาท`)).toEqual({ kind: "unknown", code });

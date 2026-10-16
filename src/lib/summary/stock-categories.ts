@@ -12,7 +12,9 @@
  *   3. Category is NEVER inferred from the market name. Markets such as
  *      "เฉลิม72 ผลไม้" sell items that are not fruit, so market-based
  *      inference would silently mis-file products.
- *   4. Anything unmapped falls into UNCATEGORIZED and stays VISIBLE in the
+ *   4. Exact dictionary fruit names also resolve as fruit. Other dictionary
+ *      categories do not imply a Stock category.
+ *   5. Anything unmapped falls into UNCATEGORIZED and stays VISIBLE in the
  *      report. Unknown products are a signal to extend this file, never
  *      something to hide.
  *
@@ -21,6 +23,8 @@
  * ผัก section). They are listed under ผัก on purpose; move them if the
  * business disagrees.
  */
+
+import { dictionaryCategoryFor } from "@/lib/produce/product-code/category";
 
 export type StockCategory = "ทุเรียน" | "ผลไม้" | "ผัก" | "ไม่จัดหมวด";
 
@@ -70,6 +74,16 @@ const DURIAN: readonly string[] = [
 ];
 
 const FRUIT: readonly string[] = [
+  // Production review 2026-10-16: classification only; identity stays separate.
+  "แก้วขมิ้น",
+  "มะม่วงจิ๋ว",
+  "ฝรั่งแดงตำหนิ",
+  "มังกรแดง",
+  // Same approved exact fruit packs as produce-section.ts; never infer all พ rows.
+  "ผลไม้กล่อง",
+  "ขนุนแพ็ค",
+  "ส้มโอแพ็ค",
+  "สับปะรดแบบหัว",
   // มะม่วง and its commercial varieties
   "มะม่วง",
   "มหาชนก",
@@ -375,6 +389,8 @@ export function stockCategoryFor(canonicalProductName: string): StockCategory {
 
   const explicit = CATEGORY_BY_PRODUCT.get(name);
   if (explicit) return explicit;
+
+  if (dictionaryCategoryFor(name) === "ม") return "ผลไม้";
 
   if (name.includes(DURIAN_MARKER) && !DURIAN_MARKER_EXCLUSIONS.has(name)) {
     return "ทุเรียน";
