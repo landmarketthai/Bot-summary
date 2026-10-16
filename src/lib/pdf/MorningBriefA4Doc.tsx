@@ -57,6 +57,32 @@ const S = StyleSheet.create({
   dailyOverviewTotal: { fontSize: 23, fontWeight: "bold", color: "#111827", marginTop: 2 },
   dailyOverviewDetails: { fontSize: 10, marginTop: 4, color: "#374151" },
   dailyOverviewWarning: { fontSize: 9.2, marginTop: 4, color: "#92400E" },
+  emptyPreviewTag: { backgroundColor: "#F1E7FB", borderWidth: 0.7, borderColor: "#9A76BE", padding: 7, marginBottom: 10 },
+  emptyPreviewText: { fontSize: 10, fontWeight: "bold", color: "#6A437F" },
+  emptyHeader: { marginBottom: 17, borderBottomWidth: 1.2, borderBottomColor: "#CBD5E1", paddingBottom: 11 },
+  emptyHeaderKicker: { fontSize: 10, fontWeight: "bold", color: "#477FA8", marginBottom: 4 },
+  emptyHeaderTitle: { fontSize: 20.5, fontWeight: "bold" },
+  emptyHeaderSubtitle: { fontSize: 10.8, color: "#6B7280", marginTop: 5 },
+  emptyHero: { backgroundColor: "#FFF7E7", borderWidth: 1, borderColor: "#D6A84B",
+    borderRadius: 6, paddingVertical: 17, paddingHorizontal: 16, marginBottom: 19 },
+  emptyHeroLabel: { fontSize: 10.2, fontWeight: "bold", color: "#946217", marginBottom: 6 },
+  emptyHeroTitle: { fontSize: 16, lineHeight: 1.35, fontWeight: "bold", color: "#5B4018", marginBottom: 8 },
+  emptyHeroDescription: { fontSize: 11.4, lineHeight: 1.45, color: "#74552B" },
+  emptySectionTitle: { fontSize: 14.5, fontWeight: "bold", marginBottom: 8 },
+  emptyCardRow: { flexDirection: "row", marginHorizontal: -4, marginBottom: 8 },
+  emptyCardOuter: { width: "50%", paddingHorizontal: 4 },
+  emptyCard: { borderWidth: 0.8, borderColor: "#D7DEE7", backgroundColor: "#F8FAFC",
+    borderRadius: 5, padding: 12, minHeight: 102, justifyContent: "space-between" },
+  emptyCardTitle: { fontSize: 11.7, fontWeight: "bold", color: "#35455A" },
+  emptyCardValue: { fontSize: 12.5, fontWeight: "bold", color: "#946217", marginTop: 6 },
+  emptyCardValueAvailable: { fontSize: 12.5, fontWeight: "bold", color: "#326A48", marginTop: 6 },
+  emptyCardValueUnavailable: { fontSize: 12, fontWeight: "bold", color: "#6B7280", marginTop: 6 },
+  emptyCardNote: { fontSize: 9.5, color: "#6B7280", marginTop: 5 },
+  emptyNotice: { backgroundColor: "#EDF4FB", borderLeftWidth: 3, borderLeftColor: "#477FA8",
+    marginTop: 13, paddingVertical: 12, paddingHorizontal: 13 },
+  emptyNoticeTitle: { fontSize: 11.7, fontWeight: "bold", marginBottom: 5, color: "#254F75" },
+  emptyNoticeText: { fontSize: 10.5, lineHeight: 1.45, color: "#374151" },
+
   coverSectionTitle: { fontSize: 13, fontWeight: "bold", marginTop: 12, marginBottom: 6 },
   coverCategory: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 5, paddingHorizontal: 8, borderBottomWidth: 0.6, borderBottomColor: "#DEE3E9" },
   coverCategoryName: { fontSize: 11.3 },
@@ -325,6 +351,24 @@ function StockMatrix({ items, category }: { items: ReturnType<typeof stockMatrix
   </View>;
 }
 
+function EmptyEvidenceCard({ title, status, note }: {
+  title: string;
+  status: "available" | "missing" | "unavailable";
+  note: string;
+}) {
+  const label = status === "available" ? "มีข้อมูลแล้ว"
+    : status === "unavailable" ? "ตรวจสอบไม่ได้ขณะนี้" : "ยังไม่มีข้อมูล";
+  const valueStyle = status === "available" ? S.emptyCardValueAvailable
+    : status === "unavailable" ? S.emptyCardValueUnavailable : S.emptyCardValue;
+  return <View style={S.emptyCardOuter}>
+    <View style={S.emptyCard} wrap={false}>
+      <Text style={S.emptyCardTitle}>{title}</Text>
+      <Text style={valueStyle}>{label}</Text>
+      <Text style={S.emptyCardNote}>{note}</Text>
+    </View>
+  </View>;
+}
+
 function DataFooter({ generatedText }: { generatedText: string }) {
   return <View style={S.footer} fixed>
     <Text>สร้างเมื่อ {generatedText}</Text>
@@ -369,7 +413,7 @@ function FinancialKpis({ label, financial, showTitle = true }: {
   </View>;
 }
 
-export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBriefReport; generatedAt: Date }) {
+export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { report: MorningBriefReport; generatedAt: Date; previewLabel?: string }) {
   const generatedText = new Intl.DateTimeFormat("th-TH", {
     dateStyle: "medium",
     timeStyle: "short",
@@ -561,15 +605,50 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
       </React.Fragment>)}
       <DataFooter generatedText={generatedText} />
     </Page></> : <Page size="A4" style={S.page}>
-      <Text style={S.title}>สรุปเช้า - {formatThaiDate(report.businessDate)}</Text>
-      {noProduceEvidence ? <View style={{ marginTop: 10 }}>
-        <Text style={S.title}>ยังไม่มีข้อมูลเบิก–ชั่งคืนสำหรับสรุปยอดขาย</Text>
-        <Text style={S.note}>รายการเบิก: ยังไม่มีข้อมูล</Text>
-        <Text style={S.note}>รายการชั่งคืน: ยังไม่มีข้อมูล</Text>
-        <Text style={S.note}>ใบขาว: {report.whiteSheetStatus === "entered" ? "มีข้อมูลแล้ว" : report.whiteSheetStatus === "unavailable" ? "ตรวจสอบไม่ได้ขณะนี้" : "ยังไม่มีข้อมูล"}</Text>
-        <Text style={S.note}>สต็อกบ้าน: {report.houseStock.status === "available" ? "มีข้อมูลแล้ว" : report.houseStock.status === "unavailable" ? "ตรวจสอบไม่ได้ขณะนี้" : "ยังไม่มีข้อมูล"}</Text>
-        <Text style={[S.note, { marginTop: 6 }]}>ไม่แสดงยอด 0 บาท เพราะยังไม่มีหลักฐานรายการขายที่บันทึกสำเร็จ</Text>
-      </View> : <Text>ยังไม่มีข้อมูลสินค้าในระบบ</Text>}
+      {noProduceEvidence ? <>
+        {previewLabel ? <View style={S.emptyPreviewTag}><Text style={S.emptyPreviewText}>{previewLabel}</Text></View> : null}
+        <View style={S.emptyHeader}>
+          <Text style={S.emptyHeaderKicker}>MORNING BRIEF / สถานะข้อมูลประจำวัน</Text>
+          <Text style={S.emptyHeaderTitle}>สรุปเช้า - {formatThaiDate(report.businessDate)}</Text>
+          <Text style={S.emptyHeaderSubtitle}>สรุปสถานะจากข้อมูลที่บันทึกในระบบ ณ เวลาสร้างรายงาน</Text>
+        </View>
+
+        <View style={S.emptyHero}>
+          <Text style={S.emptyHeroLabel}>สถานะรายงาน  •  รอข้อมูล</Text>
+          <Text style={S.emptyHeroTitle}>ยังไม่มีข้อมูลสำหรับสรุปยอดขาย</Text>
+          <Text style={S.emptyHeroDescription}>
+            ไม่พบรายการเบิกหรือชั่งคืนที่บันทึกสำเร็จสำหรับวันที่นี้
+            จึงยังไม่สามารถรายงานยอดขายได้ โดยไม่ตีความว่าขายได้ 0 บาท
+          </Text>
+        </View>
+
+        <Text style={S.emptySectionTitle}>สถานะข้อมูลแต่ละส่วน</Text>
+        <View style={S.emptyCardRow} wrap={false}>
+          <EmptyEvidenceCard title="รายการเบิกสินค้า" status="missing"
+            note="ยังไม่พบรายการเบิกที่บันทึกสำเร็จ" />
+          <EmptyEvidenceCard title="รายการชั่งคืน" status="missing"
+            note="ยังไม่พบรายการชั่งคืนที่บันทึกสำเร็จ" />
+        </View>
+        <View style={S.emptyCardRow} wrap={false}>
+          <EmptyEvidenceCard title="ใบขาว"
+            status={report.whiteSheetStatus === "entered" ? "available"
+              : report.whiteSheetStatus === "unavailable" ? "unavailable" : "missing"}
+            note={report.whiteSheetStatus === "entered" ? "พบการกรอกใบขาวแล้ว"
+              : "ยังไม่มีใบขาวที่บันทึกยืนยันได้"} />
+          <EmptyEvidenceCard title="สต็อกบ้าน"
+            status={report.houseStock.status}
+            note={report.houseStock.status === "available" ? "พบข้อมูลสต็อกบ้านแล้ว"
+              : "ยังไม่พบข้อมูลสต็อกบ้านที่ยืนยันได้"} />
+        </View>
+
+        <View style={S.emptyNotice}>
+          <Text style={S.emptyNoticeTitle}>การอ่านรายงานฉบับนี้</Text>
+          <Text style={S.emptyNoticeText}>
+            ยังสรุปยอดขายไม่ได้ (ไม่ใช่ยอดขาย 0 บาท) และยังไม่ทราบว่าทุกตลาดส่งข้อมูลครบหรือไม่
+            ข้อมูลส่วนที่ยังไม่พบจะแสดงตามสถานะจริง ไม่ใช้ยอดเงินศูนย์แทน
+          </Text>
+        </View>
+      </> : <Text>ยังไม่มีข้อมูลสินค้าในระบบ</Text>}
       <DataFooter generatedText={generatedText} />
     </Page>}
   </Document>;
