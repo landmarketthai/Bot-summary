@@ -3,7 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 import { HOUSE_STOCK_PRICED_PARSER_VERSION } from "@/lib/physical-inventory/types";
 import { FakeDatabase } from "./test-fake-supabase";
-import { loadMorningBriefReport } from "./morning-brief-service";
+import { loadMorningBriefReport, summarizeReadiness } from "./morning-brief-service";
 
 const BUSINESS_DATE = "2026-08-27";
 
@@ -22,6 +22,24 @@ function snapshot(id: string) {
 }
 
 describe("loadMorningBriefReport", () => {
+  test("reports actual withdrawal/return evidence without pretending each market is complete", () => {
+    const evidence = summarizeReadiness([
+      { market_name: "เฉลิม72", base_transaction_type: "เบิก" },
+      { market_name: "พาซิโอ้ผลไม้", base_transaction_type: "เบิก" },
+      { market_name: "ราชพฤกษ์", base_transaction_type: "เบิก" },
+      { market_name: "ราชพฤก", base_transaction_type: "คืน" },
+      { market_name: "เฉลิม72", base_transaction_type: "เสีย" }, // damaged return is not a good-return document
+      { market_name: "ทดสอบ", base_transaction_type: "เบิก" },
+    ]);
+    expect(evidence.transactionCount).toBe(5); // QA market excluded
+    expect(evidence.markets).toEqual(expect.arrayContaining([
+      { marketLabel: "เฉลิมฯ72", hasWithdrawal: true, hasReturn: false },
+      { marketLabel: "ราชพฤกษ์", hasWithdrawal: true, hasReturn: true },
+      { marketLabel: "พาซิโอ้ผลไม้", hasWithdrawal: true, hasReturn: false },
+    ]));
+    expect(summarizeReadiness([])).toEqual({ transactionCount: 0, markets: [] });
+  });
+
   test("loads compact purchase and sales summaries while House Stock is missing", async () => {
     const report = await loadMorningBriefReport(client(new FakeDatabase()), BUSINESS_DATE);
 

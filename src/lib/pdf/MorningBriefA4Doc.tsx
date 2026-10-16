@@ -32,9 +32,10 @@ const S = StyleSheet.create({
   header: { marginBottom: 8 },
   title: { fontSize: 21.5, fontWeight: "bold" },
   subtitle: { fontSize: 10, color: "#6B7280", marginTop: 2 },
-  kpiGrid: { flexDirection: "row", marginHorizontal: -2, marginBottom: 5 },
+  kpiGrid: { flexDirection: "row", marginHorizontal: -2, marginBottom: 5, alignItems: "stretch" },
   kpi: { width: "20%", paddingHorizontal: 2 },
-  kpiBox: { borderWidth: 0.9, borderColor: "#C7C9CE", padding: 4, minHeight: 51, borderRadius: 3 },
+  kpiBox: { borderWidth: 0.9, borderColor: "#C7C9CE", padding: 5, height: 72, borderRadius: 3, justifyContent: "space-between" },
+  kpiContent: { flexDirection: "column", justifyContent: "flex-end", alignItems: "flex-end" },
   kpiSales: { backgroundColor: "#FFF0BF", borderColor: "#D7AC3D" },
   kpiWithdrawal: { backgroundColor: "#DFEDFA", borderColor: "#6EACD5" },
   kpiReturn: { backgroundColor: "#DDF2DC", borderColor: "#6CAD76" },
@@ -42,8 +43,8 @@ const S = StyleSheet.create({
   kpiReady: { backgroundColor: "#E6E4F7", borderColor: "#9E98D4" },
   kpiUnknownValue: { fontSize: 9.5, fontWeight: "bold", color: "#92400E", textAlign: "right", marginTop: 3 },
   stockWarning: { backgroundColor: "#FFF8E8", borderLeftWidth: 2, borderLeftColor: "#D09A39", padding: 5, marginTop: 4 },
-  kpiLabel: { fontSize: 7.8, color: "#6B7280" },
-  kpiValue: { fontSize: 12.2, fontWeight: "bold", textAlign: "right", marginTop: 2 },
+  kpiLabel: { fontSize: 8.2, lineHeight: 1.25, color: "#6B7280", minHeight: 21 },
+  kpiValue: { fontSize: 12.2, fontWeight: "bold", textAlign: "right" },
   kpiUnit: { fontSize: 7.2, color: "#6B7280", textAlign: "right", marginTop: 1 },
   financialCategory: { marginTop: 10 },
   financialCategoryTitle: { fontSize: 14, fontWeight: "bold", marginBottom: 5, backgroundColor: "#E9EFF7", borderLeftWidth: 4, borderLeftColor: "#477FA8", paddingVertical: 3, paddingHorizontal: 6 },
@@ -341,14 +342,16 @@ function FinancialKpis({ label, financial, showTitle = true }: {
   financial: MorningBriefFruitFinancialSummary;
   showTitle?: boolean;
 }) {
+  // Category names appear in the section title, not repeatedly in narrow cards.
+  // Short, consistent labels make every row legible on an A4 printout.
   const cards = [
-    { label: `ยอดขายรวมเมื่อวาน (${label})`, value: bahtFromSatang(financial.salesValueSatang), hint: "บาท", tone: S.kpiSales },
-    { label: `${label}ที่เบิกออกไปขายเมื่อวาน`, value: bahtFromSatang(financial.withdrawalValueSatang), hint: "บาท", tone: S.kpiWithdrawal },
-    { label: "ของชั่งคืนดีจากตลาด", value: bahtFromSatang(financial.goodReturnValueSatang), hint: "บาท", tone: S.kpiReturn },
-    { label: `Stock ${label}ที่บ้าน`, value: financial.houseStockValueSatang == null ? "รอข้อมูล" : bahtFromSatang(financial.houseStockValueSatang),
-      hint: financial.houseStockValueSatang == null ? "ไม่ใช่ 0 บาท" : "บาท", tone: S.kpiHouse, unknown: financial.houseStockValueSatang == null },
+    { label: "ยอดขายเมื่อวาน", value: bahtFromSatang(financial.salesValueSatang), hint: "บาท", tone: S.kpiSales },
+    { label: "ยอดเบิกไปขาย", value: bahtFromSatang(financial.withdrawalValueSatang), hint: "บาท", tone: S.kpiWithdrawal },
+    { label: "ยอดชั่งคืนดี", value: bahtFromSatang(financial.goodReturnValueSatang), hint: "บาท", tone: S.kpiReturn },
+    { label: "สต็อกที่บ้าน", value: financial.houseStockValueSatang == null ? "รอข้อมูล" : bahtFromSatang(financial.houseStockValueSatang),
+      hint: financial.houseStockValueSatang == null ? "ยังไม่มียอดบ้าน" : "บาท", tone: S.kpiHouse, unknown: financial.houseStockValueSatang == null },
     { label: "คงเหลือพร้อมขาย", value: financial.readyValueSatang == null ? "รอยอดบ้าน" : bahtFromSatang(financial.readyValueSatang),
-      hint: "ชั่งคืนดีจากตลาด + Stock บ้าน", tone: S.kpiReady, unknown: financial.readyValueSatang == null },
+      hint: "ชั่งคืนดี + สต็อกบ้าน", tone: S.kpiReady, unknown: financial.readyValueSatang == null },
   ];
   return <View wrap={false} style={{ marginTop: 5 }}>
     {showTitle ? <Text style={S.coverSectionTitle}>{label === "รวมทุกสินค้า" ? "ภาพรวมมูลค่าทุกหมวด" : `หมวด${label}`}</Text> : null}
@@ -356,8 +359,10 @@ function FinancialKpis({ label, financial, showTitle = true }: {
       {cards.map((card, i) => <View style={S.kpi} key={i}>
         <View style={[S.kpiBox, card.tone]}>
           <Text style={S.kpiLabel}>{card.label}</Text>
-          <Text style={card.unknown ? S.kpiUnknownValue : S.kpiValue}>{card.value}</Text>
-          <Text style={S.kpiUnit}>{card.hint}</Text>
+          <View style={S.kpiContent}>
+            <Text style={card.unknown ? S.kpiUnknownValue : S.kpiValue}>{card.value}</Text>
+            <Text style={S.kpiUnit}>{card.hint}</Text>
+          </View>
         </View>
       </View>)}
     </View>
@@ -430,11 +435,13 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
   const sectionSalesTotalSatang = financialSections.reduce(
     (sum, { financial }) => sum + financial.salesValueSatang, 0,
   );
-  const hasDailyActivity = financialSections.length > 0
+  // No saved produce rows means "not reported yet", never a business-zero day.
+  const noProduceEvidence = report.produceReadiness?.transactionCount === 0;
+  const hasDailyActivity = !noProduceEvidence && (financialSections.length > 0
     || stockItems.some(hasRealStockQuantity)
     || report.sales.totalSalesSatang !== 0
     || report.sales.confirmedSalesSatang !== 0
-    || report.sales.pendingReviewSalesSatang !== 0;
+    || report.sales.pendingReviewSalesSatang !== 0);
   const salesBreakdownDiffers = report.produceFinancial != null
     && financialSections.length > 0
     && sectionSalesTotalSatang !== report.sales.totalSalesSatang;
@@ -527,6 +534,14 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
         {!report.sales.valueAuthoritative || report.sales.excludedFromSalesCount > 0 ? <Text style={S.dailyOverviewWarning}>ยอดขายมีรายการที่ยังไม่ครบหรือรอตรวจ กรุณาดูยอดยืนยันแล้วแยกต่างหาก</Text> : null}
       </View>
 
+      {report.produceReadiness ? <View style={{ marginBottom: 9 }}>
+        <Text style={S.explanationTitle}>สถานะข้อมูลตามตลาด (ยังไม่ยืนยันความครบทุกตลาด)</Text>
+        {report.produceReadiness.markets.length === 0 ? <Text style={S.explanationText}>ยังไม่มีข้อมูลเบิก–ชั่งคืน</Text> :
+          report.produceReadiness.markets.map((market) => <View key={market.marketLabel} wrap={false}>
+            <Text style={S.explanationText}>{market.marketLabel}: {market.hasWithdrawal ? "เบิกมี" : "ไม่พบเบิก"} / {market.hasReturn ? "ชั่งคืนมี" : "ไม่พบชั่งคืน"}</Text>
+          </View>)}
+        <Text style={S.note}>พบข้อมูลทั้งสองประเภทไม่ได้หมายความว่ายืนยันครบ และยังไม่ทราบรายชื่อตลาดที่ไม่ได้ส่งข้อมูล</Text>
+      </View> : null}
       {/* Product stocks follow the audit, never duplicating the cover totals. A new
           physical page. Headings are siblings of their tables so
           minPresenceAhead keeps each heading with its first rows; tables
@@ -547,7 +562,14 @@ export function MorningBriefA4Doc({ report, generatedAt }: { report: MorningBrie
       <DataFooter generatedText={generatedText} />
     </Page></> : <Page size="A4" style={S.page}>
       <Text style={S.title}>สรุปเช้า - {formatThaiDate(report.businessDate)}</Text>
-      <Text>ยังไม่มีข้อมูลสินค้าในระบบ</Text>
+      {noProduceEvidence ? <View style={{ marginTop: 10 }}>
+        <Text style={S.title}>ยังไม่มีข้อมูลเบิก–ชั่งคืนสำหรับสรุปยอดขาย</Text>
+        <Text style={S.note}>รายการเบิก: ยังไม่มีข้อมูล</Text>
+        <Text style={S.note}>รายการชั่งคืน: ยังไม่มีข้อมูล</Text>
+        <Text style={S.note}>ใบขาว: {report.whiteSheetStatus === "entered" ? "มีข้อมูลแล้ว" : report.whiteSheetStatus === "unavailable" ? "ตรวจสอบไม่ได้ขณะนี้" : "ยังไม่มีข้อมูล"}</Text>
+        <Text style={S.note}>สต็อกบ้าน: {report.houseStock.status === "available" ? "มีข้อมูลแล้ว" : report.houseStock.status === "unavailable" ? "ตรวจสอบไม่ได้ขณะนี้" : "ยังไม่มีข้อมูล"}</Text>
+        <Text style={[S.note, { marginTop: 6 }]}>ไม่แสดงยอด 0 บาท เพราะยังไม่มีหลักฐานรายการขายที่บันทึกสำเร็จ</Text>
+      </View> : <Text>ยังไม่มีข้อมูลสินค้าในระบบ</Text>}
       <DataFooter generatedText={generatedText} />
     </Page>}
   </Document>;
