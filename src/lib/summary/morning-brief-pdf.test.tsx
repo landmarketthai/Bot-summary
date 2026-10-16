@@ -317,7 +317,7 @@ describe("Morning Brief A4 PDF", () => {
     };
     const doc = MorningBriefA4Doc({ report: empty, generatedAt: new Date("2026-10-16T08:00:00+07:00") });
     const text = collectText(doc);
-    expect(text).toContain("ยังไม่มีข้อมูลเบิก–ชั่งคืนสำหรับสรุปยอดขาย");
+    expect(text).toContain("ยังไม่มีข้อมูลสำหรับสรุปยอดขาย");
     expect(text).toContain("รายการเบิกสินค้า");
     expect(text).toContain("ยังไม่มีข้อมูล");
     expect(text).toContain("สถานะข้อมูลแต่ละส่วน");

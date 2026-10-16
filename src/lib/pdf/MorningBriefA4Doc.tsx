@@ -66,7 +66,7 @@ const S = StyleSheet.create({
   emptyHero: { backgroundColor: "#FFF7E7", borderWidth: 1, borderColor: "#D6A84B",
     borderRadius: 6, paddingVertical: 17, paddingHorizontal: 16, marginBottom: 19 },
   emptyHeroLabel: { fontSize: 10.2, fontWeight: "bold", color: "#946217", marginBottom: 6 },
-  emptyHeroTitle: { fontSize: 17.5, fontWeight: "bold", color: "#5B4018", marginBottom: 8 },
+  emptyHeroTitle: { fontSize: 16, lineHeight: 1.35, fontWeight: "bold", color: "#5B4018", marginBottom: 8 },
   emptyHeroDescription: { fontSize: 11.4, lineHeight: 1.45, color: "#74552B" },
   emptySectionTitle: { fontSize: 14.5, fontWeight: "bold", marginBottom: 8 },
   emptyCardRow: { flexDirection: "row", marginHorizontal: -4, marginBottom: 8 },
@@ -615,7 +615,7 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
 
         <View style={S.emptyHero}>
           <Text style={S.emptyHeroLabel}>สถานะรายงาน  •  รอข้อมูล</Text>
-          <Text style={S.emptyHeroTitle}>ยังไม่มีข้อมูลเบิก–ชั่งคืนสำหรับสรุปยอดขาย</Text>
+          <Text style={S.emptyHeroTitle}>ยังไม่มีข้อมูลสำหรับสรุปยอดขาย</Text>
           <Text style={S.emptyHeroDescription}>
             ไม่พบรายการเบิกหรือชั่งคืนที่บันทึกสำเร็จสำหรับวันที่นี้
             จึงยังไม่สามารถรายงานยอดขายได้ โดยไม่ตีความว่าขายได้ 0 บาท
