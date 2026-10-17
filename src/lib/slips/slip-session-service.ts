@@ -70,6 +70,8 @@ export interface SlipSessionIngestor {
     senderId:    string | null,
     header:      SlipSessionHeader,
     accountabilityRoundId?: string | null,
+    /** LINE event timestamp (ms) of the open command; images sent earlier are not part of this session. */
+    openEventTsMs?: number | null,
   ): Promise<{ opened: true; batchId: string } | { opened: false; existingBatchId: string }>;
 
   findActiveSession(sourceId: string): Promise<ActiveSlipSession | null>;
@@ -84,6 +86,7 @@ export class SlipSessionService implements SlipSessionIngestor {
     senderId:   string | null,
     header:     SlipSessionHeader,
     accountabilityRoundId: string | null = null,
+    openEventTsMs: number | null = null,
   ): Promise<{ opened: true; batchId: string } | { opened: false; existingBatchId: string }> {
     const log = logger.child({ sourceId });
 
@@ -104,6 +107,7 @@ export class SlipSessionService implements SlipSessionIngestor {
         batch_type:  header.batchType,
         image_count: 0,
         accountability_round_id: accountabilityRoundId,
+        open_event_ts_ms: openEventTsMs,
       })
       .select("id")
       .single();

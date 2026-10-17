@@ -64,7 +64,7 @@ export class SlipEvidenceService implements SlipEvidenceIngestor {
       content = await this.downloadContent(input.lineMessageId);
     } catch (error) {
       log.error("slip evidence download failed", { error: safeErrorMessage(error) });
-      const evidenceId = await this.insertEvidence(input, {
+      const recorded = await this.insertEvidence(input, {
         storagePath,
         mimeType: null,
         byteSize: 0,
@@ -72,8 +72,8 @@ export class SlipEvidenceService implements SlipEvidenceIngestor {
         status: "DOWNLOAD_FAILED",
       });
       return {
-        evidenceId,
-        status: "DOWNLOAD_FAILED",
+        evidenceId: recorded.id,
+        status: recorded.status,
         storagePath,
         sha256: DOWNLOAD_FAILED_SHA256,
       };
@@ -84,7 +84,9 @@ export class SlipEvidenceService implements SlipEvidenceIngestor {
       .from(SLIP_EVIDENCE_BUCKET)
       .upload(storagePath, content.bytes, {
         contentType: content.mimeType ?? "image/jpeg",
-        upsert: false,
+        // The path is derived from the LINE message id, so a retry after a
+        // crash between upload and DB insert rewrites identical bytes.
+        upsert: true,
       });
 
     if (storageError) {
@@ -92,23 +94,24 @@ export class SlipEvidenceService implements SlipEvidenceIngestor {
         error: storageError.message,
         byteSize: content.bytes.byteLength,
       });
-      const evidenceId = await this.insertEvidence(input, {
+      const recorded = await this.insertEvidence(input, {
         storagePath,
         mimeType: content.mimeType,
         byteSize: content.bytes.byteLength,
         sha256,
         status: "STORAGE_FAILED",
       });
-      return { evidenceId, status: "STORAGE_FAILED", storagePath, sha256 };
+      return { evidenceId: recorded.id, status: recorded.status, storagePath, sha256 };
     }
 
-    const evidenceId = await this.insertEvidence(input, {
+    const recorded = await this.insertEvidence(input, {
       storagePath,
       mimeType: content.mimeType,
       byteSize: content.bytes.byteLength,
       sha256,
       status: "RECEIVED",
     });
+    const evidenceId = recorded.id;
 
     const { error: processedError } = await this.supabase
       .from("raw_messages")
@@ -126,9 +129,15 @@ export class SlipEvidenceService implements SlipEvidenceIngestor {
       mimeType: content.mimeType,
     });
 
-    return { evidenceId, status: "RECEIVED", storagePath, sha256 };
+    return { evidenceId, status: recorded.status, storagePath, sha256 };
   }
 
+  /**
+   * Records the evidence row. line_message_id is UNIQUE, so a retry of the same
+   * LINE message must reconcile with the existing row instead of failing:
+   *   - existing RECEIVED  -> keep it (never downgrade a stored image)
+   *   - existing *_FAILED  -> overwrite with this attempt's outcome
+   */
   private async insertEvidence(
     input: SlipEvidenceInput,
     evidence: {
@@ -138,7 +147,7 @@ export class SlipEvidenceService implements SlipEvidenceIngestor {
       sha256: string;
       status: SlipEvidenceStatus;
     },
-  ): Promise<string> {
+  ): Promise<{ id: string; status: SlipEvidenceStatus }> {
     const { data, error } = await this.supabase
       .from("slip_evidences")
       .insert({
@@ -157,10 +166,34 @@ export class SlipEvidenceService implements SlipEvidenceIngestor {
       .select("id")
       .single();
 
-    if (error || !data) {
-      throw new Error(`slip_evidence insert failed: ${error?.message ?? "missing inserted row"}`);
+    if (!error && data) return { id: data.id, status: evidence.status };
+
+    if (error?.code === "23505") {
+      const { data: existing } = await this.supabase
+        .from("slip_evidences")
+        .select("id, status")
+        .eq("line_message_id", input.lineMessageId)
+        .maybeSingle();
+      if (existing) {
+        if (existing.status === "RECEIVED") {
+          return { id: existing.id, status: "RECEIVED" };
+        }
+        const { error: updateError } = await this.supabase
+          .from("slip_evidences")
+          .update({
+            storage_path: evidence.storagePath,
+            mime_type: evidence.mimeType,
+            byte_size: evidence.byteSize,
+            sha256: evidence.sha256,
+            status: evidence.status,
+          })
+          .eq("id", existing.id);
+        if (!updateError) return { id: existing.id, status: evidence.status };
+        throw new Error(`slip_evidence update failed: ${updateError.message}`);
+      }
     }
-    return data.id;
+
+    throw new Error(`slip_evidence insert failed: ${error?.message ?? "missing inserted row"}`);
   }
 }
 

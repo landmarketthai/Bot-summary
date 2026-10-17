@@ -109,6 +109,7 @@ import {
   type SlipCheckProcessor,
 } from "@/lib/slips/check-service";
 import { SlipBatchService, type SlipBatchIngestor } from "@/lib/slips/batch-service";
+import { SlipImageIngestionService, type SlipImageResult } from "@/lib/slips/image-ingestion";
 import {
   QuotedSlipAmountCorrectionService,
   parseQuotedSlipAmount,
@@ -763,6 +764,7 @@ export class WebhookService {
   private readonly checkProcessor: SlipCheckProcessor;
   private readonly batchService: SlipBatchIngestor;
   private readonly slipSessionService: SlipSessionIngestor;
+  private readonly slipImageIngestion: SlipImageIngestionService;
   private readonly settlementSheetImageHandler: SettlementSheetImageHandler;
   private readonly quotedSlipAmountCorrectionService: Pick<
     QuotedSlipAmountCorrectionService,
@@ -826,6 +828,13 @@ export class WebhookService {
           });
         });
       });
+    this.slipImageIngestion = new SlipImageIngestionService(
+      supabase,
+      this.evidenceIngestor,
+      (evidenceId) => this.scheduleBackgroundTask(
+        () => this.checkProcessor.processEvidence(evidenceId),
+      ),
+    );
     this.physicalInventoryService =
       dependencies.physicalInventoryService
       ?? new PhysicalInventorySessionService(this.supabase);
@@ -3856,6 +3865,15 @@ export class WebhookService {
     const sourceId = getSourceId(event.source);
     const senderId = getUserId(event.source);
 
+    // Ledgered image (received while a slip batch was open): attribution was
+    // fixed at receipt by LINE time, every outcome is durable, and a failure
+    // schedules a bounded retry instead of blocking the images behind it. The
+    // queue event is therefore always safe to acknowledge.
+    const ledgered = await this.slipImageIngestion.process(message.id);
+    if (ledgered.outcome !== "no_ledger") {
+      return this.finishLedgeredImage(event, ledgered, eventId, log);
+    }
+
     let activeSession: Awaited<ReturnType<SlipSessionIngestor["findActiveSession"]>>;
     try {
       activeSession = await this.slipSessionService.findActiveSession(sourceId);
@@ -4042,6 +4060,30 @@ export class WebhookService {
     }
   }
 
+  private async finishLedgeredImage(
+    event: LineMessageEvent,
+    result: SlipImageResult,
+    eventId: string,
+    log: ChildLogger,
+  ): Promise<WebhookProcessResult> {
+    let reply: string | null = null;
+    if (result.outcome === "attached" && result.batchIndex === 1) {
+      reply = BATCH_FIRST_IMAGE_REPLY;
+    } else if (result.outcome === "excluded_after_close" || result.outcome === "late_after_finalize") {
+      reply = BATCH_FINALIZED_LATE_IMAGE_REPLY;
+    }
+    if (reply && event.replyToken) {
+      try {
+        await this.replyMessage(event.replyToken, reply);
+      } catch (error) {
+        log.error("slip image reply failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return { eventId, eventType: event.type, status: "saved", parsed: false };
+  }
+
   // ── Slip session: open ────────────────────────────────────────────────────
   private async processSlipOpen(
     event:     LineMessageEvent,
@@ -4094,6 +4136,7 @@ export class WebhookService {
     try {
       const result = await this.slipSessionService.openSession(
         sourceId, event.source.type, senderId, header, accountabilityRoundId,
+        Number.isFinite(event.timestamp) ? event.timestamp : null,
       );
 
       if (!result.opened) {
@@ -4162,7 +4205,12 @@ export class WebhookService {
       // fails and claimed is null — we reply with the already-closing message.
       const { data: claimed, error: claimError } = await this.supabase
         .from("slip_batches")
-        .update({ status: "closing", closing_at: new Date().toISOString() })
+        .update({
+          status: "closing",
+          closing_at: new Date().toISOString(),
+          // LINE time of the close command: images sent after it never join this batch.
+          close_event_ts_ms: Number.isFinite(event.timestamp) ? event.timestamp : null,
+        })
         .eq("id", active.batchId)
         .eq("status", "collecting")
         .select("id")
@@ -4791,6 +4839,80 @@ export class WebhookService {
       );
     }
     return { sources: sourceIds.length, processed };
+  }
+
+  /**
+   * Cron-driven recovery for slip image ingestion. Bounded and best-effort per
+   * stage so one failing stage never starves the others:
+   *   1. drain queue sources that still hold never-started slip images,
+   *   2. retry ledger rows whose backoff elapsed or whose lease expired,
+   *   3. re-drive OCR that never started for already attached evidence.
+   */
+  async recoverSlipIngest(options: { maxQueueEvents?: number; budgetMs?: number } = {}): Promise<{
+    sources: number;
+    queueProcessed: number;
+    ledger: { due: number; attached: number; retryPending: number; failedPermanent: number; other: number };
+    ocrRedriven: number;
+  }> {
+    const deadlineMs = Date.now() + (options.budgetMs ?? 15_000);
+    const maxQueueEvents = options.maxQueueEvents ?? 15;
+    const summary = {
+      sources: 0,
+      queueProcessed: 0,
+      ledger: { due: 0, attached: 0, retryPending: 0, failedPermanent: 0, other: 0 },
+      ocrRedriven: 0,
+    };
+
+    try {
+      const { data, error } = await this.supabase
+        .from("slip_image_events")
+        .select("source_id")
+        .eq("state", "received")
+        .order("received_at", { ascending: true })
+        .limit(50);
+      if (!error) {
+        const sourceIds = [...new Set((data ?? []).map((row) => row.source_id))];
+        summary.sources = sourceIds.length;
+        const results = new Map<string, WebhookProcessResult>();
+        for (const sourceId of sourceIds) {
+          if (summary.queueProcessed >= maxQueueEvents || Date.now() >= deadlineMs) break;
+          summary.queueProcessed += await this.drainOrderedSource(
+            sourceId, "", results, maxQueueEvents - summary.queueProcessed, deadlineMs,
+          );
+        }
+      }
+    } catch (error) {
+      logger.error("slip ingest queue drain failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    try {
+      summary.ledger = await this.slipImageIngestion.recoverDue(10, deadlineMs);
+    } catch (error) {
+      logger.error("slip image ledger recovery failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    try {
+      summary.ocrRedriven = await this.slipImageIngestion.redriveOcr(
+        (evidenceId) => this.checkProcessor.processEvidence(evidenceId),
+        5,
+        deadlineMs,
+      );
+    } catch (error) {
+      logger.error("slip ocr redrive failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    return summary;
+  }
+
+  /** Bounded ledger health for internal cron output (null when not deployed). */
+  async slipImageHealth(): Promise<Record<string, number | null> | null> {
+    return this.slipImageIngestion.health();
   }
 
   /**
