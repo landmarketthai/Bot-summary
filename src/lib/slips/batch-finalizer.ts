@@ -9,6 +9,7 @@ import {
   normalizeTransactionId,
   resolveGloballyAcceptedCheckIds,
 } from "@/lib/slips/transaction-dedupe";
+import type { SlipImageAccounting } from "@/lib/slips/image-ingestion";
 import {
   computeValidationFlags,
   parseBatchDate,
@@ -59,6 +60,16 @@ const CLOSE_QUIET_SECONDS = parseCloseSeconds(
 const CLOSE_MAX_SECONDS = parseCloseSeconds(
   process.env.SLIP_CLOSE_MAX_SECONDS,
   120,
+);
+
+// Upper bound on how long a closing batch waits for images that were received
+// before the close command but are not yet ingested (download/store/retry).
+// After this the batch is finalized and the summary states what is missing, so
+// an irrecoverable image can never block a batch forever. Must stay above the
+// image retry budget (5 attempts, 15s..240s backoff).
+export const CLOSE_INGEST_MAX_SECONDS = parseCloseSeconds(
+  process.env.SLIP_CLOSE_INGEST_MAX_SECONDS,
+  600,
 );
 
 // A batch that has stayed in processing beyond two normal request windows is
@@ -173,6 +184,7 @@ export type ClaimFn = (
   batchId:      string,
   quietSeconds: number,
   maxSeconds:   number,
+  ingestMaxSeconds?: number,
 ) => Promise<ClaimResult | null>;
 
 async function defaultAtomicClaim(
@@ -180,12 +192,24 @@ async function defaultAtomicClaim(
   batchId:      string,
   quietSeconds: number,
   maxSeconds:   number,
+  ingestMaxSeconds: number = CLOSE_INGEST_MAX_SECONDS,
 ): Promise<ClaimResult | null> {
-  const { data, error } = await supabase.rpc("claim_closing_slip_batch", {
+  let { data, error } = await supabase.rpc("claim_closing_slip_batch", {
     p_batch_id:      batchId,
     p_quiet_seconds: quietSeconds,
     p_max_seconds:   maxSeconds,
+    p_ingest_max_seconds: ingestMaxSeconds,
   });
+
+  // Code deployed before the ledger migration: the 3-argument function is
+  // still installed, so retry with its signature instead of never finalizing.
+  if (error && (error.code === "PGRST202" || error.code === "42883")) {
+    ({ data, error } = await supabase.rpc("claim_closing_slip_batch", {
+      p_batch_id:      batchId,
+      p_quiet_seconds: quietSeconds,
+      p_max_seconds:   maxSeconds,
+    } as never));
+  }
 
   if (error) {
     logger.error("claim_closing_slip_batch RPC failed", { batchId, reason: error.message });
@@ -231,6 +255,7 @@ export async function finalizeClosingSlipBatches(
   maxSeconds:   number = CLOSE_MAX_SECONDS,
   _finalize:    FinalizeFn = finalizeSlipBatch,
   _claim:       ClaimFn = defaultAtomicClaim,
+  ingestMaxSeconds: number = CLOSE_INGEST_MAX_SECONDS,
 ): Promise<number> {
   const { data: closingBatches, error } = await supabase
     .from("slip_batches")
@@ -244,7 +269,7 @@ export async function finalizeClosingSlipBatches(
 
   let count = 0;
   for (const batch of closingBatches ?? []) {
-    const claimed = await _claim(supabase, batch.id, quietSeconds, maxSeconds);
+    const claimed = await _claim(supabase, batch.id, quietSeconds, maxSeconds, ingestMaxSeconds);
     if (!claimed) continue;
 
     await _finalize(
@@ -522,6 +547,7 @@ export async function finalizeSlipBatch(
       loadBatchEvidences(supabase, batchId),
     ]);
     const evidences = await applyGlobalDuplicateExclusions(supabase, loadedEvidences);
+    const imageAccounting = await loadImageAccounting(supabase, batchId);
 
     // Idempotency guard: if summary_sent_at is already set, another worker
     // (or a previous retry) already delivered the summary — skip silently.
@@ -532,11 +558,20 @@ export async function finalizeSlipBatch(
       return;
     }
 
-    log.info("finalizing active slip batch", { evidenceCount: evidences.length, isTimeoutForced });
+    log.info("finalizing active slip batch", {
+      evidenceCount: evidences.length,
+      isTimeoutForced,
+      imageAccounting,
+    });
 
     if (evidences.length === 0) {
       log.warn("finalizeSlipBatch: no evidences — marking failed");
-      await sendMessage("ยังไม่มีรูปในชุดสลิปนี้");
+      const lostNotice = buildImageAccountingNotice(imageAccounting);
+      await sendMessage(
+        lostNotice
+          ? `สรุปชุดสลิป: รับรูปจาก LINE แต่บันทึกเข้าชุดไม่สำเร็จ\n\n${lostNotice}`
+          : "ยังไม่มีรูปในชุดสลิปนี้",
+      );
       messageSent = true;
       const { error: emptyErr } = await supabase.from("slip_batches").update({
         status:          "failed",
@@ -554,11 +589,15 @@ export async function finalizeSlipBatch(
 
     const title    = buildSessionTitle(batchRow);
     const slipDate = parseBatchDate(batchRow?.slip_date ?? null);
-    const message  = buildBatchSummaryMessage(evidences, {
+    const baseMessage  = buildBatchSummaryMessage(evidences, {
       title,
       isTimeout: isTimeoutForced,
       slipDate,
     });
+    // Images received from LINE but missing from the batch are reported
+    // explicitly; the partial total is never presented as the complete amount.
+    const accountingNotice = buildImageAccountingNotice(imageAccounting);
+    const message = accountingNotice ? `${baseMessage}\n\n${accountingNotice}` : baseMessage;
 
     await sendMessage(message);
     messageSent = true;
@@ -570,7 +609,8 @@ export async function finalizeSlipBatch(
         isVerifiedSlipCheckStatus(e.checkStatus) &&
         !validationFlags[i].flagged,
     ).length;
-    const failedCount = evidences.length - successCount;
+    const missingImages = imageAccounting?.incomplete ?? 0;
+    const failedCount = evidences.length - successCount + missingImages;
     const now = new Date().toISOString();
 
     const { error: updateError } = await supabase.from("slip_batches").update({
@@ -599,6 +639,7 @@ export async function finalizeSlipBatch(
       failedCount,
       summaryTitle:  title ?? "default",
       isTimeoutForced,
+      missingImages,
     });
 
     const businessDate = bangkokBusinessDateFromTimestamp(
@@ -630,6 +671,45 @@ export async function finalizeSlipBatch(
     // prevents duplicate sends on subsequent cron executions.
     throw err;
   }
+}
+
+/**
+ * Ledger accounting for the batch; null when the ledger is not deployed or the
+ * read fails (legacy behaviour: summary based on attached evidence only).
+ */
+async function loadImageAccounting(
+  supabase: Supabase,
+  batchId: string,
+): Promise<SlipImageAccounting | null> {
+  try {
+    const { data, error } = await supabase.rpc("slip_batch_image_accounting", { p_batch_id: batchId });
+    if (error || !data) return null;
+    const accounting = data as unknown as SlipImageAccounting;
+    return accounting.received_total > 0 ? accounting : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Notice appended to the LINE summary when any received image is not in the
+ * batch. Returns null when every received image is accounted for.
+ */
+export function buildImageAccountingNotice(
+  accounting: SlipImageAccounting | null,
+): string | null {
+  if (!accounting || accounting.incomplete <= 0) return null;
+  const lines = [
+    "⚠️ ยอดนี้ยังไม่ครบ ห้ามใช้เป็นยอดรวมทั้งหมด",
+    `รับรูปจาก LINE: ${accounting.received_total} รูป`,
+    `เข้าชุดแล้ว: ${accounting.attached} รูป`,
+    `ยังไม่ครบ: ${accounting.incomplete} รูป (ส่งใหม่หรือให้แอดมินตรวจมือ)`,
+  ];
+  const failed = accounting.failed_permanent + accounting.queue_dead;
+  if (failed > 0) lines.push(`- ประมวลผลไม่สำเร็จ: ${failed} รูป`);
+  if (accounting.waiting > 0) lines.push(`- ยังประมวลผลไม่เสร็จ: ${accounting.waiting} รูป`);
+  if (accounting.late_after_finalize > 0) lines.push(`- มาถึงหลังสรุปชุด: ${accounting.late_after_finalize} รูป`);
+  return lines.join("\n");
 }
 
 async function loadBatchRow(supabase: Supabase, batchId: string): Promise<SlipBatchRow | null> {
