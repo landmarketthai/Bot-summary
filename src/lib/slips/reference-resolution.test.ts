@@ -9,6 +9,12 @@ interface FakeCheck {
   id: string;
   status: string;
   reference_id: string | null;
+  failure_reason?: string | null;
+  slip_type?: string;
+  transaction_time?: string | null;
+  transfer_amount?: number | null;
+  paid_amount?: number | null;
+  gross_amount?: number | null;
 }
 
 function makeFakeSupabase(checks: FakeCheck[]) {
@@ -43,7 +49,7 @@ function makeFakeSupabase(checks: FakeCheck[]) {
                     filters.every((f) => (c as unknown as Record<string, unknown>)[f.column] === f.value));
                   if (!found) return { data: null, error: null };
                   Object.assign(found, values);
-                  return { data: { id: found.id }, error: null };
+                  return { data: { id: found.id, status: found.status, failure_reason: found.failure_reason ?? null }, error: null };
                 },
               }),
             };
@@ -81,6 +87,31 @@ describe("resolveSlipCheckReference (BR-02 manual resolution)", () => {
     expect(auditRows.map(({ check_id, reference_id, actor }) => ({ check_id, reference_id, actor }))).toEqual([
       { check_id: "chk-1", reference_id: "REF-MANUAL", actor: "admin-1" },
     ]);
+  });
+
+  it("allows admin to resolve a held missing-reference slip with enough evidence", async () => {
+    const { database, auditRows } = makeFakeSupabase([
+      { id: "held-1", status: "NEED_REVIEW", reference_id: null,
+        failure_reason: "missing_transaction_reference_global", slip_type: "THAI_HELP_THAI",
+        transaction_time: "2026-10-19T09:00:00Z", gross_amount: 100, paid_amount: 40 },
+    ]);
+    const r = await resolveSlipCheckReference(database, {
+      checkId: "held-1", referenceId: "MANUAL-REF", actor: "admin-1",
+    });
+    expect(r.status).toBe("PARTIAL_EXTRACTED");
+    expect(r.reviewReason).toBeNull();
+    expect(auditRows).toHaveLength(1);
+  });
+
+  it("does not let admin resolve a held slip without transaction timestamp", async () => {
+    const { database } = makeFakeSupabase([
+      { id: "held-1", status: "NEED_REVIEW", reference_id: null,
+        failure_reason: "missing_transaction_reference_global", slip_type: "THAI_HELP_THAI",
+        transaction_time: null, gross_amount: 100 },
+    ]);
+    await expect(resolveSlipCheckReference(database, {
+      checkId: "held-1", referenceId: "MANUAL-REF", actor: "admin-1",
+    })).rejects.toBeInstanceOf(ReferenceResolutionError);
   });
 
   it("rejects a check that is not in a verified status", async () => {

@@ -826,6 +826,7 @@ export function buildBatchSummaryMessage(
   if (trusted.length === 0 && flagged.length === 0 && !incomplete.some(
     (e) => e.failureReason === "duplicate_transaction_reference_global"
       || e.failureReason === "duplicate_image_sha256_global"
+      || e.failureReason === "possible_near_duplicate_image_global"
       || e.failureReason === "missing_transaction_reference_global",
   )) {
     if (options?.title) {
@@ -904,6 +905,7 @@ function describeReviewReason(e: EvidenceWithCheck): string {
   if (e.checkStatus === "NEED_REVIEW") {
     if (e.failureReason === "duplicate_transaction_reference_global") return "สลิปซ้ำ (รหัสอ้างอิงเคยใช้แล้ว)";
     if (e.failureReason === "duplicate_image_sha256_global") return "สลิปซ้ำ (รูปเดิมเคยส่งแล้ว)";
+    if (e.failureReason === "possible_near_duplicate_image_global") return "ภาพคล้ายสลิปก่อนหน้า (รอตรวจมือ)";
     if (e.failureReason === "missing_transaction_reference_global") return "ไม่พบรหัสอ้างอิง (รอตรวจมือ)";
     return "ไม่พบข้อมูลครบถ้วน";
   }

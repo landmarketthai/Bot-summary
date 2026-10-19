@@ -109,6 +109,8 @@ export class SlipCheckService implements SlipCheckProcessor {
           ? "🔴 พบสลิปรหัสธุรกรรมซ้ำกับรายการที่รับไว้แล้ว ระบบไม่รวมยอดซ้ำ กรุณาตรวจสอบกับเสมียน"
           : admissionReason === "duplicate_image_sha256_global"
             ? "🔴 พบรูปสลิปเดิมที่เคยรับแล้ว ระบบไม่รวมยอดซ้ำ กรุณาตรวจสอบกับเสมียน"
+            : admissionReason === "possible_near_duplicate_image_global"
+              ? "🟡 ภาพสลิปคล้ายรายการที่เคยรับ ระบบพักยอดไว้เพื่อตรวจสอบด้วยมือ"
             : admissionReason === "missing_transaction_reference_global"
               ? "🟡 ไม่พบรหัสอ้างอิงรายการ ระบบพักยอดไว้เพื่อตรวจสอบด้วยมือ"
               : await this.checkTransactionDuplicate(

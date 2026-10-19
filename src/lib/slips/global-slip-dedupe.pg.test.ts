@@ -54,7 +54,11 @@ describe.skipIf(probe.code !== 0)("global slip transaction atomicity", () => {
       );
       CREATE TABLE public.slip_checks (
         id uuid PRIMARY KEY, evidence_id uuid REFERENCES public.slip_evidences(id),
-        status text NOT NULL, reference_id text, failure_reason text
+        status text NOT NULL, reference_id text, failure_reason text,
+        slip_type text NOT NULL DEFAULT 'BANK_SLIP_QR',
+        transaction_time timestamptz DEFAULT '2026-10-19 09:00:00+07',
+        transfer_amount numeric DEFAULT 100, gross_amount numeric,
+        paid_amount numeric, discount_amount numeric
       );
     `);
     for (let i = 1; i <= 9; i++) {
@@ -92,6 +96,24 @@ describe.skipIf(probe.code !== 0)("global slip transaction atomicity", () => {
     await exec(mk(5,"REF-IMAGE-2"));
     expect(await exec(`SELECT status || ':' || failure_reason FROM public.slip_checks WHERE id='20000000-0000-4000-8000-000000000005'`))
       .toBe("NEED_REVIEW:duplicate_image_sha256_global");
+
+    // Visually similar SHA-distinct images at the same time and amount => review.
+    await exec(`UPDATE public.slip_evidences SET visual_hash_full='0123456789abcdef', visual_hash_center='fedcba9876543210' WHERE id='10000000-0000-4000-8000-000000000006'`);
+    await exec(`UPDATE public.slip_evidences SET visual_hash_full='0123456789abcdee', visual_hash_center='fedcba9876543211' WHERE id='10000000-0000-4000-8000-000000000007'`);
+    await exec(mk(6,'REF-VISUAL-1'));
+    await exec(mk(7,'REF-VISUAL-2'));
+    expect(await exec(`SELECT status || ':' || failure_reason FROM public.slip_checks WHERE id='20000000-0000-4000-8000-000000000007'`))
+      .toBe('NEED_REVIEW:possible_near_duplicate_image_global');
+
+    // Same-looking receipts but DIFFERENT amount or transaction time must not be auto-flagged.
+    await exec(`UPDATE public.slip_evidences SET visual_hash_full='0123456789abcdee' WHERE id='10000000-0000-4000-8000-000000000008'`);
+    await exec(`INSERT INTO public.slip_checks(id,evidence_id,status,reference_id,transfer_amount)
+      VALUES('20000000-0000-4000-8000-000000000008','10000000-0000-4000-8000-000000000008','EXTRACTED','REF-DIFFERENT-AMOUNT',250)`);
+    expect(await exec(`SELECT status FROM public.slip_checks WHERE id='20000000-0000-4000-8000-000000000008'`)).toBe('EXTRACTED');
+    await exec(`UPDATE public.slip_evidences SET visual_hash_center='fedcba9876543211' WHERE id='10000000-0000-4000-8000-000000000009'`);
+    await exec(`INSERT INTO public.slip_checks(id,evidence_id,status,reference_id,transaction_time)
+      VALUES('20000000-0000-4000-8000-000000000009','10000000-0000-4000-8000-000000000009','EXTRACTED','REF-DIFFERENT-TIME','2026-10-19 10:00:00+07')`);
+    expect(await exec(`SELECT status FROM public.slip_checks WHERE id='20000000-0000-4000-8000-000000000009'`)).toBe('EXTRACTED');
 
     // Re-admitting the SAME record must not be considered a separate payment.
     await exec(`UPDATE public.slip_checks SET status='EXTRACTED' WHERE id='20000000-0000-4000-8000-000000000004'`);

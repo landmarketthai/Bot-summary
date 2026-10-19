@@ -14,15 +14,25 @@ to multiple markets, including Thai Help Thai / G-Wallet receipts.
 - **P1**: Exact byte-identical image SHA-256 values across groups/markets are also
   serialized; the subsequent claimant is held for review, even if the OCR reference
   differs.
+- **P1**: Sharp computes two 64-bit grayscale dHash projections (full and center).
+  Images with different SHA-256 but near Hamming distance (<=6), matching
+  receipt type/amount and transaction time within 90 seconds are marked
+  NEED_REVIEW, never labeled as proven duplicates. Database visual admission
+  mutex serializes concurrent candidate writes.
+- Authorized manual-reference resolution supports held missing-reference receipts
+  only when amount and time are present, then rechecks through the same DB trigger.
 - LINE per-image messages read persisted status after the trigger, and batch
-  summaries surface duplicate-reference, duplicate-image and missing-reference reasons.
+  summaries surface duplicate-reference, exact-image, near-image and missing-reference reasons.
 - Historical duplicates remain physically present. Existing read-time global-winner
   logic continues to exclude losing historical records without destructive cleanup.
 
 ## Security and limitations
-- SHA-256 matching is exact, not perceptual. Re-cropped, compressed or newly
-  photographed images can have different hashes. Repeated reference IDs still
-  cover those cases; absent reference IDs are held for manual review.
+- SHA-256 matching is exact; visual hashes are heuristic and only flag similar
+  images for manual review when payment details corroborate. This detects tested
+  recompression and small border crops, not arbitrary viewpoint changes or all
+  screenshots. False positives are possible; never auto-reject based only on dHash.
+  Repeated reference IDs remain the stronger identity across all dates; missing
+  references are held for manual review.
 - Missing reference is **unknown**, not proof of fraud or proof of a duplicate.
   It must not become a verified payment without authorized human reference resolution.
 - Older data without reference IDs is not retroactively modified by the migration.
@@ -35,8 +45,11 @@ to multiple markets, including Thai Help Thai / G-Wallet receipts.
 - Isolated PostgreSQL integration test creates a disposable local DB, reapplies
   the migration, starts concurrent submissions, and checks that exactly one
   conflicting reference is verified. Also tests same-image collision, missing
-  IDs, and re-admission of the original record.
-- Focused Bun slip tests passed; TypeScript --noEmit passed.
+  IDs, near-visual match with distinct IDs, distinct amount/time false-positive
+  controls, and re-admission of the original record.
+- Sharp image tests verify JPEG recompression, 2% crop and corrupt input.
+- Complete `src/lib/slips` Bun suite: 299 pass, 0 fail, including isolated PG;
+  TypeScript --noEmit passed; scoped ESLint zero errors (warnings only).
 - Nothing has been applied to production.
 
 ## Release gate (do not skip)
@@ -57,8 +70,12 @@ to multiple markets, including Thai Help Thai / G-Wallet receipts.
    only if explicitly approved after evaluating potential double-count exposure.
    Do not modify or delete historical evidence.
 
-## Open engineering work beyond exact-match safety
-- Perceptual fingerprint (dHash/pHash) for resized/cropped near-duplicate evidence,
-  with manual-review only, false-positive evaluation and retention policy.
-- Full end-to-end UAT through real LINE webhook + migrated staging DB and integration
-  with the pending PR #182 image-ingestion remediation.
+## Remaining release dependencies
+- Broader false-positive calibration on real, anonymized receipt samples and
+  privacy/retention policy before enabling live near-image matching.
+- Full end-to-end UAT through real LINE webhook + migrated staging DB and
+  integration with the **latest uncommitted local** PR #182 candidate.
+  On 19 Oct #182 GitHub head is NOT the latest local fixes; do not merge
+  against its remote head and assume those unpublished safety patches exist.
+- No production rollout, no real LINE send, no independent production readiness
+  sign-off for combined #182 + #183 yet.

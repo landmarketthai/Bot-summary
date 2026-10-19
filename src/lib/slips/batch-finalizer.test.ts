@@ -268,6 +268,7 @@ describe("finalizeSlipBatch: success_count and failed_count use validation-guard
       transfer_amount:  item.transferAmount,
       paid_amount:      null,
       transaction_time: item.transactionTime ?? null,
+      reference_id:     `TEST-REF-${i + 1}`,
       failure_reason:   null,
     }));
 
@@ -365,6 +366,7 @@ describe("buildBatchSummaryMessage timeout breakdown", () => {
     transferAmount:  (status === "EXTRACTED" || status === "PARTIAL_EXTRACTED") ? 1000 : null,
     paidAmount:      null,
     transactionTime: null,
+    referenceId:     `TEST-REF-${idx}`,
     failureReason:   null,
   });
 
@@ -465,6 +467,7 @@ describe("buildBatchSummaryMessage trusted slip lines", () => {
     ),
     paidAmount:      null,
     transactionTime: options?.transactionTime ?? "2026-06-10T10:00:00Z",
+    referenceId:     `TEST-REF-${idx}`,
     failureReason:   null,
   });
 

@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { bangkokBusinessDateFromTimestamp } from "@/lib/business-date";
 import { downloadLineMessageContent, type LineMessageContent } from "@/lib/line/content";
 import { logger } from "@/lib/logger";
+import { computeSlipVisualHashes } from "@/lib/slips/visual-hash";
 import {
   DOWNLOAD_FAILED_SHA256,
   SLIP_EVIDENCE_BUCKET,
@@ -80,6 +81,8 @@ export class SlipEvidenceService implements SlipEvidenceIngestor {
     }
 
     const sha256 = computeSha256(content.bytes);
+    const visualHashes = await computeSlipVisualHashes(content.bytes);
+    if (!visualHashes) log.warn("slip visual fingerprint unavailable", { reason: "image_decode_failed" });
     const { error: storageError } = await this.supabase.storage
       .from(SLIP_EVIDENCE_BUCKET)
       .upload(storagePath, content.bytes, {
@@ -107,6 +110,8 @@ export class SlipEvidenceService implements SlipEvidenceIngestor {
       mimeType: content.mimeType,
       byteSize: content.bytes.byteLength,
       sha256,
+      visualHashFull: visualHashes?.full ?? null,
+      visualHashCenter: visualHashes?.center ?? null,
       status: "RECEIVED",
     });
 
@@ -136,6 +141,8 @@ export class SlipEvidenceService implements SlipEvidenceIngestor {
       mimeType: string | null;
       byteSize: number;
       sha256: string;
+      visualHashFull?: string | null;
+      visualHashCenter?: string | null;
       status: SlipEvidenceStatus;
     },
   ): Promise<string> {
@@ -152,6 +159,8 @@ export class SlipEvidenceService implements SlipEvidenceIngestor {
         mime_type: evidence.mimeType,
         byte_size: evidence.byteSize,
         sha256: evidence.sha256,
+        visual_hash_full: evidence.visualHashFull ?? null,
+        visual_hash_center: evidence.visualHashCenter ?? null,
         status: evidence.status,
       })
       .select("id")

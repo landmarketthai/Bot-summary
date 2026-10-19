@@ -1131,6 +1131,8 @@ export interface Database {
           mime_type:       string | null;
           byte_size:       number | null;
           sha256:          string;
+          visual_hash_full: string | null;
+          visual_hash_center: string | null;
           status:          SlipEvidenceStatus;
           received_at:     string;
           created_at:      string;
@@ -1153,6 +1155,8 @@ export interface Database {
           mime_type?:       string | null;
           byte_size?:       number | null;
           sha256:           string;
+          visual_hash_full?: string | null;
+          visual_hash_center?: string | null;
           status?:          SlipEvidenceStatus;
           received_at?:     string;
           created_at?:      string;
@@ -1175,6 +1179,8 @@ export interface Database {
           mime_type?:       string | null;
           byte_size?:       number | null;
           sha256?:          string;
+          visual_hash_full?: string | null;
+          visual_hash_center?: string | null;
           status?:          SlipEvidenceStatus;
           received_at?:     string;
           created_at?:      string;

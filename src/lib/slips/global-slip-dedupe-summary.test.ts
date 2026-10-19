@@ -29,4 +29,14 @@ describe("global duplicate rejection in LINE batch summary", () => {
     expect(message).toContain("#3 ไม่พบรหัสอ้างอิง (รอตรวจมือ)");
     expect(message).not.toContain("ยอดรวมที่อ่านได้:");
   });
+
+  test("near-image candidate is labeled as uncertain and held, not accused as duplicate", () => {
+    const message = buildBatchSummaryMessage([
+      evidence(4, "possible_near_duplicate_image_global"),
+    ], { slipDate: "19/10/2569" });
+    expect(message).toContain("อ่านครบ: 0 รูป");
+    expect(message).toContain("รอตรวจมือ: 1 รูป");
+    expect(message).toContain("ภาพคล้ายสลิปก่อนหน้า (รอตรวจมือ)");
+    expect(message).not.toContain("ยอดรวมที่อ่านได้:");
+  });
 });
