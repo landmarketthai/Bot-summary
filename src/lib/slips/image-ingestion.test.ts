@@ -63,6 +63,42 @@ describe("SlipImageIngestionService", () => {
   });
 });
 
+describe("cron redrive lanes (P1 #4)", () => {
+  const ids = Array.from({ length: 25 }, (_, i) => `ev-${i + 1}`);
+  const listing = (async (name: string) => {
+    if (name !== "list_slip_ocr_redrive") throw new Error(`unexpected rpc ${name}`);
+    return { data: ids, error: null };
+  });
+
+  it("healthy OCR: the lanes drain the whole fair list in one sweep", async () => {
+    const { svc } = service(listing);
+    let inFlight = 0;
+    let peak = 0;
+    const done: string[] = [];
+    const count = await svc.redriveOcr(async (id) => {
+      peak = Math.max(peak, ++inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight -= 1;
+      done.push(id);
+    }, undefined, Date.now() + 40_000);
+    expect(count).toBe(25);
+    expect(new Set(done).size).toBe(25);
+    expect(peak).toBe(10); // bounded concurrency: ocrLanes
+  });
+
+  it("slow OCR: lanes start no job that cannot finish; the guaranteed floor is one job per lane", async () => {
+    const { svc } = service(listing);
+    const started: string[] = [];
+    // 30.3 s left: every lane may start one 30 s job, then less than 30 s remains.
+    const count = await svc.redriveOcr(async (id) => {
+      started.push(id);
+      await new Promise((r) => setTimeout(r, 400));
+    }, undefined, Date.now() + 30_300);
+    expect(count).toBe(10);
+    expect(started).toEqual(ids.slice(0, 10)); // list order (least-claimed first) is respected
+  });
+});
+
 describe("buildImageAccountingNotice", () => {
   const base: SlipImageAccounting = {
     batch_id: "b", received_total: 25, attached: 25, waiting: 0, retry_pending: 0, queue_dead: 0,

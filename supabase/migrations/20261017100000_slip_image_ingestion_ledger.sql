@@ -15,17 +15,23 @@
 --      any record of the loss.
 --
 -- This migration adds:
---   * slip_image_events: one durable ledger row per unique LINE image message
---     received while a slip batch is open, written in the SAME transaction as
---     the queue receipt (trigger), attributed to the batch by LINE event time.
+--   * slip_image_events: one durable ledger row per unique queued LINE image
+--     message, written in the SAME transaction as the queue receipt (trigger;
+--     a ledger failure aborts the receipt), attributed to the batch by LINE
+--     event time. Images received before their session exists are 'unbound'
+--     and are bound when the session is created, when their worker runs, or
+--     when the batch is claimed for finalization.
 --   * RPCs: begin (lease + attempt budget), attach (idempotent), fail (bounded
 --     backoff), due-list, OCR re-drive list, accounting, health.
---   * claim_closing_slip_batch: refuses to claim while ledger rows are still in
---     flight, bounded by p_ingest_max_seconds so an irrecoverable image cannot
---     block a batch forever.
+--   * claim_closing_slip_batch: reconciles every image receipt in the
+--     session's LINE window, then refuses to claim while ledger rows are still
+--     in flight, bounded by p_ingest_max_seconds so an irrecoverable image
+--     cannot block a batch forever.
 --
--- Additive and idempotent. Old application code keeps working: it ignores the
--- ledger, and claim_closing_slip_batch keeps its 3-argument call shape.
+-- Deployment prerequisite: apply this migration BEFORE deploying application
+-- code that uses it. The application takes its legacy image path ONLY when the
+-- ledger function is verifiably absent (42883 / PGRST202); any other ledger
+-- error keeps the image pending in the queue (retryable, never acknowledged).
 
 BEGIN;
 
@@ -45,8 +51,8 @@ CREATE TABLE IF NOT EXISTS public.slip_image_events (
   line_message_id text        NOT NULL UNIQUE,
   raw_message_id  uuid        NOT NULL UNIQUE
                               REFERENCES public.raw_messages(id) ON DELETE CASCADE,
-  batch_id        uuid        NOT NULL
-                              REFERENCES public.slip_batches(id) ON DELETE CASCADE,
+  -- NULL only while no session covers the image's LINE time (see 'unbound').
+  batch_id        uuid        REFERENCES public.slip_batches(id) ON DELETE CASCADE,
   source_id       text        NOT NULL,
   source_type     text        NOT NULL,
   line_user_id    text,
@@ -62,6 +68,11 @@ CREATE TABLE IF NOT EXISTS public.slip_image_events (
   updated_at      timestamptz NOT NULL DEFAULT now(),
 
   CONSTRAINT slip_image_events_state_check CHECK (state IN (
+    'unbound',               -- received before any session covering its LINE
+                             -- time existed (e.g. same webhook as the open
+                             -- command); bound when that session is created
+    'no_session',            -- processed in LINE order and no session covers
+                             -- it: not a slip of any batch (rebindable)
     'received',              -- durably received, not yet ingested
     'ingesting',             -- a worker holds the lease (download/store/attach)
     'retry_pending',         -- attempt failed; retry scheduled at next_retry_at
@@ -73,8 +84,14 @@ CREATE TABLE IF NOT EXISTS public.slip_image_events (
   )),
   CONSTRAINT slip_image_events_attempts_check CHECK (attempts >= 0),
   CONSTRAINT slip_image_events_attached_evidence_check
-    CHECK (state <> 'attached' OR evidence_id IS NOT NULL)
+    CHECK (state <> 'attached' OR evidence_id IS NOT NULL),
+  CONSTRAINT slip_image_events_binding_check
+    CHECK ((batch_id IS NULL) = (state IN ('unbound', 'no_session')))
 );
+
+CREATE INDEX IF NOT EXISTS slip_image_events_unbound_idx
+  ON public.slip_image_events (source_id, event_ts_ms)
+  WHERE batch_id IS NULL;
 
 CREATE INDEX IF NOT EXISTS slip_image_events_batch_state_idx
   ON public.slip_image_events (batch_id, state);
@@ -100,8 +117,79 @@ CREATE TRIGGER trg_slip_image_events_updated_at
   FOR EACH ROW EXECUTE FUNCTION public.set_slip_image_event_updated_at();
 
 -- ── 3. Capture at receipt (same transaction as the queue row) ─────────────────
--- A failure here must never lose the receipt itself: it degrades to the legacy
--- processing path (which still ingests the image) and logs a warning.
+-- LINE time of an event: payload.timestamp, else the receipt time.
+CREATE OR REPLACE FUNCTION public.slip_image_event_ts(p_payload jsonb, p_fallback timestamptz)
+RETURNS bigint
+LANGUAGE sql
+IMMUTABLE
+AS $fn$
+  SELECT COALESCE(
+    CASE WHEN (p_payload->>'timestamp') ~ '^[0-9]{1,15}$'
+         THEN (p_payload->>'timestamp')::bigint END,
+    floor(extract(epoch FROM p_fallback) * 1000)::bigint
+  );
+$fn$;
+
+-- Attribute by LINE time, newest session first: the batch whose [open, close]
+-- window contains the image. Open-ended windows (still collecting, or closing
+-- without a recorded close time) match any later image. Rows from before this
+-- migration have no open time; fall back to created_at with a small grace.
+-- Returns (NULL, 'unbound') when no session covers the image (yet).
+CREATE OR REPLACE FUNCTION public.resolve_slip_image_batch(
+  p_source_id text,
+  p_ts        bigint,
+  OUT batch_id uuid,
+  OUT state    text
+)
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $fn$
+DECLARE
+  v_b  record;
+  v_lo bigint;
+BEGIN
+  FOR v_b IN
+    SELECT b.id, b.status, b.created_at, b.open_event_ts_ms, b.close_event_ts_ms
+      FROM public.slip_batches b
+     WHERE b.source_id = p_source_id
+     ORDER BY b.created_at DESC
+     LIMIT 5
+  LOOP
+    v_lo := COALESCE(
+      v_b.open_event_ts_ms,
+      floor(extract(epoch FROM v_b.created_at) * 1000)::bigint - 15000
+    );
+    IF p_ts >= v_lo AND (v_b.close_event_ts_ms IS NULL OR p_ts <= v_b.close_event_ts_ms) THEN
+      IF v_b.status IN ('collecting', 'closing') THEN
+        batch_id := v_b.id; state := 'received'; RETURN;
+      ELSIF v_b.close_event_ts_ms IS NOT NULL THEN
+        -- Sent inside a session that has already been finalized: record the
+        -- loss explicitly instead of letting it vanish.
+        batch_id := v_b.id; state := 'late_after_finalize'; RETURN;
+      END IF;
+    END IF;
+  END LOOP;
+
+  -- Sent after the latest close command and before any newer session opened.
+  SELECT b.id INTO batch_id
+    FROM public.slip_batches b
+   WHERE b.source_id = p_source_id
+     AND b.status = 'closing'
+     AND b.close_event_ts_ms IS NOT NULL
+     AND p_ts > b.close_event_ts_ms
+   ORDER BY b.created_at DESC
+   LIMIT 1;
+  state := CASE WHEN batch_id IS NULL THEN 'unbound' ELSE 'excluded_after_close' END;
+END;
+$fn$;
+
+-- EVERY queued LINE image gets a ledger row, including images received before
+-- the session that will own them exists (open command in the same webhook, or
+-- still queued ahead of them). There is deliberately no exception handler: a
+-- ledger write failure aborts the queue receipt itself, the webhook answers
+-- retryable and LINE redelivers. A receipt without a ledger row cannot exist.
 CREATE OR REPLACE FUNCTION public.capture_slip_image_event()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -109,12 +197,11 @@ SECURITY DEFINER
 SET search_path = public
 AS $fn$
 DECLARE
-  v_raw      record;
-  v_b        record;
-  v_ts       bigint;
-  v_lo       bigint;
-  v_batch_id uuid;
-  v_state    text;
+  v_raw                 record;
+  v_ts                  bigint;
+  v_batch_id            uuid;
+  v_state               text;
+  v_resolution_deferred boolean := false;
 BEGIN
   SELECT r.message_type::text AS message_type,
          r.message_id,
@@ -131,71 +218,31 @@ BEGIN
     RETURN NEW;
   END IF;
 
-  v_ts := COALESCE(
-    CASE WHEN (v_raw.payload->>'timestamp') ~ '^[0-9]{1,15}$'
-         THEN (v_raw.payload->>'timestamp')::bigint END,
-    floor(extract(epoch FROM NEW.received_at) * 1000)::bigint
-  );
-
-  -- Attribute by LINE time, newest session first: the batch whose
-  -- [open, close] window contains the image. Open-ended windows (still
-  -- collecting, or closing without a recorded close time) match any later
-  -- image. Rows from before this migration have no open time; fall back to
-  -- created_at with a small grace.
-  FOR v_b IN
-    SELECT b.id, b.status, b.created_at, b.open_event_ts_ms, b.close_event_ts_ms
-      FROM public.slip_batches b
-     WHERE b.source_id = NEW.source_id
-     ORDER BY b.created_at DESC
-     LIMIT 5
-  LOOP
-    v_lo := COALESCE(
-      v_b.open_event_ts_ms,
-      floor(extract(epoch FROM v_b.created_at) * 1000)::bigint - 15000
-    );
-    IF v_ts >= v_lo AND (v_b.close_event_ts_ms IS NULL OR v_ts <= v_b.close_event_ts_ms) THEN
-      IF v_b.status IN ('collecting', 'closing') THEN
-        v_batch_id := v_b.id;
-        v_state := 'received';
-        EXIT;
-      ELSIF v_b.close_event_ts_ms IS NOT NULL THEN
-        -- Sent inside a session that has already been finalized: record the
-        -- loss explicitly instead of letting it vanish.
-        v_batch_id := v_b.id;
-        v_state := 'late_after_finalize';
-        EXIT;
-      END IF;
-    END IF;
-  END LOOP;
-
-  IF v_batch_id IS NULL THEN
-    -- Sent after the latest close command and before any newer session opened.
-    SELECT b.id INTO v_batch_id
-      FROM public.slip_batches b
-     WHERE b.source_id = NEW.source_id
-       AND b.status = 'closing'
-       AND b.close_event_ts_ms IS NOT NULL
-       AND v_ts > b.close_event_ts_ms
-     ORDER BY b.created_at DESC
-     LIMIT 1;
-    IF NOT FOUND THEN RETURN NEW; END IF;
-    v_state := 'excluded_after_close';
-  END IF;
+  v_ts := public.slip_image_event_ts(v_raw.payload, NEW.received_at);
+  BEGIN
+    SELECT batch_id, state INTO v_batch_id, v_state
+      FROM public.resolve_slip_image_batch(NEW.source_id, v_ts);
+  EXCEPTION WHEN undefined_function THEN
+    IF position('resolve_slip_image_batch' IN SQLERRM) = 0 THEN RAISE; END IF;
+    -- Partial migration: preserve a ledger-backed queue barrier, never a
+    -- raw-only receipt. begin_slip_image_attempt retries resolution and keeps
+    -- this row head-of-line until the helper is restored.
+    v_batch_id := NULL;
+    v_state := 'unbound';
+    v_resolution_deferred := true;
+  END;
 
   INSERT INTO public.slip_image_events (
     line_message_id, raw_message_id, batch_id, source_id, source_type,
-    line_user_id, event_ts_ms, state, resolved_at
+    line_user_id, event_ts_ms, state, resolved_at, last_error
   ) VALUES (
     v_raw.message_id, NEW.raw_message_id, v_batch_id, NEW.source_id,
     COALESCE(v_raw.source_type, 'user'), v_raw.user_id, v_ts, v_state,
-    CASE WHEN v_state = 'received' THEN NULL ELSE now() END
+    CASE WHEN v_state IN ('received', 'unbound') THEN NULL ELSE now() END,
+    CASE WHEN v_resolution_deferred THEN 'resolve_slip_image_batch unavailable at receipt' END
   )
   ON CONFLICT DO NOTHING;
 
-  RETURN NEW;
-EXCEPTION WHEN OTHERS THEN
-  RAISE WARNING 'slip_image_events capture failed for raw_message %: %',
-    NEW.raw_message_id, SQLERRM;
   RETURN NEW;
 END;
 $fn$;
@@ -204,6 +251,79 @@ DROP TRIGGER IF EXISTS trg_capture_slip_image_event ON public.line_webhook_event
 CREATE TRIGGER trg_capture_slip_image_event
   AFTER INSERT ON public.line_webhook_event_queue
   FOR EACH ROW EXECUTE FUNCTION public.capture_slip_image_event();
+
+-- One LINE request may contain [open, images..., close]. Receipt must be
+-- all-or-nothing: otherwise cron could claim an already-persisted close while
+-- a middle image is absent. Calling the established single-event entrypoint
+-- keeps its idempotency and capture trigger, inside this RPC's transaction.
+CREATE OR REPLACE FUNCTION public.receive_line_webhook_payload(p_events jsonb)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $fn$
+DECLARE
+  v_event   jsonb;
+  v_receipt jsonb;
+  v_result  jsonb := '[]'::jsonb;
+BEGIN
+  IF jsonb_typeof(p_events) IS DISTINCT FROM 'array'
+     OR jsonb_array_length(p_events) < 1 THEN
+    RAISE EXCEPTION 'slip receipt: p_events must be a non-empty array';
+  END IF;
+
+  FOR v_event IN
+    SELECT value
+      FROM jsonb_array_elements(p_events) WITH ORDINALITY AS item(value, ordinal)
+     ORDER BY ordinal
+  LOOP
+    v_receipt := public.receive_line_webhook_event(
+      v_event->>'line_event_id', v_event->>'destination', v_event->>'event_type',
+      v_event->>'source_type', v_event->>'source_id', v_event->>'user_id',
+      v_event->>'message_id', v_event->>'message_type', v_event->>'raw_text',
+      v_event->'payload'
+    );
+    v_result := v_result || jsonb_build_array(v_receipt || jsonb_build_object(
+      'line_event_id', v_event->>'line_event_id',
+      'source_id', v_event->>'source_id'
+    ));
+  END LOOP;
+  RETURN v_result;
+END;
+$fn$;
+
+REVOKE ALL ON FUNCTION public.receive_line_webhook_payload(jsonb)
+  FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.receive_line_webhook_payload(jsonb) TO service_role;
+
+-- A new session adopts every not-yet-bound image sent at or after its open
+-- command (LINE time), in the same transaction that creates the session.
+-- Receipts committed concurrently are bound by begin_slip_image_attempt or
+-- claim_closing_slip_batch instead.
+CREATE OR REPLACE FUNCTION public.bind_unbound_slip_image_events()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $fn$
+BEGIN
+  IF NEW.status NOT IN ('collecting', 'closing') THEN RETURN NEW; END IF;
+  UPDATE public.slip_image_events
+     SET batch_id = NEW.id, state = 'received', resolved_at = NULL, last_error = NULL
+   WHERE source_id = NEW.source_id
+     AND batch_id IS NULL
+     AND state IN ('unbound', 'no_session')
+     AND event_ts_ms >= COALESCE(
+           NEW.open_event_ts_ms,
+           floor(extract(epoch FROM NEW.created_at) * 1000)::bigint - 15000);
+  RETURN NEW;
+END;
+$fn$;
+
+DROP TRIGGER IF EXISTS trg_bind_unbound_slip_image_events ON public.slip_batches;
+CREATE TRIGGER trg_bind_unbound_slip_image_events
+  AFTER INSERT ON public.slip_batches
+  FOR EACH ROW EXECUTE FUNCTION public.bind_unbound_slip_image_events();
 
 -- ── 4. begin: lease + attempt budget ──────────────────────────────────────────
 -- Returns {claimed:false,...} for unknown, locked, already-resolved, leased or
@@ -221,6 +341,7 @@ AS $fn$
 DECLARE
   v_ev     public.slip_image_events%ROWTYPE;
   v_status text;
+  v_res    record;
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM public.slip_image_events WHERE line_message_id = p_line_message_id
@@ -236,6 +357,24 @@ BEGIN
   IF NOT FOUND THEN
     -- Another worker holds the row right now; it owns this attempt.
     RETURN jsonb_build_object('claimed', false, 'reason', 'locked');
+  END IF;
+
+  -- Received before its session existed. The ordered queue processes events
+  -- in LINE order, so any open command sent before this image has run by now:
+  -- bind to the session covering its LINE time, or resolve as no_session.
+  IF v_ev.state = 'unbound' THEN
+    v_res := public.resolve_slip_image_batch(v_ev.source_id, v_ev.event_ts_ms);
+    IF v_res.batch_id IS NULL THEN
+      UPDATE public.slip_image_events
+         SET state = 'no_session', resolved_at = now()
+       WHERE id = v_ev.id;
+      RETURN jsonb_build_object('claimed', false, 'reason', 'resolved', 'state', 'no_session');
+    END IF;
+    UPDATE public.slip_image_events
+       SET batch_id = v_res.batch_id, state = v_res.state,
+           resolved_at = CASE WHEN v_res.state = 'received' THEN NULL ELSE now() END
+     WHERE id = v_ev.id
+    RETURNING * INTO v_ev;
   END IF;
 
   IF v_ev.state NOT IN ('received', 'retry_pending', 'ingesting') THEN
@@ -305,9 +444,13 @@ $fn$;
 -- ── 5. attach: idempotent, ordered by LINE time, never silent ─────────────────
 -- Lock order is batch -> ledger row everywhere (claim_closing_slip_batch does
 -- the same), so attach and the finalizer claim cannot deadlock.
+-- p_attempt is the fencing token returned by begin_slip_image_attempt
+-- (attempts is bumped on every claim). A stale worker whose lease expired and
+-- was re-claimed holds an older token and cannot touch the newer claim.
 CREATE OR REPLACE FUNCTION public.attach_slip_image_event(
   p_line_message_id text,
-  p_evidence_id     uuid
+  p_evidence_id     uuid,
+  p_attempt         integer
 ) RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -326,6 +469,10 @@ BEGIN
   IF NOT FOUND THEN
     RETURN jsonb_build_object('outcome', 'no_ledger');
   END IF;
+  IF v_batch_id IS NULL THEN
+    -- Only begin_slip_image_attempt binds; never attach an unbound image.
+    RAISE EXCEPTION 'slip image % is not bound to a batch', p_line_message_id;
+  END IF;
 
   SELECT * INTO v_batch FROM public.slip_batches WHERE id = v_batch_id FOR UPDATE;
   SELECT * INTO v_ev FROM public.slip_image_events
@@ -338,6 +485,9 @@ BEGIN
   END IF;
   IF v_ev.state IN ('excluded_after_close', 'excluded_not_slip', 'late_after_finalize') THEN
     RETURN jsonb_build_object('outcome', v_ev.state);
+  END IF;
+  IF v_ev.attempts IS DISTINCT FROM p_attempt THEN
+    RETURN jsonb_build_object('outcome', 'stale_claim', 'state', v_ev.state);
   END IF;
 
   IF v_batch.status NOT IN ('collecting', 'closing') THEN
@@ -391,6 +541,7 @@ $fn$;
 CREATE OR REPLACE FUNCTION public.fail_slip_image_event(
   p_line_message_id text,
   p_error           text,
+  p_attempt         integer,
   p_max_attempts    integer DEFAULT 5,
   p_permanent       boolean DEFAULT false
 ) RETURNS jsonb
@@ -410,6 +561,10 @@ BEGIN
   END IF;
   IF v_ev.state NOT IN ('received', 'ingesting', 'retry_pending') THEN
     RETURN jsonb_build_object('outcome', 'already_resolved', 'state', v_ev.state);
+  END IF;
+  IF v_ev.attempts IS DISTINCT FROM p_attempt THEN
+    -- Fencing token mismatch: a newer claim owns the row; leave it untouched.
+    RETURN jsonb_build_object('outcome', 'stale_claim', 'state', v_ev.state);
   END IF;
 
   IF p_permanent OR v_ev.attempts >= p_max_attempts THEN
@@ -449,7 +604,9 @@ AS $fn$
       -- (worker crashed between queue completion and ledger update).
       OR (ev.state = 'received' AND q.status = 'processed'
           AND ev.received_at < now() - interval '30 seconds')
-   ORDER BY ev.received_at
+   -- Fair across a burst: fewest attempts first, so the oldest few images
+   -- cannot take every sweep while the rest of the batch stays at attempt 1.
+   ORDER BY ev.attempts, COALESCE(ev.next_retry_at, ev.lease_until, ev.received_at), ev.received_at, ev.id
    LIMIT greatest(1, least(coalesce(p_limit, 10), 50));
 $fn$;
 
@@ -546,6 +703,7 @@ SECURITY DEFINER
 SET search_path = public
 AS $fn$
   SELECT jsonb_build_object(
+    'unbound', count(*) FILTER (WHERE state = 'unbound'),
     'received', count(*) FILTER (WHERE state = 'received'),
     'ingesting', count(*) FILTER (WHERE state = 'ingesting'),
     'retry_pending', count(*) FILTER (WHERE state = 'retry_pending'),
@@ -560,15 +718,25 @@ $fn$;
 
 -- ── 9. Finalizer claim: do not finish before the ledger is accounted for ─────
 -- Replaces the 3-argument function. p_ingest_max_seconds is the upper bound on
--- how long a closing batch waits for in-flight images; after it the batch is
--- claimed as forced (was_timeout = true) and the summary reports the gap.
+-- how long a closing batch waits for in-flight images, counted cohort-wide
+-- from the later of the close and the batch's last image receipt; after it
+-- the batch is claimed as forced (was_timeout = true) and the summary reports
+-- the gap. The default mirrors DEFAULT_INGEST_MAX_SECONDS (ingest-policy.ts:
+-- 25-image burst, no in-request retries, worst-case attempts, 5-min cron).
+--
+-- OCR gate: attached evidence whose check is missing or still PROCESSING
+-- (e.g. the background OCR worker crashed) can still be re-driven by the cron
+-- sweep, so the batch is NOT finalized past it until a bounded OCR wait ends:
+-- claim lease 300 s + one 30 s job + 120 s margin, plus one sweep gap (420 s)
+-- per 10 attached images (the redrive lanes per sweep). Counted from the later
+-- of the close and the last attach. Mirrors requiredOcrWaitSeconds().
 DROP FUNCTION IF EXISTS public.claim_closing_slip_batch(uuid, integer, integer);
 
 CREATE OR REPLACE FUNCTION public.claim_closing_slip_batch(
   p_batch_id           uuid,
   p_quiet_seconds      integer,
   p_max_seconds        integer,
-  p_ingest_max_seconds integer DEFAULT 600
+  p_ingest_max_seconds integer DEFAULT 2160
 ) RETURNS TABLE(claimed_id uuid, claimed_source_id text, was_timeout boolean)
 LANGUAGE plpgsql
 AS $$
@@ -576,13 +744,17 @@ DECLARE
   v_batch       public.slip_batches%ROWTYPE;
   v_now         timestamptz := now();
   v_close_start timestamptz;
+  v_ingest_from timestamptz;
   v_timed_out   boolean;
   v_quiet_ok    boolean;
   v_unresolved  bigint;
   v_ingest_cut  boolean := false;
+  v_ocr_open    bigint;
   v_ev_count    bigint;
   v_ck_count    bigint;
   v_pr_count    bigint;
+  v_lo          bigint;
+  v_hi          bigint;
 BEGIN
   -- Lock the batch row; serializes against attach_evidence_to_slip_batch and
   -- attach_slip_image_event.
@@ -594,6 +766,60 @@ BEGIN
   IF NOT FOUND THEN RETURN; END IF;
 
   v_close_start := COALESCE(v_batch.closing_at, v_batch.last_image_at);
+
+  -- Reconcile every queue receipt sent inside this session's LINE window
+  -- before deciding anything, so a receipt the ledger does not yet account
+  -- for can never be finalized past.
+  v_lo := COALESCE(v_batch.open_event_ts_ms,
+                   floor(extract(epoch FROM v_batch.created_at) * 1000)::bigint - 15000);
+  v_hi := COALESCE(v_batch.close_event_ts_ms,
+                   floor(extract(epoch FROM v_close_start) * 1000)::bigint);
+
+  -- (a) unbound receipts committed concurrently with the session's creation.
+  UPDATE public.slip_image_events
+     SET batch_id = p_batch_id, state = 'received', resolved_at = NULL, last_error = NULL
+   WHERE source_id = v_batch.source_id
+     AND batch_id IS NULL
+     AND state IN ('unbound', 'no_session')
+     AND event_ts_ms BETWEEN v_lo AND v_hi;
+
+  -- (b) image receipts with no ledger row at all (queued before this
+  -- migration was applied, during rollout). Already attached here -> attached;
+  -- otherwise received, so the batch waits for them like any other image.
+  INSERT INTO public.slip_image_events (
+    line_message_id, raw_message_id, batch_id, source_id, source_type,
+    line_user_id, event_ts_ms, state, evidence_id, resolved_at
+  )
+  SELECT r.message_id, r.id, p_batch_id, q.source_id, COALESCE(r.source_type::text, 'user'),
+         r.user_id, t.ts,
+         CASE WHEN se.batch_id = p_batch_id THEN 'attached' ELSE 'received' END,
+         CASE WHEN se.batch_id = p_batch_id THEN se.id END,
+         CASE WHEN se.batch_id = p_batch_id THEN v_now END
+    FROM public.line_webhook_event_queue q
+    JOIN public.raw_messages r ON r.id = q.raw_message_id
+    CROSS JOIN LATERAL (SELECT public.slip_image_event_ts(r.payload, q.received_at) AS ts) t
+    LEFT JOIN public.slip_evidences se ON se.line_message_id = r.message_id
+   WHERE q.source_id = v_batch.source_id
+     AND q.received_at >= v_batch.created_at - interval '1 hour'
+     AND r.message_type::text = 'image'
+     AND r.message_id IS NOT NULL
+     AND t.ts BETWEEN v_lo AND v_hi
+     AND NOT EXISTS (SELECT 1 FROM public.slip_image_events ev
+                      WHERE ev.raw_message_id = r.id OR ev.line_message_id = r.message_id)
+  ON CONFLICT DO NOTHING;
+
+  -- (c) evidence already attached to THIS batch through a path that never
+  -- touched the ledger (an old app version running against the new schema, or
+  -- a legacy attach). The image is in the batch: account for it as attached
+  -- instead of waiting for a ledger transition that will never come.
+  UPDATE public.slip_image_events ev
+     SET state = 'attached', evidence_id = se.id, lease_until = NULL,
+         next_retry_at = NULL, resolved_at = v_now, last_error = NULL
+    FROM public.slip_evidences se
+   WHERE ev.batch_id = p_batch_id
+     AND ev.state IN ('received', 'ingesting', 'retry_pending')
+     AND se.line_message_id = ev.line_message_id
+     AND se.batch_id = p_batch_id;
 
   -- Images whose LINE time is after the close command never belong here.
   IF v_batch.close_event_ts_ms IS NOT NULL THEN
@@ -628,7 +854,13 @@ BEGIN
      AND NOT (ev.state = 'received' AND q.status IN ('failed', 'stale'));
 
   IF v_unresolved > 0 THEN
-    IF v_now - v_close_start < make_interval(secs => p_ingest_max_seconds) THEN
+    -- Cohort-wide: a receipt that only reached the ledger after the close
+    -- (late webhook delivery, reconciliation above) gets the whole wait too.
+    SELECT GREATEST(v_close_start, max(ev.received_at)) INTO v_ingest_from
+      FROM public.slip_image_events ev
+     WHERE ev.batch_id = p_batch_id
+       AND ev.state NOT IN ('excluded_after_close', 'excluded_not_slip');
+    IF v_now - COALESCE(v_ingest_from, v_close_start) < make_interval(secs => p_ingest_max_seconds) THEN
       RETURN;  -- still within the bounded ingest wait
     END IF;
     v_ingest_cut := true;  -- bound exhausted: finalize and report the gap
@@ -640,6 +872,21 @@ BEGIN
                    >= make_interval(secs => p_max_seconds);
   v_quiet_ok  := v_now - v_batch.last_image_at
                    >= make_interval(secs => p_quiet_seconds);
+
+  -- OCR gate (see header): checks that are missing or PROCESSING are still
+  -- recoverable by the redrive; p_max_seconds alone must not finalize past them.
+  SELECT count(*) FILTER (WHERE sc.id IS NULL OR sc.status = 'PROCESSING'), count(*)
+    INTO v_ocr_open, v_ev_count
+    FROM public.slip_evidences se
+    LEFT JOIN public.slip_checks sc ON sc.evidence_id = se.id
+   WHERE se.batch_id = p_batch_id;
+  IF v_ocr_open > 0 THEN
+    IF v_now - GREATEST(v_close_start, v_batch.last_image_at)
+         < make_interval(secs => 450 + ceil(v_ev_count::numeric / 10)::integer * 420) THEN
+      RETURN;  -- still within the bounded OCR wait
+    END IF;
+    v_timed_out := true;  -- OCR bound exhausted: finalize, unread slips go to review
+  END IF;
 
   IF v_ingest_cut THEN
     v_timed_out := true;
@@ -680,9 +927,12 @@ $$;
 
 -- ── 10. Privileges ────────────────────────────────────────────────────────────
 REVOKE ALL ON FUNCTION public.capture_slip_image_event() FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.bind_unbound_slip_image_events() FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.resolve_slip_image_batch(text, bigint) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.slip_image_event_ts(jsonb, timestamptz) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.begin_slip_image_attempt(text, integer, integer) FROM PUBLIC, anon, authenticated;
-REVOKE ALL ON FUNCTION public.attach_slip_image_event(text, uuid) FROM PUBLIC, anon, authenticated;
-REVOKE ALL ON FUNCTION public.fail_slip_image_event(text, text, integer, boolean) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.attach_slip_image_event(text, uuid, integer) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.fail_slip_image_event(text, text, integer, integer, boolean) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.list_due_slip_image_events(integer) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.list_slip_ocr_redrive(integer) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.slip_batch_image_accounting(uuid) FROM PUBLIC, anon, authenticated;
@@ -690,12 +940,16 @@ REVOKE ALL ON FUNCTION public.slip_image_ledger_health() FROM PUBLIC, anon, auth
 REVOKE ALL ON FUNCTION public.claim_closing_slip_batch(uuid, integer, integer, integer) FROM PUBLIC, anon, authenticated;
 
 GRANT EXECUTE ON FUNCTION public.begin_slip_image_attempt(text, integer, integer) TO service_role;
-GRANT EXECUTE ON FUNCTION public.attach_slip_image_event(text, uuid) TO service_role;
-GRANT EXECUTE ON FUNCTION public.fail_slip_image_event(text, text, integer, boolean) TO service_role;
+GRANT EXECUTE ON FUNCTION public.attach_slip_image_event(text, uuid, integer) TO service_role;
+GRANT EXECUTE ON FUNCTION public.fail_slip_image_event(text, text, integer, integer, boolean) TO service_role;
 GRANT EXECUTE ON FUNCTION public.list_due_slip_image_events(integer) TO service_role;
 GRANT EXECUTE ON FUNCTION public.list_slip_ocr_redrive(integer) TO service_role;
 GRANT EXECUTE ON FUNCTION public.slip_batch_image_accounting(uuid) TO service_role;
 GRANT EXECUTE ON FUNCTION public.slip_image_ledger_health() TO service_role;
+-- The closing claim is SECURITY INVOKER and calls this helper while reconciling
+-- queued image receipts. Without this grant service_role gets 42501 and no
+-- batches are claimable, despite the RPC itself being granted.
+GRANT EXECUTE ON FUNCTION public.slip_image_event_ts(jsonb, timestamptz) TO service_role;
 GRANT EXECUTE ON FUNCTION public.claim_closing_slip_batch(uuid, integer, integer, integer) TO service_role;
 
 COMMIT;

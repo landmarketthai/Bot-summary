@@ -1,5 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { OpenAiSlipExtractor, ExtractionHttpError, EXTRACTION_PROMPT } from "@/lib/slips/extractor";
+import {
+  OpenAiSlipExtractor,
+  ExtractionHttpError,
+  EXTRACTION_PROMPT,
+  parseProviderRetryAfterMs,
+} from "@/lib/slips/extractor";
 
 type FetchMockHandler = (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch>;
 
@@ -117,6 +122,61 @@ describe("OpenAiSlipExtractor", () => {
 
     expect(callCount).toBe(2);
     expect(result.transferAmount).toBe(100);
+  });
+
+  it("429 honours Retry-After above exponential fallback without sleeping in the test", async () => {
+    let callCount = 0;
+    const delays: number[] = [];
+    const fetchImpl = createFetchMock(async () => {
+      callCount += 1;
+      if (callCount === 1) {
+        return new Response("quota", { status: 429, headers: { "Retry-After": "7" } });
+      }
+      return new Response(JSON.stringify({
+        output: [{ content: [{ type: "output_text", text: JSON.stringify({
+          slip_type: "BANK_SLIP_NO_QR",
+          gross_amount: null, discount_amount: null, paid_amount: null,
+          transfer_amount: 100, reference_id: "REF-RETRY-AFTER",
+          transaction_time: "2026-10-19T08:00:00+07:00",
+          sender_name: null, receiver_name: null, receiver_account_tail: null,
+          confidence: 0.9,
+        }) }] }],
+      }), { status: 200 });
+    });
+    const extractor = new OpenAiSlipExtractor(
+      "test-key",
+      "test-model",
+      fetchImpl,
+      async (ms) => { delays.push(ms); },
+    );
+    await extractor.extract({ bytes: new Uint8Array([1]), mimeType: "image/jpeg" });
+    expect(callCount).toBe(2);
+    expect(delays).toEqual([7_000]);
+  });
+
+  it("does not schedule a late OCR retry when Retry-After exceeds the job budget", async () => {
+    let attempts = 0;
+    const sleeps: number[] = [];
+    const fetchImpl = createFetchMock(async () => {
+      attempts += 1;
+      return new Response("provider quota", {
+        status: 429, headers: { "Retry-After": "86400" },
+      });
+    });
+    const extractor = new OpenAiSlipExtractor("test-key", "test-model", fetchImpl,
+      async (ms) => { sleeps.push(ms); });
+    const failure = await extractor.extract({ bytes: new Uint8Array([1]), mimeType: "image/jpeg" })
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ExtractionHttpError);
+    expect((failure as ExtractionHttpError).retryAfterMs).toBe(86_400_000);
+    expect(attempts).toBe(1);
+    expect(sleeps).toHaveLength(0);
+  });
+
+  it("parses numeric and HTTP-date Retry-After values", () => {
+    expect(parseProviderRetryAfterMs("2.5", 0)).toBe(2_500);
+    expect(parseProviderRetryAfterMs("Thu, 01 Jan 1970 00:00:05 GMT", 1_000)).toBe(4_000);
+    expect(parseProviderRetryAfterMs("invalid", 0)).toBeNull();
   });
 
   it("500 retries exactly once and throws on second 500", async () => {

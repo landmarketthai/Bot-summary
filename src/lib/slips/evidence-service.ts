@@ -3,6 +3,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { bangkokBusinessDateFromTimestamp } from "@/lib/business-date";
 import { downloadLineMessageContent, type LineMessageContent } from "@/lib/line/content";
 import { logger } from "@/lib/logger";
+import { SLIP_INGEST_POLICY } from "@/lib/slips/ingest-policy";
+import { IoTimeoutError, withTimeout } from "@/lib/slips/io-timeout";
 import {
   DOWNLOAD_FAILED_SHA256,
   SLIP_EVIDENCE_BUCKET,
@@ -14,7 +16,25 @@ import {
 import type { Database } from "@/types/database";
 
 type Supabase = SupabaseClient<Database>;
-type DownloadContent = (messageId: string) => Promise<LineMessageContent>;
+/**
+ * `ctx.signal` aborts at the timeout; a provider that ignores it is still cut
+ * off by withTimeout, so the bound never depends on the provider's behaviour.
+ */
+export type DownloadContent = (
+  messageId: string,
+  ctx?: { signal: AbortSignal; timeoutMs: number },
+) => Promise<LineMessageContent>;
+
+const defaultDownload: DownloadContent = (messageId, ctx) =>
+  downloadLineMessageContent(messageId, undefined, {
+    timeoutMs: ctx?.timeoutMs,
+    signal: ctx?.signal,
+  });
+
+export interface SlipEvidenceTimeouts {
+  downloadMs: number;
+  uploadMs: number;
+}
 
 function safePathSegment(value: string): string {
   const sanitized = value.replace(/[^A-Za-z0-9_-]/g, "_");
@@ -41,7 +61,11 @@ export function computeSha256(bytes: Uint8Array): string {
 export class SlipEvidenceService implements SlipEvidenceIngestor {
   constructor(
     private readonly supabase: Supabase,
-    private readonly downloadContent: DownloadContent = downloadLineMessageContent,
+    private readonly downloadContent: DownloadContent = defaultDownload,
+    private readonly timeouts: SlipEvidenceTimeouts = {
+      downloadMs: SLIP_INGEST_POLICY.io.lineDownloadTimeoutMs,
+      uploadMs: SLIP_INGEST_POLICY.io.storageUploadTimeoutMs,
+    },
   ) {}
 
   async ingest(input: SlipEvidenceInput): Promise<SlipEvidenceResult> {
@@ -61,9 +85,14 @@ export class SlipEvidenceService implements SlipEvidenceIngestor {
 
     let content: LineMessageContent;
     try {
-      content = await this.downloadContent(input.lineMessageId);
+      content = await withTimeout("line_download", this.timeouts.downloadMs, (signal) =>
+        this.downloadContent(input.lineMessageId, { signal, timeoutMs: this.timeouts.downloadMs }),
+      );
     } catch (error) {
-      log.error("slip evidence download failed", { error: safeErrorMessage(error) });
+      log.error("slip evidence download failed", {
+        error: safeErrorMessage(error),
+        timedOut: error instanceof IoTimeoutError,
+      });
       const recorded = await this.insertEvidence(input, {
         storagePath,
         mimeType: null,
@@ -80,14 +109,26 @@ export class SlipEvidenceService implements SlipEvidenceIngestor {
     }
 
     const sha256 = computeSha256(content.bytes);
-    const { error: storageError } = await this.supabase.storage
-      .from(SLIP_EVIDENCE_BUCKET)
-      .upload(storagePath, content.bytes, {
-        contentType: content.mimeType ?? "image/jpeg",
-        // The path is derived from the LINE message id, so a retry after a
-        // crash between upload and DB insert rewrites identical bytes.
-        upsert: true,
-      });
+    // A hung upload is cut off at the timeout and recorded as STORAGE_FAILED.
+    // If it completes later it writes the same bytes to the same
+    // message-id-derived path (upsert) and nothing else: the evidence row and
+    // the ledger attach are only ever written by the attempt that is awaiting
+    // here, and attach is fenced by the attempt token. An orphan is harmless.
+    let storageError: { message: string } | null;
+    try {
+      ({ error: storageError } = await withTimeout("storage_upload", this.timeouts.uploadMs, () =>
+        this.supabase.storage
+          .from(SLIP_EVIDENCE_BUCKET)
+          .upload(storagePath, content.bytes, {
+            contentType: content.mimeType ?? "image/jpeg",
+            // The path is derived from the LINE message id, so a retry after a
+            // crash between upload and DB insert rewrites identical bytes.
+            upsert: true,
+          }),
+      ));
+    } catch (error) {
+      storageError = { message: safeErrorMessage(error) };
+    }
 
     if (storageError) {
       log.error("slip evidence storage failed", {

@@ -47,6 +47,9 @@ const SUBMITTED: WhiteSheetCashEntryState = {
 
 function supabaseStub(rawId = "raw-txt") {
   return {
+    // Slip open is an ordered event: the receive RPC is tried first and must
+    // report missing ordering infrastructure (pre-queue double).
+    async rpc(name: string) { throw new Error(`unexpected rpc: ${name}`); },
     from(table: string) {
       if (table === "raw_messages") {
         return {

@@ -13,6 +13,7 @@ import { WebhookService } from "@/lib/line/webhook-service";
 import { bangkokBusinessDateFromTimestamp } from "@/lib/business-date";
 import { SlipEvidenceService, buildSlipEvidencePath } from "@/lib/slips/evidence-service";
 import { finalizeClosingSlipBatches } from "@/lib/slips/batch-finalizer";
+import { DEFAULT_INGEST_MAX_SECONDS } from "@/lib/slips/ingest-policy";
 import {
   createPgSupabase,
   createSlipTestDb,
@@ -51,8 +52,16 @@ async function download(messageId: string) {
   return { bytes: new TextEncoder().encode(`img:${messageId}`), mimeType: "image/jpeg" };
 }
 
-function makeWebhook(): WebhookService {
-  return new WebhookService(supa, {
+// The guided-menu tables are outside this harness; no guided round owns the open.
+const noGuidedRound = {
+  resolve: async () => ({ stage: "idle", reason: "no_session" }),
+  findRoundOwner: async () => ({ kind: "none" as const }),
+};
+
+function makeWebhook(client: AnySupabase = supa): WebhookService {
+  return new WebhookService(client, {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    guidedJourneyService: noGuidedRound as any,
     evidenceIngestor: new SlipEvidenceService(supa, download),
     checkProcessor: {
       // Simulated OCR provider: one read slip of 100 THB per evidence.
@@ -66,6 +75,7 @@ function makeWebhook(): WebhookService {
       },
     },
     scheduleBackgroundTask: (task) => { backgroundTasks.push(task); },
+    slipRetrySleep: async () => {}, // backoff is exercised via explicit makeRetryDue/recover in these suites
     replyMessage: async (_token: string, text: string) => { replies.push(text); },
   });
 }
@@ -129,11 +139,13 @@ async function deliver(service: WebhookService, events: unknown[], defer = true)
   return service.processEvents(events as any, "dest", { deferOrderedProcessing: defer });
 }
 
-interface LedgerRow { line_message_id: string; state: string; attempts: number; evidence_id: string | null; batch_id: string }
+interface LedgerRow { line_message_id: string; state: string; attempts: number; evidence_id: string | null; batch_id: string | null }
 const ledger = (batchId?: string) => db.query<LedgerRow>(
   `SELECT line_message_id, state, attempts, evidence_id, batch_id FROM slip_image_events
    ${batchId ? `WHERE batch_id='${batchId}'` : ""} ORDER BY event_ts_ms, line_message_id`,
 );
+const j = async <T>(sql: string) => JSON.parse(await db.scalar(sql)) as T;
+const leaseOf = () => db.scalar("SELECT lease_until FROM slip_image_events");
 const count = async (table: string, where = "TRUE") =>
   Number(await db.scalar(`SELECT count(*) FROM ${table} WHERE ${where}`));
 const batchRow = async (id: string) =>
@@ -152,6 +164,9 @@ async function makeRetryDue(lineMessageId: string) {
 describe.skipIf(!pgAvailable)("P0 slip image ingestion on PostgreSQL 17", () => {
   beforeAll(async () => {
     db = await createSlipTestDb("slip_ingest");
+    // The real openSession writes this existing production column; the minimal
+    // slip-only PG fixture predates the accountability-round migration.
+    await db.query("ALTER TABLE slip_batches ADD COLUMN IF NOT EXISTS accountability_round_id uuid");
   }, 120_000);
 
   afterAll(async () => {
@@ -331,7 +346,7 @@ describe.skipIf(!pgAvailable)("P0 slip image ingestion on PostgreSQL 17", () => 
     const webhook = makeWebhook();
     for (let i = 1; i <= 6; i++) await deliver(webhook, [imageEvent(G, i, T0 + 1000 * i)]);
     await closeBatchSql(batchId, T0 + 10_000);
-    await backdate(batchId, 700); // ingest wait bound exhausted: claim is allowed to win
+    await backdate(batchId, 1300); // ingest wait bound exhausted: claim is allowed to win
 
     const drain = backgroundTasks.splice(0);
     const claims = Array.from({ length: 4 }, () =>
@@ -445,8 +460,10 @@ describe.skipIf(!pgAvailable)("P0 slip image ingestion on PostgreSQL 17", () => 
     const webhook = makeWebhook();
     await deliver(webhook, [imageEvent(G, 1, T0 + 1000)]);
     await closeBatchSql(batchId, T0 + 5_000);
-    // Finalizer wins (ingest bound exhausted) before the worker ever ran.
-    await backdate(batchId, 700);
+    // Finalizer wins (ingest bound exhausted) before the worker ever ran. The
+    // bound is cohort-wide (from the later of close and the last receipt).
+    await backdate(batchId, DEFAULT_INGEST_MAX_SECONDS + 100);
+    await db.query(`UPDATE slip_image_events SET received_at = received_at - interval '${DEFAULT_INGEST_MAX_SECONDS + 100} seconds'`);
     const pushes: string[] = [];
     expect(await finalizeNow(pushes)).toBe(1);
     expect(pushes[0]).toContain("ยังประมวลผลไม่เสร็จ: 1 รูป");
@@ -518,6 +535,72 @@ describe.skipIf(!pgAvailable)("P0 slip image ingestion on PostgreSQL 17", () => 
     expect(await count("slip_evidences")).toBe(1);
     expect((await batchRow(batchId)).image_count).toBe(1);
     expect(ocrRuns).toHaveLength(1);
+  }, 60_000);
+
+  test("expired lease A then claim B: stale A fail/attach cannot touch B's lease", async () => {
+    const G = "G-fence";
+    const M = `m-${G}-1`;
+    const batchId = await openBatch(G);
+    await deliver(makeWebhook(), [imageEvent(G, 1, T0 + 1000)]);
+    backgroundTasks.length = 0;
+
+    const a = await j<{ claimed: boolean; attempt: number }>(`SELECT begin_slip_image_attempt('${M}', 5, 120)`);
+    expect(a.claimed).toBe(true);
+    await db.query(`UPDATE slip_image_events SET lease_until = now() - interval '1 second'`);
+    const b = await j<{ claimed: boolean; attempt: number }>(`SELECT begin_slip_image_attempt('${M}', 5, 120)`);
+    expect(b.claimed).toBe(true);
+    expect(b.attempt).toBe(a.attempt + 1);
+    const leaseB = await leaseOf();
+
+    // Stale A fails: rejected, B's lease and state untouched.
+    const failA = await j<{ outcome: string }>(
+      `SELECT fail_slip_image_event('${M}', 'download_failed', ${a.attempt}, 5, false)`);
+    expect(failA.outcome).toBe("stale_claim");
+    let row = (await ledger(batchId))[0];
+    expect(row.state).toBe("ingesting");
+    expect(await leaseOf()).toBe(leaseB);
+
+    // Stale A attaches: rejected, nothing attached.
+    const evidence = new SlipEvidenceService(supa, download);
+    const raw = (await db.query<{ id: string }>(`SELECT id FROM raw_messages WHERE message_id='${M}'`))[0].id;
+    const stored = await evidence.ingest({
+      rawMessageId: raw, lineMessageId: M, sourceId: G, sourceType: "group",
+      lineUserId: "U-seller", eventTimestamp: T0 + 1000,
+    });
+    const attachA = await j<{ outcome: string }>(
+      `SELECT attach_slip_image_event('${M}', '${stored.evidenceId}', ${a.attempt})`);
+    expect(attachA.outcome).toBe("stale_claim");
+    row = (await ledger(batchId))[0];
+    expect(row.state).toBe("ingesting");
+    expect((await batchRow(batchId)).image_count).toBe(0);
+
+    // B (current token) attaches; stale A replay afterwards is a no-op.
+    const attachB = await j<{ outcome: string }>(
+      `SELECT attach_slip_image_event('${M}', '${stored.evidenceId}', ${b.attempt})`);
+    expect(attachB.outcome).toBe("attached");
+    const replayB = await j<{ outcome: string }>(
+      `SELECT attach_slip_image_event('${M}', '${stored.evidenceId}', ${b.attempt})`);
+    expect(replayB.outcome).toBe("already_attached");
+    const lateA = await j<{ outcome: string }>(
+      `SELECT fail_slip_image_event('${M}', 'download_failed', ${a.attempt}, 5, false)`);
+    expect(lateA.outcome).toBe("already_resolved");
+    expect((await ledger(batchId))[0].state).toBe("attached");
+    expect((await batchRow(batchId)).image_count).toBe(1);
+  }, 60_000);
+
+  test("default cron recovery re-drives attached evidence whose OCR never started", async () => {
+    const batchId = await openBatch("G-ocr-budget");
+    const webhook = makeWebhook();
+    await deliver(webhook, [imageEvent("G-ocr-budget", 1, T0 + 1000)]);
+    await runTasks();
+    await db.query("DELETE FROM slip_checks");
+    await db.query("UPDATE slip_image_events SET resolved_at = now() - interval '2 minutes'");
+
+    const recovered = await webhook.recoverSlipIngest();
+
+    expect(recovered.ocrRedriven).toBe(1);
+    expect(await count("slip_checks")).toBe(1);
+    expect((await ledger(batchId))[0].state).toBe("attached");
   }, 60_000);
 
   test("legacy attach followed by ledger reconciliation does not double-count the image", async () => {
@@ -603,4 +686,146 @@ describe.skipIf(!pgAvailable)("P0 slip image ingestion on PostgreSQL 17", () => 
     expect(row.status).toBe("closing");
     expect(Number(row.close_event_ts_ms)).toBe(T0 + 30_000);
   }, 60_000);
+
+  // ── P0 #2: one payload [open, image1, image2 (download fails), image3] ──────
+  describe.each([
+    { name: "deferred drain", defer: true },
+    { name: "inline drain", defer: false },
+  ])("same webhook payload opens the session and carries its images ($name)", ({ defer }) => {
+    test("every image is ledgered, none lost behind the failure, no partial summary completes", async () => {
+      const G = `G-same-payload-${defer}`;
+      downloadPlan.set(`m-${G}-2`, { failAlways: true, calls: 0 });
+      const webhook = makeWebhook();
+
+      await deliver(webhook, [
+        textEvent(G, "evt-open", "น้อย-ราชพฤกษ์ สลิปเงินโอน 16/10/2569", T0),
+        imageEvent(G, 1, T0 + 1000),
+        imageEvent(G, 2, T0 + 2000),
+        imageEvent(G, 3, T0 + 3000),
+      ], defer);
+
+      if (defer) {
+        // Receipts are durable BEFORE the session exists: ledgered as unbound.
+        expect(await count("slip_batches")).toBe(0);
+        const early = await ledger();
+        expect(early).toHaveLength(3);
+        expect(early.every((r) => r.state === "unbound" && r.batch_id === null)).toBe(true);
+        await runTasks();
+      }
+
+      const batchId = await db.scalar(`SELECT id FROM slip_batches WHERE source_id='${G}'`);
+      expect(batchId).not.toBe("");
+      const rows = await ledger(batchId);
+      expect(rows).toHaveLength(3); // all three bound to the session by LINE time
+      expect(await count("slip_image_events")).toBe(3);
+      const byMsg = Object.fromEntries(rows.map((r) => [r.line_message_id, r]));
+      expect(byMsg[`m-${G}-1`].state).toBe("attached");
+      expect(byMsg[`m-${G}-2`].state).toBe("retry_pending");
+      expect(byMsg[`m-${G}-3`].state).toBe("attached"); // image3 not lost behind image2
+      expect(await count("line_webhook_event_queue", "status = 'processed'")).toBe(4);
+      expect(await count("slip_evidences", `batch_id='${batchId}'`)).toBe(2);
+      expect((await batchRow(batchId)).image_count).toBe(2);
+
+      await runTasks();
+      await closeBatchSql(batchId, T0 + 10_000);
+      await backdate(batchId, 30);
+      const pushes: string[] = [];
+      expect(await finalizeNow(pushes)).toBe(0); // image2 still owed a retry
+      expect((await batchRow(batchId)).status).toBe("closing");
+
+      for (let attempt = 2; attempt <= 5; attempt++) {
+        await makeRetryDue(`m-${G}-2`);
+        await webhook.recoverSlipIngest();
+      }
+      await runTasks();
+      expect((await ledger(batchId)).find((r) => r.line_message_id === `m-${G}-2`)!.state)
+        .toBe("failed_permanent");
+
+      await backdate(batchId, 30);
+      expect(await finalizeNow(pushes)).toBe(1);
+      expect(pushes).toHaveLength(1);
+      expect(pushes[0]).toContain("รับรูปจาก LINE: 3 รูป");
+      expect(pushes[0]).toContain("ยังไม่ครบ: 1 รูป");
+      expect(pushes[0]).toContain("ยอดนี้ยังไม่ครบ");
+      const final = await batchRow(batchId);
+      expect(final.status).toBe("review_needed"); // never "completed" with a missing image
+      expect(final.failed_count).toBe(1);
+      expect(final.success_count).toBe(2);
+    }, 120_000);
+  });
+
+  // ── P0 #3a: ledger trigger failure must not leave a ledger-less receipt ─────
+  test("ledger trigger insert failure rolls back the whole queue receipt; redelivery then ledgers it", async () => {
+    const G = "G-trigger-fail";
+    const batchId = await openBatch(G);
+    const webhook = makeWebhook();
+    const doomed = imageEvent(G, "boom", T0 + 1000);
+    await db.query(
+      `ALTER TABLE slip_image_events ADD CONSTRAINT zz_boom CHECK (line_message_id <> 'm-${G}-boom')`,
+    );
+    try {
+      const [failed] = await deliver(webhook, [doomed], false);
+      expect(failed.status).toBe("error");
+      expect(failed.error).toBe("db insert failed");
+      expect(failed.retryable).toBe(true);
+      // The raw message, the queue row and the ledger row are one transaction.
+      expect(await count("raw_messages")).toBe(0);
+      expect(await count("line_webhook_event_queue")).toBe(0);
+      expect(await count("slip_image_events")).toBe(0);
+      expect(await count("slip_evidences")).toBe(0);
+    } finally {
+      await db.query("ALTER TABLE slip_image_events DROP CONSTRAINT zz_boom");
+    }
+
+    // LINE redelivers the same webhookEventId: now it is received WITH a ledger row.
+    await deliver(webhook, [doomed]);
+    await runTasks();
+    const rows = await ledger(batchId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].state).toBe("attached");
+    expect(await count("line_webhook_event_queue", "status = 'processed'")).toBe(1);
+  }, 60_000);
+
+  // ── P0 #3b: begin RPC error/timeout never falls back to the legacy path ─────
+  describe.each([
+    {
+      name: "returned timeout error",
+      fail: () => ({ data: null, error: { code: "57014", message: "canceling statement due to statement timeout" } }),
+    },
+    {
+      name: "thrown network error",
+      fail: () => { throw new Error("fetch failed: ETIMEDOUT"); },
+    },
+  ])("begin_slip_image_attempt $name", ({ fail }) => {
+    test("an image sent after close is never legacy-attached to a newer open session", async () => {
+      const G = "G-begin-timeout";
+      const first = await openBatch(G, T0);
+      await closeBatchSql(first, T0 + 10_000);
+      const second = await openBatch(G, T0 + 20_000); // collecting: what the legacy path would hijack
+      const flaky = {
+        ...supa,
+        rpc: (name: string, args?: Record<string, unknown>) =>
+          name === "begin_slip_image_attempt" ? Promise.resolve().then(fail) : supa.rpc(name, args),
+      };
+      const webhook = makeWebhook(flaky);
+
+      // Sent after the first session closed and before the second opened.
+      const [outage] = await deliver(webhook, [imageEvent(G, "between", T0 + 15_000)], false);
+      expect(outage.status).toBe("error");
+      expect(outage.retryable).toBe(true);
+      expect(await count("line_webhook_event_queue", "status = 'processed'")).toBe(0);
+      expect(await count("slip_evidences")).toBe(0);
+      expect((await batchRow(second)).image_count).toBe(0);
+
+      // Outage over: redelivery resolves it from the ledger, still not into the new session.
+      await deliver(makeWebhook(), [imageEvent(G, "between", T0 + 15_000)], false);
+      await runTasks();
+      const rows = await ledger();
+      expect(rows).toHaveLength(1);
+      expect(rows[0].batch_id).toBe(first);
+      expect(rows[0].state).toBe("excluded_after_close");
+      expect(await count("slip_evidences", `batch_id='${second}'`)).toBe(0);
+      expect((await batchRow(second)).image_count).toBe(0);
+    }, 60_000);
+  });
 });

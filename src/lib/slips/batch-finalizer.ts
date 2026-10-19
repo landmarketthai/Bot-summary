@@ -10,6 +10,7 @@ import {
   resolveGloballyAcceptedCheckIds,
 } from "@/lib/slips/transaction-dedupe";
 import type { SlipImageAccounting } from "@/lib/slips/image-ingestion";
+import { DEFAULT_INGEST_MAX_SECONDS, SLIP_INGEST_POLICY } from "@/lib/slips/ingest-policy";
 import {
   computeValidationFlags,
   parseBatchDate,
@@ -65,11 +66,12 @@ const CLOSE_MAX_SECONDS = parseCloseSeconds(
 // Upper bound on how long a closing batch waits for images that were received
 // before the close command but are not yet ingested (download/store/retry).
 // After this the batch is finalized and the summary states what is missing, so
-// an irrecoverable image can never block a batch forever. Must stay above the
-// image retry budget (5 attempts, 15s..240s backoff).
+// an irrecoverable image can never block a batch forever. Derived from the
+// ingest policy so all 5 attempts fit under the real scheduler (GitHub Actions
+// every 5 min, tolerated lateness included); see src/lib/slips/ingest-policy.ts.
 export const CLOSE_INGEST_MAX_SECONDS = parseCloseSeconds(
   process.env.SLIP_CLOSE_INGEST_MAX_SECONDS,
-  600,
+  DEFAULT_INGEST_MAX_SECONDS,
 );
 
 // A batch that has stayed in processing beyond two normal request windows is
@@ -77,6 +79,17 @@ export const CLOSE_INGEST_MAX_SECONDS = parseCloseSeconds(
 const PROCESSING_RECOVERY_STALE_MINUTES = 2;
 const PROCESSING_RECOVERY_LIMIT = 20;
 const LINE_RETRY_KEY_WINDOW_HOURS = 24;
+
+/**
+ * Time a single batch finalization normally needs (one LINE push at its cap +
+ * a few DB round trips). Finalizers given a deadline do not CLAIM/lease a batch
+ * with less than this left; a batch already claimed when the deadline cuts its
+ * I/O stays in processing for the stale sweep, which retries with the same
+ * LINE retry key (no duplicate summary).
+ */
+export const FINALIZE_BATCH_RESERVE_MS = SLIP_INGEST_POLICY.functions.linePushTimeoutMs + 4_000;
+
+const hasTimeFor = (deadlineMs: number) => deadlineMs - Date.now() >= FINALIZE_BATCH_RESERVE_MS;
 
 type Supabase = SupabaseClient<Database>;
 
@@ -134,7 +147,9 @@ export async function finalizeDueSlipBatches(
   supabase: Supabase,
   push: PushMessage = defaultPush,
   abandonedMinutes: number = SLIP_ABANDONED_SESSION_MINUTES,
+  deadlineMs: number = Number.POSITIVE_INFINITY,
 ): Promise<number> {
+  if (!hasTimeFor(deadlineMs)) return 0;
   const cutoff = new Date(
     Date.now() - abandonedMinutes * 60 * 1000,
   ).toISOString();
@@ -152,8 +167,30 @@ export async function finalizeDueSlipBatches(
   }
 
   const batches = claimed ?? [];
+  // Abandoned batches skip claim_closing_slip_batch (no ledger reconciliation
+  // there), so finalizeSlipBatch's own accounting is the only gate: in-flight or
+  // failed images are reported as incomplete (review_needed + notice, never
+  // "completed"), and an accounting failure leaves the batch in processing for
+  // the stale-processing sweep. One failing batch must not block the others.
   for (const batch of batches) {
-    await finalizeSlipBatch(supabase, batch.id, (text) => push(batch.source_id, text, batch.id));
+    if (!hasTimeFor(deadlineMs)) {
+      logger.warn("finalize-slip-batches: out of time — abandoned batch left in processing for recovery", { batchId: batch.id });
+      continue;
+    }
+    try {
+      await finalizeSlipBatch(
+        supabase,
+        batch.id,
+        (text) => push(batch.source_id, text, batch.id),
+        boundedSettlement(deadlineMs, push),
+      );
+    } catch (err) {
+      logger.error("finalize-slip-batches: abandoned batch finalize failed — left in processing for recovery", {
+        batchId: batch.id,
+        reason: err instanceof Error ? err.message : String(err),
+        accountingUnavailable: err instanceof SlipAccountingUnavailableError,
+      });
+    }
   }
   return batches.length;
 }
@@ -245,8 +282,23 @@ type FinalizeFn = (
   supabase:    Supabase,
   batchId:     string,
   sendMessage: (text: string) => Promise<void>,
-  options?:    { isTimeoutForced?: boolean },
+  options?:    FinalizeOptions,
 ) => Promise<FinalizeResult | void>;
+
+export interface FinalizeOptions {
+  isTimeoutForced?: boolean;
+  /**
+   * Run the follow-up settlement finalization INSIDE this call with this
+   * (time-bounded) push, instead of the default fire-and-forget with an
+   * unbounded push. Set by deadline-bound callers (cron) so no settlement work
+   * or LINE push runs detached past their deadline.
+   */
+  settlementPush?: PushMessage;
+}
+
+/** Deadline-bound callers await settlement with their bounded push. */
+const boundedSettlement = (deadlineMs: number, push: PushMessage): FinalizeOptions | undefined =>
+  Number.isFinite(deadlineMs) ? { settlementPush: push } : undefined;
 
 export async function finalizeClosingSlipBatches(
   supabase:     Supabase,
@@ -256,7 +308,9 @@ export async function finalizeClosingSlipBatches(
   _finalize:    FinalizeFn = finalizeSlipBatch,
   _claim:       ClaimFn = defaultAtomicClaim,
   ingestMaxSeconds: number = CLOSE_INGEST_MAX_SECONDS,
+  deadlineMs: number = Number.POSITIVE_INFINITY,
 ): Promise<number> {
+  if (!hasTimeFor(deadlineMs)) return 0;
   const { data: closingBatches, error } = await supabase
     .from("slip_batches")
     .select("id, source_id")
@@ -269,16 +323,30 @@ export async function finalizeClosingSlipBatches(
 
   let count = 0;
   for (const batch of closingBatches ?? []) {
+    // Never claim (closing -> processing) what this run has no time to finish;
+    // an unclaimed batch simply stays closing for the next sweep.
+    if (!hasTimeFor(deadlineMs)) break;
     const claimed = await _claim(supabase, batch.id, quietSeconds, maxSeconds, ingestMaxSeconds);
     if (!claimed) continue;
 
-    await _finalize(
-      supabase,
-      claimed.id,
-      (text) => push(claimed.source_id, text, claimed.id),
-      { isTimeoutForced: claimed.wasTimeout },
-    );
-    count++;
+    try {
+      await _finalize(
+        supabase,
+        claimed.id,
+        (text) => push(claimed.source_id, text, claimed.id),
+        { isTimeoutForced: claimed.wasTimeout, ...boundedSettlement(deadlineMs, push) },
+      );
+      count++;
+    } catch (err) {
+      // Claimed batch is already 'processing'; the stale-processing sweep owns
+      // the retry. One failing batch (e.g. accounting unavailable) must not
+      // block the remaining closing batches in this run.
+      logger.error("finalizeClosingSlipBatches: finalize failed — batch left in processing for recovery", {
+        batchId: claimed.id,
+        reason: err instanceof Error ? err.message : String(err),
+        accountingUnavailable: err instanceof SlipAccountingUnavailableError,
+      });
+    }
   }
 
   return count;
@@ -293,6 +361,12 @@ export interface ProcessingRecoveryRun {
   movedToReview: number;
   /** Stale batches another concurrent sweep leased first. */
   claimConflicts: number;
+  /**
+   * Of `failed`: batches whose ledger accounting could not be established
+   * (nothing was sent, batch stays processing and is retried every sweep until
+   * the 24h retry-key window closes, then requires manual review).
+   */
+  accountingUnavailable?: number;
 }
 
 /**
@@ -312,6 +386,7 @@ export async function recoverStaleProcessingSlipBatches(
   staleMinutes = PROCESSING_RECOVERY_STALE_MINUTES,
   limit = PROCESSING_RECOVERY_LIMIT,
   _finalize: FinalizeFn = finalizeSlipBatch,
+  routeDeadlineMs: number = Number.POSITIVE_INFINITY,
 ): Promise<ProcessingRecoveryRun> {
   const cutoff = new Date(Date.now() - staleMinutes * 60 * 1000).toISOString();
   // Only fetch rows still inside the retry-key window (closing_at ?? created_at).
@@ -352,9 +427,9 @@ export async function recoverStaleProcessingSlipBatches(
     movedToReview: 0,
     claimConflicts: 0,
   };
-  // GitHub Actions gives this cron caller 30 seconds. Keep recovery well below
-  // that so normal batch finalization and network variance retain headroom.
-  const deadlineMs = Date.now() + 15_000;
+  // Own cap of 15 s, and never lease a batch the caller's deadline leaves no
+  // time to finish (see FINALIZE_BATCH_RESERVE_MS).
+  const deadlineMs = Math.min(Date.now() + 15_000, routeDeadlineMs - FINALIZE_BATCH_RESERVE_MS);
 
   for (const [index, batch] of batches.entries()) {
     if (Date.now() >= deadlineMs) {
@@ -396,11 +471,19 @@ export async function recoverStaleProcessingSlipBatches(
         supabase,
         batch.id,
         (text) => push(batch.source_id, text, batch.id),
+        boundedSettlement(routeDeadlineMs, push),
       );
       if (result && !result.persisted) run.failed += 1;
       else run.recovered += 1;
     } catch (recoveryError) {
       const reason = recoveryError instanceof Error ? recoveryError.message : String(recoveryError);
+      if (recoveryError instanceof SlipAccountingUnavailableError) {
+        run.accountingUnavailable = (run.accountingUnavailable ?? 0) + 1;
+        logger.error("recover-stale-slip-batches: ledger accounting unavailable — nothing sent, will retry", {
+          batchId: batch.id,
+          reason,
+        });
+      }
       if (isPermanentLineRejection(recoveryError)) {
         // Conditional on processing + unsent so a concurrent finalize wins;
         // select id so a zero-row match is never counted as moved.
@@ -534,7 +617,7 @@ export async function finalizeSlipBatch(
   supabase:    Supabase,
   batchId:     string,
   sendMessage: (text: string) => Promise<void>,
-  options?:    { isTimeoutForced?: boolean },
+  options?:    FinalizeOptions,
 ): Promise<FinalizeResult | void> {
   const log = logger.child({ batchId });
   const isTimeoutForced = options?.isTimeoutForced ?? false;
@@ -547,7 +630,6 @@ export async function finalizeSlipBatch(
       loadBatchEvidences(supabase, batchId),
     ]);
     const evidences = await applyGlobalDuplicateExclusions(supabase, loadedEvidences);
-    const imageAccounting = await loadImageAccounting(supabase, batchId);
 
     // Idempotency guard: if summary_sent_at is already set, another worker
     // (or a previous retry) already delivered the summary — skip silently.
@@ -557,6 +639,10 @@ export async function finalizeSlipBatch(
       });
       return;
     }
+
+    // Throws on RPC error/exception (fail closed, pre-send): nothing is sent
+    // and the batch stays in processing for the next recovery sweep.
+    const imageAccounting = await loadImageAccounting(supabase, batchId, batchRow);
 
     log.info("finalizing active slip batch", {
       evidenceCount: evidences.length,
@@ -646,9 +732,13 @@ export async function finalizeSlipBatch(
       new Date(batchRow?.closing_at ?? batchRow?.last_image_at ?? "").getTime(),
     );
     if (businessDate) {
-      tryFinalizeSettlement(supabase, batchRow!.source_id, businessDate).catch(
+      const settled = (options?.settlementPush
+        ? tryFinalizeSettlement(supabase, batchRow!.source_id, businessDate, options.settlementPush)
+        : tryFinalizeSettlement(supabase, batchRow!.source_id, businessDate)
+      ).catch(
         (err) => log.warn("tryFinalizeSettlement failed", { reason: err instanceof Error ? err.message : String(err) }),
       );
+      if (options?.settlementPush) await settled;
     }
 
     return { delivered: true, persisted: true };
@@ -674,21 +764,60 @@ export async function finalizeSlipBatch(
 }
 
 /**
- * Ledger accounting for the batch; null when the ledger is not deployed or the
- * read fails (legacy behaviour: summary based on attached evidence only).
+ * The ledger accounting could not be established. finalizeSlipBatch throws this
+ * BEFORE sending anything or writing a terminal status, so the batch stays in
+ * processing and the stale-processing sweep retries it (within the 24h window).
+ */
+export class SlipAccountingUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SlipAccountingUnavailableError";
+  }
+}
+
+// PostgREST "function not in schema cache" / Postgres undefined_function: the
+// only signals that the ledger migration is verifiably not deployed.
+const LEDGER_FUNCTION_MISSING_CODES = new Set(["PGRST202", "42883"]);
+
+/**
+ * Ledger accounting for the batch. Returns null ONLY when the ledger migration
+ * is verifiably absent (explicit legacy pre-migration path) or the batch has no
+ * receipts. Any other RPC error, thrown exception or malformed payload throws:
+ * the caller must not send a summary or mark the batch complete from partial
+ * totals, and the batch stays in processing for the next recovery sweep.
  */
 async function loadImageAccounting(
   supabase: Supabase,
   batchId: string,
+  batchRow: SlipBatchRow | null,
 ): Promise<SlipImageAccounting | null> {
+  let data: unknown;
+  let error: { code?: string; message: string } | null;
   try {
-    const { data, error } = await supabase.rpc("slip_batch_image_accounting", { p_batch_id: batchId });
-    if (error || !data) return null;
-    const accounting = data as unknown as SlipImageAccounting;
-    return accounting.received_total > 0 ? accounting : null;
-  } catch {
-    return null;
+    ({ data, error } = await supabase.rpc("slip_batch_image_accounting", { p_batch_id: batchId }));
+  } catch (thrown) {
+    throw new SlipAccountingUnavailableError(
+      `slip image accounting unavailable (threw): ${thrown instanceof Error ? thrown.message : String(thrown)}`,
+    );
   }
+  if (error) {
+    // On a migrated schema even a missing RPC (e.g. stale PostgREST cache) is
+    // NOT proof of completeness. Legacy fallback is permitted only when the
+    // batch row itself lacks the ledger-era schema column.
+    if (error.code && LEDGER_FUNCTION_MISSING_CODES.has(error.code)
+        && batchRow && !Object.prototype.hasOwnProperty.call(batchRow, "open_event_ts_ms")) return null;
+    throw new SlipAccountingUnavailableError(`slip image accounting unavailable (${error.code ?? "unknown"}): ${error.message}`);
+  }
+  const accounting = data as unknown as SlipImageAccounting | null;
+  const counters = ["received_total", "attached", "waiting", "queue_dead", "failed_permanent", "late_after_finalize", "incomplete"] as const;
+  if (
+    !accounting
+    || typeof accounting !== "object"
+    || counters.some((k) => typeof accounting[k] !== "number" || !Number.isFinite(accounting[k]) || accounting[k] < 0)
+  ) {
+    throw new SlipAccountingUnavailableError("slip image accounting unavailable: malformed RPC payload");
+  }
+  return accounting.received_total > 0 ? accounting : null;
 }
 
 /**
@@ -713,11 +842,14 @@ export function buildImageAccountingNotice(
 }
 
 async function loadBatchRow(supabase: Supabase, batchId: string): Promise<SlipBatchRow | null> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("slip_batches")
     .select("*")
     .eq("id", batchId)
     .maybeSingle();
+  // A read error must not look like "no batch row": the legacy-schema decision
+  // and the summary_sent_at idempotency guard both depend on this row.
+  if (error) throw new Error(`loadBatchRow: ${error.message}`);
   return data ?? null;
 }
 

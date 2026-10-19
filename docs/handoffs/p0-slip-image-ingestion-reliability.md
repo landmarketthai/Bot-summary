@@ -1,101 +1,52 @@
-# P0 — Slip image ingestion reliability (handoff + UAT)
+# PR #182 — slip-image reliability handoff
 
-Branch `fix/p0-slip-image-ingestion-20261017`, based on `origin/main` 11e2f43.
-Nothing here has been applied to Production. Migration rollout and UAT are separate, explicitly approved steps.
+Status: uncommitted integration candidate; **UAT NO-GO**. No commit, push, merge, deployment, remote migration, Production access or real LINE delivery is authorized by this handoff.
 
-## 1. Root cause (verified in code; line numbers are `origin/main` 11e2f43)
+- Actual worktree: `C:\GitHub\_worktrees\bot-summary-p0-slip-ingest-20261017` (the path `C:\GitHub_worktrees\...` does not exist).
+- Branch: `fix/p0-slip-image-ingestion-20261017`.
+- HEAD: `11854d80c3ffee2af1825ae5593bf2316b7eead5`; fixes are still working-tree changes.
+- Comparison baseline: freshly fetched `origin/main` = `11e2f4342a900d6dcaf0107f47970ed2a2bc46e4`.
+- Original independent findings: [Codex cross-check](p0-pr182-crosscheck-remediation-20261017.md).
+- Integration evidence and disposition: [verification report](pr182-integration-verification-20261017.md). Read its final status and limitations; do not treat this handoff as proof that a test ran.
 
-Incident: batch `d3ed6db7-822b-43fd-9fd0-06609a771a93` — 25 images received, 5 attached.
-`src/lib/slips/incident-baseline.pg.test.ts` replays the timeline on the pre-fix schema and reproduces it exactly
-(5 attached, 1 `DOWNLOAD_FAILED`, 19 images with no `slip_evidences` row, all 25 queue rows `processed`).
+## Incident and required invariant
 
-| # | Defect | Where |
-|---|---|---|
-| 1 | **One failed image blocks every later image.** A failed download/storage returns `error`, the drain releases the row to `pending` and `return processed` stops the loop. `claim_line_webhook_event` refuses to claim any row while an earlier row of the same source is `pending`/`processing`, so the 19 images behind image 6 wait for the 5-per-minute recovery sweep. | `webhook-service.ts` `drainOrderedSource` (4871-4883); `20260930090000_line_webhook_stale_queue_review.sql` claim `NOT EXISTS earlier` |
-| 2 | **A failed image can never recover.** `slip_evidences.line_message_id` is `UNIQUE` and the failed attempt already inserted a row, so every retry re-downloads, then throws `slip_evidence insert failed` (unique violation). There was no attempt cap: the 8 attempts in the incident were just the sweeps that happened before step 4. | `evidence-service.ts` `insertEvidence` (132-164); `0019_slip_evidence_ingestion.sql` |
-| 3 | **`จบสลิป` is not queued and the finalizer cannot see the queue.** The close command runs immediately and moves the batch to `closing`. `claim_closing_slip_batch` counts only evidences already attached to the batch, so "5 attached, all checks terminal" looks complete. | `webhook-service.ts` `processSlipClose` (4139+); `0024_slip_batch_closing.sql` |
-| 4 | **Loss is acknowledged as success.** Once the batch left `closing`, a worker that finally ran found no active session, logged "image ignored", returned `saved`, and the queue row became `processed` — no download, no evidence row, no trace. | `webhook-service.ts` `processImageMessage` (3875-3916) |
-| 5 | **Attribution by worker time, not message time.** The batch was chosen by `findActiveSession(sourceId)` when the worker ran, so a delayed image could join the wrong session (or none), and an image sent *after* `จบสลิป` could still attach to the closing batch. | `slip-session-service.ts` `findActiveSession`; `attach_evidence_to_slip_batch` accepts `closing` |
-| 6 | `raw_messages.is_processed` was true only for the 5 stored images, so the "processed" queue status and the evidence data disagreed. | `evidence-service.ts` |
+The supplied incident identifies batch `d3ed6db7-822b-43fd-9fd0-06609a771a93`, seller น้อย, market ราชพฤกษ์, 16/10/2569: 25 images, five attached, one failure and 19 without evidence, while all queue events eventually became processed. The baseline suite reproduces that shape with synthetic data and a simulated download failure. It does not replay or verify actual Production payloads. Never replay the historical batch.
 
-Sleeping or raising `CLOSE_MAX_SECONDS` would not fix any of these: the finalizer's `was_timeout` path (120 s) fires regardless of unattached images.
+The invariant is durable accounting for every received slip image before acknowledging it, with visible incomplete totals when recovery cannot finish. Accounting failure must not certify a partial sum as complete.
 
-## 2. The fix
+## Current implementation
 
-**Durable per-image ledger** `slip_image_events` (migration `20261017100000_slip_image_ingestion_ledger.sql`):
+1. `20261017100000_slip_image_ingestion_ledger.sql` creates an image receipt ledger, including `unbound` receipts when no session exists yet. A failed capture trigger aborts the queue receipt; it does not log-and-ignore the failure. Slip open/close commands now share the ordered source queue with images. Session creation, begin and closing claim bind/reconcile receipts by LINE time.
+2. Image begin increments a bounded attempt counter. Attach/fail require that attempt number as their fencing token, so an older worker cannot invalidate a newer claim. Deterministic Storage paths use upsert for retries; a stored evidence row is reused.
+3. Transient begin failures keep the queue event pending. Missing begin RPCs cannot invoke legacy attachment for a session whose database row has ledger-era columns. Genuinely pre-migration sessions retain an explicit legacy path, which does not provide the new guarantees; migration remains a prerequisite.
+4. Finalization throws before delivery on accounting timeout, malformed data or a missing RPC on a migrated schema. Missing images add an explicit incomplete notice and failed count; successful neighbours are still processed.
+5. `20261017110000_slip_ocr_claim_fencing.sql` adds atomic OCR claim/complete/fail functions. Terminal checks and finalized batches reject stale writes. A missing OCR claim RPC on a ledger database fails closed instead of using unfenced upsert.
+6. Provider calls have time bounds. Cron recovery uses a 40-second overall cap within the 55-second application budget (60-second route duration minus 5-second teardown), leaving a 15-second finalization reserve. It starts ingest/OCR only when their cap fits the remaining time. The duration export is a numeric literal because Next.js must analyze it statically. The scheduler HTTP caller allows 70 seconds.
 
-* One row per unique LINE image message received while a slip session is open, written by an `AFTER INSERT` trigger on `line_webhook_event_queue` — the **same transaction as the receipt**. A trigger failure only logs a warning; the receipt is never lost and the image falls back to the legacy path.
-* Attribution is by **LINE event time** against the session window `[open_event_ts_ms, close_event_ts_ms]` (both stored from the LINE event, not server time). Delayed workers cannot change it. Image after the close → `excluded_after_close` (told to the seller). Image sent inside an already-finalized session → `late_after_finalize` (recorded).
-* States: `received → ingesting → attached | retry_pending → … | failed_permanent`, plus `excluded_after_close`, `excluded_not_slip` (consumed by the white-sheet flow), `late_after_finalize`.
-* Queue events are now **always acknowledged**; the outcome lives in the ledger, so a failed image never blocks the images behind it and no event is "processed" without an explicit outcome.
+## Scheduler and the 2,160-second cutoff
 
-**Bounded, idempotent processing** (`src/lib/slips/image-ingestion.ts` + SQL RPCs):
+The actual scheduler is `.github/workflows/finalize-slip-batches.yml`, every **300 seconds**. `vercel.json` has no cron. This patch does not install a one-minute scheduler or change any running scheduler.
 
-* `begin_slip_image_attempt`: row lock (`SKIP LOCKED`), 120 s lease, attempt budget of 5 counted *at start* (a crashing worker still consumes budget).
-* Failure → `fail_slip_image_event`: backoff 15 / 30 / 60 / 120 / 240 s, then `failed_permanent`. Errors are stored as short codes (`download_failed`, `storage_failed`, …), never provider text.
-* `attach_slip_image_event`: idempotent (already attached → reconcile, never a second `batch_index`), refuses finalized/after-close, reuses the existing `attach_evidence_to_slip_batch` (so market attribution and accountability-round triggers behave as before).
-* `SlipEvidenceService`: a retry reconciles with the existing `slip_evidences` row (keep `RECEIVED`, overwrite `*_FAILED`); storage upload is `upsert: true` (deterministic path per LINE message id). A stored image is never re-downloaded.
-* Recovery: the existing `finalize-slip-batches` cron now runs `WebhookService.recoverSlipIngest()` before finalizing: drains queue sources holding never-started images, retries due ledger rows, re-drives OCR that never started (never re-runs a completed check).
+`SLIP_CLOSE_INGEST_MAX_SECONDS` defaults to **2160 seconds (36 minutes)** in the application and SQL; `.env.example` matches. This is the ingest cutoff for an unresolved batch, not the scheduler period. The design models bursts up to 25 images, five ingest attempts with NO in-request retries, and bounded 5-minute cron lateness. More than 25 images, skipped/delayed GitHub schedules beyond the assumed bound, provider backpressure, or a worker crash before even the first attempt may exhaust the wait before every attempt runs. In that case the financial summary MUST visibly remain incomplete (`review_needed`/missing notice), never certify partial receipts as completed. This is a modeling bound, not an unconditional five-attempt guarantee. Cron output reports the policy assessment. Production environment values must be checked explicitly before rollout: if `SLIP_CLOSE_INGEST_MAX_SECONDS=1200` remains set there, it overrides this safer default. The product owner must approve the possible 36-minute wait and the 25-ingest/10-OCR concurrency before deployment.
 
-**Finalizer** (`claim_closing_slip_batch`, now `…, p_ingest_max_seconds default 600`):
+## Migration and rollback contract — no operation is authorized here
 
-* Will not claim while any ledger row is `received`/`ingesting`/`retry_pending`, **bounded** by `SLIP_CLOSE_INGEST_MAX_SECONDS` (default 600 s, above the full retry budget of ~7.5 min). Images whose queue row went `failed`/`stale` count as permanently incomplete immediately.
-* OCR timeout is measured from the later of close and last attach, so a long ingest does not eat the OCR budget.
-* If anything is missing the summary says so and does **not** present the partial sum as complete:
-  `⚠️ ยอดนี้ยังไม่ครบ ห้ามใช้เป็นยอดรวมทั้งหมด / รับรูปจาก LINE: N / เข้าชุดแล้ว: K / ยังไม่ครบ: M`; batch status is `review_needed` (or `failed`), `failed_count` includes missing images, and settlement stays blocked exactly as for any `review_needed` batch. Missing images are never counted as 0 baht.
-* No change to extraction, validation guard, duplicate detection or settlement code. Output of `buildBatchSummaryMessage` is unchanged; the notice is appended only when `incomplete > 0`.
-* Duplicate summaries remain impossible: unchanged atomic claim + `summary_sent_at` guard + batch-id LINE retry key.
+For a separately approved isolated staging rehearsal:
 
-**Observability**: structured logs (`slip image ingestion outcome`, `slip image attempt failed`, `finalizing active slip batch` with the accounting object — ids and counts only), `slip_batch_image_accounting(batch_id)` and `slip_image_ledger_health()`; the cron JSON now includes `imageRecovery` and `imageLedger`.
+1. Stop intake, cron and existing workers; inspect collecting/closing/processing work before changing versions. Do not rely on concurrent old/new workers being safe: old application code can still use unfenced OCR writes.
+2. Apply **both** migrations, in order: `20261017100000_slip_image_ingestion_ledger.sql`, then `20261017110000_slip_ocr_claim_fencing.sql`; then deploy the matching application. Verify the ledger functions, OCR claim/complete/fail functions, backend-only privileges and actual scheduler cadence. The ledger-health flag alone does not prove the OCR migration is present.
+3. New application session open/close on an old schema must fail explicitly; do not describe this as transparent backwards compatibility. The schema compatibility tests cover explicit failure, receipt reconciliation during upgrade, legacy attachments and guarded rollback.
+4. Ledger rollback script: `supabase/rollback/20261017100000_slip_image_ingestion_ledger.down.sql`. It refuses unresolved images on open batches by default. The explicit override audits unresolved receipts and accepts a degraded legacy path; it is not a lossless rollback. Audit tables have RLS enabled and no public/client privileges.
+5. The script retains the ledger for audit, archives batch LINE timestamps, removes ledger entry points and restores the three-argument closing claim. OCR claim columns/functions remain additive; there is no destructive OCR down migration. Coordinate the application version with rollback. Reapplying after rollback requires both migrations again, including restoration of the fenced OCR redrive definition.
+6. No Production migration history is edited by these tests. Existing migration-history failures must not be “fixed” by guessing Production state.
 
-## 3. Production rollout requirements (NOT applied)
+## Verification and next owner
 
-1. Apply `supabase/migrations/20261017100000_slip_image_ingestion_ledger.sql` **before or together with** the deploy. It is additive (new table, 2 columns on `slip_batches`, new functions, one trigger) and replaces `claim_closing_slip_batch` (drops the 3-arg version, installs a 4-arg version whose 4th arg has a default).
-2. Rollout safety (tested): new code on the old DB falls back to the legacy path (`no_ledger`) and retries the 3-arg claim; old code on the new DB keeps working (default argument, ledger ignored).
-3. Production records migrations 0051–0062 under timestamp versions (see memory `prod-migration-version-drift`): register this one under its timestamp, and re-verify the migration-history baseline tests when merging.
-4. Confirm `finalize-slip-batches` is scheduled at ≤ 1 minute (scheduling lives outside the repo). The retry/backoff and the 600 s ingest bound assume that cadence.
-5. Optional env: `SLIP_CLOSE_INGEST_MAX_SECONDS` (default 600). Existing `SLIP_CLOSE_QUIET_SECONDS` / `SLIP_CLOSE_MAX_SECONDS` unchanged.
-6. **No backfill is included.** The historical incident batch must not be replayed. Any recovery of historical batches needs a separate dry-run-first script and explicit approval.
+Tests use localhost PostgreSQL 17 disposable databases and mocked LINE/Storage/OCR. External fetch is blocked during local verification; package installation used only the package registry. The worktree now owns its declared dependency installation (Next.js 16.3.4); the former shared `C:\GitHub\Bot-summary\node_modules` remains unchanged.
 
-## 4. Tests
+The CI job `p0-slip-image-ingestion` requires PostgreSQL and runs seven PG suites plus twelve unit/caller suites. Its local execution is recorded in the verification report. Because no commit/push is authorized, the updated GitHub workflow has not run remotely and is not claimed green.
 
-```bash
-# unit + everything non-PG
-bun test ./src --path-ignore-patterns='**/*.pg.test.ts'
-# real PostgreSQL 17 (local, disposable databases)
-ALLOW_DISPOSABLE_POSTGRES_TESTS=1 PGPASSWORD=postgres bun test src/lib/slips/image-ingestion.pg.test.ts src/lib/slips/incident-baseline.pg.test.ts
-```
+When the integration report is complete, stop implementation and hand the exact working tree plus source hashes/logs to a **fresh independent Codex session**. That session must inspect the diff and run its own checks; neither agent claims nor this remediation report replace evidence. UAT remains NO-GO until independent review and a separate explicit authorization. Do not send a real LINE message during review.
 
-`image-ingestion.pg.test.ts` runs the real `WebhookService`, `SlipImageIngestionService`, `SlipEvidenceService` and batch finalizer against the real migrations through `src/lib/slips/testing/pg-slip-harness.ts`; only the LINE download, Storage and OCR provider are simulated, and every assertion reads database state. Coverage map: 25-image burst + delayed workers + close with pending images + permanent 6th-image failure (reqs 1,2,4,5,6,14); temporary 6th failure (3); concurrent drains / finalizer race (7); redelivery + duplicate message ids (8); images after close, sequential sessions, two groups (9,13); worker crash (10); single summary (11).
-
-## 5. Supervised UAT (separate approval — do not run during review)
-
-Only group: **`Line ทดสอบบอท`**. Never use a real operational group.
-
-0. **Verify the destination first** (read-only, official API; token from the environment, never pasted):
-   ```bash
-   curl -s -H "Authorization: Bearer $LINE_CHANNEL_ACCESS_TOKEN" "https://api.line.me/v2/bot/group/$TEST_GROUP_ID/summary"
-   ```
-   `groupName` must equal exactly `Line ทดสอบบอท`. Otherwise stop.
-1. Apply the migration to the **Preview/staging** database only; deploy the PR to Preview with Preview-only LINE credentials pointing at the test group.
-2. **U1 burst**: open `ทดสอบ-ตลาดทดสอบ สลิปเงินโอน <วันนี้>`, send 25 distinct test slip images in < 60 s, send `จบสลิป` within ~10 s. Expect: one summary, `รับทั้งหมด`/`รับรูปจาก LINE` = 25, no `ยอดนี้ยังไม่ครบ` notice when all read.
-3. **U2 close while pending**: same, but send `จบสลิป` immediately after the last image. Expect the same final count (the summary may arrive later, up to the retry budget).
-4. **U3 after close**: after `จบสลิป`, send 2 more images. Expect the "late image" reply and the batch count unchanged; open a new session and confirm the next images join only the new session.
-5. **U4 redelivery**: use the LINE console redelivery for one image webhook; expect no extra evidence or summary.
-6. **U5 forced failure** (staging only, never in Production): temporarily block the `slip-evidence` bucket for one path or point `LINE content` at a bad token for one image; expect `retry_pending` then recovery, or after 5 attempts `failed_permanent` and a summary carrying the `⚠️ ยอดนี้ยังไม่ครบ` notice and `review_needed`.
-7. Read-only reconciliation after each run (replace the batch id):
-   ```sql
-   select public.slip_batch_image_accounting('<batch_id>');   -- received_total = attached + failed + waiting + late ...
-   select state, count(*) from slip_image_events where batch_id = '<batch_id>' group by 1;
-   select public.slip_image_ledger_health();                   -- unresolved should drain to 0
-   ```
-8. Pass criteria: every sent image appears in the ledger with a terminal state; `received_total` equals the number sent; no duplicate `slip_evidences.line_message_id`; exactly one LINE summary per batch.
-
-## 6. Known limitations / risks
-
-* An image **attached** before a close command with an earlier LINE timestamp arrives (extreme reorder) is not detached; detach logic was judged riskier for financial totals than the tiny window it closes.
-* Retry order can differ from send order (`batch_index` is attach order).
-* An image sent before the open command gets no ledger row and keeps the legacy behaviour (attached to the then-active session, without the new guarantees).
-* `late_after_finalize` images are *recorded and reported to the operator*, but the already-sent summary is not re-issued; a re-summary flow is out of scope (P1).
-* Ledger depends on the trigger at receipt; if the trigger ever fails the image takes the legacy path (still ingested, but without the new guarantees).
-* Throughput is unchanged (one image at a time per source); the fix is correctness under delay, not speed.
+ส่งต่อ Independent Review แล้ว: Codex chat `PR #182 — Independent Review หลัง Integration Verification` (`01a149d5-2f02-71f3-9a11-b92dbde841ec`) เริ่มด้วย fresh prompt ไม่มี fork history และกำหนด read-only source พร้อมสร้างหลักฐานเอง การส่งต่อไม่ใช่ผลอนุมัติ review และ UAT ยัง NO-GO

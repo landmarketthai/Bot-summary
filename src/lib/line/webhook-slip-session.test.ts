@@ -10,9 +10,8 @@ import type { Database } from "@/types/database";
 function makeTextSupabase(rawId = "raw-txt") {
   return {
     async rpc(name: string) {
-      if (name === "receive_line_webhook_event") {
-        return { data: { raw_message_id: rawId, duplicate: false }, error: null };
-      }
+      // This minimal double represents the pre-queue schema. A receive-only
+      // queue double would be invalid: production must not bypass missing claim.
       throw new Error(`Unexpected rpc: ${name}`);
     },
     from(table: string) {
@@ -58,6 +57,9 @@ function makeCloseSupabase(
   const batchUpdates: Array<Record<string, unknown>> = [];
 
   const client = {
+    // Pre-queue double: slip close is an ordered event, so the receive RPC is
+    // tried first and must report missing ordering infrastructure.
+    async rpc(name: string) { throw new Error(`unexpected rpc: ${name}`); },
     from(table: string) {
       if (table === "raw_messages") {
         return {

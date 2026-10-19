@@ -1,0 +1,25 @@
+name: slip-ledger-alert
+
+on:
+  schedule:
+    - cron: "4,14,24,34,44,54 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  alert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      # The route itself is fail-closed: until the explicit Vercel feature flag
+      # and recipient are configured this call cannot send a LINE message.
+      - name: Check durable slip ledger alert
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl -sf --max-time 35 \
+            -X GET \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            https://bot-summary.vercel.app/api/cron/slip-ledger-alert

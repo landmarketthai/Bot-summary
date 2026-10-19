@@ -22,6 +22,30 @@ const defaultPushMessage: PushMessage = async (to, text) => {
   await pushLineMessage(to, text);
 };
 
+/** Default OCR lease; a worker that outlives it loses its fencing token. */
+export const SLIP_CHECK_LEASE_SECONDS = 300;
+
+type RpcResult = { data: unknown; error: { code?: string; message?: string } | null };
+type RpcClient = { rpc?: (name: string, args: Record<string, unknown>) => PromiseLike<RpcResult> };
+
+interface CheckClaim {
+  checkId: string;
+  /** Fencing token; null only on the legacy path (claim RPCs not deployed). */
+  token: number | null;
+}
+
+/**
+ * True ONLY when the claim functions are verifiably not deployed: Postgres
+ * undefined_function, PostgREST "function not found", or a unit double with no
+ * rpc at all. Timeouts and every other error must NOT fall back to the
+ * unfenced upsert, which can overwrite a successful check.
+ */
+function isMissingClaimRpc(error: { code?: string; message?: string } | null): boolean {
+  return error?.code === "42883"
+    || error?.code === "PGRST202"
+    || /^unexpected(?: .*?)?rpc/i.test(error?.message ?? "");
+}
+
 export interface SlipCheckProcessor {
   processEvidence(evidenceId: string): Promise<void>;
 }
@@ -31,11 +55,13 @@ export class SlipCheckService implements SlipCheckProcessor {
     private readonly supabase: Supabase,
     private readonly extractor: SlipExtractor = new CascadingSlipExtractor(),
     private readonly pushMessage: PushMessage = defaultPushMessage,
+    private readonly leaseSeconds: number = SLIP_CHECK_LEASE_SECONDS,
   ) {}
 
   async processEvidence(evidenceId: string): Promise<void> {
     const log = logger.child({ evidenceId });
     let checkId: string | null = null;
+    let claimToken: number | null = null;
     // Track whether this evidence belongs to a batch so we can suppress the
     // per-image LINE push (the batch finalizer sends a single summary instead).
     let isInBatch = false;
@@ -45,7 +71,10 @@ export class SlipCheckService implements SlipCheckProcessor {
     try {
       const evidence = await this.loadEvidence(evidenceId);
       isInBatch = evidence.batch_id !== null;
-      checkId = await this.createProcessingCheck(evidenceId);
+      const claim = await this.claimCheck(evidenceId, log);
+      if (!claim) return; // terminal, leased by a live worker, or batch no longer open
+      checkId = claim.checkId;
+      claimToken = claim.token;
       const bytes = await this.downloadEvidence(
         evidence.storage_bucket,
         evidence.storage_path,
@@ -57,27 +86,36 @@ export class SlipCheckService implements SlipCheckProcessor {
       });
       const status = determineSlipCheckStatus(extraction);
 
-      const { error: updateError } = await this.supabase
-        .from("slip_checks")
-        .update({
-          status,
-          slip_type: extraction.slipType,
-          gross_amount: extraction.grossAmount,
-          discount_amount: extraction.discountAmount,
-          paid_amount: extraction.paidAmount,
-          transfer_amount: extraction.transferAmount,
-          reference_id: extraction.referenceId,
-          transaction_time: extraction.transactionTime,
-          sender_name: extraction.senderName,
-          receiver_name: extraction.receiverName,
-          receiver_account_tail: extraction.receiverAccountTail,
-          confidence: extraction.confidence,
-          extracted_json: extractionToJson(extraction),
-          failure_reason: null,
-        })
-        .eq("id", checkId);
+      const fields = {
+        slip_type: extraction.slipType,
+        gross_amount: extraction.grossAmount,
+        discount_amount: extraction.discountAmount,
+        paid_amount: extraction.paidAmount,
+        transfer_amount: extraction.transferAmount,
+        reference_id: extraction.referenceId,
+        transaction_time: extraction.transactionTime,
+        sender_name: extraction.senderName,
+        receiver_name: extraction.receiverName,
+        receiver_account_tail: extraction.receiverAccountTail,
+        confidence: extraction.confidence,
+        extracted_json: extractionToJson(extraction),
+      };
 
-      if (updateError) throw new Error("Could not save extracted slip fields");
+      if (claimToken !== null) {
+        const outcome = await this.completeCheck(checkId, claimToken, status, fields);
+        if (outcome !== "completed") {
+          // Stale worker, finished check or finalized batch: the stored row is
+          // authoritative. Do not overwrite it and do not notify.
+          log.warn("slip extraction result discarded", { checkId, outcome });
+          return;
+        }
+      } else {
+        const { error: updateError } = await this.supabase
+          .from("slip_checks")
+          .update({ status, ...fields, failure_reason: null })
+          .eq("id", checkId);
+        if (updateError) throw new Error("Could not save extracted slip fields");
+      }
 
       log.info("slip extraction completed", {
         checkId,
@@ -122,23 +160,34 @@ export class SlipCheckService implements SlipCheckProcessor {
         log.error("slip extraction failed", { checkId, reason: failureReason });
       }
 
+      let failureRecorded = true;
       if (checkId) {
-        const { error: updateError } = await this.supabase
-          .from("slip_checks")
-          .update({
-            status: "FAILED",
-            failure_reason: failureReason,
-          })
-          .eq("id", checkId);
+        if (claimToken !== null) {
+          const outcome = await this.failCheck(checkId, claimToken, failureReason, log);
+          // A stale worker must not notify: the check belongs to a newer claim
+          // (or is already terminal) and the real result is reported there.
+          if (outcome === "stale_claim" || outcome === "already_terminal" || outcome === "batch_not_open") {
+            failureRecorded = false;
+            log.warn("slip failure not recorded", { checkId, outcome });
+          }
+        } else {
+          const { error: updateError } = await this.supabase
+            .from("slip_checks")
+            .update({
+              status: "FAILED",
+              failure_reason: failureReason,
+            })
+            .eq("id", checkId);
 
-        if (updateError) {
-          log.error("failed to mark slip check as failed", {
-            reason: "database_update_failed",
-          });
+          if (updateError) {
+            log.error("failed to mark slip check as failed", {
+              reason: "database_update_failed",
+            });
+          }
         }
       }
 
-      if (!isInBatch) {
+      if (!isInBatch && failureRecorded) {
         const sourceId = await this.findSourceId(evidenceId);
         if (sourceId) {
           await this.pushSummary(
@@ -163,7 +212,88 @@ export class SlipCheckService implements SlipCheckProcessor {
     return data;
   }
 
-  private async createProcessingCheck(evidenceId: string): Promise<string> {
+  /**
+   * Wins the OCR claim (insert PROCESSING, or re-claim an EXPIRED PROCESSING
+   * lease) and returns the fencing token. Returns null when another live
+   * worker holds it, the check is already terminal, or the batch is no longer
+   * collecting/closing. The unfenced upsert is used only when the claim RPC is
+   * verifiably not deployed.
+   */
+  private async claimCheck(
+    evidenceId: string,
+    log: ReturnType<typeof logger.child>,
+  ): Promise<CheckClaim | null> {
+    const client = this.supabase as unknown as RpcClient;
+    if (typeof client.rpc === "function") {
+      const { data, error } = await client.rpc("claim_slip_check", {
+        p_evidence_id: evidenceId,
+        p_lease_seconds: this.leaseSeconds,
+      });
+      if (!error) {
+        const claim = data as { claimed?: boolean; check_id?: string; token?: number; reason?: string } | null;
+        if (claim?.claimed === true && claim.check_id && typeof claim.token === "number") {
+          return { checkId: claim.check_id, token: claim.token };
+        }
+        if (claim?.claimed === false) {
+          log.info("slip check not claimed", { reason: claim.reason ?? "unknown" });
+          return null;
+        }
+        throw new Error("Slip check could not be created");
+      }
+      if (!isMissingClaimRpc(error)) throw new Error("Slip check could not be created");
+      // A missing OCR RPC on a ledger database is a partial rollout/cache
+      // failure, not permission to bypass fencing with the legacy upsert.
+      const ledger = await client.rpc("slip_image_ledger_health", {});
+      if (!ledger.error || !isMissingClaimRpc(ledger.error)) {
+        throw new Error("Slip OCR migration 20261017110000 is required");
+      }
+    }
+    return { checkId: await this.createProcessingCheckLegacy(evidenceId), token: null };
+  }
+
+  private async completeCheck(
+    checkId: string,
+    token: number,
+    status: string,
+    fields: Record<string, unknown>,
+  ): Promise<string> {
+    const client = this.supabase as unknown as RpcClient;
+    const { data, error } = await client.rpc!("complete_slip_check", {
+      p_check_id: checkId,
+      p_token: token,
+      p_status: status,
+      p_fields: fields,
+    });
+    if (error) throw new Error("Could not save extracted slip fields");
+    return (data as { outcome?: string } | null)?.outcome ?? "unknown";
+  }
+
+  private async failCheck(
+    checkId: string,
+    token: number,
+    reason: string,
+    log: ReturnType<typeof logger.child>,
+  ): Promise<string> {
+    try {
+      const client = this.supabase as unknown as RpcClient;
+      const { data, error } = await client.rpc!("fail_slip_check", {
+        p_check_id: checkId,
+        p_token: token,
+        p_reason: reason,
+      });
+      if (error) {
+        log.error("failed to mark slip check as failed", { reason: "database_update_failed" });
+        return "error";
+      }
+      return (data as { outcome?: string } | null)?.outcome ?? "unknown";
+    } catch {
+      log.error("failed to mark slip check as failed", { reason: "database_update_failed" });
+      return "error";
+    }
+  }
+
+  // Pre-migration schema only (claim RPCs missing). Unfenced.
+  private async createProcessingCheckLegacy(evidenceId: string): Promise<string> {
     const { data, error } = await this.supabase
       .from("slip_checks")
       .upsert(

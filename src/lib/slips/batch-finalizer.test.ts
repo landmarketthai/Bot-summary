@@ -4,6 +4,7 @@ import {
   finalizeSlipBatch,
   buildBatchSummaryMessage,
   parseAbandonedMinutes,
+  SlipAccountingUnavailableError,
 } from "./batch-finalizer";
 import type { Database } from "@/types/database";
 
@@ -56,6 +57,12 @@ describe("parseAbandonedMinutes", () => {
 
 // ── finalizeSlipBatch delivery state ──────────────────────────────────────
 
+/** Accounting RPC as seen on a pre-migration schema: function not in schema cache. */
+const LEGACY_SCHEMA_RPC = async () => ({
+  data: null,
+  error: { code: "PGRST202", message: "Could not find the function public.slip_batch_image_accounting" },
+});
+
 /**
  * Minimal supabase stub for finalizeSlipBatch tests.
  *
@@ -72,6 +79,7 @@ function makeFinalizerSupabase({
   statusUpdates?: Array<Record<string, unknown>>;
 }): SupabaseClient<Database> {
   return {
+    rpc: LEGACY_SCHEMA_RPC,
     from(table: string) {
       if (table === "slip_batches") {
         return {
@@ -259,6 +267,8 @@ describe("finalizeSlipBatch: success_count and failed_count use validation-guard
   function makeFinalizerWithEvidences(
     items: Array<{ transferAmount: number; transactionTime?: string | null }>,
     capturedUpdates: Array<Record<string, unknown>>,
+    rpc: () => Promise<{ data: unknown; error: { code?: string; message: string } | null }> = LEGACY_SCHEMA_RPC,
+    migratedSchema = false,
   ): SupabaseClient<Database> {
     const evidenceRows = items.map((_, i) => ({ id: `ev-${i + 1}`, batch_index: i + 1 }));
     const checkRows = items.map((item, i) => ({
@@ -272,6 +282,7 @@ describe("finalizeSlipBatch: success_count and failed_count use validation-guard
     }));
 
     return {
+      rpc: rpc,
       from(table: string) {
         if (table === "slip_batches") {
           return {
@@ -280,7 +291,7 @@ describe("finalizeSlipBatch: success_count and failed_count use validation-guard
                 eq(_c: string, _v: unknown) {
                   return {
                     async maybeSingle() {
-                      return { data: { id: "batch-1", summary_sent_at: null, slip_date: null }, error: null };
+                      return { data: { id: "batch-1", summary_sent_at: null, slip_date: null, ...(migratedSchema ? { open_event_ts_ms: null } : {}) }, error: null };
                     },
                   };
                 },
@@ -348,6 +359,130 @@ describe("finalizeSlipBatch: success_count and failed_count use validation-guard
     expect(dbUpdate?.success_count).toBe(5);
     expect(dbUpdate?.failed_count).toBe(1);
     expect(dbUpdate?.status).toBe("review_needed");
+  });
+
+  // ── Fail-closed ledger accounting (PR182 P0 #1) ──────────────────────────
+  // 2 images received, 1 attached; accounting RPC unavailable. Must not send a
+  // summary or write a status; batch stays processing (summary_sent_at null)
+  // so the stale-processing sweep retries it.
+  const oneAttached = [{ transferAmount: 100 }];
+
+  it("RPC error 57014 (timeout): throws, no summary sent, no batch update", async () => {
+    const updates: Array<Record<string, unknown>> = [];
+    const sent: string[] = [];
+    const supabase = makeFinalizerWithEvidences(oneAttached, updates, async () => ({
+      data: null,
+      error: { code: "57014", message: "canceling statement due to statement timeout" },
+    }));
+
+    await expect(
+      finalizeSlipBatch(supabase, "batch-1", async (t) => { sent.push(t); }),
+    ).rejects.toThrow("57014");
+
+    expect(sent).toHaveLength(0);
+    expect(updates).toHaveLength(0);
+  });
+
+  it("RPC throws: no summary sent, no batch update, error propagates for retry", async () => {
+    const updates: Array<Record<string, unknown>> = [];
+    const sent: string[] = [];
+    const supabase = makeFinalizerWithEvidences(oneAttached, updates, async () => {
+      throw new Error("fetch failed");
+    });
+
+    await expect(
+      finalizeSlipBatch(supabase, "batch-1", async (t) => { sent.push(t); }),
+    ).rejects.toThrow("fetch failed");
+
+    expect(sent).toHaveLength(0);
+    expect(updates).toHaveLength(0);
+  });
+
+  it("RPC returns no error but empty/malformed payload: fails closed", async () => {
+    const updates: Array<Record<string, unknown>> = [];
+    const sent: string[] = [];
+    const supabase = makeFinalizerWithEvidences(oneAttached, updates, async () => ({ data: null, error: null }));
+
+    await expect(
+      finalizeSlipBatch(supabase, "batch-1", async (t) => { sent.push(t); }),
+    ).rejects.toThrow("malformed");
+
+    expect(sent).toHaveLength(0);
+    expect(updates).toHaveLength(0);
+  });
+
+  it("RPC returns a partial payload (missing counters): fails closed, nothing sent or written", async () => {
+    const updates: Array<Record<string, unknown>> = [];
+    const sent: string[] = [];
+    const supabase = makeFinalizerWithEvidences(oneAttached, updates, async () => ({
+      data: { received_total: 2, attached: 1 },
+      error: null,
+    }));
+
+    await expect(
+      finalizeSlipBatch(supabase, "batch-1", async (t) => { sent.push(t); }),
+    ).rejects.toThrow("malformed");
+
+    expect(sent).toHaveLength(0);
+    expect(updates).toHaveLength(0);
+  });
+
+  it("accounting failure is a typed error so recovery can surface it", async () => {
+    const supabase = makeFinalizerWithEvidences(oneAttached, [], async () => ({
+      data: null,
+      error: { code: "57014", message: "statement timeout" },
+    }));
+    await expect(
+      finalizeSlipBatch(supabase, "batch-1", async () => {}),
+    ).rejects.toBeInstanceOf(SlipAccountingUnavailableError);
+  });
+
+  for (const code of ["PGRST202", "42883"]) {
+    it(`missing RPC ${code} on a migrated schema: fails closed, never certifies partial totals`, async () => {
+      const updates: Array<Record<string, unknown>> = [];
+      const sent: string[] = [];
+      const supabase = makeFinalizerWithEvidences(
+        oneAttached,
+        updates,
+        async () => ({ data: null, error: { code, message: "function unavailable" } }),
+        true,
+      );
+      await expect(
+        finalizeSlipBatch(supabase, "batch-1", async (text) => { sent.push(text); }),
+      ).rejects.toThrow(code);
+      expect(sent).toHaveLength(0);
+      expect(updates).toHaveLength(0);
+    });
+  }
+
+  it("explicit legacy schema (PGRST202 function missing): still finalizes from evidence", async () => {
+    const updates: Array<Record<string, unknown>> = [];
+    const sent: string[] = [];
+    const supabase = makeFinalizerWithEvidences(oneAttached, updates, LEGACY_SCHEMA_RPC);
+
+    await finalizeSlipBatch(supabase, "batch-1", async (t) => { sent.push(t); });
+
+    expect(sent).toHaveLength(1);
+    expect(updates.find((u) => "success_count" in u)?.status).toBe("completed");
+  });
+
+  it("ledger accounting reporting missing images: summary carries notice, not completed", async () => {
+    const updates: Array<Record<string, unknown>> = [];
+    const sent: string[] = [];
+    const supabase = makeFinalizerWithEvidences(oneAttached, updates, async () => ({
+      data: {
+        received_total: 2, attached: 1, waiting: 0, retry_pending: 0, queue_dead: 0,
+        failed_permanent: 1, late_after_finalize: 0, incomplete: 1,
+      },
+      error: null,
+    }));
+
+    await finalizeSlipBatch(supabase, "batch-1", async (t) => { sent.push(t); });
+
+    expect(sent[0]).toContain("ยังไม่ครบ: 1 รูป");
+    const update = updates.find((u) => "success_count" in u);
+    expect(update?.status).toBe("review_needed");
+    expect(update?.failed_count).toBe(1);
   });
 });
 

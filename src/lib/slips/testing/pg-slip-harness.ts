@@ -37,6 +37,8 @@ export const SLIP_PIPELINE_MIGRATIONS = [
   "20260919134000_line_webhook_semantic_timestamp_order.sql",
   "20260930090000_line_webhook_stale_queue_review.sql",
   "20261017100000_slip_image_ingestion_ledger.sql",
+  "20261017110000_slip_ocr_claim_fencing.sql",
+  "20261019120000_slip_ingest_health_alert.sql",
 ];
 
 const BOOTSTRAP_SQL = `
@@ -153,6 +155,32 @@ const lit = (v: unknown): string => {
 };
 const ident = (n: string) => `"${n.replaceAll('"', '""')}"`;
 
+function splitTop(expr: string): string[] {
+  const parts: string[] = [];
+  let depth = 0, cur = "";
+  for (const ch of expr) {
+    if (ch === "(") depth++;
+    if (ch === ")") depth--;
+    if (ch === "," && depth === 0) { parts.push(cur); cur = ""; } else cur += ch;
+  }
+  if (cur) parts.push(cur);
+  return parts;
+}
+function condToSql(term: string): string {
+  const t = term.trim();
+  if (t.startsWith("and(") && t.endsWith(")")) return splitTop(t.slice(4, -1)).map(condToSql).join(" AND ");
+  if (t.startsWith("or(") && t.endsWith(")")) return `(${orToSql(t.slice(3, -1))})`;
+  const [col, op, ...rest] = t.split(".");
+  const value = rest.join(".");
+  const ops: Record<string, string> = { eq: "=", neq: "<>", gte: ">=", lte: "<=", gt: ">", lt: "<" };
+  if (op === "is") return `${ident(col)} IS ${value === "null" ? "NULL" : value.toUpperCase()}`;
+  if (!ops[op]) throw new Error(`harness or(): unsupported op ${op}`);
+  return `${ident(col)} ${ops[op]} ${lit(value)}`;
+}
+function orToSql(expr: string): string {
+  return splitTop(expr).map((t) => `(${condToSql(t)})`).join(" OR ");
+}
+
 interface PgError { code?: string; message: string }
 type Result = { data: unknown; error: PgError | null; count?: number | null };
 
@@ -203,6 +231,8 @@ class Builder implements PromiseLike<Result> {
   in(c: string, vs: unknown[]) {
     this.filters.push(vs.length ? `${ident(c)} IN (${vs.map(lit).join(",")})` : "FALSE"); return this;
   }
+  /** PostgREST or(): "a.gte.x,and(b.is.null,c.gte.y)" — subset used by app code. */
+  or(expr: string) { this.filters.push(`(${orToSql(expr)})`); return this; }
   order(c: string, o?: { ascending?: boolean }) {
     this.orders.push(`${ident(c)} ${o?.ascending === false ? "DESC" : "ASC"}`); return this;
   }

@@ -89,6 +89,8 @@ function makeFinalizationDatabase(
   }));
 
   const database = {
+    // Pre-migration schema: accounting function absent (explicit legacy path).
+    rpc: async () => ({ data: null, error: { code: "PGRST202", message: "function not found" } }),
     from(table: string) {
       if (table === "slip_batches") {
         return {

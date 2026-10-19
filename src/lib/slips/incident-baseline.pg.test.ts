@@ -21,6 +21,9 @@ import {
 } from "@/lib/slips/testing/pg-slip-harness";
 
 const pgAvailable = await probePg();
+if (!pgAvailable && process.env.SLIP_INGEST_REQUIRE === "1") {
+  throw new Error("SLIP_INGEST_REQUIRE=1 but PostgreSQL 17 harness unavailable");
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnySupabase = any;
@@ -33,7 +36,8 @@ describe.skipIf(!pgAvailable)("incident baseline (pre-fix schema, legacy path)",
   beforeAll(async () => {
     db = await createSlipTestDb(
       "slip_base",
-      SLIP_PIPELINE_MIGRATIONS.filter((m) => !m.includes("slip_image_ingestion_ledger")),
+      // Pre-fix schema: everything up to (not including) the P0 remediation migrations.
+      SLIP_PIPELINE_MIGRATIONS.filter((m) => m < "20261017100000"),
     );
   }, 120_000);
 
@@ -77,8 +81,25 @@ describe.skipIf(!pgAvailable)("incident baseline (pre-fix schema, legacy path)",
       source: { type: "group", groupId: G, userId: "U-seller" },
       message: { type: "image", id: `m-${G}-${i + 1}`, contentProvider: { type: "line" } },
     }));
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await webhook.processEvents(events as any, "dest", { deferOrderedProcessing: false });
+    // Characterize the OLD receipt path directly. The current application
+    // intentionally refuses a multi-event payload when the atomic payload RPC
+    // is absent, so routing it through processEvents would prove the new guard
+    // instead of replaying the historical incident.
+    for (const event of events) {
+      await supa.rpc("receive_line_webhook_event", {
+        p_line_event_id: event.webhookEventId,
+        p_destination: "dest",
+        p_event_type: event.type,
+        p_source_type: event.source.type,
+        p_source_id: event.source.groupId,
+        p_user_id: event.source.userId,
+        p_message_id: event.message.id,
+        p_message_type: event.message.type,
+        p_raw_text: null,
+        p_payload: event,
+      });
+    }
+    await webhook.recoverPendingOrderedEvents(25);
 
     // Head-of-line: images 1-5 attached, image 6 failed and stopped the drain.
     expect(await db.scalar(`SELECT count(*) FROM slip_evidences WHERE batch_id='${batchId}'`)).toBe("5");
