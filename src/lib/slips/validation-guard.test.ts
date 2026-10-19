@@ -149,6 +149,7 @@ function makeExtracted(amount: number, idx: number, slipType: SlipType = "BANK_S
     transferAmount:  slipType === "BANK_SLIP_QR" || slipType === "BANK_SLIP_NO_QR" ? amount : null,
     paidAmount:      slipType === "GWALLET" || slipType === "THAI_HELP_THAI" ? amount : null,
     transactionTime: null,
+    referenceId:     `TEST-REF-${idx}`,
     _idx:            idx,
   };
 }
@@ -253,7 +254,11 @@ describe("duplicate guard", () => {
       makeExtractedWithRef(500, "REF-002"),
     ];
     const flags = computeValidationFlags(evidences, null);
-    expect(flags.every((f) => !f.flagged)).toBe(true);
+    expect(flags[0].flagged).toBe(false);
+    expect(flags[1].flagReasons).toContain("ไม่พบรหัสอ้างอิง");
+    expect(flags[2].flagReasons).toContain("ไม่พบรหัสอ้างอิง");
+    expect(flags[3].flagReasons).toContain("ไม่พบรหัสอ้างอิง");
+    expect(flags[4].flagged).toBe(false);
   });
 
   it("a FAILED check does not consume a reference for the duplicate guard", () => {
@@ -291,6 +296,7 @@ function makeExtractedWithTime(
     transferAmount:  amount,
     paidAmount:      null,
     transactionTime,
+    referenceId:     `TEST-DATE-${idx}`,
     _idx:            idx,
   };
 }
@@ -580,6 +586,7 @@ describe("Production batch fixture: n0i — wat takl0m — 10/6/2569", () => {
     transferAmount:  number | null;
     paidAmount:      number | null;
     transactionTime: string | null;
+    referenceId:     string;
     failureReason:   null;
   };
 
@@ -603,11 +610,15 @@ describe("Production batch fixture: n0i — wat takl0m — 10/6/2569", () => {
       transferAmount,
       paidAmount,
       transactionTime: txTime,
+      referenceId:     `TEST-FIXTURE-REF-${idx}`,
       failureReason:   null,
     };
   }
 
   // 25 rows — actual slip types, amounts, statuses and timestamps.
+  // Synthetic unique TEST-FIXTURE-REF values isolate legacy amount/date tests;
+  // they are NOT recovered real transaction IDs. Missing-reference safety has
+  // separate tests and must never be bypassed in production.
   //
   // Trusted 19 items: #1(154.80) + #2-5(4×100) + #7-8(2×200) + #13-14(2×300)
   //                   + #16-18(3×200) + #19-22(4×50) + #23(26.60) + #24-25(2×200)

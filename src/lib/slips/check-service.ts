@@ -79,9 +79,23 @@ export class SlipCheckService implements SlipCheckProcessor {
 
       if (updateError) throw new Error("Could not save extracted slip fields");
 
+      // A database trigger may downgrade a verified result to NEED_REVIEW when
+      // another worker simultaneously admits the same reference/image.
+      // Always report the persisted disposition, never the pre-trigger guess.
+      const { data: persisted, error: readError } = await this.supabase
+        .from("slip_checks")
+        .select("status, failure_reason")
+        .eq("id", checkId)
+        .single();
+      if (readError || !persisted) {
+        throw new Error("Could not verify persisted slip disposition");
+      }
+      const admittedStatus = persisted.status;
+      const admissionReason = persisted.failure_reason;
+
       log.info("slip extraction completed", {
         checkId,
-        status,
+        status: admittedStatus,
         slipType: extraction.slipType,
         confidence: extraction.confidence,
         isInBatch,
@@ -91,16 +105,22 @@ export class SlipCheckService implements SlipCheckProcessor {
       // The batch finalizer will aggregate results and send one summary
       // (it has its own in-batch duplicate flag via validation-guard.ts).
       if (!isInBatch) {
-        const duplicateWarning = await this.checkTransactionDuplicate(
+        const duplicateWarning = admissionReason === "duplicate_transaction_reference_global"
+          ? "🔴 พบสลิปรหัสธุรกรรมซ้ำกับรายการที่รับไว้แล้ว ระบบไม่รวมยอดซ้ำ กรุณาตรวจสอบกับเสมียน"
+          : admissionReason === "duplicate_image_sha256_global"
+            ? "🔴 พบรูปสลิปเดิมที่เคยรับแล้ว ระบบไม่รวมยอดซ้ำ กรุณาตรวจสอบกับเสมียน"
+            : admissionReason === "missing_transaction_reference_global"
+              ? "🟡 ไม่พบรหัสอ้างอิงรายการ ระบบพักยอดไว้เพื่อตรวจสอบด้วยมือ"
+              : await this.checkTransactionDuplicate(
           checkId,
-          status,
+          admittedStatus,
           extraction.referenceId,
           evidence.source_id,
           log,
         );
         await this.pushSummary(
           evidence.source_id,
-          duplicateWarning ?? buildSlipLineSummary(extraction, status),
+          duplicateWarning ?? buildSlipLineSummary(extraction, admittedStatus),
           log,
         );
       }
@@ -282,6 +302,7 @@ function safeFailureReason(error: unknown): string {
     "Slip check could not be created": "check_create_failed",
     "Private slip evidence could not be downloaded": "evidence_download_failed",
     "Could not save extracted slip fields": "check_update_failed",
+    "Could not verify persisted slip disposition": "check_readback_failed",
     "Image extraction provider returned no structured output": "extractor_empty_output",
     "Image extraction provider returned invalid JSON": "extractor_invalid_output",
     "Extractor returned a non-object result": "extractor_invalid_output",

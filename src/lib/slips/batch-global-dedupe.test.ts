@@ -312,8 +312,10 @@ describe("batch finalizer global slip dedupe", () => {
     expect(marked[2].globallyDuplicate).toBe(false);
 
     const message = buildBatchSummaryMessage(marked);
-    expect(message).toContain("อ่านครบ: 2 รูป");
-    expect(message).toMatch(/600(?:[,.]0+)? บาท/);
+    expect(message).toContain("อ่านครบ: 1 รูป");
+    expect(message).toContain("รอตรวจมือ: 2 รูป");
+    expect(message).toMatch(/500(?:[,.]0+)? บาท/);
+    expect(message).toContain("ไม่พบรหัสอ้างอิง");
     expect(message).toContain("สลิปซ้ำ");
     expect(message).not.toContain("REF-001");
   });
