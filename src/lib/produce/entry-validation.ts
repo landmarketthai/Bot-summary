@@ -22,6 +22,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { canonicalItemLine } from "./business-fingerprint";
 import type { WeighSession, WeighSessionItem } from "@/lib/parsers/weigh-session/types";
 import {
   boundedEditDistance,
@@ -45,6 +46,24 @@ const QUANTITY_EPSILON = 0.0005;
 export type ProduceValidationSeverity = "blocking" | "review_required" | "advisory";
 
 export type ProduceValidationException =
+  | {
+      kind: "suspected_duplicate_item";
+      severity: "review_required";
+      itemNumber: number;
+      productName: string;
+      firstItemNumber: number;
+      quantity: number;
+      unit: string;
+      price: number;
+    }
+  | {
+      kind: "excess_return";
+      severity: "advisory";
+      productName: string;
+      unit: string;
+      withdrawnQuantity: number;
+      returnedQuantity: number;
+    }
   | {
       kind: "subunit_confirmation";
       severity: "review_required";
@@ -323,6 +342,23 @@ export function validateProduceEntry(input: ProduceValidationInput): ProduceVali
   // normalized the confident cases (product-vocabulary.ts).
   reconciliation.push(...vocabularyExceptions(parsed));
   reviews.push(...subunitExceptions(parsed));
+  const seenItems = new Map<string, number>();
+  for (const item of parsed.items) {
+    if (item.quantity === null || item.unit === null || item.price_per_unit === null) continue;
+    const key = JSON.stringify([item.transaction_type, canonicalItemLine({
+      productName: canonicalProductIdentity(item.product_name, item.unit),
+      transactionType: item.transaction_type,
+      unit: item.unit, quantity: item.quantity, pricePerUnit: item.price_per_unit,
+      basisQuantity: item.basis_quantity, basisUnit: item.basis_unit, basisPrice: item.basis_price,
+    })]);
+    const firstItemNumber = seenItems.get(key);
+    if (firstItemNumber !== undefined) reviews.push({
+      kind: "suspected_duplicate_item", severity: "review_required",
+      itemNumber: item.item_number, productName: item.product_name, firstItemNumber,
+      quantity: item.quantity, unit: item.unit, price: item.price_per_unit,
+    });
+    else seenItems.set(key, item.item_number);
+  }
 
   // ── 2. Identity and price of every return line, against the master.
   // An unbound legacy session has no knowable round, so the only master it can
@@ -399,6 +435,11 @@ export function validateProduceEntry(input: ProduceValidationInput): ProduceVali
         goodReturnQuantity: round3(cell.goodReturnQuantity),
         damagedQuantity: round3(cell.damagedQuantity),
         excessQuantity: round3(returned - cell.withdrawnQuantity),
+      });
+      advisories.push({
+        kind: "excess_return", severity: "advisory", productName: cell.productName,
+        unit: cell.unit, withdrawnQuantity: round3(cell.withdrawnQuantity),
+        returnedQuantity: round3(returned),
       });
     }
   }

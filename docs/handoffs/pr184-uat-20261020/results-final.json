@@ -1,0 +1,252 @@
+{
+  "environment": {
+    "database": "pr184_uat",
+    "postgres": "127.0.0.1:55484",
+    "postgrest": "127.0.0.1:55486",
+    "webhook": "127.0.0.1:55487",
+    "outbound": "loopback allowlist only",
+    "runtime": "development"
+  },
+  "scenarios": {
+    "A_finalization": "Previously persisted; see execution-initial.log",
+    "final_database": {
+      "returnDocuments": 1,
+      "returnRows": 26,
+      "returnBaht": 13725,
+      "withdrawalBaht": 19375.5,
+      "pending": [
+        {
+          "status": "duplicate",
+          "terminalized": true
+        }
+      ]
+    },
+    "D_sales": {
+      "awaitingReturnCount": 0,
+      "totalSalesSatang": 565050,
+      "confirmedSalesSatang": 586050,
+      "pendingReviewSalesSatang": -21000,
+      "adjustmentSatang": 0,
+      "valueAuthoritative": false,
+      "trustedCount": 23,
+      "unresolvedCount": 3,
+      "soldOutCount": 0,
+      "priceConflictCount": 0,
+      "priceConflictMarketCount": 0,
+      "priceIssueCount": 2,
+      "incompleteReturnIssueCount": 0,
+      "excludedFromSalesCount": 0,
+      "vegetableMarketDataPresent": false,
+      "markets": [
+        {
+          "awaitingReturnCount": 0,
+          "marketLabel": "พาซิโอ้ผลไม้",
+          "totalSalesSatang": 565050,
+          "confirmedSalesSatang": 586050,
+          "pendingReviewSalesSatang": -21000,
+          "adjustmentSatang": 0,
+          "valueAuthoritative": false,
+          "trustedCount": 23,
+          "unresolvedCount": 3,
+          "soldOutCount": 0,
+          "priceIssueCount": 2,
+          "incompleteReturnIssueCount": 0,
+          "excludedFromSalesCount": 0
+        }
+      ],
+      "reviewItems": [
+        {
+          "marketLabel": "พาซิโอ้ผลไม้",
+          "productName": "ทับทิม",
+          "unit": "ลูก",
+          "status": "QUANTITY_BLOCKED",
+          "valueStatus": "PENDING_REVIEW",
+          "reasons": [
+            "returns_exceed_withdrawal"
+          ],
+          "soldQuantity": null,
+          "enteredPriceSatang": 1000,
+          "centralPriceSatang": null,
+          "confirmedSalesSatang": null,
+          "pendingReviewSalesSatang": -3000,
+          "adjustmentSatang": 0,
+          "returnEvidenceIncomplete": false
+        },
+        {
+          "marketLabel": "พาซิโอ้ผลไม้",
+          "productName": "มะม่วงจิ้ว",
+          "unit": "โล",
+          "status": "VALUE_BLOCKED",
+          "valueStatus": "PENDING_REVIEW",
+          "reasons": [
+            "return_price_mismatch"
+          ],
+          "soldQuantity": 0,
+          "enteredPriceSatang": 2000,
+          "centralPriceSatang": null,
+          "confirmedSalesSatang": null,
+          "pendingReviewSalesSatang": -5400,
+          "adjustmentSatang": 0,
+          "returnEvidenceIncomplete": false
+        },
+        {
+          "marketLabel": "พาซิโอ้ผลไม้",
+          "productName": "มังคุด",
+          "unit": "โล",
+          "status": "VALUE_BLOCKED",
+          "valueStatus": "PENDING_REVIEW",
+          "reasons": [
+            "return_price_mismatch"
+          ],
+          "soldQuantity": 0,
+          "enteredPriceSatang": 2000,
+          "centralPriceSatang": null,
+          "confirmedSalesSatang": null,
+          "pendingReviewSalesSatang": -12600,
+          "adjustmentSatang": 0,
+          "returnEvidenceIncomplete": false
+        }
+      ]
+    },
+    "D_financial": {
+      "fruit": {
+        "withdrawalValueSatang": 1933150,
+        "salesValueSatang": 586050,
+        "pendingReviewSalesSatang": -21000,
+        "unavailableCount": 0,
+        "awaitingReturnCount": 0,
+        "goodReturnValueSatang": 1368100,
+        "houseStockValueSatang": null,
+        "readyValueSatang": null,
+        "markets": [
+          {
+            "marketLabel": "พาซิโอ้ผลไม้",
+            "withdrawalValueSatang": 1933150,
+            "salesValueSatang": 586050,
+            "pendingReviewSalesSatang": -21000,
+            "unavailableCount": 0,
+            "awaitingReturnCount": 0,
+            "goodReturnValueSatang": 1368100
+          }
+        ]
+      },
+      "other": {
+        "withdrawalValueSatang": 4400,
+        "salesValueSatang": 0,
+        "pendingReviewSalesSatang": 0,
+        "unavailableCount": 0,
+        "awaitingReturnCount": 0,
+        "goodReturnValueSatang": 4400,
+        "houseStockValueSatang": null,
+        "readyValueSatang": null,
+        "markets": [
+          {
+            "marketLabel": "พาซิโอ้ผลไม้",
+            "withdrawalValueSatang": 4400,
+            "salesValueSatang": 0,
+            "pendingReviewSalesSatang": 0,
+            "unavailableCount": 0,
+            "awaitingReturnCount": 0,
+            "goodReturnValueSatang": 4400
+          }
+        ]
+      }
+    }
+  },
+  "validation": {
+    "priceMangosteen": true,
+    "priceMango": true,
+    "excessPomegranate": true,
+    "duplicatePapayaReview": true,
+    "additionalMain": [
+      {
+        "status": "finalized",
+        "session_id": "dcbcbce7-1cd6-462c-a51c-c6a58025d044",
+        "notification_id": "1349f518-8073-4709-8793-c9629c90b4f8",
+        "replaced_produce_session_id": null
+      }
+    ],
+    "additional": [
+      {
+        "status": "finalized",
+        "session_id": "ffc49c96-8abe-4657-852e-022d107f07b4",
+        "notification_id": "15e38340-49f0-4f3a-902b-6734532609d9",
+        "replaced_produce_session_id": null
+      }
+    ],
+    "additionalDatabase": {
+      "documents": 2,
+      "rows": 2,
+      "baht": 960,
+      "quantity": 60
+    },
+    "otherMarket": [
+      {
+        "awaitingReturnCount": 1,
+        "marketLabel": "ราชพฤก",
+        "totalSalesSatang": 0,
+        "confirmedSalesSatang": 0,
+        "pendingReviewSalesSatang": 0,
+        "adjustmentSatang": 0,
+        "valueAuthoritative": false,
+        "trustedCount": 0,
+        "unresolvedCount": 1,
+        "soldOutCount": 0,
+        "priceIssueCount": 0,
+        "incompleteReturnIssueCount": 1,
+        "excludedFromSalesCount": 1
+      },
+      {
+        "awaitingReturnCount": 0,
+        "marketLabel": "วัดทุ่งลานนา",
+        "totalSalesSatang": 6000,
+        "confirmedSalesSatang": 6000,
+        "pendingReviewSalesSatang": 0,
+        "adjustmentSatang": 0,
+        "valueAuthoritative": true,
+        "trustedCount": 1,
+        "unresolvedCount": 0,
+        "soldOutCount": 0,
+        "priceIssueCount": 0,
+        "incompleteReturnIssueCount": 0,
+        "excludedFromSalesCount": 0
+      }
+    ]
+  },
+  "expiry": {
+    "sweep": {
+      "expired": 1,
+      "expiredEmptyDraft": 0,
+      "expiredIncomplete": 1
+    },
+    "retained": {
+      "terminalized": true,
+      "finalization_status": "failed_closed",
+      "accumulated_text": "กี้-ราชพฤก เบิก 18/10/2569\n1.มังคุด20บาท\n1โล"
+    },
+    "reply": [
+      "C-pr184-uat-expiry",
+      "⚠️ รายการหมดอายุหลังไม่มีการอัปเดต 30 นาที ยังไม่ได้บันทึกยอดเงิน\nข้อความเดิมยังเก็บไว้ กรุณาเปิดหัวรายการวันเดิม ตลาดเดิม และประเภทเดิม แล้วส่งรายการเดิมให้ครบและจบรายการอีกครั้ง\nตรวจสรุปเดิมก่อนส่งซ้ำ ระบบตรวจรายการซ้ำก่อนบันทึก ห้ามใช้คำสั่งเบิกเพิ่มหรือชั่งคืนเพิ่มเพื่อส่งชุดเดิมซ้ำ"
+    ],
+    "recovery": [
+      {
+        "status": "finalized",
+        "session_id": "849af122-274f-4a39-ab76-1f43a232d207",
+        "notification_id": "75434f14-919c-412b-b52a-f19525a8d6ef",
+        "replaced_produce_session_id": null
+      }
+    ],
+    "replay": [
+      {
+        "reason": "compatibility_fingerprint",
+        "status": "duplicate"
+      }
+    ],
+    "database": {
+      "documents": 1,
+      "rows": 1,
+      "baht": 20
+    }
+  },
+  "assertionFailures": []
+}

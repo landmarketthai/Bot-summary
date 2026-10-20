@@ -149,6 +149,7 @@ describe("summarizeSales", () => {
     ]);
 
     expect(summarizeSales(report)).toEqual({
+      awaitingReturnCount: 0,
       totalSalesSatang: 2_246_074,
       confirmedSalesSatang: 2_174_074,
       pendingReviewSalesSatang: 72_000,
@@ -158,8 +159,8 @@ describe("summarizeSales", () => {
       unresolvedCount: 107,
       soldOutCount: 2,
       markets: [
-        { marketLabel: "\u0e15\u0e25\u0e32\u0e14\u0e40\u0e2d", totalSalesSatang: 2_246_074, confirmedSalesSatang: 2_174_074, pendingReviewSalesSatang: 72_000, adjustmentSatang: -1_000, valueAuthoritative: false, trustedCount: 77, unresolvedCount: 107, soldOutCount: 2, priceIssueCount: 1, incompleteReturnIssueCount: 1, excludedFromSalesCount: 0 },
-        { marketLabel: "\u0e15\u0e25\u0e32\u0e14\u0e1a\u0e35", totalSalesSatang: 2_246_074, confirmedSalesSatang: 2_174_074, pendingReviewSalesSatang: 72_000, adjustmentSatang: -1_000, valueAuthoritative: false, trustedCount: 77, unresolvedCount: 107, soldOutCount: 0, priceIssueCount: 1, incompleteReturnIssueCount: 0, excludedFromSalesCount: 1 },
+        { awaitingReturnCount: 0, marketLabel: "\u0e15\u0e25\u0e32\u0e14\u0e40\u0e2d", totalSalesSatang: 2_246_074, confirmedSalesSatang: 2_174_074, pendingReviewSalesSatang: 72_000, adjustmentSatang: -1_000, valueAuthoritative: false, trustedCount: 77, unresolvedCount: 107, soldOutCount: 2, priceIssueCount: 1, incompleteReturnIssueCount: 1, excludedFromSalesCount: 0 },
+        { awaitingReturnCount: 0, marketLabel: "\u0e15\u0e25\u0e32\u0e14\u0e1a\u0e35", totalSalesSatang: 2_246_074, confirmedSalesSatang: 2_174_074, pendingReviewSalesSatang: 72_000, adjustmentSatang: -1_000, valueAuthoritative: false, trustedCount: 77, unresolvedCount: 107, soldOutCount: 0, priceIssueCount: 1, incompleteReturnIssueCount: 0, excludedFromSalesCount: 1 },
       ],
       priceConflictCount: 2,
       priceConflictMarketCount: 2,

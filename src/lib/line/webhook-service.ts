@@ -55,7 +55,7 @@ import {
   latestDraftItemAction,
   parseSubunitConfirmCommandLine,
 } from "@/lib/parsers/weigh-session/draft-item-command";
-import { mainCloserRefusal } from "@/lib/parsers/weigh-session/main-closer";
+import { mainCloserRefusal, normalizeProduceCloser, unclearProduceCloser } from "@/lib/parsers/weigh-session/main-closer";
 import {
   PendingSessionService,
   PendingSessionAfterCloseBoundaryError,
@@ -698,7 +698,7 @@ export function normalizeLine(line: string): string {
 }
 
 export function normalizeText(text: string): string {
-  return text.split("\n").map(normalizeLine).join("\n");
+  return text.split("\n").map((line) => normalizeProduceCloser(normalizeLine(line))).join("\n");
 }
 
 export function isProduceOrderingEvent(event: LineEvent): boolean {
@@ -1482,6 +1482,12 @@ export class WebhookService {
         sessionKey = routed.session.session_key;
         pending = routed.session;
       }
+    }
+
+    if (unclearProduceCloser(normalizedText)) {
+      if (replyToken) await replyMessage(replyToken,
+        "⚠️ ยังไม่ปิดรายการ เพราะคำสั่งไม่ชัดเจน\nข้อมูลเดิมยังอยู่ กรุณาส่ง “จบรายการเบิก” หรือ “จบรายการชั่งคืน” ให้ตรงประเภท");
+      return { eventId, eventType: event.type, status: "saved", parsed: false };
     }
 
     if (pending) {
@@ -2414,6 +2420,8 @@ export class WebhookService {
 
     if (hasSessionEnd(normalizedText)) {
       log.warn("SESSION_END received without active pending session", { sessionKey });
+      if (replyToken) await replyMessage(replyToken,
+        "⚠️ ไม่มีรายการที่เปิดอยู่ อาจหมดอายุหรือบันทึกแล้ว\nกรุณาตรวจสรุปเดิมก่อน หากยังไม่บันทึก ให้เปิดหัวรายการวันเดิม ตลาดเดิม แล้วส่งรายการเดิมให้ครบและจบรายการอีกครั้ง ระบบจะตรวจรายการซ้ำก่อนบันทึก");
       return { eventId, eventType: event.type, status: "saved", parsed: false };
     }
 

@@ -12,6 +12,7 @@ import { isStrictBusinessDate } from "./cron";
 import { isQaMarketLabel } from "./qa-scopes";
 import { resolveCentralPricesForDate } from "@/lib/white-sheet/load";
 import { resolveWithdrawalUnitPriceBaht } from "@/lib/white-sheet/calculate";
+import { exactLineTotalScaled } from "@/lib/produce/exact-line-total";
 import {
   loadRoundReturnStatuses,
   roundsWithIncompleteReturn,
@@ -1178,8 +1179,7 @@ function adaptRows(
     const marketLabel = normalizedMarketLabel(row.market_name);
     const rawUnit = row.unit?.trim() ?? "";
     const enteredPriceBaht =
-      row.base_transaction_type?.trim() === "เบิก"
-      && rawUnit
+      rawUnit
       && row.price_per_unit !== null
         ? resolveWithdrawalUnitPriceBaht({
             unit: rawUnit,
@@ -1200,8 +1200,16 @@ function adaptRows(
       unit: row.unit,
       quantity: row.quantity === null ? null : Number(row.quantity),
       transactionType: row.transaction_type,
+      recordedValueScaled: exactLineTotalScaled({
+        quantity: row.quantity, pricePerUnit: row.price_per_unit,
+        basisQuantity: row.basis_quantity, basisPrice: row.basis_price,
+      }),
+      enteredReturnPriceSatang: row.base_transaction_type?.trim() !== "เบิก"
+        && enteredPriceSatang !== null && Number.isSafeInteger(enteredPriceSatang) && enteredPriceSatang >= 0
+          ? enteredPriceSatang : null,
       enteredPriceSatang:
-        enteredPriceSatang !== null
+        row.base_transaction_type?.trim() === "เบิก"
+        && enteredPriceSatang !== null
         && Number.isSafeInteger(enteredPriceSatang)
         && enteredPriceSatang >= 0
           ? enteredPriceSatang
@@ -1212,6 +1220,7 @@ function adaptRows(
 }
 
 export interface LoadSalesReportOptions {
+  requireReturnEvidence?: boolean;
   /**
    * Include known QA/test market scopes. Default false: production reports —
    * automatic and manual alike — exclude them. Audit paths pass true to see
@@ -1277,6 +1286,7 @@ export async function loadSalesReport(
     : (marketName: string | null) => !isQaMarketLabel(marketName);
 
   return calculateSalesReport({
+    requireReturnEvidence: options.requireReturnEvidence,
     businessDate,
     rows: adaptRows(rows, sourceByRawMessageId, sessionIssues).filter((row) =>
       keep(row.marketName),

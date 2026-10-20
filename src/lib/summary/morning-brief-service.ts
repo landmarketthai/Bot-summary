@@ -153,20 +153,31 @@ export function summarizeProduceFinancial(
 
     let withdrawalValueSatang = 0;
     let salesValueSatang = 0;
+    let pendingReviewSalesSatang = 0;
+    let unavailableCount = 0;
+    let awaitingReturnCount = 0;
     let goodReturnValueSatang = 0;
     for (const row of sectionRows) {
       const priceSatang = row.enteredPriceSatang ?? row.centralPriceSatang;
-      if (priceSatang != null) {
-        withdrawalValueSatang += quantityTimesSatang(row.withdrawnQuantity, priceSatang) ?? 0;
-        goodReturnValueSatang += quantityTimesSatang(row.goodReturnQuantity, priceSatang) ?? 0;
-      }
-      salesValueSatang += (row.expectedSalesSatang ?? 0) + (row.pendingReviewSalesSatang ?? 0);
+      withdrawalValueSatang += row.recordedWithdrawalSatang !== undefined
+        ? row.recordedWithdrawalSatang ?? 0
+        : priceSatang == null ? 0 : quantityTimesSatang(row.withdrawnQuantity, priceSatang) ?? 0;
+      goodReturnValueSatang += row.recordedGoodReturnSatang !== undefined
+        ? row.recordedGoodReturnSatang ?? 0
+        : priceSatang == null ? 0 : quantityTimesSatang(row.goodReturnQuantity, priceSatang) ?? 0;
+      salesValueSatang += row.expectedSalesSatang ?? 0;
+      pendingReviewSalesSatang += row.pendingReviewSalesSatang ?? 0;
+      if (row.valueStatus === "UNAVAILABLE") unavailableCount += 1;
+      if (row.reasons.includes("missing_return_evidence")) awaitingReturnCount += 1;
     }
 
     return [{
       marketLabel: market.marketLabel,
       withdrawalValueSatang,
       salesValueSatang,
+      pendingReviewSalesSatang,
+      unavailableCount,
+      awaitingReturnCount,
       goodReturnValueSatang,
     }];
   });
@@ -183,6 +194,9 @@ export function summarizeProduceFinancial(
   return {
     withdrawalValueSatang,
     salesValueSatang,
+    pendingReviewSalesSatang: markets.reduce((sum, market) => sum + market.pendingReviewSalesSatang, 0),
+    unavailableCount: markets.reduce((sum, market) => sum + market.unavailableCount, 0),
+    awaitingReturnCount: markets.reduce((sum, market) => sum + market.awaitingReturnCount, 0),
     goodReturnValueSatang,
     houseStockValueSatang,
     readyValueSatang: houseStockValueSatang == null ? null : goodReturnValueSatang + houseStockValueSatang,
@@ -213,7 +227,7 @@ export async function loadMorningBriefReport(
 ): Promise<MorningBriefReport> {
   const [purchasePlanning, sales, houseStock, reconciliation, whiteSheetStatus, produceRows] = await Promise.all([
     loadPurchasePlanningReport(supabase, businessDate),
-    loadSalesReport(supabase, businessDate),
+    loadSalesReport(supabase, businessDate, { requireReturnEvidence: true }),
     loadHouseStock(supabase, businessDate),
     loadReconciliation(supabase, businessDate),
     loadWhiteSheetStatus(supabase, businessDate),

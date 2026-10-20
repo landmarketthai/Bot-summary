@@ -152,12 +152,14 @@ describe("@Botsummary read-white-sheet routing", () => {
     expect(s.images).toEqual([]); expect(s.slipLookups()).toBe(1);
   });
   it.each(["multi-image", "external"])("refuses %s without invoking extraction or any writing flow", async (kind) => {
-    const s = setup(); const image = event("img");
+    const s = setup(); const now = Date.now() - 1000;
+    // LINE order: the command is sent before the image (claim order is LINE time).
+    const command = event("cmd", "@Botsummary อ่านใบขาว", "U1", now); const image = event("img", undefined, "U1", now + 1);
     if (image.message.type === "image") {
       if (kind === "multi-image") image.message.imageSet = { id: "set", index: 1, total: 2 };
       else image.message.contentProvider = { type: "external", originalContentUrl: "https://example.com/private" };
     }
-    await s.service.processEvents([event("cmd", "@Botsummary อ่านใบขาว"), image], "Ubot");
+    await s.service.processEvents([command, image], "Ubot");
     expect(s.images).toEqual([]); expect(s.replies.at(-1)).toBe(PREVIEW_RETRY_REPLY); expect(s.slipLookups()).toBe(0);
   });
   it("contains reader failure without falling into slip/settlement writes", async () => {

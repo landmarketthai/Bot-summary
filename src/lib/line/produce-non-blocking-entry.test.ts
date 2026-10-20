@@ -340,7 +340,7 @@ describe("real case: ดำ-วัดทุ่งลานนา ชั่งค
       product_name: "ไซมัส", unit: "โล", withdrawn_quantity: 5, good_return_quantity: 8.1, excess_quantity: 3.1,
     }]);
     expect(rows.some((row) => row.category === "produce_unknown_product")).toBe(true);
-    expect(notification).not.toContain("ตรวจสอบ");
+    expect(notification).toContain("ไซมัส — เบิก 5 โล → คืน 8.1 โล");
   });
 });
 

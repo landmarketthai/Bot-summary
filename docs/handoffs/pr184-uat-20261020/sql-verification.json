@@ -1,0 +1,428 @@
+{
+    "main": {
+        "products": [
+            {
+                "quantity": 6.000,
+                "product_name": "กล้วยหอม",
+                "total_amount": 720.00000,
+                "price_per_unit": 120.00,
+                "base_transaction_type": "คืน"
+            },
+            {
+                "quantity": 47.000,
+                "product_name": "ทับทิม",
+                "total_amount": 470.00000,
+                "price_per_unit": 10.00,
+                "base_transaction_type": "คืน"
+            },
+            {
+                "quantity": 37.500,
+                "product_name": "น้อยหน่า",
+                "total_amount": 1500.00000,
+                "price_per_unit": 40.00,
+                "base_transaction_type": "คืน"
+            },
+            {
+                "quantity": 4.000,
+                "product_name": "ผลไม้กล่อง",
+                "total_amount": 80.00000,
+                "price_per_unit": 20.00,
+                "base_transaction_type": "คืน"
+            },
+            {
+                "quantity": 29.900,
+                "product_name": "ฝรั่ง",
+                "total_amount": 1046.50000,
+                "price_per_unit": 35.00,
+                "base_transaction_type": "คืน"
+            },
+            {
+                "quantity": 26.000,
+                "product_name": "ฝรั่งแดง",
+                "total_amount": 910.00000,
+                "price_per_unit": 35.00,
+                "base_transaction_type": "คืน"
+            },
+            {
+                "quantity": 2.800,
+                "product_name": "พุทราจีน",
+                "total_amount": 280.00000,
+                "price_per_unit": 100.00,
+                "base_transaction_type": "คืน"
+            },
+            {
+                "quantity": 25.500,
+                "product_name": "พุทรานมสด",
+                "total_amount": 1020.00000,
+                "price_per_unit": 40.00,
+                "base_transaction_type": "คืน"
+            },
+            {
+                "quantity": 2.700,
+                "product_name": "มะม่วงจิ้ว",
+                "total_amount": 108.00000,
+                "price_per_unit": 40.00,
+                "base_transaction_type": "คืน"
+            },
+            {
+                "quantity": 118.000,
+                "product_name": "มะละกอ",
+                "total_amount": 1888.00000,
+                "price_per_unit": 16.00,
+                "base_transaction_type": "คืน"
+            },
+            {
+                "quantity": 6.300,
+                "product_name": "มังคุด",
+                "total_amount": 252.00000,
+                "price_per_unit": 40.00,
+                "base_transaction_type": "คืน"
+            },
+            {
+                "quantity": 36.600,
+                "product_name": "ลองกอง",
+                "total_amount": 1281.00000,
+                "price_per_unit": 35.00,
+                "base_transaction_type": "คืน"
+            },
+            {
+                "quantity": 6.100,
+                "product_name": "ลูกไหนดำ",
+                "total_amount": 305.00000,
+                "price_per_unit": 50.00,
+                "base_transaction_type": "คืน"
+            },
+            {
+                "quantity": 3.600,
+                "product_name": "สาลี่หอม",
+                "total_amount": 144.00000,
+                "price_per_unit": 40.00,
+                "base_transaction_type": "คืน"
+            },
+            {
+                "quantity": 1.200,
+                "product_name": "ส้มจีน",
+                "total_amount": 60.00000,
+                "price_per_unit": 50.00,
+                "base_transaction_type": "คืน"
+            },
+            {
+                "quantity": 14.300,
+                "product_name": "ส้มสายน้ำผึ้ง",
+                "total_amount": 572.00000,
+                "price_per_unit": 40.00,
+                "base_transaction_type": "คืน"
+            },
+            {
+                "quantity": 0.700,
+                "product_name": "ส้มเขียวหวาน",
+                "total_amount": 28.00000,
+                "price_per_unit": 40.00,
+                "base_transaction_type": "คืน"
+            },
+            {
+                "quantity": 3.000,
+                "product_name": "ส้มโอ",
+                "total_amount": 90.00000,
+                "price_per_unit": 30.00,
+                "base_transaction_type": "คืน"
+            },
+            {
+                "quantity": 3.900,
+                "product_name": "องุ่นคิมสัน",
+                "total_amount": 507.00000,
+                "price_per_unit": 130.00,
+                "base_transaction_type": "คืน"
+            },
+            {
+                "quantity": 7.700,
+                "product_name": "องุ่นจักรพรรดิ์",
+                "total_amount": 616.00000,
+                "price_per_unit": 80.00,
+                "base_transaction_type": "คืน"
+            },
+            {
+                "quantity": 3.900,
+                "product_name": "แก้วมังกร",
+                "total_amount": 175.50000,
+                "price_per_unit": 45.00,
+                "base_transaction_type": "คืน"
+            },
+            {
+                "quantity": 9.700,
+                "product_name": "แก้วมังกรแดง",
+                "total_amount": 388.00000,
+                "price_per_unit": 40.00,
+                "base_transaction_type": "คืน"
+            },
+            {
+                "quantity": 9.000,
+                "product_name": "แตงโม",
+                "total_amount": 270.00000,
+                "price_per_unit": 30.00,
+                "base_transaction_type": "คืน"
+            },
+            {
+                "quantity": 35.000,
+                "product_name": "แตงไทย",
+                "total_amount": 560.00000,
+                "price_per_unit": 16.00,
+                "base_transaction_type": "คืน"
+            },
+            {
+                "quantity": 41.000,
+                "product_name": "แอปเปิ้ล",
+                "total_amount": 410.00000,
+                "price_per_unit": 10.00,
+                "base_transaction_type": "คืน"
+            },
+            {
+                "quantity": 1.100,
+                "product_name": "แอปเปิ้ลแคราะ",
+                "total_amount": 44.00000,
+                "price_per_unit": 40.00,
+                "base_transaction_type": "คืน"
+            },
+            {
+                "quantity": 6.000,
+                "product_name": "กล้วยหอม",
+                "total_amount": 720.00000,
+                "price_per_unit": 120.00,
+                "base_transaction_type": "เบิก"
+            },
+            {
+                "quantity": 44.000,
+                "product_name": "ทับทิม",
+                "total_amount": 440.00000,
+                "price_per_unit": 10.00,
+                "base_transaction_type": "เบิก"
+            },
+            {
+                "quantity": 37.500,
+                "product_name": "น้อยหน่า",
+                "total_amount": 1500.00000,
+                "price_per_unit": 40.00,
+                "base_transaction_type": "เบิก"
+            },
+            {
+                "quantity": 4.000,
+                "product_name": "ผลไม้กล่อง",
+                "total_amount": 80.00000,
+                "price_per_unit": 20.00,
+                "base_transaction_type": "เบิก"
+            },
+            {
+                "quantity": 29.900,
+                "product_name": "ฝรั่ง",
+                "total_amount": 1046.50000,
+                "price_per_unit": 35.00,
+                "base_transaction_type": "เบิก"
+            },
+            {
+                "quantity": 26.000,
+                "product_name": "ฝรั่งแดง",
+                "total_amount": 910.00000,
+                "price_per_unit": 35.00,
+                "base_transaction_type": "เบิก"
+            },
+            {
+                "quantity": 61.405,
+                "product_name": "พุทราจีน",
+                "total_amount": 6140.50000,
+                "price_per_unit": 100.00,
+                "base_transaction_type": "เบิก"
+            },
+            {
+                "quantity": 25.500,
+                "product_name": "พุทรานมสด",
+                "total_amount": 1020.00000,
+                "price_per_unit": 40.00,
+                "base_transaction_type": "เบิก"
+            },
+            {
+                "quantity": 2.700,
+                "product_name": "มะม่วงจิ้ว",
+                "total_amount": 54.00000,
+                "price_per_unit": 20.00,
+                "base_transaction_type": "เบิก"
+            },
+            {
+                "quantity": 30.000,
+                "product_name": "มะละกอ",
+                "total_amount": 480.00000,
+                "price_per_unit": 16.00,
+                "base_transaction_type": "เบิก"
+            },
+            {
+                "quantity": 30.000,
+                "product_name": "มะละกอ",
+                "total_amount": 480.00000,
+                "price_per_unit": 16.00,
+                "base_transaction_type": "เบิก"
+            },
+            {
+                "quantity": 58.000,
+                "product_name": "มะละกอ",
+                "total_amount": 928.00000,
+                "price_per_unit": 16.00,
+                "base_transaction_type": "เบิก"
+            },
+            {
+                "quantity": 6.300,
+                "product_name": "มังคุด",
+                "total_amount": 126.00000,
+                "price_per_unit": 20.00,
+                "base_transaction_type": "เบิก"
+            },
+            {
+                "quantity": 36.600,
+                "product_name": "ลองกอง",
+                "total_amount": 1281.00000,
+                "price_per_unit": 35.00,
+                "base_transaction_type": "เบิก"
+            },
+            {
+                "quantity": 6.100,
+                "product_name": "ลูกไหนดำ",
+                "total_amount": 305.00000,
+                "price_per_unit": 50.00,
+                "base_transaction_type": "เบิก"
+            },
+            {
+                "quantity": 3.600,
+                "product_name": "สาลี่หอม",
+                "total_amount": 144.00000,
+                "price_per_unit": 40.00,
+                "base_transaction_type": "เบิก"
+            },
+            {
+                "quantity": 1.200,
+                "product_name": "ส้มจีน",
+                "total_amount": 60.00000,
+                "price_per_unit": 50.00,
+                "base_transaction_type": "เบิก"
+            },
+            {
+                "quantity": 14.300,
+                "product_name": "ส้มสายน้ำผึ้ง",
+                "total_amount": 572.00000,
+                "price_per_unit": 40.00,
+                "base_transaction_type": "เบิก"
+            },
+            {
+                "quantity": 0.700,
+                "product_name": "ส้มเขียวหวาน",
+                "total_amount": 28.00000,
+                "price_per_unit": 40.00,
+                "base_transaction_type": "เบิก"
+            },
+            {
+                "quantity": 3.000,
+                "product_name": "ส้มโอ",
+                "total_amount": 90.00000,
+                "price_per_unit": 30.00,
+                "base_transaction_type": "เบิก"
+            },
+            {
+                "quantity": 3.900,
+                "product_name": "องุ่นคิมสัน",
+                "total_amount": 507.00000,
+                "price_per_unit": 130.00,
+                "base_transaction_type": "เบิก"
+            },
+            {
+                "quantity": 7.700,
+                "product_name": "องุ่นจักรพรรดิ์",
+                "total_amount": 616.00000,
+                "price_per_unit": 80.00,
+                "base_transaction_type": "เบิก"
+            },
+            {
+                "quantity": 3.900,
+                "product_name": "แก้วมังกร",
+                "total_amount": 175.50000,
+                "price_per_unit": 45.00,
+                "base_transaction_type": "เบิก"
+            },
+            {
+                "quantity": 9.700,
+                "product_name": "แก้วมังกรแดง",
+                "total_amount": 388.00000,
+                "price_per_unit": 40.00,
+                "base_transaction_type": "เบิก"
+            },
+            {
+                "quantity": 9.000,
+                "product_name": "แตงโม",
+                "total_amount": 270.00000,
+                "price_per_unit": 30.00,
+                "base_transaction_type": "เบิก"
+            },
+            {
+                "quantity": 35.000,
+                "product_name": "แตงไทย",
+                "total_amount": 560.00000,
+                "price_per_unit": 16.00,
+                "base_transaction_type": "เบิก"
+            },
+            {
+                "quantity": 41.000,
+                "product_name": "แอปเปิ้ล",
+                "total_amount": 410.00000,
+                "price_per_unit": 10.00,
+                "base_transaction_type": "เบิก"
+            },
+            {
+                "quantity": 1.100,
+                "product_name": "แอปเปิ้ลแคราะ",
+                "total_amount": 44.00000,
+                "price_per_unit": 40.00,
+                "base_transaction_type": "เบิก"
+            }
+        ],
+        "returnBaht": 13725.00000,
+        "returnRows": 26,
+        "withdrawalBaht": 19375.50000,
+        "withdrawalRows": 28,
+        "returnDocuments": 1,
+        "withdrawalDocuments": 1,
+        "documentDifferenceBaht": 5650.50000
+    },
+    "additional": {
+        "baht": 960.00000,
+        "rows": 2,
+        "quantity": 60.000,
+        "documents": 2
+    },
+    "environment": {
+        "database": "pr184_uat",
+        "serverPort": 55484,
+        "currentUser": "pr184_uat",
+        "serverAddress": "127.0.0.1",
+        "productionCredentialsUsed": false
+    },
+    "expiryRecovery": {
+        "baht": 20.00000,
+        "rows": 1,
+        "documents": 1
+    },
+    "duplicateReviews": [
+        {
+            "confirmed": true,
+            "exceptions": [
+                {
+                    "kind": "suspected_duplicate_item",
+                    "unit": "ลูก",
+                    "price": 16,
+                    "quantity": 30,
+                    "severity": "review_required",
+                    "itemNumber": 23,
+                    "productName": "มะละกอ",
+                    "firstItemNumber": 22
+                }
+            ],
+            "confirmedEvent": "pr184-uat-48",
+            "presentedEvent": "pr184-uat-47"
+        }
+    ]
+}

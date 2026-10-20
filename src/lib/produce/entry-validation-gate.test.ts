@@ -387,6 +387,21 @@ describe("fail closed", () => {
 });
 
 describe("finalize gate", () => {
+  it("holds identical lines until a distinct confirmation, and invalidates it after edits", async () => {
+    const db = new FakeDb();
+    const parsed = parseWeighSession([
+      "ขวัญ-พาซิโอ้ผลไม้ เบิก 19/10/2569", "1.มะละกอ16บาท", "30ลูก",
+      "2.มะละกอ16บาท", "30ลูก", "จบรายการเบิก",
+    ].join("\n"));
+    expect((await runProduceCloseGate(db.client(), REF, parsed, "E1")).decision).toBe("review_presented");
+    expect((await runProduceCloseGate(db.client(), REF, parsed, "E1")).decision).toBe("review_presented");
+    expect((await runProduceFinalizeGate(db.client(), REF, parsed)).decision).not.toBe("proceed");
+    expect((await runProduceCloseGate(db.client(), REF, parsed, "E2")).decision).toBe("proceed");
+    expect((await runProduceFinalizeGate(db.client(), REF, parsed)).decision).toBe("proceed");
+    const changed = { ...parsed, items: [...parsed.items, { ...parsed.items[1], item_number: 3 }] };
+    expect((await runProduceFinalizeGate(db.client(), REF, changed)).decision).not.toBe("proceed");
+    expect(parsed.items).toHaveLength(2);
+  });
   it("lets a price advisory finalize without acknowledgement", async () => {
     const db = new FakeDb({ [ROUND]: withdrawal });
     const gate = await runProduceFinalizeGate(db.client(), REF, priceChange());
