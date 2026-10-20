@@ -33,4 +33,3 @@ export function morningBriefLayoutFixture(after: MorningBriefReport, markets: nu
     purchasePlanning: { strong: { count: items.length, productNames: items.map(item => item.productName), items },
       surplus: empty, reduce: empty, unknown: empty }, houseStock: { status: "missing" } };
 }
-
