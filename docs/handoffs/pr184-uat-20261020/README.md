@@ -50,7 +50,13 @@ Added regression coverage for actual 20-to-40 prices, excess quantities, unchang
 - [Before PDF](pdf/before-return.pdf), [after PDF](pdf/after-return.pdf), with all five rendered pages under [rendered/](rendered/). All pages visually inspected; no clipped amounts/status labels or overlapping tables.
 - [Before report JSON](before-return.report.json), [after report JSON](after-return.report.json).
 - `origin/main` remains `11e2f4342a900d6dcaf0107f47970ed2a2bc46e4`; no new main changes affected this run.
-- PR #182 checked at `0bb0088258a9047ed6641cedfb3b37446fe909f0`. Only shared changed file: `src/lib/line/webhook-service.ts`. A three-way merge preview against the common base returned **exit 0, no conflict markers**. No PR #182 file/worktree/ref was changed. This checks textual integration; the eventual combined release should retain both Produce and Slip behavior.
+- PR #182 checked at `0bb0088258a9047ed6641cedfb3b37446fe909f0`. Shared changed files: `src/lib/line/webhook-service.ts` and the later CI fixture correction in `webhook-white-sheet-reader.test.ts`. Three-way merge previews against the common base returned **exit 0, no conflict markers**; the fixture block matches PR #182's existing correction. No PR #182 file/worktree/ref was changed. This checks textual integration; the eventual combined release should retain both Produce and Slip behavior.
 - Latest HEAD CI must be read from [PR #184 checks](https://github.com/landmarketthai/Bot-summary/pull/184/checks) after this commit is pushed. Successful old-HEAD checks are not substituted for new-HEAD verification.
 
 Production remains untouched. Functional UAT is complete. Release approval, merge and production deployment remain separate actions and were not performed.
+
+## New-HEAD CI fixture issue
+
+The first follow-up run at `334cc09` exposed an unchanged, clock-dependent White Sheet routing fixture in the cross-feature guard: the image event was created before its command, although the test expected the command to precede it. With different millisecond timestamps the durable queue correctly claimed the image first. The log showed the preview-start reply instead of the retry reply; financial/Produce UAT remained green. This is separate from the 21 previously recorded baseline failures.
+
+The fixture now uses one explicit clock and command/image timestamps in the intended order. Expected responses and production routing are unchanged. PR #182 already contains the same timestamp-order correction; only this small fixture fix was applied on branch #184, without modifying or merging PR #182. The corrected file passed **25 tests / 0 failures / 72 assertions** locally. [Failed first-HEAD job evidence](https://github.com/landmarketthai/Bot-summary/actions/runs/39374646790/job/118469933153). The resulting final HEAD must have its own CI checks.

@@ -14,3 +14,8 @@ PASS (exit 0)
 PDF after final unclassified-money note: 38 pass, 0 fail, 345 assertions, 2 files.
 
 Historical non-PG baseline remains 21 failures, not rerun for this scoped release gate.
+
+ 25 pass
+ 0 fail
+ 72 expect() calls
+Ran 25 tests across 1 file. [188.00ms]
