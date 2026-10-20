@@ -4,6 +4,8 @@ import {
   type SlipExtraction,
 } from "@/lib/slips/extraction-schema";
 import { logger } from "@/lib/logger";
+import { SLIP_INGEST_POLICY } from "@/lib/slips/ingest-policy";
+import { IoTimeoutError, withTimeout } from "@/lib/slips/io-timeout";
 
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 const DEFAULT_MODEL = "gpt-6-luna";
@@ -15,6 +17,10 @@ const RETRY_DELAY_MS: Partial<Record<ExtractionFailureCode, number>> = {
   upstream_error: 1000,
   timeout:        1000,
 };
+const MAX_EXPONENTIAL_RETRY_DELAY_MS = 30_000;
+// An OCR job has a 30s hard cap. If Retry-After cannot fit in that job,
+// fail visibly rather than leave a detached timer that retries after its lease.
+const MAX_INLINE_RETRY_WAIT_MS = 10_000;
 
 export type ExtractionFailureCode =
   | "bad_request"
@@ -33,6 +39,7 @@ export class ExtractionHttpError extends Error {
     public readonly retryable: boolean,
     public readonly responseSnippet: string,
     public readonly durationMs: number,
+    public readonly retryAfterMs: number | null = null,
   ) {
     super(`Image extraction provider returned HTTP ${httpStatus}`);
     this.name = "ExtractionHttpError";
@@ -54,6 +61,8 @@ export class OpenAiSlipExtractor implements SlipExtractor {
     private readonly model = process.env.SLIP_EXTRACTION_MODEL ?? DEFAULT_MODEL,
     private readonly fetchImpl: typeof fetch = fetch,
     private readonly sleepImpl: (ms: number) => Promise<void> = sleep,
+    /** Wall-clock cap for ONE provider call, headers and body. */
+    private readonly callTimeoutMs: number = SLIP_INGEST_POLICY.io.ocrCallTimeoutMs,
   ) {}
 
   async extract(input: SlipExtractionInput): Promise<SlipExtraction> {
@@ -61,6 +70,7 @@ export class OpenAiSlipExtractor implements SlipExtractor {
 
     // One retry for retryable failures (429, 5xx, timeout).
     // Non-retryable failures (400, 401, 403, 404, 413) throw immediately.
+    const jobStartedAtMs = Date.now();
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
         return await this.attemptExtraction(input, attempt);
@@ -70,7 +80,26 @@ export class OpenAiSlipExtractor implements SlipExtractor {
           err.retryable &&
           attempt === 1
         ) {
-          const delay = RETRY_DELAY_MS[err.failureCode] ?? 1000;
+          // Exponential fallback, but never retry before the provider's
+          // Retry-After. The whole OCR job is separately hard-capped by the
+          // caller, so a very large header cannot hold the cron indefinitely.
+          const base = RETRY_DELAY_MS[err.failureCode] ?? 1000;
+          const exponential = Math.min(
+            base * (2 ** (attempt - 1)),
+            MAX_EXPONENTIAL_RETRY_DELAY_MS,
+          );
+          const delay = Math.max(exponential, err.retryAfterMs ?? 0);
+          const fitsJobBudget = Date.now() - jobStartedAtMs + delay + this.callTimeoutMs
+            < SLIP_INGEST_POLICY.io.ocrJobTimeoutMs;
+          if (delay > MAX_INLINE_RETRY_WAIT_MS || !fitsJobBudget) {
+            logger.warn("slip extraction deferred: provider retry delay exceeds OCR job budget", {
+              provider: PROVIDER, model: this.model, failureCode: err.failureCode,
+              httpStatus: err.httpStatus, retryDelayMs: delay,
+            });
+            // The caller records a visible failed OCR/check rather than
+            // triggering a provider call from a timer after its lease expired.
+            throw err;
+          }
           logger.warn("slip extraction retrying after transient error", {
             provider:   PROVIDER,
             model:      this.model,
@@ -97,15 +126,21 @@ export class OpenAiSlipExtractor implements SlipExtractor {
     let response: Response;
 
     try {
-      response = await this.fetchImpl(OPENAI_RESPONSES_URL, {
-        method: "POST",
-        headers: {
-          // Authorization header is intentionally never logged.
-          Authorization: `Bearer ${this.apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: buildRequestBody(this.model, input),
-      });
+      // AbortSignal.timeout also aborts the body read of a real fetch;
+      // withTimeout bounds the call even when the transport ignores the signal.
+      const callSignal = AbortSignal.timeout(this.callTimeoutMs);
+      response = await withTimeout("ocr_http", this.callTimeoutMs, () =>
+        this.fetchImpl(OPENAI_RESPONSES_URL, {
+          method: "POST",
+          headers: {
+            // Authorization header is intentionally never logged.
+            Authorization: `Bearer ${this.apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: buildRequestBody(this.model, input),
+          signal: callSignal,
+        }),
+      );
     } catch (fetchError) {
       const durationMs = Date.now() - start;
       const snippet = fetchError instanceof Error ? fetchError.message.slice(0, 500) : String(fetchError).slice(0, 500);
@@ -127,6 +162,7 @@ export class OpenAiSlipExtractor implements SlipExtractor {
     if (!response.ok) {
       const snippet = await safeReadBody(response);
       const { failureCode, retryable } = classifyHttpStatus(response.status);
+      const retryAfterMs = parseProviderRetryAfterMs(response.headers.get("retry-after"));
 
       logger.warn("slip extraction HTTP error", {
         provider:        PROVIDER,
@@ -138,6 +174,7 @@ export class OpenAiSlipExtractor implements SlipExtractor {
         durationMs,
         imageSizeBytes:  input.bytes.length,
         attempt,
+        retryAfterMs,
       });
 
       throw new ExtractionHttpError(
@@ -146,10 +183,19 @@ export class OpenAiSlipExtractor implements SlipExtractor {
         retryable,
         snippet,
         durationMs,
+        retryAfterMs,
       );
     }
 
-    const payload = await response.json() as unknown;
+    let payload: unknown;
+    try {
+      payload = await withTimeout("ocr_body", this.callTimeoutMs, () => response.json() as Promise<unknown>);
+    } catch (bodyError) {
+      if (bodyError instanceof IoTimeoutError) {
+        throw new ExtractionHttpError(0, "timeout", true, bodyError.message, Date.now() - start);
+      }
+      throw bodyError;
+    }
     const outputText = readOutputText(payload);
     if (!outputText) throw new Error("Image extraction provider returned no structured output");
 
@@ -162,6 +208,18 @@ export class OpenAiSlipExtractor implements SlipExtractor {
 
     return parseSlipExtraction(parsed);
   }
+}
+
+export function parseProviderRetryAfterMs(
+  value: string | null,
+  nowMs = Date.now(),
+): number | null {
+  if (!value) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds * 1_000);
+  const retryAt = Date.parse(value);
+  if (!Number.isFinite(retryAt)) return null;
+  return Math.max(0, retryAt - nowMs);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

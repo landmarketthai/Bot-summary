@@ -40,6 +40,7 @@ function makeRecoverSupabase(
   opts: {
     statusUpdates?: Array<Record<string, unknown>>;
     updateErrors?: Array<{ message: string } | null>;
+    accountingError?: { code: string; message: string };
   } = {},
 ): SupabaseClient<Database> {
   const { statusUpdates = [], updateErrors = [] } = opts;
@@ -55,6 +56,13 @@ function makeRecoverSupabase(
   };
 
   return {
+    rpc: async () => ({
+      data: opts.accountingError ? null : {
+        batch_id: "batch-1", received_total: 0, attached: 0, waiting: 0,
+        queue_dead: 0, failed_permanent: 0, late_after_finalize: 0, incomplete: 0,
+      },
+      error: opts.accountingError ?? null,
+    }),
     from(table: string) {
       if (table === "slip_batches") {
         return {
@@ -146,6 +154,22 @@ function failingPush(
 // ── recoverSlipBatch — business logic tests ───────────────────────────────────
 
 describe("recoverSlipBatch — delivery + persistence outcomes", () => {
+  it("accounting timeout keeps recovery unsent and leaves the batch unchanged", async () => {
+    const statusUpdates: Array<Record<string, unknown>> = [];
+    const pushCalls: Array<{ to: string; retryKey?: string }> = [];
+    const supabase = makeRecoverSupabase(
+      { status: "processing", summary_sent_at: null },
+      { statusUpdates, accountingError: { code: "57014", message: "statement timeout" } },
+    );
+
+    const result = await recoverSlipBatch(supabase, "batch-1", deliveredPush(pushCalls));
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("57014");
+    expect(pushCalls).toHaveLength(0);
+    expect(statusUpdates).toHaveLength(0);
+  });
+
   it("A. LINE 2xx + DB update succeeds → finalized", async () => {
     const statusUpdates: Array<Record<string, unknown>> = [];
     const supabase = makeRecoverSupabase(

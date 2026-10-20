@@ -105,6 +105,6 @@ export class ReviewDatabase extends FakeDatabase {
   readonly allowedReviewWrites = ["raw_messages", "white_sheet_review_turns"];
   onlyReviewLedgerWrites(): boolean {
     return this.writes.every((table) => this.allowedReviewWrites.includes(table))
-      && this.rpcCalls.every((name) => /^(receive|claim|complete)_line_webhook_event$/u.test(name));
+      && this.rpcCalls.every((name) => /^((receive|claim|complete)_line_webhook_event|receive_line_webhook_payload)$/u.test(name));
   }
 }

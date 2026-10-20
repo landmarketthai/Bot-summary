@@ -41,6 +41,82 @@ jobs:
       - name: Typecheck
         run: bun x tsc --noEmit --incremental false
 
+  p0-slip-image-ingestion:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      ALLOW_DISPOSABLE_POSTGRES_TESTS: "1"
+      PGHOST: localhost
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGPORT: "5432"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      # Fail CI when the local disposable PostgreSQL is unavailable instead of silently skipping tests.
+      - name: Require local PostgreSQL 17
+        run: |
+          pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER"
+          version="$(psql -d postgres -tAc 'SHOW server_version_num')"
+          test "$version" -ge 170000
+      - name: P0 slip ingestion and incident baseline (real PostgreSQL)
+        run: >-
+          SLIP_INGEST_REQUIRE=1 bun test
+          src/lib/slips/image-ingestion.pg.test.ts
+          src/lib/slips/image-ingestion-ordering.pg.test.ts
+          src/lib/slips/incident-baseline.pg.test.ts
+          src/lib/slips/finalizer-accounting.pg.test.ts
+          src/lib/slips/ocr-claim.pg.test.ts
+          src/lib/slips/image-lease-fencing.pg.test.ts
+          src/lib/slips/schema-compat.pg.test.ts
+          src/lib/slips/cron-cohort-recovery.pg.test.ts
+          src/lib/slips/slip-ledger-alert.pg.test.ts
+          src/lib/slips/full-rollback-sequence.pg.test.ts
+          src/lib/slips/global-dedupe-integration.pg.test.ts
+      - name: P0 slip finalizer, retry and webhook regressions
+        run: >-
+          bun test
+          src/lib/slips/image-ingestion.test.ts
+          src/lib/slips/ingest-policy.test.ts
+          src/lib/slips/evidence-service-timeout.test.ts
+          src/lib/slips/check-service.test.ts
+          src/lib/slips/batch-claim-signature-fallback.test.ts
+          src/lib/slips/batch-finalizer.test.ts
+          src/lib/slips/batch-global-dedupe.test.ts
+          src/lib/line/webhook-slip-session.test.ts
+          src/lib/line/webhook-slip-close-v2.test.ts
+          src/lib/line/webhook-guided-slip-open.test.ts
+          src/lib/slips/slip-session.test.ts
+          src/app/api/cron/finalize-slip-batches/recover/route.test.ts
+          src/app/api/cron/finalize-slip-batches/route.test.ts
+          src/app/api/cron/slip-ledger-alert/route.test.ts
+          src/lib/line/webhook-white-sheet-review.test.ts
+          src/lib/line/webhook-white-sheet-reader.test.ts
+          src/lib/line/webhook-image-batch.test.ts
+          src/lib/line/webhook-produce-validation.test.ts
+          src/lib/line/webhook-physical-inventory.test.ts
+          src/lib/line/webhook-session-identity.test.ts
+      - name: Typecheck
+        run: npm run type-check
+      - name: git diff --check against PR base
+        run: git diff --check "origin/${{ github.base_ref }}...HEAD"
+
   p2e-accountability-round:
     runs-on: ubuntu-latest
     services:

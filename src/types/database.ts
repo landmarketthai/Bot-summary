@@ -26,6 +26,18 @@ export type SlipCheckStatus =
 export type SlipType =
   | "BANK_SLIP_QR" | "BANK_SLIP_NO_QR" | "THAI_HELP_THAI"
   | "GWALLET" | "NUMBERS_ONLY" | "WHITE_PAPER" | "UNKNOWN";
+export type SlipImageEventState =
+  | "unbound"
+  | "no_session"
+  | "received"
+  | "ingesting"
+  | "retry_pending"
+  | "attached"
+  | "failed_permanent"
+  | "excluded_after_close"
+  | "excluded_not_slip"
+  | "late_after_finalize";
+
 export type SlipBatchStatus =
   | "collecting" | "closing" | "processing" | "completed" | "review_needed" | "failed";
 export type ManualSlipSessionStatus      = "open" | "closed";
@@ -1067,6 +1079,8 @@ export interface Database {
           batch_type:      string;
           finalized_at:    string | null;
           closing_at:      string | null;
+          open_event_ts_ms: number | null;
+          close_event_ts_ms: number | null;
           accountability_round_id: string | null;
         };
         Insert: {
@@ -1090,6 +1104,8 @@ export interface Database {
           batch_type?:      string;
           finalized_at?:    string | null;
           closing_at?:      string | null;
+          open_event_ts_ms?: number | null;
+          close_event_ts_ms?: number | null;
           accountability_round_id?: string | null;
         };
         Update: {
@@ -1113,8 +1129,53 @@ export interface Database {
           batch_type?:      string;
           finalized_at?:    string | null;
           closing_at?:      string | null;
+          open_event_ts_ms?: number | null;
+          close_event_ts_ms?: number | null;
           accountability_round_id?: string | null;
         };
+        Relationships: [];
+      };
+
+      slip_image_events: {
+        Row: {
+          id:              string;
+          line_message_id: string;
+          raw_message_id:  string;
+          batch_id:        string | null;
+          source_id:       string;
+          source_type:     string;
+          line_user_id:    string | null;
+          event_ts_ms:     number;
+          state:           SlipImageEventState;
+          attempts:        number;
+          lease_until:     string | null;
+          next_retry_at:   string | null;
+          evidence_id:     string | null;
+          last_error:      string | null;
+          received_at:     string;
+          resolved_at:     string | null;
+          updated_at:      string;
+        };
+        Insert: {
+          id?:              string;
+          line_message_id:  string;
+          raw_message_id:   string;
+          batch_id?:        string | null;
+          source_id:        string;
+          source_type:      string;
+          line_user_id?:    string | null;
+          event_ts_ms:      number;
+          state?:           SlipImageEventState;
+          attempts?:        number;
+          lease_until?:     string | null;
+          next_retry_at?:   string | null;
+          evidence_id?:     string | null;
+          last_error?:      string | null;
+          received_at?:     string;
+          resolved_at?:     string | null;
+          updated_at?:      string;
+        };
+        Update: Partial<Database["public"]["Tables"]["slip_image_events"]["Insert"]>;
         Relationships: [];
       };
 
@@ -1373,6 +1434,8 @@ export interface Database {
           confidence:            number | null;
           extracted_json:        Json | null;
           failure_reason:        string | null;
+          claim_token:           number;
+          lease_until:           string | null;
           created_at:            string;
           updated_at:            string;
         };
@@ -1393,6 +1456,8 @@ export interface Database {
           confidence?:            number | null;
           extracted_json?:        Json | null;
           failure_reason?:        string | null;
+          claim_token?:           number;
+          lease_until?:           string | null;
           created_at?:            string;
           updated_at?:            string;
         };
@@ -1413,6 +1478,8 @@ export interface Database {
           confidence?:             number | null;
           extracted_json?:         Json | null;
           failure_reason?:         string | null;
+          claim_token?:            number;
+          lease_until?:            string | null;
           created_at?:             string;
           updated_at?:             string;
         };
@@ -2433,6 +2500,10 @@ export interface Database {
         };
         Returns: { raw_message_id: string; duplicate: boolean };
       };
+      receive_line_webhook_payload: {
+        Args: { p_events: Json };
+        Returns: Json;
+      };
       claim_line_webhook_event: {
         Args: { p_source_id: string };
         Returns: {
@@ -2487,6 +2558,46 @@ export interface Database {
           cash_entry: Database["public"]["Tables"]["digital_white_sheet_cash_entries"]["Row"] | null;
         };
       };
+      begin_slip_image_attempt: {
+        Args: { p_line_message_id: string; p_max_attempts?: number; p_lease_seconds?: number };
+        Returns: Json;
+      };
+      attach_slip_image_event: {
+        Args: { p_line_message_id: string; p_evidence_id: string; p_attempt: number };
+        Returns: Json;
+      };
+      fail_slip_image_event: {
+        Args: { p_line_message_id: string; p_error: string; p_attempt: number; p_max_attempts?: number; p_permanent?: boolean };
+        Returns: Json;
+      };
+      list_due_slip_image_events: {
+        Args: { p_limit?: number };
+        Returns: string[];
+      };
+      claim_slip_check: {
+        Args: { p_evidence_id: string; p_lease_seconds?: number };
+        Returns: Json;
+      };
+      complete_slip_check: {
+        Args: { p_check_id: string; p_token: number; p_status: string; p_fields: Json };
+        Returns: Json;
+      };
+      fail_slip_check: {
+        Args: { p_check_id: string; p_token: number; p_reason: string };
+        Returns: Json;
+      };
+      list_slip_ocr_redrive: {
+        Args: { p_limit?: number };
+        Returns: string[];
+      };
+      slip_batch_image_accounting: {
+        Args: { p_batch_id: string };
+        Returns: Json;
+      };
+      slip_image_ledger_health: {
+        Args: Record<string, never>;
+        Returns: Json;
+      };
       attach_evidence_to_slip_batch: {
         Args: { p_batch_id: string; p_evidence_id: string };
         Returns: number;
@@ -2508,6 +2619,7 @@ export interface Database {
           p_batch_id:      string;
           p_quiet_seconds: number;
           p_max_seconds:   number;
+          p_ingest_max_seconds?: number;
         };
         Returns: Array<{
           claimed_id:        string;

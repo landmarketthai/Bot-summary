@@ -11,7 +11,7 @@ jobs:
     steps:
       - name: Call finalize-slip-batches cron
         run: |
-          curl -sf --max-time 30 \
+          curl -sf --max-time 70 \
             -X GET \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             https://bot-summary.vercel.app/api/cron/finalize-slip-batches
