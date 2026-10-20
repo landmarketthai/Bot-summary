@@ -1212,6 +1212,7 @@ function adaptRows(
 }
 
 export interface LoadSalesReportOptions {
+  requireReturnEvidence?: boolean;
   /**
    * Include known QA/test market scopes. Default false: production reports —
    * automatic and manual alike — exclude them. Audit paths pass true to see
@@ -1277,6 +1278,7 @@ export async function loadSalesReport(
     : (marketName: string | null) => !isQaMarketLabel(marketName);
 
   return calculateSalesReport({
+    requireReturnEvidence: options.requireReturnEvidence,
     businessDate,
     rows: adaptRows(rows, sourceByRawMessageId, sessionIssues).filter((row) =>
       keep(row.marketName),

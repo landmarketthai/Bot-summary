@@ -389,7 +389,7 @@ function FinancialKpis({ label, financial, showTitle = true }: {
   // Category names appear in the section title, not repeatedly in narrow cards.
   // Short, consistent labels make every row legible on an A4 printout.
   const cards = [
-    { label: "ยอดขายเมื่อวาน", value: bahtFromSatang(financial.salesValueSatang), hint: "บาท", tone: S.kpiSales },
+    { label: "ยอดขายยืนยันแล้ว", value: bahtFromSatang(financial.salesValueSatang), hint: "บาท", tone: S.kpiSales },
     { label: "ยอดเบิกไปขาย", value: bahtFromSatang(financial.withdrawalValueSatang), hint: "บาท", tone: S.kpiWithdrawal },
     { label: "ยอดชั่งคืนดี", value: bahtFromSatang(financial.goodReturnValueSatang), hint: "บาท", tone: S.kpiReturn },
     { label: "สต็อกที่บ้าน", value: financial.houseStockValueSatang == null ? "รอข้อมูล" : bahtFromSatang(financial.houseStockValueSatang),
@@ -410,6 +410,7 @@ function FinancialKpis({ label, financial, showTitle = true }: {
         </View>
       </View>)}
     </View>
+    <Text style={S.explanationText}>ยอดรอตรวจ {bahtFromSatang(financial.pendingReviewSalesSatang ?? 0)} บาท • ยังไม่คำนวณ {financial.unavailableCount ?? 0} รายการ{financial.awaitingReturnCount ? ` • รอชั่งคืน ${financial.awaitingReturnCount} รายการ` : ""}</Text>
   </View>;
 }
 
@@ -444,7 +445,10 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
       ? financialSections.reduce((total, { financial }) => total + financial[key]!, 0)
       : null;
   const combined: MorningBriefFruitFinancialSummary = {
-    salesValueSatang: report.sales.totalSalesSatang,
+    salesValueSatang: report.sales.confirmedSalesSatang,
+    pendingReviewSalesSatang: report.sales.pendingReviewSalesSatang,
+    unavailableCount: report.sales.excludedFromSalesCount,
+    awaitingReturnCount: report.sales.awaitingReturnCount,
     withdrawalValueSatang: financialTotal("withdrawalValueSatang"),
     goodReturnValueSatang: financialTotal("goodReturnValueSatang"),
     houseStockValueSatang: knownTotal("houseStockValueSatang"),
@@ -466,7 +470,7 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
   const marketRows = report.sales.markets?.length
     ? report.sales.markets
     : [...coverMarketTotals.entries()].map(([marketLabel, totals]) => ({
-        marketLabel, totalSalesSatang: totals.sales,
+        marketLabel, totalSalesSatang: totals.sales, confirmedSalesSatang: totals.sales, awaitingReturnCount: 0,
       }));
   // The five money-field summaries stay on one A4 page even on busy days.
   // Extra market rows continue AFTER the cover.
@@ -488,7 +492,7 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
     || report.sales.pendingReviewSalesSatang !== 0);
   const salesBreakdownDiffers = report.produceFinancial != null
     && financialSections.length > 0
-    && sectionSalesTotalSatang !== report.sales.totalSalesSatang;
+    && sectionSalesTotalSatang !== report.sales.confirmedSalesSatang;
   const stockSections = STOCK_CATEGORIES.flatMap((category) => {
     const items = stockItems.filter((item) => stockCategory(item) === category);
     const financial = category === "ผลไม้" ? financialBySection.fruit
@@ -508,12 +512,10 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
       </View>
       <View style={S.dailyOverview} wrap={false}>
         <Text style={S.dailyOverviewTitle}>
-          {report.sales.excludedFromSalesCount > 0
-            ? "ยอดขายตามข้อมูลที่มี"
-            : "ยอดขายรวมทั้งวัน"} — {thaiNumericDate(report.businessDate)}
+          ยอดขายยืนยันแล้ว — {thaiNumericDate(report.businessDate)}
         </Text>
-        <Text style={S.dailyOverviewTotal}>{bahtFromSatang(report.sales.totalSalesSatang)} บาท</Text>
-        <Text style={S.dailyOverviewDetails}>รวมยอดที่คำนวณได้จากทุกหมวดสินค้าและทุกตลาด</Text>
+        <Text style={S.dailyOverviewTotal}>{bahtFromSatang(report.sales.confirmedSalesSatang)} บาท</Text>
+        <Text style={S.dailyOverviewDetails}>ทุกหมวดสินค้าและทุกตลาด • ยอดรอตรวจและรอชั่งคืนแสดงแยกด้านล่าง</Text>
       </View>
       <FinancialKpis label="รวมทุกสินค้า" financial={combined} />
       {marketRows.length > 0 ? <View style={{ marginTop: 4 }}>
@@ -522,7 +524,7 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
           <View style={S.tr} fixed>
             <MarketCell width="28%" tone="name" header>ตลาด</MarketCell>
             <MarketCell width="24%" tone="withdrawal" header>เบิกไปขาย</MarketCell>
-            <MarketCell width="24%" tone="sales" header>ยอดขาย</MarketCell>
+            <MarketCell width="24%" tone="sales" header>ยืนยันแล้ว</MarketCell>
             <MarketCell width="24%" tone="return" header>ชั่งคืนดี</MarketCell>
           </View>
           {firstPageMarkets.map((market, index) => {
@@ -530,14 +532,14 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
             return <View key={`${market.marketLabel}-${index}`} style={S.tr} wrap={false}>
               <MarketCell width="28%" tone="name">{market.marketLabel}</MarketCell>
               <MarketCell width="24%" tone="withdrawal">{totals ? bahtFromSatang(totals.withdrawal) : "-"}</MarketCell>
-              <MarketCell width="24%" tone="sales">{bahtFromSatang(market.totalSalesSatang)}</MarketCell>
+              <MarketCell width="24%" tone="sales">{bahtFromSatang(market.confirmedSalesSatang)}{market.awaitingReturnCount ? " • รอชั่งคืน" : ""}</MarketCell>
               <MarketCell width="24%" tone="return">{totals ? bahtFromSatang(totals.goodReturn) : "-"}</MarketCell>
             </View>;
           })}
           <View style={S.tr} wrap={false}>
             <MarketCell width="28%" tone="name" total>รวมทุกตลาด</MarketCell>
             <MarketCell width="24%" tone="withdrawal" total>{bahtFromSatang(combined.withdrawalValueSatang)}</MarketCell>
-            <MarketCell width="24%" tone="sales" total>{bahtFromSatang(report.sales.totalSalesSatang)}</MarketCell>
+            <MarketCell width="24%" tone="sales" total>{bahtFromSatang(report.sales.confirmedSalesSatang)}</MarketCell>
             <MarketCell width="24%" tone="return" total>{bahtFromSatang(combined.goodReturnValueSatang)}</MarketCell>
           </View>
         </View>
@@ -554,7 +556,7 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
           <View style={S.tr} fixed>
             <MarketCell width="28%" tone="name" header>ตลาด</MarketCell>
             <MarketCell width="24%" tone="withdrawal" header>เบิกไปขาย</MarketCell>
-            <MarketCell width="24%" tone="sales" header>ยอดขาย</MarketCell>
+            <MarketCell width="24%" tone="sales" header>ยืนยันแล้ว</MarketCell>
             <MarketCell width="24%" tone="return" header>ชั่งคืนดี</MarketCell>
           </View>
           {remainingMarkets.map((market, index) => {
@@ -562,7 +564,7 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
             return <View style={S.tr} key={`${market.marketLabel}-${index}`} wrap={false}>
               <MarketCell width="28%" tone="name">{market.marketLabel}</MarketCell>
               <MarketCell width="24%" tone="withdrawal">{totals ? bahtFromSatang(totals.withdrawal) : "-"}</MarketCell>
-              <MarketCell width="24%" tone="sales">{bahtFromSatang(market.totalSalesSatang)}</MarketCell>
+              <MarketCell width="24%" tone="sales">{bahtFromSatang(market.confirmedSalesSatang)}{market.awaitingReturnCount ? " • รอชั่งคืน" : ""}</MarketCell>
               <MarketCell width="24%" tone="return">{totals ? bahtFromSatang(totals.goodReturn) : "-"}</MarketCell>
             </View>;
           })}
@@ -574,7 +576,7 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
         <Text style={S.explanationText}>ยอดขายยืนยันแล้ว {bahtFromSatang(report.sales.confirmedSalesSatang)} บาท • ยอดรอตรวจ {bahtFromSatang(report.sales.pendingReviewSalesSatang)} บาท</Text>
         {report.sales.adjustmentSatang !== 0 ? <Text style={S.explanationText}>ยอดปรับราคา {bahtFromSatang(report.sales.adjustmentSatang)} บาท</Text> : null}
         {report.sales.excludedFromSalesCount > 0 ? <Text style={S.dailyOverviewWarning}>มี {report.sales.excludedFromSalesCount} รายการที่คำนวณยอดขายไม่ได้ รวมอยู่ในยอดรายงานไม่ได้</Text> : null}
-        {salesBreakdownDiffers ? <Text style={S.dailyOverviewWarning}>ยอดแยกหมวดรวม {bahtFromSatang(sectionSalesTotalSatang)} บาท ต่างจากยอดขายรวมในระบบ {bahtFromSatang(report.sales.totalSalesSatang)} บาท — โปรดตรวจสอบความครบถ้วนของข้อมูล ห้ามถือว่าเป็นยอดยืนยันเพิ่ม</Text> : null}
+        {salesBreakdownDiffers ? <Text style={S.dailyOverviewWarning}>ยอดแยกหมวดรวม {bahtFromSatang(sectionSalesTotalSatang)} บาท ต่างจากยอดขายยืนยันแล้วในระบบ {bahtFromSatang(report.sales.confirmedSalesSatang)} บาท — โปรดตรวจสอบความครบถ้วนของข้อมูล ห้ามถือว่าเป็นยอดยืนยันเพิ่ม</Text> : null}
         {!report.sales.valueAuthoritative || report.sales.excludedFromSalesCount > 0 ? <Text style={S.dailyOverviewWarning}>ยอดขายมีรายการที่ยังไม่ครบหรือรอตรวจ กรุณาดูยอดยืนยันแล้วแยกต่างหาก</Text> : null}
       </View>
 

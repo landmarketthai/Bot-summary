@@ -29,6 +29,7 @@ import { occurrenceLetter, parseDraftItemCommandLine } from "./draft-item-comman
 import {
   baseMainTransactionType,
   mainCloserCompatibility,
+  normalizeProduceCloser,
 } from "./main-closer";
 
 // Additional-batch header keyword → the base transaction type its items store.
@@ -286,6 +287,8 @@ export function parseWeighSession(
     } else {
       content = line;
     }
+
+    content = normalizeProduceCloser(content);
 
     // ── Date extraction ────────────────────────────────────────────────────
     if (!date && !prefixMatch) {

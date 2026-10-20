@@ -61,6 +61,10 @@ function parseErrorItemNumber(detail: string): number | null {
 
 function exceptionDetail(exception: ProduceValidationException): string {
   switch (exception.kind) {
+    case "suspected_duplicate_item":
+      return `${exception.productName} เหมือนข้อ ${exception.firstItemNumber} ต้องยืนยันว่าเพิ่มจริง`;
+    case "excess_return":
+      return `${exception.productName} คืน ${exception.returnedQuantity} ${exception.unit} มากกว่าเบิก ${exception.withdrawnQuantity}`;
     case "unknown_unit":
       return `ไม่รู้จักหน่วย “${exception.unit}” ของ ${exception.productName}`;
     case "subunit_confirmation":

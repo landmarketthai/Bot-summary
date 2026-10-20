@@ -114,8 +114,8 @@ describe("Morning Decision Brief", () => {
 
   test("shows business money totals without diagnostic issue counters", () => {
     const message = buildMorningBriefMessage(report());
-    expect(message).toContain("ยอดขายรวมที่คำนวณได้ (บางส่วน) 22,460.74 บาท");
-    expect(message).toContain("ยอดยืนยันแล้ว 21,740.74 บาท");
+    expect(message).toContain("ยอดขายยืนยันแล้ว 21,740.74 บาท");
+    expect(message).toContain("ยอดขายยืนยันแล้ว 21,740.74 บาท");
     expect(message).toContain("ยอดรอตรวจ 720.00 บาท");
     expect(message).toContain("ปรับราคา -10.00 บาท");
     expect(message).not.toContain("รอตรวจราคา 2 รายการ");
@@ -143,12 +143,12 @@ describe("Morning Decision Brief", () => {
       goodReturnValueSatang: sales * 2, houseStockValueSatang: 0, readyValueSatang: sales * 2, markets: [] });
     const message = buildMorningBriefMessage(report({
       produceFinancial: { fruit: financial(100), vegetable: financial(200), other: financial(300) },
-      sales: { ...report().sales, totalSalesSatang: 600, excludedFromSalesCount: 0 },
+      sales: { ...report().sales, totalSalesSatang: 600, confirmedSalesSatang: 600, pendingReviewSalesSatang: 0, excludedFromSalesCount: 0 },
     }));
-    expect(message).toContain("ยอดขายรวม 6.00 บาท");
-    expect(message).toContain("ผลไม้ — ภาพรวมเงิน\nยอดขาย 1.00 บาท\nเบิก 10.00 บาท\nชั่งคืนดี 2.00 บาท");
-    expect(message).toContain("ผัก — ภาพรวมเงิน\nยอดขาย 2.00 บาท");
-    expect(message).toContain("อื่นๆ — ภาพรวมเงิน\nยอดขาย 3.00 บาท");
+    expect(message).toContain("ยอดขายยืนยันแล้ว 6.00 บาท");
+    expect(message).toContain("ผลไม้ — ภาพรวมเงิน\nยอดขายยืนยันแล้ว 1.00 บาท\nยอดรอตรวจ 0.00 บาท\nเบิก 10.00 บาท\nชั่งคืนดี 2.00 บาท");
+    expect(message).toContain("ผัก — ภาพรวมเงิน\nยอดขายยืนยันแล้ว 2.00 บาท");
+    expect(message).toContain("อื่นๆ — ภาพรวมเงิน\nยอดขายยืนยันแล้ว 3.00 บาท");
     expect(message.indexOf("ผลไม้ — ภาพรวมเงิน")).toBeLessThan(message.indexOf("ผัก — ภาพรวมเงิน"));
     expect(message.indexOf("ผัก — ภาพรวมเงิน")).toBeLessThan(message.indexOf("อื่นๆ — ภาพรวมเงิน"));
   });
@@ -240,7 +240,7 @@ describe("Morning Decision Brief", () => {
         excludedFromSalesCount: 0,
       },
     }));
-    expect(message).toContain("💰 ภาพรวมเงิน\nยอดขายรวม 21,740.74 บาท");
+    expect(message).toContain("💰 ภาพรวมเงิน\nยอดขายยืนยันแล้ว 21,740.74 บาท");
     expect(message).not.toContain("ยอดรอตรวจ");
     expect(message).not.toContain("ปรับราคา");
     expect(message).not.toMatch(/ 0 รายการ/);
@@ -286,8 +286,8 @@ describe("Morning Brief LINE layout — Production 2026-09-07 regression", () =>
     expect(messages.length).toBeGreaterThan(1);
     expect(messages[0]).toContain("Part 1/");
     expect(messages[0]).toContain("💰 ภาพรวมเงิน");
-    expect(messages[0]).toContain("ยอดขายรวมที่คำนวณได้ (บางส่วน) 22,460.74 บาท");
-    expect(messages[0]).toContain("ยอดยืนยันแล้ว 21,740.74 บาท");
+    expect(messages[0]).toContain("ยอดขายยืนยันแล้ว 21,740.74 บาท");
+    expect(messages[0]).toContain("ยอดขายยืนยันแล้ว 21,740.74 บาท");
     expect(messages[0]).toContain("ยอดรอตรวจ 720.00 บาท");
     const joined = messages.join("\n");
     expect(joined.indexOf("💰 ภาพรวมเงิน")).toBeLessThan(joined.indexOf("🛒 แผนซื้อของ"));
@@ -314,8 +314,8 @@ describe("Morning Brief LINE layout — Production 2026-09-07 regression", () =>
 
   test("the PDF shows daily money and real stock but skips zero-quantity review placeholders", () => {
     const text = pdfText(MorningBriefA4Doc({ report: heavy, generatedAt: new Date("2026-09-08T01:00:00Z") }));
-    expect(text).toContain("ยอดขายตามข้อมูลที่มี");
-    expect(text).toContain("22,460.74");
+    expect(text).toContain("ยอดขายยืนยันแล้ว");
+    expect(text).toContain("21,740.74");
     // Pending-return names with no proven stock quantity are not inventory rows.
     for (const name of unknownNames) expect(text).not.toContain(name);
     expect(text).not.toContain("สาลี่");

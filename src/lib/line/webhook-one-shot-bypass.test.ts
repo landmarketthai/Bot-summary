@@ -329,7 +329,7 @@ describe("a pasted complete produce document cannot bypass P4A", () => {
     expect(db.rows("produce_sessions")).toHaveLength(0);
   });
 
-  it("rejects a cross-type closer, then finalizes the same return generation once", async () => {
+  it.each(["จบรายการชั่งคืน", "จบรายกาาชั่งคืน"])("rejects a cross-type closer, then finalizes once with %s", async (closer) => {
     const db = new BypassDatabase(MASTER);
     const replies: string[] = [];
     const service = webhook(db, replies);
@@ -349,10 +349,10 @@ describe("a pasted complete produce document cannot bypass P4A", () => {
     expect(db.rows("produce_sessions")).toHaveLength(0);
     expect(db.rows("produce_transactions")).toHaveLength(MASTER.length);
 
-    await service.processEvents([textEvent("จบรายการชั่งคืน")], "destination");
+    await service.processEvents([textEvent(closer)], "destination");
 
     expect(db.pending.session_generation).toBe(generation);
-    expect(db.pending.accumulated_text).toBe(`${originalText}\nจบรายการชั่งคืน`);
+    expect(db.pending.accumulated_text).toBe(`${originalText}\n${closer}`);
     expect(db.pending.close_event_timestamp_ms).not.toBeNull();
     const result = await finalizePendingGeneration(db as never, db.pending);
     expect(result.status).toBe("finalized");
@@ -361,6 +361,19 @@ describe("a pasted complete produce document cannot bypass P4A", () => {
     expect(db.finalizeCalls[0].p_items).toMatchObject([
       { product_name: "ปลาหวานแดง", quantity: 4, transaction_type: "คืน" },
     ]);
+  });
+
+  it("immediately explains an uncertain close while retaining every captured item", async () => {
+    const db = new BypassDatabase(MASTER);
+    const replies: string[] = [];
+    const service = webhook(db, replies);
+    await service.processEvents([textEvent(RETURN_MATCHING.split("\n").slice(0, -1).join("\n"))], "destination");
+    const original = db.pending.accumulated_text;
+    await service.processEvents([textEvent("จบรายกาชั่งคืนน")], "destination");
+    expect(replies.at(-1)).toContain("คำสั่งไม่ชัดเจน");
+    expect(db.pending.accumulated_text).toBe(original);
+    expect(db.pending.close_event_timestamp_ms).toBeNull();
+    expect(db.finalizeCalls).toHaveLength(0);
   });
 
   it("routes through pending generation instead of persisting directly", async () => {
@@ -437,7 +450,7 @@ describe("a pasted complete produce document cannot bypass P4A", () => {
     expect(db.rows("produce_sessions")).toHaveLength(1);
     const payload = db.finalizeCalls[0].p_session as Row;
     expect(payload.validation_errors).toEqual([]);
-    expect(payload.notification_payload).toContain("ราคาแตกต่างจากตอนเบิก");
+    expect(payload.notification_payload).toContain("ต้องตรวจสอบราคา/จำนวนคืน");
   });
 
   it("finalizes a return in a unit the product was not withdrawn in, without asking for a correction", async () => {

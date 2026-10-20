@@ -111,7 +111,7 @@ describe("Morning Brief A4 PDF", () => {
     };
     const tree = MorningBriefA4Doc({ report: mixed, generatedAt: new Date("2026-10-07T08:00:00+07:00") });
     const text = collectText(tree);
-    expect(text).toContain("ยอดขายเมื่อวาน");
+    expect(text).toContain("ยอดขายยืนยันแล้ว");
     expect(text).toContain("มูลค่าสินค้ารอจัดหมวด");
     expect(text).not.toContain("สรุปอื่นๆคงเหลือเพื่อสั่งซื้อ");
     expect(text).toContain("หมวดผลไม้ -");
@@ -182,7 +182,7 @@ describe("Morning Brief A4 PDF", () => {
   test("restores whole-day sales on page one before splitting the 13 October categories", async () => {
     const fruit = {
       withdrawalValueSatang: 4_378_553,
-      salesValueSatang: 1_175_352,
+      salesValueSatang: 1_125_352, pendingReviewSalesSatang: 50_000,
       goodReturnValueSatang: 3_235_524,
       houseStockValueSatang: null, readyValueSatang: null, markets: [],
     };
@@ -216,16 +216,16 @@ describe("Morning Brief A4 PDF", () => {
     const doc = MorningBriefA4Doc({ report: daily, generatedAt: new Date("2026-10-14T08:05:00+07:00") });
     const text = collectText(doc);
     const normalized = text.replace(/\s+/g, " ").trim();
-    expect(text).toContain("ยอดขายรวมทั้งวัน");
-    expect(text).toContain("14,501.52");
-    expect(text.indexOf("14,501.52")).toBeLessThan(text.indexOf("หมวดผลไม้ -"));
+    expect(text).toContain("ยอดขายยืนยันแล้ว");
+    expect(text).toContain("14,001.52");
+    expect(text.indexOf("14,001.52")).toBeLessThan(text.indexOf("หมวดผลไม้ -"));
     expect(normalized).toContain("ยืนยันแล้ว 14,001.52 บาท");
     expect(normalized).toContain("รอตรวจ 500.00 บาท");
-    expect(normalized).toContain("ยอดขายเมื่อวาน 11,753.52 บาท");
-    expect(normalized).toContain("ยอดขายเมื่อวาน 110.00 บาท");
+    expect(normalized).toContain("ยอดขายยืนยันแล้ว 11,253.52 บาท");
+    expect(normalized).toContain("ยอดขายยืนยันแล้ว 110.00 บาท");
     expect(normalized).toContain("มูลค่าสินค้ารอจัดหมวด 2,638.00 บาท");
     expect(text).not.toContain("สรุปอื่นๆคงเหลือเพื่อสั่งซื้อ");
-    expect(text).not.toContain("ต่างจากยอดขายรวมในระบบ");
+    expect(text).not.toContain("ต่างจากยอดขายยืนยันแล้วในระบบ");
     registerFonts();
     const buffer = await renderToBuffer(doc);
     expect(buffer.subarray(0, 4).toString()).toBe("%PDF");
@@ -246,7 +246,8 @@ describe("Morning Brief A4 PDF", () => {
     };
     const data: MorningBriefReport = {
       ...report, businessDate: "2026-10-11",
-      sales: { ...report.sales, totalSalesSatang: 1_598_075, excludedFromSalesCount: 1 },
+      sales: { ...report.sales, totalSalesSatang: 1_598_075, confirmedSalesSatang: 1_598_075,
+        pendingReviewSalesSatang: 0, excludedFromSalesCount: 1 },
       produceFinancial: { fruit, vegetable },
       fruitFinancial: fruit,
       houseStock: { status: "missing" },
@@ -273,10 +274,10 @@ describe("Morning Brief A4 PDF", () => {
       expect(detail).toContain(phrase);
     }
     const fruitHeader = detail.indexOf("หมวดผลไม้ -");
-    const fruitKpis = detail.indexOf("ยอดขายเมื่อวาน", fruitHeader);
+    const fruitKpis = detail.indexOf("ยอดขายยืนยันแล้ว", fruitHeader);
     const fruitTable = detail.indexOf("รายการ (ผลไม้)");
     const vegHeader = detail.indexOf("หมวดผัก -");
-    const vegKpis = detail.indexOf("ยอดขายเมื่อวาน", vegHeader);
+    const vegKpis = detail.indexOf("ยอดขายยืนยันแล้ว", vegHeader);
     const vegTable = detail.indexOf("รายการ (ผัก)");
     expect(fruitHeader).toBeGreaterThanOrEqual(0);
     expect(fruitKpis).toBeGreaterThan(fruitHeader);
@@ -286,8 +287,8 @@ describe("Morning Brief A4 PDF", () => {
     expect(vegTable).toBeGreaterThan(vegKpis);
     for (const phrase of ["48,324.34", "32,843.82", "สต็อกที่บ้าน", "รอข้อมูล",
       "รอยอดบ้าน", "คงเหลือพร้อมขาย", "500.00", "0.00"]) expect(detail).toContain(phrase);
-    expect(cover).not.toContain("ยืนยันแล้ว");
-    expect(cover).not.toContain("รอตรวจ");
+    expect(cover).toContain("ยืนยันแล้ว");
+    expect(cover).toContain("รอตรวจ");
     expect(detail).toContain("รายละเอียดการตรวจข้อมูล");
     expect(detail).not.toContain("คำอธิบายตัวเลข");
     registerFonts();
@@ -297,7 +298,7 @@ describe("Morning Brief A4 PDF", () => {
 
   test("balances all five KPI cards with concise titles and no overflowing old labels", () => {
     const text = collectText(MorningBriefA4Doc({ report, generatedAt: new Date("2026-10-16T08:00:00+07:00") }));
-    for (const title of ["ยอดขายเมื่อวาน", "ยอดเบิกไปขาย", "ยอดชั่งคืนดี", "สต็อกที่บ้าน", "คงเหลือพร้อมขาย"]) {
+    for (const title of ["ยอดขายยืนยันแล้ว", "ยอดเบิกไปขาย", "ยอดชั่งคืนดี", "สต็อกที่บ้าน", "คงเหลือพร้อมขาย"]) {
       expect(text).toContain(title);
     }
     expect(text).not.toContain("รวมทุกสินค้าที่เบิกออกไปขายเมื่อวาน");
@@ -330,7 +331,7 @@ describe("Morning Brief A4 PDF", () => {
     expect((bytes.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(1);
   });
 
-  test("keeps verification status and warnings off the executive cover but visible in the detail pages", () => {
+  test("separates confirmed, pending and unavailable values on the cover and detail pages", () => {
     const withPending: MorningBriefReport = {
       ...report,
       sales: { ...report.sales, excludedFromSalesCount: 2, valueAuthoritative: false },
@@ -342,9 +343,9 @@ describe("Morning Brief A4 PDF", () => {
     expect(pages).toHaveLength(2);
     const cover = collectText(pages[0]);
     const details = collectText(pages[1]);
-    expect(cover).toContain("ยอดขายตามข้อมูลที่มี");
-    expect(cover).toContain("1,304.56");
-    for (const text of ["ยืนยันแล้ว", "รอตรวจ", "ปรับราคา", "รายละเอียดการตรวจข้อมูล"]) {
+    expect(cover).toContain("ยอดขายยืนยันแล้ว");
+    expect(cover).toContain("1,234.56");
+    for (const text of ["ปรับราคา", "รายละเอียดการตรวจข้อมูล"]) {
       expect(cover).not.toContain(text);
     }
     expect(details).toContain("ยอดขายยืนยันแล้ว");
@@ -361,11 +362,11 @@ describe("Morning Brief A4 PDF", () => {
         vegetable: { ...report.fruitFinancial!, salesValueSatang: 2_000 },
         other: { ...report.fruitFinancial!, salesValueSatang: 3_000 },
       },
-      sales: { ...report.sales, totalSalesSatang: 7_000 },
+      sales: { ...report.sales, totalSalesSatang: 7_000, confirmedSalesSatang: 7_000, pendingReviewSalesSatang: 0 },
     };
     const text = collectText(MorningBriefA4Doc({ report: daily, generatedAt: new Date("2026-10-14T08:05:00+07:00") }));
-    expect(text).toContain("ยอดขายรวมทั้งวัน");
-    expect(text.replace(/\s+/g, " ")).toContain("ยอดแยกหมวดรวม 60.00 บาท ต่างจากยอดขายรวมในระบบ");
+    expect(text).toContain("ยอดขายยืนยันแล้ว");
+    expect(text.replace(/\s+/g, " ")).toContain("ยอดแยกหมวดรวม 60.00 บาท ต่างจากยอดขายยืนยันแล้วในระบบ");
     expect(text.replace(/\s+/g, " ")).toContain("70.00 บาท");
   });
 
@@ -374,17 +375,17 @@ describe("Morning Brief A4 PDF", () => {
       ...report,
       produceFinancial: {},
       fruitFinancial: undefined,
-      sales: { ...report.sales, totalSalesSatang: 12_345 },
+      sales: { ...report.sales, totalSalesSatang: 12_345, confirmedSalesSatang: 12_345, pendingReviewSalesSatang: 0 },
     };
     const text = collectText(MorningBriefA4Doc({ report: daily, generatedAt: new Date("2026-10-14T08:05:00+07:00") }));
-    expect(text).toContain("ยอดขายรวมทั้งวัน");
+    expect(text).toContain("ยอดขายยืนยันแล้ว");
     expect(text.replace(/\s+/g, " ")).toContain("123.45 บาท");
     expect(text).not.toContain("ยังไม่มีข้อมูลสินค้าในระบบ");
   });
 
   test("shows yesterday sales total in the top KPI row", () => {
     const text = collectText(MorningBriefA4Doc({ report, generatedAt: new Date("2026-09-19T08:00:00+07:00") }));
-    expect(text).toContain("ยอดขายเมื่อวาน");
+    expect(text).toContain("ยอดขายยืนยันแล้ว");
     expect(text).toContain("22,511.58");
   });
 
@@ -610,10 +611,10 @@ describe("Morning Brief A4 PDF", () => {
     };
     const doc = MorningBriefA4Doc({ report: layoutReport, generatedAt: new Date("2026-10-12T08:05:00+07:00") });
     const text = collectText(doc);
-    expect(text).toContain("ยอดขายเมื่อวาน");
+    expect(text).toContain("ยอดขายยืนยันแล้ว");
     expect(text).toContain("มูลค่าสินค้ารอจัดหมวด");
     expect(text).not.toContain("สรุปอื่นๆคงเหลือเพื่อสั่งซื้อ");
-    expect(text).toContain("ยอดขายเมื่อวาน");
+    expect(text).toContain("ยอดขายยืนยันแล้ว");
     expect(text).toContain("หมวดผัก");
     expect(text).toContain("มะเขือราชินี");
     expect(text).toContain("2.2");

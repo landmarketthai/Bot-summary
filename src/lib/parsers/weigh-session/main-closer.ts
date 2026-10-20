@@ -1,5 +1,6 @@
 import { RE } from "./regex";
 import type { BaseTransactionType, TransactionType } from "./types";
+import { boundedEditDistance } from "./units";
 
 const MAIN_CLOSER_TYPES: ReadonlyArray<{
   closer: string;
@@ -14,6 +15,24 @@ const MAIN_CLOSER_TYPES: ReadonlyArray<{
 ];
 
 const GENERIC_MAIN_CLOSER = /^จบรายการ(?:\s+(\d+)\s*รายการ)?\s*$/;
+
+/** Only repair the command prefix; the transaction suffix must match exactly. */
+export function normalizeProduceCloser(rawLine: string): string {
+  const line = rawLine.trim();
+  if (!line.startsWith("จบ")) return rawLine;
+  for (const { closer } of MAIN_CLOSER_TYPES) {
+    const suffix = closer.slice("จบรายการ".length);
+    if (!line.endsWith(suffix)) continue;
+    const prefix = line.slice(0, -suffix.length);
+    if (boundedEditDistance(prefix, "จบรายการ", 1) !== null) return closer;
+  }
+  return rawLine;
+}
+
+export function unclearProduceCloser(text: string): boolean {
+  return text.split("\n").some((line) => /^จบ\S*(?:รายการ|รายกา|ชั่ง|เบิก|คืน)/.test(line.trim())
+    && !RE.SESSION_END.test(normalizeProduceCloser(line)));
+}
 
 export const MAIN_SESSION_LABEL: Record<BaseTransactionType, string> = {
   "เบิก": "รายการเบิก",
@@ -42,7 +61,7 @@ export function mainCloserCompatibility(
   rawLine: string,
 ): MainCloserCompatibility | null {
   const prefix = rawLine.trim().match(RE.TIME_PREFIX);
-  const line = (prefix?.[3] ?? rawLine).trim();
+  const line = normalizeProduceCloser((prefix?.[3] ?? rawLine).trim());
   if (!RE.SESSION_END.test(line)) return null;
 
   const expectedCloser = MAIN_SESSION_EXPECTED_CLOSER[activeType];

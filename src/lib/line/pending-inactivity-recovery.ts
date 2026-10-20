@@ -41,7 +41,13 @@ export const INACTIVITY_EXPIRE_AFTER = "30 minutes";
 export const INACTIVITY_WARNING_TEXT =
   "⚠️ รายการนี้ไม่มีการอัปเดตมา 25 นาที\n"
   + "Session จะหมดอายุในอีก 5 นาที\n"
-  + "หากยังกรอกอยู่ ให้ส่งรายการถัดไปได้เลย ระบบจะต่อเวลาให้อัตโนมัติ";
+  + "หากยังกรอกอยู่ ให้ส่งรายการถัดไปได้เลย ระบบจะต่อเวลาให้อัตโนมัติ\n"
+  + "หากครบแล้ว ส่ง “จบรายการเบิก” หรือ “จบรายการชั่งคืน” ให้ตรงประเภท";
+
+export const INACTIVITY_EXPIRED_TEXT =
+  "⚠️ รายการหมดอายุหลังไม่มีการอัปเดต 30 นาที ยังไม่ได้บันทึกยอดเงิน\n"
+  + "ข้อความเดิมยังเก็บไว้ กรุณาเปิดหัวรายการวันเดิม ตลาดเดิม และประเภทเดิม แล้วส่งรายการเดิมให้ครบและจบรายการอีกครั้ง\n"
+  + "ตรวจสรุปเดิมก่อนส่งซ้ำ ระบบตรวจรายการซ้ำก่อนบันทึก ห้ามใช้คำสั่งเบิกเพิ่มหรือชั่งคืนเพิ่มเพื่อส่งชุดเดิมซ้ำ";
 
 export interface PendingInactivityWarningRun {
   claimed: number;
@@ -166,6 +172,7 @@ export async function sweepPendingSessionInactivityWarnings(
 export async function sweepPendingSessionInactivityExpiry(
   supabase: Supabase,
   limit = 25,
+  push: WarningPush = defaultPush,
 ): Promise<PendingInactivityExpiryRun> {
   const { data, error } = await supabase.rpc(
     "sweep_pending_session_inactivity_expiry",
@@ -197,6 +204,17 @@ export async function sweepPendingSessionInactivityExpiry(
       outcome: row.outcome,
       acceptedItemCount: row.accepted_item_count,
     });
+    const to = row.source_id ?? row.line_user_id;
+    if (row.accepted_item_count > 0 && to) {
+      try {
+        await push(to, INACTIVITY_EXPIRED_TEXT);
+      } catch (error) {
+        logger.error("produce.inactivity.expiry_push_failed", {
+          sessionKey: row.session_key,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
   }
 
   return {

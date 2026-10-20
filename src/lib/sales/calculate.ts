@@ -65,9 +65,7 @@ export type SalesBlockReason =
   | "unknown_transaction_type"
   | "market_unresolved"
   /**
-   * No longer produced by the calculator for a whole round with no return
-   * document: that case is sold-out by design. Kept in the union (and in
-   * message.ts's REASON_LABELS) for type/API compatibility only.
+   * Required-return reports cannot infer a sale from absent return evidence.
    */
   | "missing_return_evidence"
   /**
@@ -153,6 +151,8 @@ export interface SalesSourceRow {
 }
 
 export interface SalesCalculationInput {
+  /** Morning Brief requires observed returns, including explicit zero returns. */
+  requireReturnEvidence?: boolean;
   businessDate: string;
   rows: readonly SalesSourceRow[];
   /** Central selling price in satang, keyed by centralPriceMapKey(productKey, unitKey). */
@@ -751,6 +751,10 @@ export function calculateSalesReport(input: SalesCalculationInput): SalesReport 
 
   const identityRows: SalesIdentityRow[] = aggregateList.map((aggregate) => {
     const reasons = new Set(aggregate.reasons);
+    if (input.requireReturnEvidence && aggregate.hasWithdrawal
+      && !aggregate.hasGoodReturn) {
+      addReason(reasons, "missing_return_evidence");
+    }
 
     // Quantity evidence rules. A whole round with no return document at all
     // is sold-out by design. A round that DID persist a return, but left this

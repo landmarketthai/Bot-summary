@@ -423,6 +423,9 @@ export async function finalizePendingGeneration(
   snapshot: PendingSession,
   push: PushMessage = defaultPush,
 ): Promise<TryFinalizeResult> {
+  if (snapshot.terminalized) {
+    return { status: "skipped", reason: "already_terminalized" };
+  }
   if (!ownsSnapshotEnvironment(snapshot)) {
     return { status: "skipped", reason: "wrong_environment" };
   }
