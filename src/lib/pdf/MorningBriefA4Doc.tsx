@@ -34,7 +34,7 @@ const S = StyleSheet.create({
   subtitle: { fontSize: 10, color: "#6B7280", marginTop: 2 },
   kpiGrid: { flexDirection: "row", marginHorizontal: -2, marginBottom: 5, alignItems: "stretch" },
   kpi: { width: "20%", paddingHorizontal: 2 },
-  kpiBox: { borderWidth: 0.9, borderColor: "#C7C9CE", padding: 5, height: 72, borderRadius: 3, justifyContent: "space-between" },
+  kpiBox: { borderWidth: 0.9, borderColor: "#C7C9CE", padding: 5, height: 58, borderRadius: 3, justifyContent: "space-between" },
   kpiContent: { flexDirection: "column", justifyContent: "flex-end", alignItems: "flex-end" },
   kpiSales: { backgroundColor: "#FFF0BF", borderColor: "#D7AC3D" },
   kpiWithdrawal: { backgroundColor: "#DFEDFA", borderColor: "#6EACD5" },
@@ -83,7 +83,7 @@ const S = StyleSheet.create({
   emptyNoticeTitle: { fontSize: 11.7, fontWeight: "bold", marginBottom: 5, color: "#254F75" },
   emptyNoticeText: { fontSize: 10.5, lineHeight: 1.45, color: "#374151" },
 
-  coverSectionTitle: { fontSize: 13, fontWeight: "bold", marginTop: 12, marginBottom: 6 },
+  coverSectionTitle: { fontSize: 13, fontWeight: "bold", marginTop: 7, marginBottom: 4 },
   coverCategory: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 5, paddingHorizontal: 8, borderBottomWidth: 0.6, borderBottomColor: "#DEE3E9" },
   coverCategoryName: { fontSize: 11.3 },
   coverCategoryValue: { fontSize: 11.3, fontWeight: "bold" },
@@ -143,8 +143,8 @@ const S = StyleSheet.create({
   marketSales: { backgroundColor: "#F8F0CD" },
   marketReturn: { backgroundColor: "#E4F2E1" },
   marketTotal: { fontWeight: "bold", fontSize: 11.1 },
-  // Keep stock rows legible without forcing a fourth page for a stray note.
-  matrixCell: { paddingVertical: 5.0, paddingHorizontal: 5, fontSize: 11.7 },
+  // Row padding leaves Thai tone marks clear without reserving blank space.
+  matrixCell: { paddingVertical: 1, paddingHorizontal: 5, fontSize: 11.7 },
   stockUnit: { fontSize: 9.2, color: "#4B5563" },
   matrixName: { backgroundColor: "#FFFFFF" },
   matrixAlternate: { backgroundColor: "#F4F7F4" },
@@ -159,8 +159,8 @@ const S = StyleSheet.create({
   stockHeader: {
     borderBottomWidth: 1.4,
     borderBottomColor: "#111827",
-    paddingBottom: 7,
-    marginBottom: 8,
+    paddingBottom: 4,
+    marginBottom: 4,
   },
   footer: {
     position: "absolute",
@@ -173,6 +173,12 @@ const S = StyleSheet.create({
     color: "#6B7280",
   },
 });
+
+const thaiWords = new Intl.Segmenter("th", { granularity: "word" });
+function tableWordSegments(word: string): string[] {
+  // The shared font disables word breaks; long Thai labels otherwise cross cell borders.
+  return word.length > 24 ? Array.from(thaiWords.segment(word), ({ segment }) => segment) : [word];
+}
 
 function MarketCell({
   width,
@@ -195,7 +201,7 @@ function MarketCell({
         ? S.marketReturn
         : S.marketName;
   return <View style={[S.marketCell, toneStyle, header ? S.marketHeader : {}, total ? S.marketTotal : {}, { width }]}>
-    <Text style={S.center}>{children}</Text>
+    <Text hyphenationCallback={tableWordSegments} style={header || tone === "name" ? S.center : S.right}>{children}</Text>
   </View>;
 }
 
@@ -225,7 +231,7 @@ function MatrixCell({
         : S.matrixName;
 
   return <View style={[S.cell, S.matrixCell, toneStyle, alternate && tone === "name" ? S.matrixAlternate : {}, header ? S.th : {}, { width }]}>
-    <Text style={[
+    <Text hyphenationCallback={tableWordSegments} style={[
       right ? S.right : center ? S.center : {},
       tone === "market" && !header ? S.matrixMarketText : {},
     ]}>{children}</Text>
@@ -328,9 +334,9 @@ function StockMatrix({ items, category }: { items: ReturnType<typeof stockMatrix
         <MatrixCell width="40%" center alternate={index % 2 === 1}>
           {item.productName} <Text style={S.stockUnit}>{`(${unitLabel})`}</Text>
         </MatrixCell>
-        <MatrixCell width="20%" tone="house" center>{stockQuantity(item.houseStockQuantity, true)}</MatrixCell>
-        <MatrixCell width="20%" tone="market" center>{stockQuantity(item.marketStockQuantity, true)}</MatrixCell>
-        <MatrixCell width="20%" tone="total" center>{stockQuantity(item.totalRemainingQuantity)}</MatrixCell>
+        <MatrixCell width="20%" tone="house" right>{stockQuantity(item.houseStockQuantity, true)}</MatrixCell>
+        <MatrixCell width="20%" tone="market" right>{stockQuantity(item.marketStockQuantity, true)}</MatrixCell>
+        <MatrixCell width="20%" tone="total" right>{stockQuantity(item.totalRemainingQuantity)}</MatrixCell>
       </View>;
     })}
     {Array.from(new Set(items.map((item) => displayUnit(item.unit)))).map((unit) => {
@@ -343,9 +349,9 @@ function StockMatrix({ items, category }: { items: ReturnType<typeof stockMatrix
           : "-";
       return <View style={S.tr} key={`total-${unit}`} wrap={false}>
         <MatrixCell width="40%" tone="total" center>{`รวม (${unit})`}</MatrixCell>
-        <MatrixCell width="20%" tone="total" center>{houseKnown ? sum("houseStockQuantity") : "-"}</MatrixCell>
-        <MatrixCell width="20%" tone="total" center>{sum("marketStockQuantity")}</MatrixCell>
-        <MatrixCell width="20%" tone="total" center>{houseKnown ? sum("totalRemainingQuantity") : "-"}</MatrixCell>
+        <MatrixCell width="20%" tone="total" right>{houseKnown ? sum("houseStockQuantity") : "-"}</MatrixCell>
+        <MatrixCell width="20%" tone="total" right>{sum("marketStockQuantity")}</MatrixCell>
+        <MatrixCell width="20%" tone="total" right>{houseKnown ? sum("totalRemainingQuantity") : "-"}</MatrixCell>
       </View>;
     })}
   </View>;
@@ -381,10 +387,11 @@ function DataFooter({ generatedText }: { generatedText: string }) {
  * produce category immediately above its physical-stock table.
  * Null house/ready values stay unknown, never fabricated as zero.
  */
-function FinancialKpis({ label, financial, showTitle = true }: {
+function FinancialKpis({ label, financial, showTitle = true, compact = false }: {
   label: string;
   financial: MorningBriefFruitFinancialSummary;
   showTitle?: boolean;
+  compact?: boolean;
 }) {
   // Category names appear in the section title, not repeatedly in narrow cards.
   // Short, consistent labels make every row legible on an A4 printout.
@@ -397,9 +404,12 @@ function FinancialKpis({ label, financial, showTitle = true }: {
     { label: "คงเหลือพร้อมขาย", value: financial.readyValueSatang == null ? "รอยอดบ้าน" : bahtFromSatang(financial.readyValueSatang),
       hint: "ชั่งคืนดี + สต็อกบ้าน", tone: S.kpiReady, unknown: financial.readyValueSatang == null },
   ];
-  return <View wrap={false} style={{ marginTop: 5 }}>
+  return <View wrap={false} style={{ marginTop: compact ? 0 : 5 }}>
     {showTitle ? <Text style={S.coverSectionTitle}>{label === "รวมทุกสินค้า" ? "ภาพรวมมูลค่าทุกหมวด" : `หมวด${label}`}</Text> : null}
-    <View style={S.kpiGrid}>
+    {compact ? <>
+      <Text style={S.explanationText}>{cards.slice(0, 3).map((card) => `${card.label} ${card.value} บาท`).join(" • ")}</Text>
+      <Text style={S.explanationText}>{cards.slice(3).map((card) => `${card.label} ${card.value}${card.unknown ? "" : " บาท"}`).join(" • ")}</Text>
+    </> : <View style={S.kpiGrid}>
       {cards.map((card, i) => <View style={S.kpi} key={i}>
         <View style={[S.kpiBox, card.tone]}>
           <Text style={S.kpiLabel}>{card.label}</Text>
@@ -409,7 +419,7 @@ function FinancialKpis({ label, financial, showTitle = true }: {
           </View>
         </View>
       </View>)}
-    </View>
+    </View>}
     <Text style={S.explanationText}>ยอดรอตรวจ {bahtFromSatang(financial.pendingReviewSalesSatang ?? 0)} บาท • ยังไม่คำนวณ {financial.unavailableCount ?? 0} รายการ{financial.awaitingReturnCount ? ` • รอชั่งคืน ${financial.awaitingReturnCount} รายการ` : ""}</Text>
     {financial.pendingReviewSalesSatang ? <Text style={S.explanationText}>ยอดขายคำนวณได้ (รวมรอตรวจ) {bahtFromSatang(financial.salesValueSatang + financial.pendingReviewSalesSatang)} บาท • {financial.pendingReviewSalesSatang < 0 ? "ผลต่างติดลบจากราคา/จำนวนคืนต้องตรวจสอบ ยังไม่ยืนยัน" : "ยังไม่ใช่ยอดขายยืนยันแล้ว"}</Text> : null}
   </View>;
@@ -473,11 +483,6 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
     : [...coverMarketTotals.entries()].map(([marketLabel, totals]) => ({
         marketLabel, totalSalesSatang: totals.sales, confirmedSalesSatang: totals.sales, awaitingReturnCount: 0,
       }));
-  // The five money-field summaries stay on one A4 page even on busy days.
-  // Extra market rows continue AFTER the cover.
-  const COVER_MARKET_LIMIT = 7;
-  const firstPageMarkets = marketRows.slice(0, COVER_MARKET_LIMIT);
-  const remainingMarkets = marketRows.slice(COVER_MARKET_LIMIT);
   const stockItems = stockMatrixItems(report);
   // The day-wide sales report is the source of truth for the headline. Section
   // totals remain a breakdown, never a substitute for the whole-day result.
@@ -498,11 +503,9 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
     const items = stockItems.filter((item) => stockCategory(item) === category);
     const financial = category === "ผลไม้" ? financialBySection.fruit
       : category === "ผัก" ? financialBySection.vegetable : undefined;
-    // Money summaries appear over the matching stock table, not on the cover.
-    // Still show a financial category even when there is no physical stock.
+    // Finance without physical stock stays on the overview, never an empty detail page.
     const hasStock = items.some(hasRealStockQuantity);
-    const hasFinance = category !== "อื่นๆ" && financialSections.some(({ section }) => PRODUCE_SECTION_LABEL[section] === category);
-    return hasStock || hasFinance ? [{ category, items, financial, hasStock }] : [];
+    return hasStock ? [{ category, items, financial, hasStock }] : [];
   });
 
   return <Document title={`Morning Brief ${report.businessDate}`}>
@@ -529,7 +532,7 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
             <MarketCell width="24%" tone="sales" header>ยืนยันแล้ว</MarketCell>
             <MarketCell width="24%" tone="return" header>ชั่งคืนดี</MarketCell>
           </View>
-          {firstPageMarkets.map((market, index) => {
+          {marketRows.map((market, index) => {
             const totals = coverMarketTotals.get(market.marketLabel);
             return <View key={`${market.marketLabel}-${index}`} style={S.tr} wrap={false}>
               <MarketCell width="28%" tone="name">{market.marketLabel}</MarketCell>
@@ -544,32 +547,6 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
             <MarketCell width="24%" tone="sales" total>{bahtFromSatang(report.sales.confirmedSalesSatang)}</MarketCell>
             <MarketCell width="24%" tone="return" total>{bahtFromSatang(combined.goodReturnValueSatang)}</MarketCell>
           </View>
-        </View>
-        {remainingMarkets.length > 0 ? <Text style={[S.note, { marginTop: 4 }]}>
-          รายละเอียดอีก {remainingMarkets.length} ตลาดต่อในหน้าถัดไป (ยอดรวมด้านบนรวมทุกตลาดแล้ว)
-        </Text> : null}
-      </View> : null}
-      <DataFooter generatedText={generatedText} />
-    </Page>
-    <Page size="A4" style={S.page} wrap>
-      {remainingMarkets.length > 0 ? <View style={{ marginBottom: 10 }}>
-        <Text style={S.coverSectionTitle}>ตลาดเพิ่มเติม (ยอดรวมอยู่หน้าแรกแล้ว)</Text>
-        <View style={S.table}>
-          <View style={S.tr} fixed>
-            <MarketCell width="28%" tone="name" header>ตลาด</MarketCell>
-            <MarketCell width="24%" tone="withdrawal" header>เบิกไปขาย</MarketCell>
-            <MarketCell width="24%" tone="sales" header>ยืนยันแล้ว</MarketCell>
-            <MarketCell width="24%" tone="return" header>ชั่งคืนดี</MarketCell>
-          </View>
-          {remainingMarkets.map((market, index) => {
-            const totals = coverMarketTotals.get(market.marketLabel);
-            return <View style={S.tr} key={`${market.marketLabel}-${index}`} wrap={false}>
-              <MarketCell width="28%" tone="name">{market.marketLabel}</MarketCell>
-              <MarketCell width="24%" tone="withdrawal">{totals ? bahtFromSatang(totals.withdrawal) : "-"}</MarketCell>
-              <MarketCell width="24%" tone="sales">{bahtFromSatang(market.confirmedSalesSatang)}{market.awaitingReturnCount ? " • รอชั่งคืน" : ""}</MarketCell>
-              <MarketCell width="24%" tone="return">{totals ? bahtFromSatang(totals.goodReturn) : "-"}</MarketCell>
-            </View>;
-          })}
         </View>
       </View> : null}
       <View style={[S.explanation, { marginTop: 9 }]} wrap={false}>
@@ -590,25 +567,27 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
           </View>)}
         <Text style={S.note}>พบข้อมูลทั้งสองประเภทไม่ได้หมายความว่ายืนยันครบ และยังไม่ทราบรายชื่อตลาดที่ไม่ได้ส่งข้อมูล</Text>
       </View> : null}
-      {/* Product stocks follow the audit, never duplicating the cover totals. A new
-          physical page. Headings are siblings of their tables so
-          minPresenceAhead keeps each heading with its first rows; tables
-          split between rows (never clipped) and repeat their fixed header. */}
+      {financialSections.filter(({ section }) => section !== "other"
+        && !stockSections.some(({ category }) => category === PRODUCE_SECTION_LABEL[section]))
+        .map(({ section, financial }) => <FinancialKpis key={section} label={PRODUCE_SECTION_LABEL[section]} financial={financial} compact />)}
+      <DataFooter generatedText={generatedText} />
+    </Page>
+    {stockSections.length > 0 ? <Page size="A4" style={S.page} wrap>
+      {/* Keep category headings with their first rows; small categories share a page. */}
       {stockSections.map(({ category, items, financial, hasStock }, index) => <React.Fragment key={category}>
-        <View wrap={false} minPresenceAhead={hasStock ? 100 : 0}>
-          <View style={[S.stockHeader, { marginTop: 12 }]}>
-            <Text style={S.title}>{`หมวด${category} - ${formatThaiDate(report.businessDate)}`}</Text>
-            <Text style={S.subtitle}>รวมคงเหลือ = คงเหลือในบ้าน + ในตลาด</Text>
+        <View wrap={false} minPresenceAhead={items.length > 1 ? 70 : 40}>
+          <View style={[S.stockHeader, { marginTop: index === 0 ? 0 : 8 }]}>
+            <Text style={{ fontSize: 16, fontWeight: "bold" }}>{`หมวด${category} - ${formatThaiDate(report.businessDate)}`}</Text>
             {index === 0 ? <Text style={[S.note, { marginTop: 3 }]}>
-              บ้านเจ๊ = คงเหลือในบ้าน/คลัง • ในตลาด = ของดีชั่งคืน • ไม่ทราบยอดฝั่งบ้านแสดง “-”
+              รวมคงเหลือ = คงเหลือในบ้าน + ในตลาด • ในตลาด = ของดีชั่งคืน • ไม่ทราบยอดบ้านแสดง “-”
             </Text> : null}
           </View>
-          {financial ? <FinancialKpis label={category} financial={financial} showTitle={false} /> : null}
+          {financial ? <FinancialKpis label={category} financial={financial} showTitle={false} compact /> : null}
         </View>
         {hasStock ? <StockMatrix items={items} category={category} /> : null}
       </React.Fragment>)}
       <DataFooter generatedText={generatedText} />
-    </Page></> : <Page size="A4" style={S.page}>
+    </Page> : null}</> : <Page size="A4" style={S.page}>
       {noProduceEvidence ? <>
         {previewLabel ? <View style={S.emptyPreviewTag}><Text style={S.emptyPreviewText}>{previewLabel}</Text></View> : null}
         <View style={S.emptyHeader}>

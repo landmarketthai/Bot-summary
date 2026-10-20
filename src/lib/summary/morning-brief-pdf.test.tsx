@@ -97,6 +97,33 @@ function collectRenderCallbacks(node: React.ReactNode): PdfRenderCallback[] {
 }
 
 describe("Morning Brief A4 PDF", () => {
+  for (const [name, expectedPages] of [["before-return", 1], ["after-return", 2]] as const) {
+    test(`packs the unchanged 19 October ${name} UAT snapshot into ${expectedPages} A4 pages`, async () => {
+      const fixture: MorningBriefReport = await Bun.file(`${import.meta.dir}/../../../docs/handoffs/pr184-uat-20261020/${name}.report.json`).json();
+      const snapshot = JSON.stringify(fixture);
+      const doc = MorningBriefA4Doc({ report: fixture, generatedAt: new Date("2026-10-20T12:15:00+07:00") });
+      const text = collectText(doc).replace(/\s+/g, " ");
+      expect(text).toContain("19,375.50");
+      expect(text).toContain("รายละเอียดการตรวจข้อมูล");
+      expect(text).toContain("สถานะข้อมูลตามตลาด");
+      if (name === "before-return") {
+        expect(text).toContain("ยังไม่คำนวณ 26 รายการ");
+        expect(text).toContain("รอชั่งคืน 26 รายการ");
+        expect(text).not.toContain("รายการ (ผลไม้)");
+      } else {
+        for (const amount of ["13,725.00", "5,860.50", "-210.00", "5,650.50"]) expect(text).toContain(amount);
+        expect(text).toContain("รายการ (อื่นๆ)");
+        for (const group of Object.values(fixture.purchasePlanning)) {
+          for (const item of group.items ?? []) expect(text).toContain(item.productName);
+        }
+      }
+      registerFonts();
+      const pdf = await renderToBuffer(doc);
+      expect((pdf.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(expectedPages);
+      expect(JSON.stringify(fixture)).toBe(snapshot);
+    });
+  }
+
   test("preserves financial category labels and canonical stock identity when packing pages", async () => {
     const empty = { count: 0, productNames: [], items: [] };
     const summary = { withdrawalValueSatang: 200, salesValueSatang: 100, goodReturnValueSatang: 100,
@@ -289,7 +316,7 @@ describe("Morning Brief A4 PDF", () => {
       "รอยอดบ้าน", "คงเหลือพร้อมขาย", "500.00", "0.00"]) expect(detail).toContain(phrase);
     expect(cover).toContain("ยืนยันแล้ว");
     expect(cover).toContain("รอตรวจ");
-    expect(detail).toContain("รายละเอียดการตรวจข้อมูล");
+    expect(cover).toContain("รายละเอียดการตรวจข้อมูล");
     expect(detail).not.toContain("คำอธิบายตัวเลข");
     registerFonts();
     const buffer = await renderToBuffer(doc);
@@ -346,12 +373,12 @@ describe("Morning Brief A4 PDF", () => {
     expect(cover).toContain("ยอดขายยืนยันแล้ว");
     expect(cover).toContain("1,234.56");
     for (const text of ["ปรับราคา", "รายละเอียดการตรวจข้อมูล"]) {
-      expect(cover).not.toContain(text);
+      expect(cover).toContain(text);
     }
     expect(details).toContain("ยอดขายยืนยันแล้ว");
     expect(details).toContain("ยอดรอตรวจ");
-    expect(details).toContain("ยอดปรับราคา");
-    expect(details.replace(/\s+/g, " ")).toContain("มี 2 รายการที่คำนวณยอดขายไม่ได้");
+    expect(cover).toContain("ยอดปรับราคา");
+    expect(cover.replace(/\s+/g, " ")).toContain("มี 2 รายการที่คำนวณยอดขายไม่ได้");
   });
 
   test("warns when category sums disagree with the authoritative daily sales instead of silently replacing it", () => {
@@ -646,7 +673,8 @@ describe("Morning Brief A4 PDF", () => {
     const doc = MorningBriefA4Doc({ report: allActive, generatedAt: new Date("2026-09-20T08:00:00+07:00") });
     const content = collectText(doc);
     for (const label of ["ผลไม้", "ผัก"]) {
-      expect(content).toContain(`หมวด${label} -`);
+      expect(content).toContain(`หมวด${label}`);
+      expect(content).not.toContain(`รายการ (${label})`);
     }
     expect(content).not.toContain("สรุปอื่นๆคงเหลือเพื่อสั่งซื้อ");
     expect(content).toContain("มูลค่าสินค้ารอจัดหมวด");
@@ -845,7 +873,14 @@ describe("Morning Brief A4 PDF", () => {
       if (typeof element.type === "function") {
         return walk((element.type as (props: Record<string, unknown>) => React.ReactNode)(element.props));
       }
-      const props = element.props as { wrap?: boolean; minPresenceAhead?: number; children?: React.ReactNode };
+      const props = element.props as { wrap?: boolean; minPresenceAhead?: number; children?: React.ReactNode; hyphenationCallback?: (word: string) => string[] };
+      if (props.hyphenationCallback) {
+        const word = "ชื่อยาวมากเป็นพิเศษสำหรับทดสอบการตัดบรรทัดในตาราง";
+        const parts = props.hyphenationCallback(word);
+        expect(parts.join("")).toBe(word);
+        expect(parts.length).toBeGreaterThan(1);
+        expect(parts.every(part => !/^\p{Mark}/u.test(part))).toBe(true);
+      }
       const text = collectText(props.children);
       if (props.wrap === false) unbreakable.push(text);
       if (props.wrap === false && props.minPresenceAhead != null && text.includes("รวมคงเหลือ =")) headingPresence.push(props.minPresenceAhead);
@@ -867,7 +902,7 @@ describe("Morning Brief A4 PDF", () => {
     try {
       registerFonts();
       const pdf = await renderToBuffer(doc);
-      expect((pdf.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(3);
+      expect((pdf.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(2);
     } finally {
       console.warn = originalWarn;
     }
