@@ -5,6 +5,7 @@ import { PRODUCT_CODE_ENTRIES } from "@/lib/produce/product-code/dictionary";
 import { registerFonts } from "@/lib/pdf/fonts";
 import { MorningBriefA4Doc } from "@/lib/pdf/MorningBriefA4Doc";
 import type { MorningBriefReport } from "@/lib/summary/morning-brief";
+import { morningBriefLayoutFixture } from "../../../docs/handoffs/pr184-pdf-layout-20261020/fixtures";
 import {
   buildMorningBriefReferenceData,
   createMorningBriefPdfArtifact,
@@ -97,6 +98,40 @@ function collectRenderCallbacks(node: React.ReactNode): PdfRenderCallback[] {
 }
 
 describe("Morning Brief A4 PDF", () => {
+  for (const count of [3, 10, 30]) {
+    test(`summarizes ${count} markets and retains missing evidence and financial exceptions`, async () => {
+      const base: MorningBriefReport = await Bun.file(`${import.meta.dir}/../../../docs/handoffs/pr184-uat-20261020/after-return.report.json`).json();
+      const fixture = morningBriefLayoutFixture(base, count, 6, 3, 2);
+      const healthy = collectText(MorningBriefA4Doc({ report: fixture, generatedAt: new Date("2026-10-20T12:15:00+07:00") })).replace(/\s+/g, " ");
+      expect(healthy).toContain(`พบ ${count} ตลาด • มีเบิก ${count} ตลาด • มีชั่งคืน ${count} ตลาด • พบทั้งสองประเภท ${count} ตลาด`);
+      expect(healthy).not.toContain(": เบิกมี / ชั่งคืนมี");
+      fixture.produceReadiness!.markets[count - 1]!.hasReturn = false;
+      fixture.sales.markets![0]!.pendingReviewSalesSatang = -21_000;
+      fixture.sales.markets![0]!.unresolvedCount = 1;
+      fixture.sales.markets![1]!.valueAuthoritative = false;
+      fixture.sales.markets![count - 1]!.incompleteReturnIssueCount = 1;
+      const text = collectText(MorningBriefA4Doc({ report: fixture, generatedAt: new Date("2026-10-20T12:15:00+07:00") })).replace(/\s+/g, " ");
+      expect(text).toContain(`มีชั่งคืน ${count - 1} ตลาด • พบทั้งสองประเภท ${count - 1} ตลาด`);
+      expect(text).toContain("ตลาดทดสอบ1 : เบิกมี / ชั่งคืนมี • ยอดรอตรวจ -210.00 บาท");
+      expect(text).toContain(`ตลาดทดสอบ${count} : เบิกมี / ไม่พบชั่งคืน`);
+      expect(text).toContain("ตลาดทดสอบ2 : เบิกมี / ชั่งคืนมี • ยอดตลาดยังไม่ยืนยัน");
+      expect(text).toContain("พบข้อมูลทั้งสองประเภทไม่ได้หมายความว่ายืนยันครบ");
+    });
+  }
+
+  test("fits all 64 overflow products into four pages with the last row and every unit total together", async () => {
+    const base: MorningBriefReport = await Bun.file(`${import.meta.dir}/../../../docs/handoffs/pr184-uat-20261020/after-return.report.json`).json();
+    const fixture = morningBriefLayoutFixture(base, 30, 48, 12, 4);
+    const snapshot = JSON.stringify(fixture);
+    const doc = MorningBriefA4Doc({ report: fixture, generatedAt: new Date("2026-10-20T12:15:00+07:00") });
+    const text = collectText(doc).replace(/\s+/g, "");
+    for (const item of fixture.purchasePlanning.strong.items!) expect(text).toContain(item.productName.replace(/\s+/g, ""));
+    registerFonts();
+    const pdf = await renderToBuffer(doc);
+    expect((pdf.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(4);
+    expect(JSON.stringify(fixture)).toBe(snapshot);
+  });
+
   for (const [name, expectedPages] of [["before-return", 1], ["after-return", 2]] as const) {
     test(`packs the unchanged 19 October ${name} UAT snapshot into ${expectedPages} A4 pages`, async () => {
       const fixture: MorningBriefReport = await Bun.file(`${import.meta.dir}/../../../docs/handoffs/pr184-uat-20261020/${name}.report.json`).json();
@@ -376,7 +411,7 @@ describe("Morning Brief A4 PDF", () => {
       expect(cover).toContain(text);
     }
     expect(details).toContain("ยอดขายยืนยันแล้ว");
-    expect(details).toContain("ยอดรอตรวจ");
+    expect(cover).toContain("ยอดรอตรวจ");
     expect(cover).toContain("ยอดปรับราคา");
     expect(cover.replace(/\s+/g, " ")).toContain("มี 2 รายการที่คำนวณยอดขายไม่ได้");
   });
@@ -865,6 +900,7 @@ describe("Morning Brief A4 PDF", () => {
     // every section heading asks react-pdf to keep rows after it.
     const unbreakable: string[] = [];
     const headingPresence: number[] = [];
+    let wordBoundaries = 0;
     const walk = (node: React.ReactNode): void => {
       if (node == null || typeof node === "boolean" || typeof node === "string" || typeof node === "number") return;
       if (Array.isArray(node)) return node.forEach(walk);
@@ -873,13 +909,10 @@ describe("Morning Brief A4 PDF", () => {
       if (typeof element.type === "function") {
         return walk((element.type as (props: Record<string, unknown>) => React.ReactNode)(element.props));
       }
-      const props = element.props as { wrap?: boolean; minPresenceAhead?: number; children?: React.ReactNode; hyphenationCallback?: (word: string) => string[] };
-      if (props.hyphenationCallback) {
-        const word = "ชื่อยาวมากเป็นพิเศษสำหรับทดสอบการตัดบรรทัดในตาราง";
-        const parts = props.hyphenationCallback(word);
-        expect(parts.join("")).toBe(word);
-        expect(parts.length).toBeGreaterThan(1);
-        expect(parts.every(part => !/^\p{Mark}/u.test(part))).toBe(true);
+      const props = element.props as { wrap?: boolean; minPresenceAhead?: number; children?: React.ReactNode; style?: { fontSize?: number } };
+      if (props.style?.fontSize === 0.01) {
+        expect(props.children).toBe(" ");
+        wordBoundaries++;
       }
       const text = collectText(props.children);
       if (props.wrap === false) unbreakable.push(text);
@@ -887,6 +920,8 @@ describe("Morning Brief A4 PDF", () => {
       walk(props.children);
     };
     walk(doc);
+    expect(wordBoundaries).toBeGreaterThan(0);
+    expect(unbreakable.some(text => text.includes("สินค้าทดสอบ14") && text.includes("รวม (ถุง)"))).toBe(true);
     expect(unbreakable.some((text) => text.includes("สินค้าทดสอบ0") && text.includes("สินค้าทดสอบ1"))).toBe(false);
     // Market and stock rows are individually wrappable, never locked into
     // one huge container that could clip later pages.
@@ -907,6 +942,6 @@ describe("Morning Brief A4 PDF", () => {
       console.warn = originalWarn;
     }
     expect(warnings.filter((warning) => warning.includes("can't wrap"))).toEqual([]);
-    for (const item of items) expect(collectText(doc)).toContain(item.productName);
+    for (const item of items) expect(collectText(doc).replace(/\s+/g, "")).toContain(item.productName.replace(/\s+/g, ""));
   });
 });
