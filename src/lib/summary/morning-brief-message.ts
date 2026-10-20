@@ -89,6 +89,7 @@ function buildSalesBlock(report: MorningBriefReport): string {
   if (sales.pendingReviewSalesSatang !== 0) {
     lines.push(
       `ยอดรอตรวจ ${satangToBahtText(sales.pendingReviewSalesSatang)} บาท`,
+      `ยอดขายคำนวณได้ (รวมรอตรวจ) ${satangToBahtText(sales.totalSalesSatang)} บาท`,
     );
   }
   if (sales.adjustmentSatang !== 0) lines.push(`ปรับราคา ${satangToBahtText(sales.adjustmentSatang)} บาท`);
@@ -106,6 +107,7 @@ function buildProduceFinancialBlocks(report: MorningBriefReport): string[] {
       `${PRODUCE_SECTION_LABEL[section]} — ภาพรวมเงิน`,
       `ยอดขายยืนยันแล้ว ${satangToBahtText(financial.salesValueSatang)} บาท`,
       `ยอดรอตรวจ ${satangToBahtText(financial.pendingReviewSalesSatang ?? 0)} บาท`,
+      ...(financial.pendingReviewSalesSatang ? [`ยอดขายคำนวณได้ (รวมรอตรวจ) ${satangToBahtText(financial.salesValueSatang + financial.pendingReviewSalesSatang)} บาท`] : []),
       ...(financial.awaitingReturnCount ? [`รอชั่งคืน ${financial.awaitingReturnCount} รายการ`] : []),
       `เบิก ${satangToBahtText(financial.withdrawalValueSatang)} บาท`,
       `ชั่งคืนดี ${satangToBahtText(financial.goodReturnValueSatang)} บาท`,

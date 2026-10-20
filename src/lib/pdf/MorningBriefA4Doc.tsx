@@ -411,6 +411,7 @@ function FinancialKpis({ label, financial, showTitle = true }: {
       </View>)}
     </View>
     <Text style={S.explanationText}>ยอดรอตรวจ {bahtFromSatang(financial.pendingReviewSalesSatang ?? 0)} บาท • ยังไม่คำนวณ {financial.unavailableCount ?? 0} รายการ{financial.awaitingReturnCount ? ` • รอชั่งคืน ${financial.awaitingReturnCount} รายการ` : ""}</Text>
+    {financial.pendingReviewSalesSatang ? <Text style={S.explanationText}>ยอดขายคำนวณได้ (รวมรอตรวจ) {bahtFromSatang(financial.salesValueSatang + financial.pendingReviewSalesSatang)} บาท • {financial.pendingReviewSalesSatang < 0 ? "ผลต่างติดลบจากราคา/จำนวนคืนต้องตรวจสอบ ยังไม่ยืนยัน" : "ยังไม่ใช่ยอดขายยืนยันแล้ว"}</Text> : null}
   </View>;
 }
 
@@ -516,6 +517,7 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
         </Text>
         <Text style={S.dailyOverviewTotal}>{bahtFromSatang(report.sales.confirmedSalesSatang)} บาท</Text>
         <Text style={S.dailyOverviewDetails}>ทุกหมวดสินค้าและทุกตลาด • ยอดรอตรวจและรอชั่งคืนแสดงแยกด้านล่าง</Text>
+        {report.sales.pendingReviewSalesSatang !== 0 ? <Text style={S.dailyOverviewDetails}>ยอดขายคำนวณได้ (รวมรอตรวจ) {bahtFromSatang(report.sales.totalSalesSatang)} บาท</Text> : null}
       </View>
       <FinancialKpis label="รวมทุกสินค้า" financial={combined} />
       {marketRows.length > 0 ? <View style={{ marginTop: 4 }}>
@@ -572,7 +574,7 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
       </View> : null}
       <View style={[S.explanation, { marginTop: 9 }]} wrap={false}>
         <Text style={S.explanationTitle}>รายละเอียดการตรวจข้อมูล</Text>
-        {unclassified && unclassified.salesValueSatang !== 0 ? <Text style={S.explanationText}>มูลค่าสินค้ารอจัดหมวด {bahtFromSatang(unclassified.salesValueSatang)} บาท (รวมในยอดขายหน้าแรกแล้ว ไม่เพิ่มยอดซ้ำ)</Text> : null}
+        {unclassified && (unclassified.withdrawalValueSatang !== 0 || unclassified.goodReturnValueSatang !== 0 || unclassified.salesValueSatang !== 0) ? <Text style={S.explanationText}>มูลค่าสินค้ารอจัดหมวด {bahtFromSatang(unclassified.salesValueSatang)} บาท (รวมในยอดขายหน้าแรกแล้ว ไม่เพิ่มยอดซ้ำ) • เบิก {bahtFromSatang(unclassified.withdrawalValueSatang)} บาท • ชั่งคืน {bahtFromSatang(unclassified.goodReturnValueSatang)} บาท</Text> : null}
         <Text style={S.explanationText}>ยอดขายยืนยันแล้ว {bahtFromSatang(report.sales.confirmedSalesSatang)} บาท • ยอดรอตรวจ {bahtFromSatang(report.sales.pendingReviewSalesSatang)} บาท</Text>
         {report.sales.adjustmentSatang !== 0 ? <Text style={S.explanationText}>ยอดปรับราคา {bahtFromSatang(report.sales.adjustmentSatang)} บาท</Text> : null}
         {report.sales.excludedFromSalesCount > 0 ? <Text style={S.dailyOverviewWarning}>มี {report.sales.excludedFromSalesCount} รายการที่คำนวณยอดขายไม่ได้ รวมอยู่ในยอดรายงานไม่ได้</Text> : null}

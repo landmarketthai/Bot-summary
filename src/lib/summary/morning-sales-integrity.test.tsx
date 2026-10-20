@@ -95,4 +95,55 @@ describe("19 October Morning Brief integrity", () => {
     expect(build([withdrawal, { ...returned, quantity: 0 }]).sales.confirmedSalesSatang).toBe(1_937_550);
     expect(build([{ ...withdrawal, accountabilityRoundId: null }]).sales.confirmedSalesSatang).toBe(0);
   });
+
+  test("submitted return prices and excess returns stay in document money as pending signed differences", () => {
+    const rows: SalesSourceRow[] = [
+      { ...withdrawal, productName: "พุทราจีน", quantity: 61.405, enteredPriceSatang: 10_000 },
+      { ...returned, productName: "พุทราจีน", quantity: 2.8, enteredReturnPriceSatang: 10_000 },
+      { ...withdrawal, quantity: 6.3 },
+      { ...returned, quantity: 6.3, enteredReturnPriceSatang: 4000 },
+      { ...withdrawal, productName: "มะม่วงจิ้ว", quantity: 2.7 },
+      { ...returned, productName: "มะม่วงจิ้ว", quantity: 2.7, enteredReturnPriceSatang: 4000 },
+      { ...withdrawal, productName: "ทับทิม", unit: "ลูก", quantity: 44, enteredPriceSatang: 1000 },
+      { ...returned, productName: "ทับทิม", unit: "ลูก", quantity: 47, enteredReturnPriceSatang: 1000 },
+    ];
+    const before = rows.map((row) => ({ ...row }));
+    const report = build(rows);
+    expect(report.sales.confirmedSalesSatang).toBe(586_050);
+    expect(report.sales.pendingReviewSalesSatang).toBe(-21_000);
+    expect(report.sales.totalSalesSatang).toBe(565_050);
+    expect(report.sales.valueAuthoritative).toBe(false);
+    expect(report.sales.excludedFromSalesCount).toBe(0);
+    expect(report.sales.priceIssueCount).toBe(2);
+    expect(report.sales.reviewItems).toHaveLength(3);
+    expect(report.fruitFinancial!.goodReturnValueSatang).toBe((280 + 252 + 108 + 470) * 100);
+    expect(rows).toEqual(before);
+    const contents = text(MorningBriefA4Doc({ report, generatedAt })).replace(/\s+/g, " ");
+    expect(contents).toContain("ยอดขายคำนวณได้ (รวมรอตรวจ) 5,650.50 บาท");
+    expect(contents).toContain("ยอดรอตรวจ -210.00 บาท");
+  });
+
+  test("persisted basis amounts take priority over a rounded unit price; missing money is unavailable", () => {
+    const sales = calculateSalesReport({ businessDate: "2026-10-19", requireReturnEvidence: true, rows: [
+      { ...withdrawal, quantity: 1, enteredPriceSatang: 2333, recordedValueScaled: BigInt(2_333_000) },
+      { ...returned, quantity: 0.3, enteredReturnPriceSatang: 2333, recordedValueScaled: BigInt(700_000) },
+    ] });
+    expect(sales.allMarkets.expectedSalesSatang).toBe(1633);
+    const missing = calculateSalesReport({ businessDate: "2026-10-19", requireReturnEvidence: true, rows: [
+      withdrawal, { ...returned, enteredPriceSatang: null, recordedValueScaled: null },
+    ] });
+    expect(missing.allMarkets.expectedSalesSatang).toBe(0);
+    expect(missing.markets[0].rows[0].valueStatus).toBe("UNAVAILABLE");
+  });
+
+  test("document differences round once and retain negative half-satang review amounts", () => {
+    const total = (withdrawn: number, returnValue: number, returnPrice: number) => calculateSalesReport({
+      businessDate: "2026-10-19", requireReturnEvidence: true, rows: [
+        { ...withdrawal, quantity: 1, enteredPriceSatang: 100, recordedValueScaled: BigInt(withdrawn) },
+        { ...returned, quantity: 1, enteredReturnPriceSatang: returnPrice, recordedValueScaled: BigInt(returnValue) },
+      ],
+    }).allMarkets;
+    expect(total(100_500, 400, 100).expectedSalesSatang).toBe(100);
+    expect(total(100_500, 101_000, 101).pendingReviewSalesSatang).toBe(-1);
+  });
 });

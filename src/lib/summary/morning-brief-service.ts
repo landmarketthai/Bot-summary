@@ -159,10 +159,12 @@ export function summarizeProduceFinancial(
     let goodReturnValueSatang = 0;
     for (const row of sectionRows) {
       const priceSatang = row.enteredPriceSatang ?? row.centralPriceSatang;
-      if (priceSatang != null) {
-        withdrawalValueSatang += quantityTimesSatang(row.withdrawnQuantity, priceSatang) ?? 0;
-        goodReturnValueSatang += quantityTimesSatang(row.goodReturnQuantity, priceSatang) ?? 0;
-      }
+      withdrawalValueSatang += row.recordedWithdrawalSatang !== undefined
+        ? row.recordedWithdrawalSatang ?? 0
+        : priceSatang == null ? 0 : quantityTimesSatang(row.withdrawnQuantity, priceSatang) ?? 0;
+      goodReturnValueSatang += row.recordedGoodReturnSatang !== undefined
+        ? row.recordedGoodReturnSatang ?? 0
+        : priceSatang == null ? 0 : quantityTimesSatang(row.goodReturnQuantity, priceSatang) ?? 0;
       salesValueSatang += row.expectedSalesSatang ?? 0;
       pendingReviewSalesSatang += row.pendingReviewSalesSatang ?? 0;
       if (row.valueStatus === "UNAVAILABLE") unavailableCount += 1;

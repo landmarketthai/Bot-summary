@@ -1,0 +1,873 @@
+{
+  "businessDate": "2026-10-19",
+  "purchasePlanning": {
+    "strong": {
+      "count": 0,
+      "productNames": [],
+      "items": []
+    },
+    "surplus": {
+      "count": 26,
+      "productNames": [
+        "มะละกอ",
+        "พุทราจีน",
+        "ทับทิม",
+        "แอปเปิ้ล",
+        "น้อยหน่า",
+        "ลองกอง",
+        "แตงไทย",
+        "ฝรั่ง",
+        "ฝรั่งแดง",
+        "พุทรานมสด",
+        "ส้มสายน้ำผึ้ง",
+        "แก้วมังกรแดง",
+        "แตงโม",
+        "องุ่นจักรพรรดิ์",
+        "มังคุด",
+        "ลูกไหนดำ",
+        "กล้วยหอม",
+        "ผลไม้กล่อง",
+        "แก้วมังกร",
+        "องุ่นคิมสัน",
+        "สาลี่หอม",
+        "ส้มโอ",
+        "มะม่วงจิ้ว",
+        "ส้มจีน",
+        "แอปเปิ้ลแคราะ",
+        "ส้มเขียวหวาน"
+      ],
+      "items": [
+        {
+          "productName": "มะละกอ",
+          "originalProductName": null,
+          "category": "ผลไม้",
+          "unit": "ลูก",
+          "uncertaintyReasons": [],
+          "marketStockQuantity": 0,
+          "houseStockQuantity": null,
+          "totalRemainingQuantity": null
+        },
+        {
+          "productName": "พุทราจีน",
+          "originalProductName": null,
+          "category": "ผลไม้",
+          "unit": "โล",
+          "uncertaintyReasons": [],
+          "marketStockQuantity": 0,
+          "houseStockQuantity": null,
+          "totalRemainingQuantity": null
+        },
+        {
+          "productName": "ทับทิม",
+          "originalProductName": null,
+          "category": "ผลไม้",
+          "unit": "ลูก",
+          "uncertaintyReasons": [],
+          "marketStockQuantity": 0,
+          "houseStockQuantity": null,
+          "totalRemainingQuantity": null
+        },
+        {
+          "productName": "แอปเปิ้ล",
+          "originalProductName": null,
+          "category": "ผลไม้",
+          "unit": "ลูก",
+          "uncertaintyReasons": [],
+          "marketStockQuantity": 0,
+          "houseStockQuantity": null,
+          "totalRemainingQuantity": null
+        },
+        {
+          "productName": "น้อยหน่า",
+          "originalProductName": null,
+          "category": "ผลไม้",
+          "unit": "โล",
+          "uncertaintyReasons": [],
+          "marketStockQuantity": 0,
+          "houseStockQuantity": null,
+          "totalRemainingQuantity": null
+        },
+        {
+          "productName": "ลองกอง",
+          "originalProductName": null,
+          "category": "ผลไม้",
+          "unit": "โล",
+          "uncertaintyReasons": [],
+          "marketStockQuantity": 0,
+          "houseStockQuantity": null,
+          "totalRemainingQuantity": null
+        },
+        {
+          "productName": "แตงไทย",
+          "originalProductName": null,
+          "category": "ผลไม้",
+          "unit": "ลูก",
+          "uncertaintyReasons": [],
+          "marketStockQuantity": 0,
+          "houseStockQuantity": null,
+          "totalRemainingQuantity": null
+        },
+        {
+          "productName": "ฝรั่ง",
+          "originalProductName": null,
+          "category": "ผลไม้",
+          "unit": "โล",
+          "uncertaintyReasons": [],
+          "marketStockQuantity": 0,
+          "houseStockQuantity": null,
+          "totalRemainingQuantity": null
+        },
+        {
+          "productName": "ฝรั่งแดง",
+          "originalProductName": null,
+          "category": "ผลไม้",
+          "unit": "โล",
+          "uncertaintyReasons": [],
+          "marketStockQuantity": 0,
+          "houseStockQuantity": null,
+          "totalRemainingQuantity": null
+        },
+        {
+          "productName": "พุทรานมสด",
+          "originalProductName": null,
+          "category": "ผลไม้",
+          "unit": "โล",
+          "uncertaintyReasons": [],
+          "marketStockQuantity": 0,
+          "houseStockQuantity": null,
+          "totalRemainingQuantity": null
+        },
+        {
+          "productName": "ส้มสายน้ำผึ้ง",
+          "originalProductName": null,
+          "category": "ผลไม้",
+          "unit": "โล",
+          "uncertaintyReasons": [],
+          "marketStockQuantity": 0,
+          "houseStockQuantity": null,
+          "totalRemainingQuantity": null
+        },
+        {
+          "productName": "แก้วมังกรแดง",
+          "originalProductName": null,
+          "category": "ผลไม้",
+          "unit": "โล",
+          "uncertaintyReasons": [],
+          "marketStockQuantity": 0,
+          "houseStockQuantity": null,
+          "totalRemainingQuantity": null
+        },
+        {
+          "productName": "แตงโม",
+          "originalProductName": null,
+          "category": "ผลไม้",
+          "unit": "ลูก",
+          "uncertaintyReasons": [],
+          "marketStockQuantity": 0,
+          "houseStockQuantity": null,
+          "totalRemainingQuantity": null
+        },
+        {
+          "productName": "องุ่นจักรพรรดิ์",
+          "originalProductName": null,
+          "category": "ผลไม้",
+          "unit": "โล",
+          "uncertaintyReasons": [],
+          "marketStockQuantity": 0,
+          "houseStockQuantity": null,
+          "totalRemainingQuantity": null
+        },
+        {
+          "productName": "มังคุด",
+          "originalProductName": null,
+          "category": "ผลไม้",
+          "unit": "โล",
+          "uncertaintyReasons": [],
+          "marketStockQuantity": 0,
+          "houseStockQuantity": null,
+          "totalRemainingQuantity": null
+        },
+        {
+          "productName": "ลูกไหนดำ",
+          "originalProductName": null,
+          "category": "ผลไม้",
+          "unit": "โล",
+          "uncertaintyReasons": [],
+          "marketStockQuantity": 0,
+          "houseStockQuantity": null,
+          "totalRemainingQuantity": null
+        },
+        {
+          "productName": "กล้วยหอม",
+          "originalProductName": null,
+          "category": "ผลไม้",
+          "unit": "หวี",
+          "uncertaintyReasons": [],
+          "marketStockQuantity": 0,
+          "houseStockQuantity": null,
+          "totalRemainingQuantity": null
+        },
+        {
+          "productName": "ผลไม้กล่อง",
+          "originalProductName": null,
+          "category": "ผลไม้",
+          "unit": "กล่อง",
+          "uncertaintyReasons": [],
+          "marketStockQuantity": 0,
+          "houseStockQuantity": null,
+          "totalRemainingQuantity": null
+        },
+        {
+          "productName": "แก้วมังกร",
+          "originalProductName": null,
+          "category": "ผลไม้",
+          "unit": "โล",
+          "uncertaintyReasons": [],
+          "marketStockQuantity": 0,
+          "houseStockQuantity": null,
+          "totalRemainingQuantity": null
+        },
+        {
+          "productName": "องุ่นคิมสัน",
+          "originalProductName": null,
+          "category": "ผลไม้",
+          "unit": "โล",
+          "uncertaintyReasons": [],
+          "marketStockQuantity": 0,
+          "houseStockQuantity": null,
+          "totalRemainingQuantity": null
+        },
+        {
+          "productName": "สาลี่หอม",
+          "originalProductName": null,
+          "category": "ผลไม้",
+          "unit": "โล",
+          "uncertaintyReasons": [],
+          "marketStockQuantity": 0,
+          "houseStockQuantity": null,
+          "totalRemainingQuantity": null
+        },
+        {
+          "productName": "ส้มโอ",
+          "originalProductName": null,
+          "category": "ผลไม้",
+          "unit": "ลูก",
+          "uncertaintyReasons": [],
+          "marketStockQuantity": 0,
+          "houseStockQuantity": null,
+          "totalRemainingQuantity": null
+        },
+        {
+          "productName": "มะม่วงจิ้ว",
+          "originalProductName": null,
+          "category": "ผลไม้",
+          "unit": "โล",
+          "uncertaintyReasons": [],
+          "marketStockQuantity": 0,
+          "houseStockQuantity": null,
+          "totalRemainingQuantity": null
+        },
+        {
+          "productName": "ส้มจีน",
+          "originalProductName": null,
+          "category": "ผลไม้",
+          "unit": "โล",
+          "uncertaintyReasons": [],
+          "marketStockQuantity": 0,
+          "houseStockQuantity": null,
+          "totalRemainingQuantity": null
+        },
+        {
+          "productName": "แอปเปิ้ลแคราะ",
+          "originalProductName": null,
+          "category": "ไม่จัดหมวด",
+          "unit": "โล",
+          "uncertaintyReasons": [],
+          "marketStockQuantity": 0,
+          "houseStockQuantity": null,
+          "totalRemainingQuantity": null
+        },
+        {
+          "productName": "ส้มเขียวหวาน",
+          "originalProductName": null,
+          "category": "ผลไม้",
+          "unit": "โล",
+          "uncertaintyReasons": [],
+          "marketStockQuantity": 0,
+          "houseStockQuantity": null,
+          "totalRemainingQuantity": null
+        }
+      ]
+    },
+    "reduce": {
+      "count": 0,
+      "productNames": [],
+      "items": []
+    },
+    "unknown": {
+      "count": 0,
+      "productNames": [],
+      "items": []
+    }
+  },
+  "sales": {
+    "awaitingReturnCount": 26,
+    "totalSalesSatang": 0,
+    "confirmedSalesSatang": 0,
+    "pendingReviewSalesSatang": 0,
+    "adjustmentSatang": 0,
+    "valueAuthoritative": false,
+    "trustedCount": 0,
+    "unresolvedCount": 26,
+    "soldOutCount": 0,
+    "priceConflictCount": 0,
+    "priceConflictMarketCount": 0,
+    "priceIssueCount": 0,
+    "incompleteReturnIssueCount": 26,
+    "excludedFromSalesCount": 26,
+    "vegetableMarketDataPresent": false,
+    "markets": [
+      {
+        "awaitingReturnCount": 26,
+        "marketLabel": "พาซิโอ้ผลไม้",
+        "totalSalesSatang": 0,
+        "confirmedSalesSatang": 0,
+        "pendingReviewSalesSatang": 0,
+        "adjustmentSatang": 0,
+        "valueAuthoritative": false,
+        "trustedCount": 0,
+        "unresolvedCount": 26,
+        "soldOutCount": 0,
+        "priceIssueCount": 0,
+        "incompleteReturnIssueCount": 26,
+        "excludedFromSalesCount": 26
+      }
+    ],
+    "reviewItems": [
+      {
+        "marketLabel": "พาซิโอ้ผลไม้",
+        "productName": "กล้วยหอม",
+        "unit": "หวี",
+        "status": "QUANTITY_BLOCKED",
+        "valueStatus": "UNAVAILABLE",
+        "reasons": [
+          "missing_return_evidence"
+        ],
+        "soldQuantity": null,
+        "enteredPriceSatang": 12000,
+        "centralPriceSatang": null,
+        "confirmedSalesSatang": null,
+        "pendingReviewSalesSatang": null,
+        "adjustmentSatang": 0,
+        "returnEvidenceIncomplete": false
+      },
+      {
+        "marketLabel": "พาซิโอ้ผลไม้",
+        "productName": "แก้วมังกร",
+        "unit": "โล",
+        "status": "QUANTITY_BLOCKED",
+        "valueStatus": "UNAVAILABLE",
+        "reasons": [
+          "missing_return_evidence"
+        ],
+        "soldQuantity": null,
+        "enteredPriceSatang": 4500,
+        "centralPriceSatang": null,
+        "confirmedSalesSatang": null,
+        "pendingReviewSalesSatang": null,
+        "adjustmentSatang": 0,
+        "returnEvidenceIncomplete": false
+      },
+      {
+        "marketLabel": "พาซิโอ้ผลไม้",
+        "productName": "แก้วมังกรแดง",
+        "unit": "โล",
+        "status": "QUANTITY_BLOCKED",
+        "valueStatus": "UNAVAILABLE",
+        "reasons": [
+          "missing_return_evidence"
+        ],
+        "soldQuantity": null,
+        "enteredPriceSatang": 4000,
+        "centralPriceSatang": null,
+        "confirmedSalesSatang": null,
+        "pendingReviewSalesSatang": null,
+        "adjustmentSatang": 0,
+        "returnEvidenceIncomplete": false
+      },
+      {
+        "marketLabel": "พาซิโอ้ผลไม้",
+        "productName": "แตงไทย",
+        "unit": "ลูก",
+        "status": "QUANTITY_BLOCKED",
+        "valueStatus": "UNAVAILABLE",
+        "reasons": [
+          "missing_return_evidence"
+        ],
+        "soldQuantity": null,
+        "enteredPriceSatang": 1600,
+        "centralPriceSatang": null,
+        "confirmedSalesSatang": null,
+        "pendingReviewSalesSatang": null,
+        "adjustmentSatang": 0,
+        "returnEvidenceIncomplete": false
+      },
+      {
+        "marketLabel": "พาซิโอ้ผลไม้",
+        "productName": "แตงโม",
+        "unit": "ลูก",
+        "status": "QUANTITY_BLOCKED",
+        "valueStatus": "UNAVAILABLE",
+        "reasons": [
+          "missing_return_evidence"
+        ],
+        "soldQuantity": null,
+        "enteredPriceSatang": 3000,
+        "centralPriceSatang": null,
+        "confirmedSalesSatang": null,
+        "pendingReviewSalesSatang": null,
+        "adjustmentSatang": 0,
+        "returnEvidenceIncomplete": false
+      },
+      {
+        "marketLabel": "พาซิโอ้ผลไม้",
+        "productName": "ทับทิม",
+        "unit": "ลูก",
+        "status": "QUANTITY_BLOCKED",
+        "valueStatus": "UNAVAILABLE",
+        "reasons": [
+          "missing_return_evidence"
+        ],
+        "soldQuantity": null,
+        "enteredPriceSatang": 1000,
+        "centralPriceSatang": null,
+        "confirmedSalesSatang": null,
+        "pendingReviewSalesSatang": null,
+        "adjustmentSatang": 0,
+        "returnEvidenceIncomplete": false
+      },
+      {
+        "marketLabel": "พาซิโอ้ผลไม้",
+        "productName": "น้อยหน่า",
+        "unit": "โล",
+        "status": "QUANTITY_BLOCKED",
+        "valueStatus": "UNAVAILABLE",
+        "reasons": [
+          "missing_return_evidence"
+        ],
+        "soldQuantity": null,
+        "enteredPriceSatang": 4000,
+        "centralPriceSatang": null,
+        "confirmedSalesSatang": null,
+        "pendingReviewSalesSatang": null,
+        "adjustmentSatang": 0,
+        "returnEvidenceIncomplete": false
+      },
+      {
+        "marketLabel": "พาซิโอ้ผลไม้",
+        "productName": "ผลไม้กล่อง",
+        "unit": "กล่อง",
+        "status": "QUANTITY_BLOCKED",
+        "valueStatus": "UNAVAILABLE",
+        "reasons": [
+          "missing_return_evidence"
+        ],
+        "soldQuantity": null,
+        "enteredPriceSatang": 2000,
+        "centralPriceSatang": null,
+        "confirmedSalesSatang": null,
+        "pendingReviewSalesSatang": null,
+        "adjustmentSatang": 0,
+        "returnEvidenceIncomplete": false
+      },
+      {
+        "marketLabel": "พาซิโอ้ผลไม้",
+        "productName": "ฝรั่ง",
+        "unit": "โล",
+        "status": "QUANTITY_BLOCKED",
+        "valueStatus": "UNAVAILABLE",
+        "reasons": [
+          "missing_return_evidence"
+        ],
+        "soldQuantity": null,
+        "enteredPriceSatang": 3500,
+        "centralPriceSatang": null,
+        "confirmedSalesSatang": null,
+        "pendingReviewSalesSatang": null,
+        "adjustmentSatang": 0,
+        "returnEvidenceIncomplete": false
+      },
+      {
+        "marketLabel": "พาซิโอ้ผลไม้",
+        "productName": "ฝรั่งแดง",
+        "unit": "โล",
+        "status": "QUANTITY_BLOCKED",
+        "valueStatus": "UNAVAILABLE",
+        "reasons": [
+          "missing_return_evidence"
+        ],
+        "soldQuantity": null,
+        "enteredPriceSatang": 3500,
+        "centralPriceSatang": null,
+        "confirmedSalesSatang": null,
+        "pendingReviewSalesSatang": null,
+        "adjustmentSatang": 0,
+        "returnEvidenceIncomplete": false
+      },
+      {
+        "marketLabel": "พาซิโอ้ผลไม้",
+        "productName": "พุทราจีน",
+        "unit": "โล",
+        "status": "QUANTITY_BLOCKED",
+        "valueStatus": "UNAVAILABLE",
+        "reasons": [
+          "missing_return_evidence"
+        ],
+        "soldQuantity": null,
+        "enteredPriceSatang": 10000,
+        "centralPriceSatang": null,
+        "confirmedSalesSatang": null,
+        "pendingReviewSalesSatang": null,
+        "adjustmentSatang": 0,
+        "returnEvidenceIncomplete": false
+      },
+      {
+        "marketLabel": "พาซิโอ้ผลไม้",
+        "productName": "พุทรานมสด",
+        "unit": "โล",
+        "status": "QUANTITY_BLOCKED",
+        "valueStatus": "UNAVAILABLE",
+        "reasons": [
+          "missing_return_evidence"
+        ],
+        "soldQuantity": null,
+        "enteredPriceSatang": 4000,
+        "centralPriceSatang": null,
+        "confirmedSalesSatang": null,
+        "pendingReviewSalesSatang": null,
+        "adjustmentSatang": 0,
+        "returnEvidenceIncomplete": false
+      },
+      {
+        "marketLabel": "พาซิโอ้ผลไม้",
+        "productName": "มะม่วงจิ้ว",
+        "unit": "โล",
+        "status": "QUANTITY_BLOCKED",
+        "valueStatus": "UNAVAILABLE",
+        "reasons": [
+          "missing_return_evidence"
+        ],
+        "soldQuantity": null,
+        "enteredPriceSatang": 2000,
+        "centralPriceSatang": null,
+        "confirmedSalesSatang": null,
+        "pendingReviewSalesSatang": null,
+        "adjustmentSatang": 0,
+        "returnEvidenceIncomplete": false
+      },
+      {
+        "marketLabel": "พาซิโอ้ผลไม้",
+        "productName": "มะละกอ",
+        "unit": "ลูก",
+        "status": "QUANTITY_BLOCKED",
+        "valueStatus": "UNAVAILABLE",
+        "reasons": [
+          "missing_return_evidence"
+        ],
+        "soldQuantity": null,
+        "enteredPriceSatang": 1600,
+        "centralPriceSatang": null,
+        "confirmedSalesSatang": null,
+        "pendingReviewSalesSatang": null,
+        "adjustmentSatang": 0,
+        "returnEvidenceIncomplete": false
+      },
+      {
+        "marketLabel": "พาซิโอ้ผลไม้",
+        "productName": "มังคุด",
+        "unit": "โล",
+        "status": "QUANTITY_BLOCKED",
+        "valueStatus": "UNAVAILABLE",
+        "reasons": [
+          "missing_return_evidence"
+        ],
+        "soldQuantity": null,
+        "enteredPriceSatang": 2000,
+        "centralPriceSatang": null,
+        "confirmedSalesSatang": null,
+        "pendingReviewSalesSatang": null,
+        "adjustmentSatang": 0,
+        "returnEvidenceIncomplete": false
+      },
+      {
+        "marketLabel": "พาซิโอ้ผลไม้",
+        "productName": "ลองกอง",
+        "unit": "โล",
+        "status": "QUANTITY_BLOCKED",
+        "valueStatus": "UNAVAILABLE",
+        "reasons": [
+          "missing_return_evidence"
+        ],
+        "soldQuantity": null,
+        "enteredPriceSatang": 3500,
+        "centralPriceSatang": null,
+        "confirmedSalesSatang": null,
+        "pendingReviewSalesSatang": null,
+        "adjustmentSatang": 0,
+        "returnEvidenceIncomplete": false
+      },
+      {
+        "marketLabel": "พาซิโอ้ผลไม้",
+        "productName": "ลูกไหนดำ",
+        "unit": "โล",
+        "status": "QUANTITY_BLOCKED",
+        "valueStatus": "UNAVAILABLE",
+        "reasons": [
+          "missing_return_evidence"
+        ],
+        "soldQuantity": null,
+        "enteredPriceSatang": 5000,
+        "centralPriceSatang": null,
+        "confirmedSalesSatang": null,
+        "pendingReviewSalesSatang": null,
+        "adjustmentSatang": 0,
+        "returnEvidenceIncomplete": false
+      },
+      {
+        "marketLabel": "พาซิโอ้ผลไม้",
+        "productName": "ส้มเขียวหวาน",
+        "unit": "โล",
+        "status": "QUANTITY_BLOCKED",
+        "valueStatus": "UNAVAILABLE",
+        "reasons": [
+          "missing_return_evidence"
+        ],
+        "soldQuantity": null,
+        "enteredPriceSatang": 4000,
+        "centralPriceSatang": null,
+        "confirmedSalesSatang": null,
+        "pendingReviewSalesSatang": null,
+        "adjustmentSatang": 0,
+        "returnEvidenceIncomplete": false
+      },
+      {
+        "marketLabel": "พาซิโอ้ผลไม้",
+        "productName": "ส้มจีน",
+        "unit": "โล",
+        "status": "QUANTITY_BLOCKED",
+        "valueStatus": "UNAVAILABLE",
+        "reasons": [
+          "missing_return_evidence"
+        ],
+        "soldQuantity": null,
+        "enteredPriceSatang": 5000,
+        "centralPriceSatang": null,
+        "confirmedSalesSatang": null,
+        "pendingReviewSalesSatang": null,
+        "adjustmentSatang": 0,
+        "returnEvidenceIncomplete": false
+      },
+      {
+        "marketLabel": "พาซิโอ้ผลไม้",
+        "productName": "ส้มสายน้ำผึ้ง",
+        "unit": "โล",
+        "status": "QUANTITY_BLOCKED",
+        "valueStatus": "UNAVAILABLE",
+        "reasons": [
+          "missing_return_evidence"
+        ],
+        "soldQuantity": null,
+        "enteredPriceSatang": 4000,
+        "centralPriceSatang": null,
+        "confirmedSalesSatang": null,
+        "pendingReviewSalesSatang": null,
+        "adjustmentSatang": 0,
+        "returnEvidenceIncomplete": false
+      },
+      {
+        "marketLabel": "พาซิโอ้ผลไม้",
+        "productName": "ส้มโอ",
+        "unit": "ลูก",
+        "status": "QUANTITY_BLOCKED",
+        "valueStatus": "UNAVAILABLE",
+        "reasons": [
+          "missing_return_evidence"
+        ],
+        "soldQuantity": null,
+        "enteredPriceSatang": 3000,
+        "centralPriceSatang": null,
+        "confirmedSalesSatang": null,
+        "pendingReviewSalesSatang": null,
+        "adjustmentSatang": 0,
+        "returnEvidenceIncomplete": false
+      },
+      {
+        "marketLabel": "พาซิโอ้ผลไม้",
+        "productName": "สาลี่หอม",
+        "unit": "โล",
+        "status": "QUANTITY_BLOCKED",
+        "valueStatus": "UNAVAILABLE",
+        "reasons": [
+          "missing_return_evidence"
+        ],
+        "soldQuantity": null,
+        "enteredPriceSatang": 4000,
+        "centralPriceSatang": null,
+        "confirmedSalesSatang": null,
+        "pendingReviewSalesSatang": null,
+        "adjustmentSatang": 0,
+        "returnEvidenceIncomplete": false
+      },
+      {
+        "marketLabel": "พาซิโอ้ผลไม้",
+        "productName": "องุ่นคิมสัน",
+        "unit": "โล",
+        "status": "QUANTITY_BLOCKED",
+        "valueStatus": "UNAVAILABLE",
+        "reasons": [
+          "missing_return_evidence"
+        ],
+        "soldQuantity": null,
+        "enteredPriceSatang": 13000,
+        "centralPriceSatang": null,
+        "confirmedSalesSatang": null,
+        "pendingReviewSalesSatang": null,
+        "adjustmentSatang": 0,
+        "returnEvidenceIncomplete": false
+      },
+      {
+        "marketLabel": "พาซิโอ้ผลไม้",
+        "productName": "องุ่นจักรพรรดิ์",
+        "unit": "โล",
+        "status": "QUANTITY_BLOCKED",
+        "valueStatus": "UNAVAILABLE",
+        "reasons": [
+          "missing_return_evidence"
+        ],
+        "soldQuantity": null,
+        "enteredPriceSatang": 8000,
+        "centralPriceSatang": null,
+        "confirmedSalesSatang": null,
+        "pendingReviewSalesSatang": null,
+        "adjustmentSatang": 0,
+        "returnEvidenceIncomplete": false
+      },
+      {
+        "marketLabel": "พาซิโอ้ผลไม้",
+        "productName": "แอปเปิ้ล",
+        "unit": "ลูก",
+        "status": "QUANTITY_BLOCKED",
+        "valueStatus": "UNAVAILABLE",
+        "reasons": [
+          "missing_return_evidence"
+        ],
+        "soldQuantity": null,
+        "enteredPriceSatang": 1000,
+        "centralPriceSatang": null,
+        "confirmedSalesSatang": null,
+        "pendingReviewSalesSatang": null,
+        "adjustmentSatang": 0,
+        "returnEvidenceIncomplete": false
+      },
+      {
+        "marketLabel": "พาซิโอ้ผลไม้",
+        "productName": "แอปเปิ้ลแคราะ",
+        "unit": "โล",
+        "status": "QUANTITY_BLOCKED",
+        "valueStatus": "UNAVAILABLE",
+        "reasons": [
+          "missing_return_evidence"
+        ],
+        "soldQuantity": null,
+        "enteredPriceSatang": 4000,
+        "centralPriceSatang": null,
+        "confirmedSalesSatang": null,
+        "pendingReviewSalesSatang": null,
+        "adjustmentSatang": 0,
+        "returnEvidenceIncomplete": false
+      }
+    ]
+  },
+  "fruitFinancial": {
+    "withdrawalValueSatang": 1933150,
+    "salesValueSatang": 0,
+    "pendingReviewSalesSatang": 0,
+    "unavailableCount": 25,
+    "awaitingReturnCount": 25,
+    "goodReturnValueSatang": 0,
+    "houseStockValueSatang": null,
+    "readyValueSatang": null,
+    "markets": [
+      {
+        "marketLabel": "พาซิโอ้ผลไม้",
+        "withdrawalValueSatang": 1933150,
+        "salesValueSatang": 0,
+        "pendingReviewSalesSatang": 0,
+        "unavailableCount": 25,
+        "awaitingReturnCount": 25,
+        "goodReturnValueSatang": 0
+      }
+    ]
+  },
+  "produceFinancial": {
+    "fruit": {
+      "withdrawalValueSatang": 1933150,
+      "salesValueSatang": 0,
+      "pendingReviewSalesSatang": 0,
+      "unavailableCount": 25,
+      "awaitingReturnCount": 25,
+      "goodReturnValueSatang": 0,
+      "houseStockValueSatang": null,
+      "readyValueSatang": null,
+      "markets": [
+        {
+          "marketLabel": "พาซิโอ้ผลไม้",
+          "withdrawalValueSatang": 1933150,
+          "salesValueSatang": 0,
+          "pendingReviewSalesSatang": 0,
+          "unavailableCount": 25,
+          "awaitingReturnCount": 25,
+          "goodReturnValueSatang": 0
+        }
+      ]
+    },
+    "other": {
+      "withdrawalValueSatang": 4400,
+      "salesValueSatang": 0,
+      "pendingReviewSalesSatang": 0,
+      "unavailableCount": 1,
+      "awaitingReturnCount": 1,
+      "goodReturnValueSatang": 0,
+      "houseStockValueSatang": null,
+      "readyValueSatang": null,
+      "markets": [
+        {
+          "marketLabel": "พาซิโอ้ผลไม้",
+          "withdrawalValueSatang": 4400,
+          "salesValueSatang": 0,
+          "pendingReviewSalesSatang": 0,
+          "unavailableCount": 1,
+          "awaitingReturnCount": 1,
+          "goodReturnValueSatang": 0
+        }
+      ]
+    }
+  },
+  "houseStock": {
+    "status": "missing"
+  },
+  "whiteSheetStatus": "missing",
+  "produceReadiness": {
+    "transactionCount": 28,
+    "markets": [
+      {
+        "marketLabel": "พาซิโอ้ผลไม้",
+        "hasWithdrawal": true,
+        "hasReturn": false
+      }
+    ]
+  },
+  "reconciliation": {
+    "status": "missing"
+  }
+}

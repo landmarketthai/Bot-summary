@@ -1,5 +1,7 @@
 # Morning Brief / LINE integrity — 20 October 2026
 
+Final real-PostgreSQL/PostgREST integration UAT and follow-up fix: [PR #184 release gate evidence](pr184-uat-20261020/README.md). This later run uses the newly supplied 26-line return and supersedes the local PostgreSQL / synthetic-return limitations recorded below.
+
 Base: `origin/main` at `11e2f43`. Branch: `codex/morning-sales-line-integrity-20261020`.
 The original checkout has unrelated uncommitted work. All changes here were made in an isolated worktree; PR #182 and its worktree were not modified.
 The only shared changed file with PR #182 is `src/lib/line/webhook-service.ts`; these changes are confined to Produce close normalization/feedback, so an eventual integration must preserve that PR's separate Slip changes.

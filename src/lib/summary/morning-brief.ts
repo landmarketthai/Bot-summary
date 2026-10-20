@@ -145,7 +145,7 @@ export function summarizeSales(report: SalesReport): MorningBriefSales {
   const rows = report.markets.flatMap((market) => market.rows);
 
   const hasPriceIssue = (reasons: readonly string[]) =>
-    reasons.includes("central_price_conflict") || reasons.includes("missing_central_price");
+    reasons.includes("central_price_conflict") || reasons.includes("missing_central_price") || reasons.includes("return_price_mismatch");
   const hasReturnIssue = (row: (typeof rows)[number]) =>
     row.reasons.includes("missing_return_evidence") || row.reasons.includes("product_return_absent") || Boolean(row.returnEvidenceIncomplete);
 
