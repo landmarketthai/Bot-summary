@@ -142,6 +142,7 @@ BEGIN
      WHERE p.pronamespace = 'public'::regnamespace
        AND p.proname IN (
          'capture_slip_image_event',
+         'receive_line_webhook_payload',
          'bind_unbound_slip_image_events',
          'resolve_slip_image_batch',
          'slip_image_event_ts',

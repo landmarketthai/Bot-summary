@@ -50,6 +50,7 @@ jobs:
           src/lib/slips/schema-compat.pg.test.ts
           src/lib/slips/cron-cohort-recovery.pg.test.ts
           src/lib/slips/slip-ledger-alert.pg.test.ts
+          src/lib/slips/full-rollback-sequence.pg.test.ts
       - name: P0 slip finalizer, retry and webhook regressions
         run: >-
           bun test
