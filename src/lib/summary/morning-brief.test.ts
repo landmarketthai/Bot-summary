@@ -238,11 +238,12 @@ describe("Morning Brief section financial purity", () => {
     const fruit = summarizeProduceFinancial(sales, house, "fruit");
     const vegetable = summarizeProduceFinancial(sales, house, "vegetable");
     const other = summarizeProduceFinancial(sales, house, "other");
-    expect([fruit.withdrawalValueSatang, vegetable.withdrawalValueSatang, other.withdrawalValueSatang]).toEqual([300, 700, 1800]);
-    expect([fruit.salesValueSatang, vegetable.salesValueSatang, other.salesValueSatang]).toEqual([30, 70, 180]);
-    expect([fruit.goodReturnValueSatang, vegetable.goodReturnValueSatang, other.goodReturnValueSatang]).toEqual([200, 200, 300]);
-    expect([fruit.houseStockValueSatang, vegetable.houseStockValueSatang, other.houseStockValueSatang]).toEqual([100, 200, 300]);
-    expect([fruit.readyValueSatang, vegetable.readyValueSatang, other.readyValueSatang]).toEqual([300, 400, 600]);
+    // Durian belongs to fruit under the existing reviewed classification.
+    expect([fruit.withdrawalValueSatang, vegetable.withdrawalValueSatang, other.withdrawalValueSatang]).toEqual([800, 700, 1300]);
+    expect([fruit.salesValueSatang, vegetable.salesValueSatang, other.salesValueSatang]).toEqual([80, 70, 130]);
+    expect([fruit.goodReturnValueSatang, vegetable.goodReturnValueSatang, other.goodReturnValueSatang]).toEqual([300, 200, 200]);
+    expect([fruit.houseStockValueSatang, vegetable.houseStockValueSatang, other.houseStockValueSatang]).toEqual([400, 200, 0]);
+    expect([fruit.readyValueSatang, vegetable.readyValueSatang, other.readyValueSatang]).toEqual([700, 400, 200]);
   });
 
   test("known vegetables and special packs have classified purchase headings", () => {

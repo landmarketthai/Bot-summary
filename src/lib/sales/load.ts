@@ -60,6 +60,7 @@ import {
 
 type Supabase = SupabaseClient<Database>;
 type ProduceTransactionRow = Database["public"]["Views"]["produce_transactions"]["Row"];
+export type SalesMarketFilter = (marketName: string | null, roundId?: string | null) => boolean;
 
 const PAGE_SIZE = 1000;
 const LOOKUP_CHUNK_SIZE = 500;
@@ -378,6 +379,7 @@ async function loadScopeBlockers(
   supabase: Supabase,
   businessDate: string,
   failures: ProduceFailureScan,
+  marketFilter?: SalesMarketFilter,
 ): Promise<SalesScopeBlocker[]> {
   // No time window here: both scans are attributed by the produce business date
   // their own evidence names, not by when the row happened to be written.
@@ -391,7 +393,7 @@ async function loadScopeBlockers(
     blockers.push({ kind: "unresolved_pending_session", count: unresolvedPending });
   }
 
-  const relevant = await countProduceParseErrors(supabase, businessDate);
+  const relevant = await countProduceParseErrors(supabase, businessDate, marketFilter);
   if (relevant > 0) {
     blockers.push({ kind: "message_parser_error", count: relevant });
   }
@@ -607,6 +609,7 @@ export interface ProduceFailureScan {
 export async function loadProduceFailureScan(
   supabase: Supabase,
   businessDate: string,
+  marketFilter?: SalesMarketFilter,
 ): Promise<ProduceFailureScan> {
   const [pendingAttempts, lostMessages, evidence] = await Promise.all([
     scanUnresolvedPendingAttempts(supabase, businessDate),
@@ -617,7 +620,8 @@ export async function loadProduceFailureScan(
   const attempts = [
     ...pendingAttempts,
     ...lostMessages.map((row) => row.attempt),
-  ];
+  ].filter((attempt) => !marketFilter || !attempt.marketLabel
+    || marketFilter(attempt.marketLabel, attempt.accountabilityRoundId));
   const classifications = classifyProduceFailures(attempts, evidence.outcomes, {
     cancelledRoundIds: evidence.cancelledRoundIds,
   });
@@ -693,6 +697,7 @@ async function pendingIngestEventTimes(
 async function countProduceParseErrors(
   supabase: Supabase,
   businessDate: string,
+  marketFilter?: SalesMarketFilter,
 ): Promise<number> {
   const errors = await fetchAllScopeRows<{ parser_name: string; raw_message_id: string }>(
     "parse error",
@@ -726,6 +731,9 @@ async function countProduceParseErrors(
       PRODUCE_PARSER_NAMES.has(row.parser_name)
       || (typeof message.rawText === "string" && RE.SESSION_START.test(message.rawText));
     if (!isProduce) return false;
+    const market = message.rawText ? parseWeighSession(message.rawText).session_title : null;
+    // Unattributable missing evidence must still block either scoped report.
+    if (marketFilter && normalizedMarketLabel(market) && !marketFilter(market)) return false;
 
     // A crash on a message headed 25/07/2569 is a blocker for the 25th, even
     // when it arrived on the 26th — and it must NOT block the 26th.
@@ -784,10 +792,12 @@ async function loadSessionAudits(
   rows: readonly ProduceTransactionRow[],
   sourceByRawMessageId: ReadonlyMap<string, string>,
   failures: ProduceFailureScan,
+  marketFilter?: SalesMarketFilter,
+  roundMarketLabels?: ReadonlyMap<string, string>,
 ): Promise<SalesSessionAudit[]> {
   const { data, error } = await supabase
     .from("produce_sessions")
-    .select("id, session_title, total_items, raw_message_id, voided_at, session_date")
+    .select("id, session_title, total_items, raw_message_id, voided_at, session_date, accountability_round_id")
     .eq("session_date", businessDate)
     .is("voided_at", null);
   if (error) throw new SalesDataError(`produce session audit query failed: ${error.message}`);
@@ -797,6 +807,9 @@ async function loadSessionAudits(
   const missingSources: string[] = [];
 
   for (const session of data ?? []) {
+    const marketName = roundMarketLabels?.get(session.accountability_round_id ?? "")
+      || normalizedMarketLabel(session.session_title) || null;
+    if (marketFilter && marketName && !marketFilter(marketName, session.accountability_round_id)) continue;
     // The server filter is re-applied client-side: a null-dated session belongs
     // to auditNullDatedSessions, which dates it from its own evidence.
     if (session.session_date !== undefined && session.session_date !== businessDate) continue;
@@ -808,7 +821,7 @@ async function loadSessionAudits(
     audits.push({
       sessionId: session.id,
       sourceId: sourceByRawMessageId.get(session.raw_message_id) ?? null,
-      marketName: normalizedMarketLabel(session.session_title) || null,
+      marketName,
       reasons: ["session_rows_missing"],
     });
   }
@@ -1220,6 +1233,8 @@ function adaptRows(
 }
 
 export interface LoadSalesReportOptions {
+  marketFilter?: SalesMarketFilter;
+  roundMarketLabels?: ReadonlyMap<string, string>;
   requireReturnEvidence?: boolean;
   /**
    * Include known QA/test market scopes. Default false: production reports —
@@ -1254,12 +1269,12 @@ export async function loadSalesReport(
   // Loaded once and shared: the scope blockers and the session audits must
   // agree on which failures are still active, or the header count and the
   // detail list stop reconciling.
-  const failures = options.failures ?? (await loadProduceFailureScan(supabase, businessDate));
+  const failures = options.failures ?? (await loadProduceFailureScan(supabase, businessDate, options.marketFilter));
 
   const [sourceByRawMessageId, sessionIssues, scopeBlockers, pricing] = await Promise.all([
     mapRawMessageSources(supabase, rawMessageIds),
     loadSessionIssues(supabase, rows),
-    loadScopeBlockers(supabase, businessDate, failures),
+    loadScopeBlockers(supabase, businessDate, failures, options.marketFilter),
     // Legacy fallback only. Entered round prices stay authoritative when present.
     resolveCentralPricesForDate(supabase, businessDate, rows),
   ]);
@@ -1270,6 +1285,8 @@ export async function loadSalesReport(
     rows,
     sourceByRawMessageId,
     failures,
+    options.marketFilter,
+    options.roundMarketLabels,
   );
 
   // P2E round identity: the canonical market label for display, the rounds
@@ -1289,16 +1306,17 @@ export async function loadSalesReport(
     requireReturnEvidence: options.requireReturnEvidence,
     businessDate,
     rows: adaptRows(rows, sourceByRawMessageId, sessionIssues).filter((row) =>
-      keep(row.marketName),
+      keep(row.marketName) && (!options.marketFilter || options.marketFilter(row.marketName, row.accountabilityRoundId)),
     ),
     centralPrices: pricing.prices,
     priceConflicts: pricing.conflicts,
     scopeBlockers,
-    sessionAudits: sessionAudits.filter((audit) => keep(audit.marketName)),
+    sessionAudits: sessionAudits.filter((audit) => keep(audit.marketName)
+      && (!options.marketFilter || !audit.marketName || options.marketFilter(audit.marketName))),
     roundMarketLabels: new Map(
-      roundStatuses
+      [...(options.roundMarketLabels ?? []), ...roundStatuses
         .filter((round) => round.marketLabel)
-        .map((round) => [round.accountabilityRoundId, round.marketLabel]),
+        .map((round) => [round.accountabilityRoundId, round.marketLabel] as const)],
     ),
     incompleteReturnRounds: new Set([
       ...roundsWithIncompleteReturn(roundStatuses),

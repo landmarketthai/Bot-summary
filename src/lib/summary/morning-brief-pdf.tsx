@@ -4,7 +4,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 import { registerFonts } from "@/lib/pdf/fonts";
 import { MorningBriefA4Doc } from "@/lib/pdf/MorningBriefA4Doc";
-import type { MorningBriefReport } from "@/lib/summary/morning-brief";
+import type { MorningBriefReport, MorningBriefScope } from "@/lib/summary/morning-brief";
 
 export const MORNING_BRIEF_PDF_BUCKET = "morning-brief-pdfs";
 export const MORNING_BRIEF_PDF_EXPIRES_SECONDS = 7 * 24 * 60 * 60;
@@ -33,16 +33,16 @@ export interface MorningBriefPdfArtifact {
   expiresInSeconds: number;
 }
 
-export function morningBriefPdfFilename(businessDate: string): string {
-  return `morning-brief-${businessDate}.pdf`;
+export function morningBriefPdfFilename(businessDate: string, reportScope?: MorningBriefScope): string {
+  return `morning-brief-${reportScope ? `${reportScope}-` : ""}${businessDate}.pdf`;
 }
 
-export function morningBriefPdfPath(businessDate: string): string {
-  return `${businessDate}/${morningBriefPdfFilename(businessDate)}`;
+export function morningBriefPdfPath(businessDate: string, reportScope?: MorningBriefScope): string {
+  return `${businessDate}/${morningBriefPdfFilename(businessDate, reportScope)}`;
 }
 
-export function morningBriefReferencePath(businessDate: string): string {
-  return `${businessDate}/morning-brief-${businessDate}.ref.json`;
+export function morningBriefReferencePath(businessDate: string, reportScope?: MorningBriefScope): string {
+  return morningBriefPdfPath(businessDate, reportScope).replace(/\.pdf$/, ".ref.json");
 }
 
 export function buildMorningBriefReferenceData(
@@ -64,13 +64,14 @@ export async function createMorningBriefPdfArtifact(
   report: MorningBriefReport,
   generatedAt = new Date(),
 ): Promise<MorningBriefPdfArtifact> {
+  if (report.readiness?.status === "not_ready") throw new Error(`morning brief not_ready: ${report.readiness.reasons.join(", ")}`);
   registerFonts();
   const buffer = await renderToBuffer(
     <MorningBriefA4Doc report={report} generatedAt={generatedAt} />,
   );
-  const path = morningBriefPdfPath(report.businessDate);
-  const filename = morningBriefPdfFilename(report.businessDate);
-  const referencePath = morningBriefReferencePath(report.businessDate);
+  const path = morningBriefPdfPath(report.businessDate, report.reportScope);
+  const filename = morningBriefPdfFilename(report.businessDate, report.reportScope);
+  const referencePath = morningBriefReferencePath(report.businessDate, report.reportScope);
   const bucket = supabase.storage.from(MORNING_BRIEF_PDF_BUCKET);
 
   const { error: uploadError } = await bucket.upload(path, new Uint8Array(buffer), {

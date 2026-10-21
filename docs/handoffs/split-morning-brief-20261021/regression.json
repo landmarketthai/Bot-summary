@@ -1,0 +1,365 @@
+{
+  "command": "bun test --timeout 30000 (each file isolated to prevent module-mock leakage)",
+  "results": [
+    {
+      "file": "src/lib/physical-inventory\\parse.test.ts",
+      "code": 0,
+      "pass": 47,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/physical-inventory\\session-service.test.ts",
+      "code": 0,
+      "pass": 10,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/physical-inventory\\house-stock-report.test.ts",
+      "code": 0,
+      "pass": 19,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/sales\\round-return-sold-out.test.ts",
+      "code": 0,
+      "pass": 9,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/sales\\qa-scopes.test.ts",
+      "code": 0,
+      "pass": 5,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/physical-inventory\\finalizer.test.ts",
+      "code": 0,
+      "pass": 13,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/sales\\latest-sales-date.test.ts",
+      "code": 0,
+      "pass": 9,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/sales\\cron.test.ts",
+      "code": 0,
+      "pass": 18,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/sales\\load.test.ts",
+      "code": 0,
+      "pass": 109,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/sales\\command.test.ts",
+      "code": 0,
+      "pass": 9,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/sales\\calculate.test.ts",
+      "code": 0,
+      "pass": 97,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/sales\\message.test.ts",
+      "code": 0,
+      "pass": 58,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/summary\\morning-brief.test.ts",
+      "code": 0,
+      "pass": 7,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/summary\\morning-brief-service.test.ts",
+      "code": 0,
+      "pass": 8,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/summary\\morning-brief-message.test.ts",
+      "code": 0,
+      "pass": 17,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/summary\\latest-stock-date.test.ts",
+      "code": 0,
+      "pass": 9,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/summary\\daily-stock-cron.test.ts",
+      "code": 0,
+      "pass": 20,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/summary\\daily-good-return-value.test.ts",
+      "code": 0,
+      "pass": 54,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/summary\\purchase-planning-service.test.ts",
+      "code": 0,
+      "pass": 18,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/summary\\purchase-planning-message.test.ts",
+      "code": 0,
+      "pass": 35,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/summary\\morning-brief-scope.test.ts",
+      "code": 0,
+      "pass": 21,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/summary\\produce-section.test.ts",
+      "code": 0,
+      "pass": 44,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/summary\\purchase-planning-command.test.ts",
+      "code": 0,
+      "pass": 5,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/summary\\produce-category-totals.test.ts",
+      "code": 0,
+      "pass": 33,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/summary\\remaining-fruit-message.test.ts",
+      "code": 0,
+      "pass": 7,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/summary\\remaining-fruit-data.test.ts",
+      "code": 0,
+      "pass": 3,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/summary\\remaining-fruit-command.test.ts",
+      "code": 0,
+      "pass": 7,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/summary\\purchase-planning.test.ts",
+      "code": 0,
+      "pass": 62,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/summary\\morning-sales-integrity.test.tsx",
+      "code": 0,
+      "pass": 7,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/white-sheet\\withdrawal-central-price-seed.test.ts",
+      "code": 0,
+      "pass": 9,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/white-sheet\\warnings.test.ts",
+      "code": 0,
+      "pass": 8,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/white-sheet\\pricing.test.ts",
+      "code": 0,
+      "pass": 20,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/white-sheet\\persist.test.ts",
+      "code": 0,
+      "pass": 35,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/summary\\stock-categories.test.ts",
+      "code": 0,
+      "pass": 136,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/white-sheet\\market-scopes.test.ts",
+      "code": 0,
+      "pass": 9,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/summary\\round-market-identity.test.ts",
+      "code": 0,
+      "pass": 11,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/white-sheet\\local-uat.test.tsx",
+      "code": 0,
+      "pass": 8,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/summary\\remaining-fruit.test.ts",
+      "code": 0,
+      "pass": 63,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/white-sheet\\lifecycle-security.test.ts",
+      "code": 0,
+      "pass": 5,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/white-sheet\\load.test.tsx",
+      "code": 0,
+      "pass": 13,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/white-sheet\\compose.test.ts",
+      "code": 0,
+      "pass": 9,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/summary\\stock-summary-message.test.ts",
+      "code": 0,
+      "pass": 14,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/summary\\stock-snapshot-message.test.ts",
+      "code": 0,
+      "pass": 33,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/white-sheet\\compose-profitability.test.tsx",
+      "code": 0,
+      "pass": 12,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/summary\\stock-summary.test.ts",
+      "code": 0,
+      "pass": 25,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/white-sheet\\central-pricing.test.tsx",
+      "code": 0,
+      "pass": 9,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/summary\\transactions.test.ts",
+      "code": 0,
+      "pass": 8,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/white-sheet\\category.test.ts",
+      "code": 0,
+      "pass": 4,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/white-sheet\\calculate.test.ts",
+      "code": 0,
+      "pass": 27,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/white-sheet\\business-date-display.test.ts",
+      "code": 0,
+      "pass": 3,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/summary\\unattributable-withdrawal.test.ts",
+      "code": 0,
+      "pass": 7,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/produce/round-return-status.test.ts",
+      "code": 0,
+      "pass": 11,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/reconciliation.test.ts",
+      "code": 0,
+      "pass": 21,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/line/reply.test.ts",
+      "code": 0,
+      "pass": 43,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/reconciliation-report-service.test.ts",
+      "code": 0,
+      "pass": 2,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/settlement-finalizer.test.ts",
+      "code": 0,
+      "pass": 30,
+      "fail": 0
+    },
+    {
+      "file": "src/app/api/cron/daily-morning-brief/route.test.ts",
+      "code": 0,
+      "pass": 22,
+      "fail": 0
+    },
+    {
+      "file": "src/app/api/cron/daily-stock-summary/route.test.ts",
+      "code": 0,
+      "pass": 28,
+      "fail": 0
+    },
+    {
+      "file": "src/app/api/cron/daily-sales-summary/route.test.ts",
+      "code": 0,
+      "pass": 28,
+      "fail": 0
+    },
+    {
+      "file": "src/lib/summary\\morning-brief-pdf.test.tsx",
+      "code": 0,
+      "pass": 39,
+      "fail": 0
+    }
+  ]
+}

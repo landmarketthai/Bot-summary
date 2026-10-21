@@ -1,0 +1,30 @@
+{
+  "base": "80a38e9dc6e266a011b19dd693e0ae767a35b0d4",
+  "clean_main_reproduction": [
+    {
+      "suite": "central-pricing.test.tsx",
+      "pass": 4,
+      "fail": 5
+    },
+    {
+      "suite": "message.test.ts",
+      "pass": 57,
+      "fail": 1
+    },
+    {
+      "suite": "morning-brief.test.ts",
+      "pass": 6,
+      "fail": 1
+    },
+    {
+      "suite": "purchase-planning-service.test.ts",
+      "pass": 17,
+      "fail": 1
+    },
+    {
+      "suite": "withdrawal-central-price-seed.test.ts",
+      "pass": 6,
+      "fail": 3
+    }
+  ]
+}

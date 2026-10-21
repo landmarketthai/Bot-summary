@@ -3,6 +3,7 @@ import { Document, Page, StyleSheet, Text, View } from "@react-pdf/renderer";
 import { formatThaiDate } from "@/lib/date";
 import { morningBriefProductIdentity, type MorningBriefReport, type MorningBriefFruitFinancialSummary } from "@/lib/summary/morning-brief";
 import { PRODUCE_SECTIONS, PRODUCE_SECTION_LABEL, produceSectionOf } from "@/lib/summary/produce-section";
+import { salesReasonLabel } from "@/lib/sales/message";
 
 function bahtFromSatang(satang: number): string {
   return (satang / 100).toLocaleString("en-US", {
@@ -389,6 +390,32 @@ function DataFooter({ generatedText }: { generatedText: string }) {
   </View>;
 }
 
+function SalesDetails({ report }: { report: MorningBriefReport }) {
+  return <View style={S.table}>
+    <View style={S.tr} fixed>
+      {[["สินค้า / หน่วย", "28%"], ["เบิก", "12%"], ["คืนดี", "12%"], ["คืนเสีย", "12%"], ["ขาย", "12%"], ["ราคา (บาท)", "24%"]].map(([label, width]) =>
+        <MarketCell key={label} width={width} tone="name" header>{label}</MarketCell>)}
+    </View>
+    {(report.salesDetails ?? []).map((row, index) => {
+      const recordedQuantity = (value: number) => row.status === "QUANTITY_BLOCKED" && value === 0 ? "ตรวจสอบไม่ได้" : qty(value);
+      return <View key={`${row.marketKey}-${index}`} wrap={false}>
+      <Text style={S.explanationText}><TableLabel>{row.marketLabel}</TableLabel></Text>
+      <View style={S.tr}>
+        <MarketCell width="28%" tone="name"><TableLabel>{row.productName}</TableLabel> ({displayUnit(row.unit)})</MarketCell>
+        <MarketCell width="12%" tone="withdrawal"><Text style={{ fontSize: 8.2 }}>{recordedQuantity(row.withdrawnQuantity)}</Text></MarketCell>
+        <MarketCell width="12%" tone="return"><Text style={{ fontSize: 8.2 }}>{row.reasons.includes("missing_return_evidence") ? "รอชั่งคืน" : recordedQuantity(row.goodReturnQuantity)}</Text></MarketCell>
+        <MarketCell width="12%" tone="return"><Text style={{ fontSize: 8.2 }}>{recordedQuantity(row.damagedReturnQuantity)}</Text></MarketCell>
+        <MarketCell width="12%" tone="sales"><Text style={{ fontSize: 8.2 }}>{row.soldQuantity == null ? "ตรวจสอบไม่ได้" : qty(row.soldQuantity)}</Text></MarketCell>
+        <MarketCell width="24%" tone="sales">{row.enteredPriceSatang == null ? "ยังไม่มีข้อมูล" : bahtFromSatang(row.enteredPriceSatang)}</MarketCell>
+      </View>
+      <Text style={S.explanationText}>ยืนยันแล้ว {row.expectedSalesSatang == null ? "ตรวจสอบไม่ได้" : `${bahtFromSatang(row.expectedSalesSatang)} บาท`}
+        {row.pendingReviewSalesSatang != null ? ` • รอตรวจ ${bahtFromSatang(row.pendingReviewSalesSatang)} บาท` : ""}
+        {row.reasons.length ? ` • ${row.reasons.map(salesReasonLabel).join(" / ")}` : ""}</Text>
+    </View>;
+    })}
+  </View>;
+}
+
 function MarketReadiness({ report }: { report: MorningBriefReport }) {
   if (!report.produceReadiness) return null;
   const markets = report.produceReadiness.markets;
@@ -530,7 +557,7 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
   );
   // No saved produce rows means "not reported yet", never a business-zero day.
   const noProduceEvidence = report.produceReadiness?.transactionCount === 0;
-  const hasDailyActivity = !noProduceEvidence && (financialSections.length > 0
+  const hasDailyActivity = !noProduceEvidence && ((report.salesDetails?.length ?? 0) > 0 || financialSections.length > 0
     || stockItems.some(hasRealStockQuantity)
     || report.sales.totalSalesSatang !== 0
     || report.sales.confirmedSalesSatang !== 0
@@ -547,18 +574,19 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
     return hasStock ? [{ category, items, financial, hasStock }] : [];
   });
 
-  return <Document title={`Morning Brief ${report.businessDate}`}>
+  const scopeLabel = report.reportScope === "fruit" ? "ผลไม้" : report.reportScope === "vegetable" ? "ผัก" : "";
+  return <Document title={`Morning Brief ${scopeLabel} ${report.businessDate}`}>
     {hasDailyActivity ? <><Page size="A4" style={S.page} wrap>
       <View style={S.header}>
-        <Text style={S.summaryTitle}>สรุปยอดขายประจำวัน - {formatThaiDate(report.businessDate)}</Text>
-        <Text style={S.subtitle}>Bot-summary | ข้อมูลวันที่ {thaiNumericDate(report.businessDate)} | ภาพรวมยอดขายทุกหมวดและรายละเอียดตามตลาด</Text>
+        <Text style={S.summaryTitle}>สรุปยอดขายประจำวัน{scopeLabel ? ` (${scopeLabel})` : ""} - {formatThaiDate(report.businessDate)}</Text>
+        <Text style={S.subtitle}>Bot-summary | ข้อมูลวันที่ {thaiNumericDate(report.businessDate)} | {report.reportScope === "vegetable" ? "เฉพาะตลาดพาซิโอ้ผัก" : report.reportScope === "fruit" ? "ขอบเขตตลาดผลไม้" : "ภาพรวมยอดขายทุกหมวดและรายละเอียดตามตลาด"}</Text>
       </View>
       <View style={S.dailyOverview} wrap={false}>
         <Text style={S.dailyOverviewTitle}>
           ยอดขายยืนยันแล้ว — {thaiNumericDate(report.businessDate)}
         </Text>
         <Text style={S.dailyOverviewTotal}>{bahtFromSatang(report.sales.confirmedSalesSatang)} บาท</Text>
-        <Text style={S.dailyOverviewDetails}>ทุกหมวดสินค้าและทุกตลาด • ยอดรอตรวจและรอชั่งคืนแสดงแยกด้านล่าง</Text>
+        <Text style={S.dailyOverviewDetails}>{report.reportScope ? "ทุกสินค้าในขอบเขตรายงาน" : "ทุกหมวดสินค้าและทุกตลาด"} • ยอดรอตรวจและรอชั่งคืนแสดงแยกด้านล่าง</Text>
         {report.sales.pendingReviewSalesSatang !== 0 ? <Text style={S.dailyOverviewDetails}>ยอดขายคำนวณได้ (รวมรอตรวจ) {bahtFromSatang(report.sales.totalSalesSatang)} บาท</Text> : null}
       </View>
       <FinancialKpis label="รวมทุกสินค้า" financial={combined} />
@@ -618,6 +646,11 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
         </View>
         {hasStock ? <StockMatrix items={items} category={category} /> : null}
       </React.Fragment>)}
+      <DataFooter generatedText={generatedText} />
+    </Page> : null}
+    {report.salesDetails?.length ? <Page size="A4" style={S.page} wrap>
+      <Text style={S.coverSectionTitle}>รายละเอียดสินค้าและสถานะยอดขาย</Text>
+      <SalesDetails report={report} />
       <DataFooter generatedText={generatedText} />
     </Page> : null}</> : <Page size="A4" style={S.page}>
       {noProduceEvidence ? <>

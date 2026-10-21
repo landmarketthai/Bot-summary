@@ -6,6 +6,8 @@ import { registerFonts } from "@/lib/pdf/fonts";
 import { MorningBriefA4Doc } from "@/lib/pdf/MorningBriefA4Doc";
 import type { MorningBriefReport } from "@/lib/summary/morning-brief";
 import { morningBriefLayoutFixture } from "../../../docs/handoffs/pr184-pdf-layout-20261020/fixtures";
+import { DATE, scopeFixture } from "../../../docs/handoffs/split-morning-brief-20261021/fixtures";
+import { loadMorningBriefReport } from "./morning-brief-service";
 import {
   buildMorningBriefReferenceData,
   createMorningBriefPdfArtifact,
@@ -98,6 +100,15 @@ function collectRenderCallbacks(node: React.ReactNode): PdfRenderCallback[] {
 }
 
 describe("Morning Brief A4 PDF", () => {
+  test("scoped detail rows never present blocked unknown quantities as zero", async () => {
+    const scoped = await loadMorningBriefReport(scopeFixture({ invalidQuantity: true }).client, DATE, "vegetable");
+    const text = collectText(MorningBriefA4Doc({ report: scoped, generatedAt: new Date("2026-10-20T13:00:00+07:00") }));
+    const details = text.slice(text.indexOf("รายละเอียดสินค้าและสถานะยอดขาย"));
+    expect(details).toContain("รอชั่งคืน");
+    expect(details).toContain("ตรวจสอบไม่ได้");
+    expect(details).not.toMatch(/(^|\s)0(\s|$)/);
+    expect(text).toContain("เฉพาะตลาดพาซิโอ้ผัก");
+  });
   for (const count of [3, 10, 30]) {
     test(`summarizes ${count} markets and retains missing evidence and financial exceptions`, async () => {
       const base: MorningBriefReport = await Bun.file(`${import.meta.dir}/../../../docs/handoffs/pr184-uat-20261020/after-return.report.json`).json();

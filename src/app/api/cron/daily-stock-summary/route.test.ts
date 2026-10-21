@@ -204,8 +204,8 @@ describe("daily stock summary cron — delivery", () => {
     expect(body.ok).toBe(true);
     expect(body.sent).toBe(false);
     expect(body.reason).toBe("no_targets_configured");
-    expect(body.morningBriefReferencePersisted).toBe(true);
-    expect(morningBriefPdfBuilds).toBe(1);
+    expect(body.morningBriefReferencePersisted).toBe(false);
+    expect(morningBriefPdfBuilds).toBe(0);
     expect(pushCalls).toHaveLength(0);
   });
 
@@ -243,14 +243,14 @@ describe("daily stock summary cron — delivery", () => {
     expect(body.anomalyMarketCount).toBe(1);
     expect(body.hasAnomalies).toBe(true);
 
-    // Scheduled 08:00 output carries the business report + House Stock + printable PDF;
+    // The 08:05 output keeps stock + House Stock; Morning Brief owns the PDF.
     // internal anomaly/remediation diagnostics stay out of LINE.
     expect(pushCalls.map((c) => c.to)).toEqual([
-      "Cgroup1", "Cgroup1", "Cgroup1",
-      "Cgroup2", "Cgroup2", "Cgroup2",
+      "Cgroup1", "Cgroup1",
+      "Cgroup2", "Cgroup2",
     ]);
-    expect(morningBriefPdfBuilds).toBe(1);
-    expect(pushCalls.filter((c) => c.text.includes("PDF สำหรับพิมพ์ A4"))).toHaveLength(2);
+    expect(morningBriefPdfBuilds).toBe(0);
+    expect(pushCalls.filter((c) => c.text.includes("PDF สำหรับพิมพ์ A4"))).toHaveLength(0);
     const text = pushCalls.filter((c) => c.to === "Cgroup1").map((c) => c.text).join("\n\n");
     expect(text).toContain("📦 สรุปของดีชั่งคืนประจำวัน");
     expect(text).toContain("🥭 ทุเรียน");
@@ -583,7 +583,7 @@ describe("daily stock summary cron — empty business date", () => {
 
     // The empty state is still delivered in full …
     expect(res.status).toBe(200);
-    expect(pushCalls).toHaveLength(3);
+    expect(pushCalls).toHaveLength(2);
     expect(text).toContain("ยังไม่พบข้อมูลชั่งคืนประจำวันที่ 27 กรกฎาคม 2569");
     expect(text).toContain(LATEST_DATA_UNAVAILABLE_NOTICE);
     // … without telling the business its records are empty on the strength of

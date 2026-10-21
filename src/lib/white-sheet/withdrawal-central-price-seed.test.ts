@@ -197,13 +197,13 @@ describe("central price seeds on withdrawal write, not White Sheet read", () => 
     ];
     const database = makeSheetDatabase({ produceRows, priceTable });
 
-    // Load before any write-path seed → missing price, no seed writes.
+    // Entered prices already value the sale; a read must never seed the fallback.
     const before = await loadDigitalWhiteSheetCalculation(
       database,
       { sourceId: SOURCE_ID, marketKey: "ki", marketLabel: MARKET, businessDate: BUSINESS_DATE },
       ZERO_CASH,
     );
-    expect(before.expectedSales).toBe(0);
+    expect(before.expectedSales).toBe(80);
     expect(priceTable.rows).toHaveLength(0);
     expect(priceTable.seedRpcCalls).toBe(0);
 
@@ -281,7 +281,7 @@ describe("central price seeds on withdrawal write, not White Sheet read", () => 
     expect(priceTable.rows[0]?.price_satang).toBe(4000);
   });
 
-  it("E: conflicting-price later withdrawal leaves central price unchanged and HARD STOP remains", async () => {
+  it("E: a different price in another market preserves the reference and the entered market value", async () => {
     const priceTable = makePriceTable();
     const produceRows = [
       {
@@ -355,8 +355,8 @@ describe("central price seeds on withdrawal write, not White Sheet read", () => 
       { sourceId: SOURCE_ID, marketKey: "ki", marketLabel: MARKET, businessDate: BUSINESS_DATE },
       ZERO_CASH,
     );
-    expect(calc.expectedSales).toBe(0);
-    expect(calc.warnings.some((w) => w.startsWith("ราคากลางขัดแย้งกันสำหรับ"))).toBe(true);
+    expect(calc.expectedSales).toBe(80);
+    expect(calc.warnings.some((w) => w.startsWith("ราคากลางขัดแย้งกันสำหรับ"))).toBe(false);
   });
 
   it("F/G: good return and damaged return do not seed", async () => {
@@ -451,7 +451,7 @@ describe("central price seeds on withdrawal write, not White Sheet read", () => 
     expect(seedCalls).toHaveLength(0);
   });
 
-  it("I: admin-corrected price remains authoritative across markets", async () => {
+  it("I: admin-corrected reference does not replace persisted entered market prices", async () => {
     const priceTable = makePriceTable([
       {
         product_key: "แตงโม",
@@ -520,7 +520,7 @@ describe("central price seeds on withdrawal write, not White Sheet read", () => 
       { sourceId: SOURCE_ID, marketKey: "ki", marketLabel: MARKET, businessDate: BUSINESS_DATE },
       ZERO_CASH,
     );
-    expect(calc.expectedSales).toBe(90);
+    expect(calc.expectedSales).toBe(80);
     expect(calc.warnings.some((w) => w.startsWith("ราคากลางขัดแย้งกันสำหรับ"))).toBe(false);
   });
 
