@@ -455,7 +455,7 @@ describe("durable success notification limit", () => {
   it("caps an oversized advisory-free finalizer payload before storing the outbox row", async () => {
     const largeText = Array.from(
       { length: 150 },
-      (_, index) => `${index + 1}. แตงโม 25 บาท\n1 ลูก`,
+      (_, index) => `${index + 1}. แตงโม 25 บาท\n${index + 1} ลูก`,
     ).join("\n");
     const db = new FinalizerDocDouble({
       ...tables({ includeStaleCancelEvent: false }),

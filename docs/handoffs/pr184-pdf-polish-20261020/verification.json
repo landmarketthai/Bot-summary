@@ -1,0 +1,30 @@
+{
+  "before-return": {
+    "pages": 1,
+    "planning_items": 26,
+    "a4_and_footers": "PASS",
+    "margins": "PASS",
+    "content": "PASS"
+  },
+  "after-return": {
+    "pages": 2,
+    "planning_items": 26,
+    "a4_and_footers": "PASS",
+    "margins": "PASS",
+    "content": "PASS"
+  },
+  "multi-market": {
+    "pages": 2,
+    "planning_items": 11,
+    "a4_and_footers": "PASS",
+    "margins": "PASS",
+    "content": "PASS"
+  },
+  "overflow": {
+    "pages": 4,
+    "planning_items": 64,
+    "a4_and_footers": "PASS",
+    "margins": "PASS",
+    "content": "PASS"
+  }
+}

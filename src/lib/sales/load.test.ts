@@ -147,6 +147,19 @@ describe("P1 business-date window", () => {
 });
 
 describe("P1 loader", () => {
+  test("Morning Brief mode refuses absent returns without changing the legacy report policy", async () => {
+    const fixture = baseFixture({
+      produce: [produceRow({ quantity: 10, transaction_type: "เบิก" })],
+      sessions: [{ id: "session-1", total_items: 1, parser_errors: null }],
+    });
+    const strict = await loadSalesReport(fakeSupabase(fixture), DATE, { requireReturnEvidence: true });
+    expect(strict.allMarkets.expectedSalesSatang).toBe(0);
+    expect(strict.blocked[0].reasons).toContain("missing_return_evidence");
+    const legacy = await loadSalesReport(fakeSupabase(fixture), DATE);
+    expect(legacy.allMarkets.expectedSalesSatang).toBe(120_000);
+    const complete = await loadSalesReport(fakeSupabase(baseFixture()), DATE, { requireReturnEvidence: true });
+    expect(complete.allMarkets.expectedSalesSatang).toBe(72_000);
+  });
   test("produces a trusted report from clean data", async () => {
     const report = await loadSalesReport(fakeSupabase(baseFixture()), DATE);
 

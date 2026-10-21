@@ -31,6 +31,13 @@ function formatPrice(value: number): string {
 
 function describe(exception: ProduceValidationException): string[] {
   switch (exception.kind) {
+    case "suspected_duplicate_item":
+      return [exception.productName,
+        `   เหมือนข้อ ${exception.firstItemNumber}: ${formatQuantity(exception.quantity)} ${exception.unit} ราคา ${formatPrice(exception.price)} บาท`,
+        "   กรุณาตรวจว่าเป็นรายการเพิ่มจริงหรือพิมพ์ซ้ำ ระบบยังไม่ลบรายการใด"];
+    case "excess_return":
+      return [exception.productName,
+        `   เบิก ${formatQuantity(exception.withdrawnQuantity)} ${exception.unit} แต่คืน ${formatQuantity(exception.returnedQuantity)} ${exception.unit}`];
     case "subunit_confirmation":
       return [
         `${exception.productName}`,
@@ -88,21 +95,22 @@ function correctionGuidance(exceptions: ProduceValidationException[]): string[] 
   ];
 }
 
-// Only price differences are shown after save. Missing withdrawals, unit
-// mismatches and returns above the withdrawal are internal reconciliation
-// (data_quality_issues), never operator-facing.
+// Advisories preserve entered money and never refuse a normal transaction.
 function renderPriceAdvisoryWarning(
   advisories: ProduceValidationAdvisory[],
   listedCount: number,
 ): string {
   const listed = advisories.slice(0, listedCount);
+  const priceOnly = advisories.every((entry) => entry.kind === "price_not_withdrawn");
   const lines = [
-    `⚠️ พบ ${advisories.length} รายการที่ราคาแตกต่างจากตอนเบิก`,
-    ...listed.map((advisory) =>
-      `• ${advisory.productName} — เบิก ${advisory.withdrawnPrices.map(formatPrice).join(", ")} บาท/${advisory.unit} → ชั่งคืน ${formatPrice(advisory.enteredPrice)} บาท/${advisory.unit}`),
+    priceOnly ? `⚠️ พบ ${advisories.length} รายการที่ราคาแตกต่างจากตอนเบิก`
+      : `⚠️ พบ ${advisories.length} รายการที่ต้องตรวจสอบราคา/จำนวนคืน`,
+    ...listed.map((advisory) => advisory.kind === "price_not_withdrawn"
+      ? `• ${advisory.productName} — เบิก ${advisory.withdrawnPrices.map(formatPrice).join(", ")} บาท/${advisory.unit} → ชั่งคืน ${formatPrice(advisory.enteredPrice)} บาท/${advisory.unit}`
+      : `• ${advisory.productName} — เบิก ${formatQuantity(advisory.withdrawnQuantity)} ${advisory.unit} → คืน ${formatQuantity(advisory.returnedQuantity)} ${advisory.unit}`),
   ];
   const hidden = advisories.length - listed.length;
-  if (hidden > 0) lines.push(`…และอีก ${hidden} รายการที่ราคาแตกต่าง`);
+  if (hidden > 0) lines.push(`…และอีก ${hidden} รายการ${priceOnly ? "ที่ราคาแตกต่าง" : "ที่ต้องตรวจสอบ"}`);
   lines.push("", "ระบบบันทึกตามราคาที่กรอกไว้แล้ว");
   return lines.join("\n");
 }
@@ -232,6 +240,9 @@ export function buildBlockingValidationReply(
 }
 
 function reviewHeadline(result: ProduceValidationResult): string {
+  if (result.reviews.some((review) => review.kind === "suspected_duplicate_item")) {
+    return `⚠️ พบ ${result.reviews.length} รายการที่ต้องยืนยัน รวมรายการสินค้าที่อาจซ้ำ`;
+  }
   return `⚠️ พบ ${result.reviews.length} ชื่อสินค้าที่ต้องตรวจสอบ`;
 }
 
@@ -263,6 +274,12 @@ function reviewActionBlock(
   confirmationInstruction: string,
 ): string[] {
   const subject = result.reviews.length === 1 ? "ชื่อนี้" : "ชื่อเหล่านี้";
+  if (result.reviews.some((review) => review.kind === "suspected_duplicate_item")) return [
+    "ถ้าเป็นรายการเพิ่มจริงและต้องการบันทึกทุกบรรทัด ให้ยืนยันตามคำสั่งด้านล่าง",
+    confirmationInstruction,
+    "ถ้าพิมพ์ซ้ำ ให้ส่ง “ลบข้อ <เลขข้อ>” แล้วจบรายการอีกครั้ง",
+    "ข้อมูลยังอยู่ครบ ระบบไม่ลบหรือแก้ยอดให้อัตโนมัติ",
+  ];
   return [
     `✅ ถ้า${subject}ถูกต้องและต้องการบันทึกตามที่พิมพ์`,
     confirmationInstruction,

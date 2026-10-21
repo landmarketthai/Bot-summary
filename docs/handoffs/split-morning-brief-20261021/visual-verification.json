@@ -1,0 +1,38 @@
+{
+  "synthetic": {
+    "fruit": {
+      "pages": 2,
+      "a4_footers_margins_no_status_or_weighing_entries": "PASS"
+    },
+    "vegetable-review": {
+      "pages": 2,
+      "a4_footers_margins_no_status_or_weighing_entries": "PASS"
+    },
+    "vegetable-unavailable": {
+      "pages": 1,
+      "a4_footers_margins_no_status_or_weighing_entries": "PASS"
+    },
+    "vegetable": {
+      "pages": 2,
+      "a4_footers_margins_no_status_or_weighing_entries": "PASS"
+    }
+  },
+  "pr184_pixel_regression": {
+    "before-return": {
+      "pages": 1,
+      "identical_pixels": true
+    },
+    "after-return": {
+      "pages": 2,
+      "identical_pixels": true
+    },
+    "multi-market": {
+      "pages": 2,
+      "identical_pixels": true
+    },
+    "overflow": {
+      "pages": 4,
+      "identical_pixels": true
+    }
+  }
+}

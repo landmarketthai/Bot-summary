@@ -20,6 +20,8 @@ import { centralPriceMapKey } from "@/lib/white-sheet/pricing";
  *   confirmed_sales = sold_quantity × this round's entered-price evidence
  *   pending_sales   = best-known quantity × entered-price evidence
  *   total_sales     = confirmed_sales + pending_sales
+ * Morning Brief additionally uses persisted W/R/D line amounts. Price changes
+ * and excess returns retain their signed document difference as pending review.
  *
  * Absence of a return row means the corresponding return quantity is zero
  * ONLY when the round has no persisted return document at all — a genuine
@@ -65,9 +67,7 @@ export type SalesBlockReason =
   | "unknown_transaction_type"
   | "market_unresolved"
   /**
-   * No longer produced by the calculator for a whole round with no return
-   * document: that case is sold-out by design. Kept in the union (and in
-   * message.ts's REASON_LABELS) for type/API compatibility only.
+   * Required-return reports cannot infer a sale from absent return evidence.
    */
   | "missing_return_evidence"
   /**
@@ -77,6 +77,7 @@ export type SalesBlockReason =
   | "product_return_absent"
   | "return_without_withdrawal"
   | "returns_exceed_withdrawal"
+  | "return_price_mismatch"
   | "duplicate_main_session"
   | "session_parser_errors"
   | "session_item_count_mismatch"
@@ -122,6 +123,9 @@ export interface SalesSessionAudit {
  * canonical unit) happens here so it can be unit-tested without a database.
  */
 export interface SalesSourceRow {
+  /** Persisted line amount at 1e5 baht precision; null means unvalued evidence. */
+  recordedValueScaled?: bigint | null;
+  enteredReturnPriceSatang?: number | null;
   /**
    * LINE source that owns the session. Null when it could not be resolved —
    * the row is then keyed by session and blocked, never merged into a market.
@@ -153,6 +157,8 @@ export interface SalesSourceRow {
 }
 
 export interface SalesCalculationInput {
+  /** Morning Brief requires observed returns, including explicit zero returns. */
+  requireReturnEvidence?: boolean;
   businessDate: string;
   rows: readonly SalesSourceRow[];
   /** Central selling price in satang, keyed by centralPriceMapKey(productKey, unitKey). */
@@ -181,6 +187,8 @@ export interface SalesCalculationInput {
 
 /** One atomic market + product + unit result — the only place a number is computed. */
 export interface SalesIdentityRow {
+  recordedWithdrawalSatang?: number | null;
+  recordedGoodReturnSatang?: number | null;
   marketKey: string;
   /** Display label. Carries a short source suffix when one label spans several sources. */
   marketLabel: string;
@@ -375,6 +383,13 @@ function fromMilliQuantity(value: bigint): number {
 }
 
 interface IdentityAggregate {
+  recordedWithdrawal: bigint;
+  recordedGoodReturn: bigint;
+  recordedDamaged: bigint;
+  unvaluedWithdrawal: boolean;
+  unvaluedReturn: boolean;
+  unvaluedGoodReturn: boolean;
+  returnPrices: Set<number>;
   marketKey: string;
   marketLabel: string;
   sourceId: string | null;
@@ -684,6 +699,8 @@ export function calculateSalesReport(input: SalesCalculationInput): SalesReport 
     let aggregate = aggregates.get(key);
     if (!aggregate) {
       aggregate = {
+        recordedWithdrawal: BigInt(0), recordedGoodReturn: BigInt(0), recordedDamaged: BigInt(0),
+        unvaluedWithdrawal: false, unvaluedReturn: false, unvaluedGoodReturn: false, returnPrices: new Set<number>(),
         marketKey,
         marketLabel: marketResolved ? label : "",
         sourceId: marketResolved ? (row.sourceId as string) : null,
@@ -722,6 +739,25 @@ export function calculateSalesReport(input: SalesCalculationInput): SalesReport 
       continue;
     }
 
+    const linePrice = bucket === "เบิก" ? row.enteredPriceSatang
+      : row.enteredReturnPriceSatang ?? row.enteredPriceSatang;
+    const lineValue = row.recordedValueScaled === undefined
+      ? (typeof linePrice === "number" && Number.isSafeInteger(linePrice) && linePrice >= 0
+        ? converted * BigInt(linePrice) : converted === BigInt(0) ? BigInt(0) : null)
+      : row.recordedValueScaled;
+    if (bucket === "เบิก") {
+      if (lineValue === null) aggregate.unvaluedWithdrawal = true;
+      else aggregate.recordedWithdrawal += lineValue;
+    } else {
+      if (lineValue === null) {
+        aggregate.unvaluedReturn = true;
+        if (bucket === "คืน") aggregate.unvaluedGoodReturn = true;
+      }
+      else if (bucket === "คืน") aggregate.recordedGoodReturn += lineValue;
+      else aggregate.recordedDamaged += lineValue;
+      if (typeof linePrice === "number" && Number.isSafeInteger(linePrice) && linePrice >= 0) aggregate.returnPrices.add(linePrice);
+    }
+
     if (bucket === "เบิก") {
       aggregate.withdrawn += converted;
       aggregate.hasWithdrawal = true;
@@ -751,6 +787,10 @@ export function calculateSalesReport(input: SalesCalculationInput): SalesReport 
 
   const identityRows: SalesIdentityRow[] = aggregateList.map((aggregate) => {
     const reasons = new Set(aggregate.reasons);
+    if (input.requireReturnEvidence && aggregate.hasWithdrawal
+      && !aggregate.hasGoodReturn) {
+      addReason(reasons, "missing_return_evidence");
+    }
 
     // Quantity evidence rules. A whole round with no return document at all
     // is sold-out by design. A round that DID persist a return, but left this
@@ -811,8 +851,34 @@ export function calculateSalesReport(input: SalesCalculationInput): SalesReport 
       ? null
       : Number(roundHalfUp(valueQuantity * BigInt(centralPrice), QUANTITY_SCALE_PER_UNIT));
     const legacyPriceConflicted = !enteredPriceUsable && priceConflicts.has(priceKey);
+    const recordedWithdrawalSatang = aggregate.unvaluedWithdrawal ? null
+      : Number(roundHalfUp(aggregate.recordedWithdrawal, QUANTITY_SCALE_PER_UNIT));
+    const recordedGoodReturnSatang = aggregate.unvaluedGoodReturn ? null
+      : Number(roundHalfUp(aggregate.recordedGoodReturn, QUANTITY_SCALE_PER_UNIT));
+    const recordedDifference = aggregate.recordedWithdrawal - aggregate.recordedGoodReturn - aggregate.recordedDamaged;
+    const documentValue = recordedWithdrawalSatang === null || aggregate.unvaluedReturn ? null
+      : Number(recordedDifference < BigInt(0)
+        ? -roundHalfUp(-recordedDifference, QUANTITY_SCALE_PER_UNIT)
+        : roundHalfUp(recordedDifference, QUANTITY_SCALE_PER_UNIT));
+    const returnPriceMismatch = [...aggregate.returnPrices].some((price) => !aggregate.enteredPrices.has(price));
+    const documentReview = reasons.has("returns_exceed_withdrawal") || returnPriceMismatch || returnEvidenceIncomplete;
+    const onlyQuantityReview = [...reasons].every((reason) => reason === "returns_exceed_withdrawal");
 
-    if (hardQuantityBlocked) {
+    if (input.requireReturnEvidence && aggregate.hasGoodReturn && onlyQuantityReview) {
+      // Keep submitted money even when the quantities/prices need review; never reprice the return.
+      if (returnPriceMismatch) addReason(reasons, "return_price_mismatch");
+      status = quantityBlocked ? "QUANTITY_BLOCKED" : documentReview ? "VALUE_BLOCKED" : "TRUSTED";
+      if (documentValue === null) {
+        status = quantityBlocked ? "QUANTITY_BLOCKED" : "VALUE_BLOCKED";
+        addReason(reasons, "missing_central_price");
+      } else if (documentReview) {
+        pendingReviewSalesSatang = documentValue;
+        valueStatus = "PENDING_REVIEW";
+      } else {
+        expectedSalesSatang = documentValue;
+        valueStatus = "CONFIRMED";
+      }
+    } else if (hardQuantityBlocked) {
       status = "QUANTITY_BLOCKED";
     } else if (returnQuantityPending) {
       status = "QUANTITY_BLOCKED";
@@ -844,6 +910,7 @@ export function calculateSalesReport(input: SalesCalculationInput): SalesReport 
     }
 
     return {
+      ...(input.requireReturnEvidence ? { recordedWithdrawalSatang, recordedGoodReturnSatang } : {}),
       marketKey: aggregate.marketKey,
       marketLabel: aggregate.marketLabel,
       sourceId: aggregate.sourceId,

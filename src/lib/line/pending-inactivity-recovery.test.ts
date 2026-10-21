@@ -7,6 +7,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   INACTIVITY_WARNING_TEXT,
+  INACTIVITY_EXPIRED_TEXT,
   sweepPendingSessionInactivityExpiry,
   sweepPendingSessionInactivityWarnings,
 } from "@/lib/line/pending-inactivity-recovery";
@@ -154,8 +155,12 @@ describe("pending session inactivity expiry sweep", () => {
         },
       ],
     });
-    const run = await sweepPendingSessionInactivityExpiry(db);
+    const pushes: string[] = [];
+    const run = await sweepPendingSessionInactivityExpiry(db, 25, async (to, text) => { pushes.push(`${to}:${text}`); });
     expect(run).toEqual({ expired: 2, expiredEmptyDraft: 1, expiredIncomplete: 1 });
+    expect(pushes).toEqual([`C2:${INACTIVITY_EXPIRED_TEXT}`]);
+    expect(pushes[0]).toContain("ยังไม่ได้บันทึกยอดเงิน");
+    expect(pushes[0]).toContain("ห้ามใช้คำสั่งเบิกเพิ่ม");
     expect(db.calls[0].name).toBe("sweep_pending_session_inactivity_expiry");
   });
 
@@ -174,5 +179,11 @@ describe("pending session inactivity expiry sweep", () => {
     await expect(
       sweepPendingSessionInactivityExpiry(fakeDb({ error: { message: "boom", code: "XX000" } })),
     ).rejects.toThrow("inactivity expiry sweep failed");
+  });
+
+  it("retains the expiry outcome if the LINE notification fails", async () => {
+    const db = fakeDb({ data: [{ source_id: "C1", accepted_item_count: 26, outcome: "failed_closed" }] });
+    const run = await sweepPendingSessionInactivityExpiry(db, 25, async () => { throw new Error("LINE unavailable"); });
+    expect(run.expiredIncomplete).toBe(1);
   });
 });

@@ -1,0 +1,188 @@
+
+FILE execution-initial.log
+EVENT 1 ขวัญ-พาซิโอ้ผลไม้ เบิก 19/10/2569 [{"eventId":"pr184-uat-1","eventType":"message","status":"saved","parsed":false}]
+EVENT 2 1.ฝรั่ง35บาท [{"eventId":"pr184-uat-2","eventType":"message","status":"saved","parsed":false}]
+EVENT 3 29.9โล [{"eventId":"pr184-uat-3","eventType":"message","status":"saved","parsed":false}]
+EVENT 4 2.ฝรั่งแดง35บาท
+EVENT 5 3.น้อยหน่า40บาท [{"eventId":"pr184-uat-5","eventType":"message","status":"saved","parsed":false}]
+EVENT 6 37.5โล [{"eventId":"pr184-uat-6","eventType":"message","status":"saved","parsed":false}]
+EVENT 7 4.แก้วมังกร45บาท [{"eventId":"pr184-uat-7","eventType":"message","status":"saved","parsed":false}]
+EVENT 8 3.9โล [{"eventId":"pr184-uat-8","eventType":"message","status":"saved","parsed":false}]
+EVENT 9 5.มังคุด20บาท [{"eventId":"pr184-uat-9","eventType":"message","status":"saved","parsed":false}]
+EVENT 10 6.3โล [{"eventId":"pr184-uat-10","eventType":"message","status":"saved","parsed":false}]
+EVENT 11 6.ส้มสายน้ำผึ้ง40บาท [{"eventId":"pr184-uat-11","eventType":"message","status":"saved","parsed":false}]
+EVENT 12 14.3โล [{"eventId":"pr184-uat-12","eventType":"message","status":"saved","parsed":false}]
+EVENT 13 7.ลองกอง35บาท [{"eventId":"pr184-uat-13","eventType":"message","status":"saved","parsed":false}]
+EVENT 14 36.6โล [{"eventId":"pr184-uat-14","eventType":"message","status":"saved","parsed":false}]
+EVENT 15 8.พุทรานมสด40บาท [{"eventId":"pr184-uat-15","eventType":"message","status":"saved","parsed":false}]
+EVENT 16 25.5โล [{"eventId":"pr184-uat-16","eventType":"message","status":"saved","parsed":false}]
+EVENT 17 9.แก้วมังกรแดง40บาท [{"eventId":"pr184-uat-17","eventType":"message","status":"saved","parsed":false}]
+EVENT 18 9.7โล [{"eventId":"pr184-uat-18","eventType":"message","status":"saved","parsed":false}]
+EVENT 19 10.มะม่วงจิ้ว20บาท [{"eventId":"pr184-uat-19","eventType":"message","status":"saved","parsed":false}]
+EVENT 20 2.7โล [{"eventId":"pr184-uat-20","eventType":"message","status":"saved","parsed":false}]
+EVENT 21 11.ส้มเขียวหวาน40บาท [{"eventId":"pr184-uat-21","eventType":"message","status":"saved","parsed":false}]
+EVENT 22 0.7โล [{"eventId":"pr184-uat-22","eventType":"message","status":"saved","parsed":false}]
+EVENT 23 12.แอปเปิ้ลแคราะ40บาท [{"eventId":"pr184-uat-23","eventType":"message","status":"saved","parsed":false}]
+EVENT 24 1.1โล [{"eventId":"pr184-uat-24","eventType":"message","status":"saved","parsed":false}]
+EVENT 25 13.ส้มจีน50บาท [{"eventId":"pr184-uat-25","eventType":"message","status":"saved","parsed":false}]
+EVENT 26 1.2โล [{"eventId":"pr184-uat-26","eventType":"message","status":"saved","parsed":false}]
+EVENT 27 14.องุ่นจักรพรรดิ์80บาท [{"eventId":"pr184-uat-27","eventType":"message","status":"saved","parsed":false}]
+EVENT 28 7.7โล [{"eventId":"pr184-uat-28","eventType":"message","status":"saved","parsed":false}]
+EVENT 29 15.พุทราจีน100บาท [{"eventId":"pr184-uat-29","eventType":"message","status":"saved","parsed":false}]
+EVENT 30 61.404999999999994โล [{"eventId":"pr184-uat-30","eventType":"message","status":"saved","parsed":false}]
+EVENT 31 16.องุ่นคิมสัน130บาท [{"eventId":"pr184-uat-31","eventType":"message","status":"saved","parsed":false}]
+EVENT 32 3.9โล [{"eventId":"pr184-uat-32","eventType":"message","status":"saved","parsed":false}]
+EVENT 33 17.ลูกไหนดำ50บาท [{"eventId":"pr184-uat-33","eventType":"message","status":"saved","parsed":false}]
+EVENT 34 6.1โล [{"eventId":"pr184-uat-34","eventType":"message","status":"saved","parsed":false}]
+EVENT 35 18.สาลี่หอม40บาท [{"eventId":"pr184-uat-35","eventType":"message","status":"saved","parsed":false}]
+EVENT 36 3.6โล [{"eventId":"pr184-uat-36","eventType":"message","status":"saved","parsed":false}]
+EVENT 37 19.แตงไทย16บาท
+EVENT 38 20.ส้มโอ30บาท
+EVENT 39 21.แตงโม30บาท
+EVENT 40 22.มะละกอ16บาท
+EVENT 41 23.มะละกอ16บาท
+EVENT 42 24.มะละกอ16บาท
+EVENT 43 25.แอปเปิ้ล10บาท
+EVENT 44 26.ทับทิม10บาท
+EVENT 45 27.กล้วยหอม120บาท
+EVENT 46 28.ผลไม้กล่อง20บาท
+EVENT 47 จบรายการเบิก [{"eventId":"pr184-uat-47","eventType":"message","status":"saved","parsed":false}]
+EVENT 48 จบรายการเบิก [{"eventId":"pr184-uat-48","eventType":"message","status":"saved","parsed":false}]
+[2026-10-20T05:11:04.963Z] INFO  daily summary upsert succeeded {"summaryDate":"2026-10-19","staffName":"ขวัญ","marketName":"พาซิโอ้ผลไม้","borrowTotal":19375.5,"returnTotal":0,"badReturnTotal":0,"netSales":19375.5,"transactionCount":28}
+FINALIZE [{"status":"finalized","session_id":"b00d7cb6-c40c-4ac0-bd15-4be1c02094d9","notification_id":"9ccc646c-efce-4a92-9e1c-7cffbad25d4b","replaced_produce_session_id":null}]
+
+FILE execution.log
+EVENT 49 ขวัญ-พาซิโอ้ผลไม้ ชั่งคืน 19/10/2569
+EVENT 50 1.ฝรั่ง35บาท
+EVENT 51 29.9โล
+EVENT 52 2.ฝรั่งแดง35บาท
+EVENT 53 3.น้อยหน่า40บาท
+EVENT 54 37.5โล
+EVENT 55 4.แก้วมังกร45บาท
+EVENT 56 3.9โล
+EVENT 57 5.มังคุด40บาท
+EVENT 58 6.3โล
+EVENT 59 6.ส้มสายน้ำผึ้ง40บาท
+EVENT 60 14.3โล
+EVENT 61 7.ลองกอง35บาท
+EVENT 62 36.6โล
+EVENT 63 8.พุทรานมสด40บาท
+EVENT 64 25.5โล
+EVENT 65 9.แก้วมังกรแดง40บาท
+EVENT 66 9.7โล
+EVENT 67 10.มะม่วงจิ้ว40บาท
+EVENT 68 2.7โล
+EVENT 69 11.ส้มเขียวหวาน40บาท
+EVENT 70 0.7โล
+EVENT 71 12.แอปเปิ้ลแคราะ40บาท
+EVENT 72 1.1โล
+EVENT 73 13.ส้มจีน50บาท
+EVENT 74 1.2โล
+EVENT 75 14.องุ่นจักรพรรดิ์80บาท
+EVENT 76 7.7โล
+EVENT 77 15.พุทราจีน100บาท
+EVENT 78 2.8โล
+EVENT 79 16.องุ่นคิมสัน130บาท
+EVENT 80 3.9โล
+EVENT 81 17.ลูกไหนดำ50บาท
+EVENT 82 6.1โล
+EVENT 83 18.สาลี่หอม40บาท
+EVENT 84 3.6โล
+EVENT 85 19.แตงไทย16บาท
+EVENT 86 20.ส้มโอ30บาท
+EVENT 87 21.แตงโม30บาท
+EVENT 88 22.มะละกอ16บาท
+EVENT 89 23.แอปเปิ้ล10บาท
+EVENT 90 24.ทับทิม10บาท
+EVENT 91 25.กล้วยหอม120บาท
+EVENT 92 26.ผลไม้กล่อง20บาท
+EVENT 93 จบรายกาาชั่งคืน [{"eventId":"pr184-uat-93","eventType":"message","status":"saved","parsed":false}]
+[2026-10-20T05:11:46.410Z] INFO  daily summary upsert succeeded {"summaryDate":"2026-10-19","staffName":"ขวัญ","marketName":"พาซิโอ้ผลไม้","borrowTotal":19375.5,"returnTotal":13725,"badReturnTotal":0,"netSales":5650.5,"transactionCount":54}
+FINALIZE [{"status":"finalized","session_id":"7c9eb9de-844d-4226-ada9-496127eeeeb5","notification_id":"a7ae8c6c-fb74-4bc1-b008-11b8801ad4aa","replaced_produce_session_id":null}]
+EVENT 94 ขวัญ-พาซิโอ้ผลไม้ ชั่งคืน 19/10/2569
+EVENT 95 1.ฝรั่ง35บาท
+EVENT 96 29.9โล
+EVENT 97 2.ฝรั่งแดง35บาท
+EVENT 98 3.น้อยหน่า40บาท
+EVENT 99 37.5โล
+EVENT 100 4.แก้วมังกร45บาท
+EVENT 101 3.9โล
+EVENT 102 5.มังคุด40บาท
+EVENT 103 6.3โล
+EVENT 104 6.ส้มสายน้ำผึ้ง40บาท
+EVENT 105 14.3โล
+EVENT 106 7.ลองกอง35บาท
+EVENT 107 36.6โล
+EVENT 108 8.พุทรานมสด40บาท
+EVENT 109 25.5โล
+EVENT 110 9.แก้วมังกรแดง40บาท
+EVENT 111 9.7โล
+EVENT 112 10.มะม่วงจิ้ว40บาท
+EVENT 113 2.7โล
+EVENT 114 11.ส้มเขียวหวาน40บาท
+EVENT 115 0.7โล
+EVENT 116 12.แอปเปิ้ลแคราะ40บาท
+EVENT 117 1.1โล
+EVENT 118 13.ส้มจีน50บาท
+EVENT 119 1.2โล
+EVENT 120 14.องุ่นจักรพรรดิ์80บาท
+EVENT 121 7.7โล
+EVENT 122 15.พุทราจีน100บาท
+EVENT 123 2.8โล
+EVENT 124 16.องุ่นคิมสัน130บาท
+EVENT 125 3.9โล
+EVENT 126 17.ลูกไหนดำ50บาท
+EVENT 127 6.1โล
+EVENT 128 18.สาลี่หอม40บาท
+EVENT 129 3.6โล
+EVENT 130 19.แตงไทย16บาท
+EVENT 131 20.ส้มโอ30บาท
+EVENT 132 21.แตงโม30บาท
+EVENT 133 22.มะละกอ16บาท
+EVENT 134 23.แอปเปิ้ล10บาท
+EVENT 135 24.ทับทิม10บาท
+EVENT 136 25.กล้วยหอม120บาท
+EVENT 137 26.ผลไม้กล่อง20บาท
+EVENT 138 จบรายการชั่งคืน [{"eventId":"pr184-uat-138","eventType":"message","status":"saved","parsed":false}]
+[2026-10-20T05:11:49.093Z] WARN  produce business duplicate blocked {"correlationId":"group:C-pr184-uat-pasio:user:U-pr184-uat-khwan:014b6a73-a924-4c1f-8674-72ff44f12e09","sessionKey":"group:C-pr184-uat-pasio:user:U-pr184-uat-khwan","sessionGeneration":"014b6a73-a924-4c1f-8674-72ff44f12e09","ingestRevision":45,"reason":"compatibility_fingerprint","businessDate":"2026-10-19","sellerLabel":"ขวัญ","marketLabel":"พาซิโอ้ผลไม้","transactionType":"คืน","businessFingerprint":"c4cdeced32a823364b9eabfd062ec0732a02fcaefbff1d54848bee37149409a3","existingProduceSessionIds":["b00d7cb6-c40c-4ac0-bd15-4be1c02094d9","7c9eb9de-844d-4226-ada9-496127eeeeb5"],"attemptedSessionKey":"group:C-pr184-uat-pasio:user:U-pr184-uat-khwan","attemptedSessionGeneration":"014b6a73-a924-4c1f-8674-72ff44f12e09","attemptedSourceId":"C-pr184-uat-pasio","attemptedLineUserId":"U-pr184-uat-khwan","attemptedAccountabilityRoundId":"6e38acce-7173-4ed8-91b6-6e967c3b26e2"}
+FINALIZE [{"reason":"compatibility_fingerprint","status":"duplicate"}]
+
+FILE report-corrected.log
+
+
+FILE validation/execution.log
+EVENT 201 กี้-ราชพฤก เบิก 18/10/2569 [{"eventId":"pr184-uat-201","eventType":"message","status":"saved","parsed":false}]
+EVENT 202 1.มะละกอ16บาท
+EVENT 203 จบรายการเบิก [{"eventId":"pr184-uat-203","eventType":"message","status":"saved","parsed":false}]
+[2026-10-20T05:17:00.997Z] INFO  daily summary upsert succeeded {"summaryDate":"2026-10-18","staffName":"กี้","marketName":"ราชพฤก","borrowTotal":480,"returnTotal":0,"badReturnTotal":0,"netSales":480,"transactionCount":1}
+FINALIZE [{"status":"finalized","session_id":"dcbcbce7-1cd6-462c-a51c-c6a58025d044","notification_id":"1349f518-8073-4709-8793-c9629c90b4f8","replaced_produce_session_id":null}]
+EVENT 204 กี้-ราชพฤก เบิกเพิ่ม 18/10/2569 [{"eventId":"pr184-uat-204","eventType":"message","status":"saved","parsed":false}]
+EVENT 205 1.มะละกอ16บาท
+EVENT 206 จบรายการเบิกเพิ่ม [{"eventId":"pr184-uat-206","eventType":"message","status":"saved","parsed":false}]
+[2026-10-20T05:17:01.371Z] INFO  daily summary upsert succeeded {"summaryDate":"2026-10-18","staffName":"กี้","marketName":"ราชพฤก","borrowTotal":960,"returnTotal":0,"badReturnTotal":0,"netSales":960,"transactionCount":2}
+FINALIZE [{"status":"finalized","session_id":"ffc49c96-8abe-4657-852e-022d107f07b4","notification_id":"15e38340-49f0-4f3a-902b-6734532609d9","replaced_produce_session_id":null}]
+EVENT 207 กี้-วัดทุ่งลานนา เบิก 18/10/2569 [{"eventId":"pr184-uat-207","eventType":"message","status":"saved","parsed":false}]
+EVENT 208 1.แตงโม10บาท
+EVENT 209 จบรายการเบิก [{"eventId":"pr184-uat-209","eventType":"message","status":"saved","parsed":false}]
+[2026-10-20T05:17:01.829Z] INFO  daily summary upsert succeeded {"summaryDate":"2026-10-18","staffName":"กี้","marketName":"วัดทุ่งลานนา","borrowTotal":100,"returnTotal":0,"badReturnTotal":0,"netSales":100,"transactionCount":1}
+FINALIZE [{"status":"finalized","session_id":"8b86dd57-db0c-496c-a6ab-a9d18b7d07d5","notification_id":"b91e84df-bec6-411d-93e0-0c0212b634fc","replaced_produce_session_id":null}]
+EVENT 210 กี้-วัดทุ่งลานนา ชั่งคืน 18/10/2569 [{"eventId":"pr184-uat-210","eventType":"message","status":"saved","parsed":false}]
+EVENT 211 1.แตงโม10บาท
+EVENT 212 จบรายการชั่งคืน [{"eventId":"pr184-uat-212","eventType":"message","status":"saved","parsed":false}]
+[2026-10-20T05:17:02.158Z] INFO  daily summary upsert succeeded {"summaryDate":"2026-10-18","staffName":"กี้","marketName":"วัดทุ่งลานนา","borrowTotal":100,"returnTotal":40,"badReturnTotal":0,"netSales":60,"transactionCount":2}
+FINALIZE [{"status":"finalized","session_id":"833bb94e-22bb-495c-9197-687022f25ade","notification_id":"5ac91839-da33-48e6-93c0-63cfe570df3d","replaced_produce_session_id":null}]
+
+FILE expiry.log
+EVENT 301 กี้-ราชพฤก เบิก 18/10/2569 [{"eventId":"pr184-uat-301","eventType":"message","status":"saved","parsed":false}]
+EVENT 302 1.มังคุด20บาท
+[2026-10-20T05:17:43.019Z] INFO  produce.inactivity.expired {"sessionKey":"group:C-pr184-uat-expiry:user:U-pr184-uat-khwan","sessionGeneration":"1705554e-e53a-49d1-8ff1-e9d125a5917b","accountabilityRoundId":null,"outcome":"failed_closed","acceptedItemCount":2}
+EVENT 303 กี้-ราชพฤก เบิก 18/10/2569 [{"eventId":"pr184-uat-303","eventType":"message","status":"saved","parsed":false}]
+EVENT 304 1.มังคุด20บาท
+EVENT 305 จบรายการเบิก [{"eventId":"pr184-uat-305","eventType":"message","status":"saved","parsed":false}]
+[2026-10-20T05:17:43.431Z] INFO  daily summary upsert succeeded {"summaryDate":"2026-10-18","staffName":"กี้","marketName":"ราชพฤก","borrowTotal":980,"returnTotal":0,"badReturnTotal":0,"netSales":980,"transactionCount":3}
+FINALIZE [{"status":"finalized","session_id":"849af122-274f-4a39-ab76-1f43a232d207","notification_id":"75434f14-919c-412b-b52a-f19525a8d6ef","replaced_produce_session_id":null}]
+EVENT 306 กี้-ราชพฤก เบิก 18/10/2569 [{"eventId":"pr184-uat-306","eventType":"message","status":"saved","parsed":false}]
+EVENT 307 1.มังคุด20บาท
+EVENT 308 จบรายการเบิก [{"eventId":"pr184-uat-308","eventType":"message","status":"saved","parsed":false}]
+[2026-10-20T05:17:43.779Z] WARN  produce business duplicate blocked {"correlationId":"group:C-pr184-uat-expiry:user:U-pr184-uat-khwan:ae7dc95c-3b43-478e-8349-6fd00e2e8f8e","sessionKey":"group:C-pr184-uat-expiry:user:U-pr184-uat-khwan","sessionGeneration":"ae7dc95c-3b43-478e-8349-6fd00e2e8f8e","ingestRevision":3,"reason":"compatibility_fingerprint","businessDate":"2026-10-18","sellerLabel":"กี้","marketLabel":"ราชพฤก","transactionType":"เบิก","businessFingerprint":"8cb3f72b26885e06d6310d42f427f83325601f9912e83d57f36ed22a9fd24cd9","existingProduceSessionIds":["dcbcbce7-1cd6-462c-a51c-c6a58025d044","ffc49c96-8abe-4657-852e-022d107f07b4","849af122-274f-4a39-ab76-1f43a232d207"],"attemptedSessionKey":"group:C-pr184-uat-expiry:user:U-pr184-uat-khwan","attemptedSessionGeneration":"ae7dc95c-3b43-478e-8349-6fd00e2e8f8e","attemptedSourceId":"C-pr184-uat-expiry","attemptedLineUserId":"U-pr184-uat-khwan","attemptedAccountabilityRoundId":"8e9b8178-6398-480f-906f-08b7d4c0eabb"}
+FINALIZE [{"reason":"compatibility_fingerprint","status":"duplicate"}]

@@ -1,0 +1,3452 @@
+[
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-1",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473062381,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-1",
+        "message": {
+          "id": "pr184-msg-1",
+          "type": "text",
+          "text": "ขวัญ-พาซิโอ้ผลไม้ เบิก 19/10/2569"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-2",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473062529,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-2",
+        "message": {
+          "id": "pr184-msg-2",
+          "type": "text",
+          "text": "1.ฝรั่ง35บาท"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-3",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473062579,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-3",
+        "message": {
+          "id": "pr184-msg-3",
+          "type": "text",
+          "text": "29.9โล"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-4",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473062627,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-4",
+        "message": {
+          "id": "pr184-msg-4",
+          "type": "text",
+          "text": "2.ฝรั่งแดง35บาท\n26โล"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-5",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473062667,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-5",
+        "message": {
+          "id": "pr184-msg-5",
+          "type": "text",
+          "text": "3.น้อยหน่า40บาท"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-6",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473062708,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-6",
+        "message": {
+          "id": "pr184-msg-6",
+          "type": "text",
+          "text": "37.5โล"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-7",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473062745,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-7",
+        "message": {
+          "id": "pr184-msg-7",
+          "type": "text",
+          "text": "4.แก้วมังกร45บาท"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-8",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473062784,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-8",
+        "message": {
+          "id": "pr184-msg-8",
+          "type": "text",
+          "text": "3.9โล"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-9",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473062822,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-9",
+        "message": {
+          "id": "pr184-msg-9",
+          "type": "text",
+          "text": "5.มังคุด20บาท"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-10",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473062871,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-10",
+        "message": {
+          "id": "pr184-msg-10",
+          "type": "text",
+          "text": "6.3โล"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-11",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473062909,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-11",
+        "message": {
+          "id": "pr184-msg-11",
+          "type": "text",
+          "text": "6.ส้มสายน้ำผึ้ง40บาท"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-12",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473062950,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-12",
+        "message": {
+          "id": "pr184-msg-12",
+          "type": "text",
+          "text": "14.3โล"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-13",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473062989,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-13",
+        "message": {
+          "id": "pr184-msg-13",
+          "type": "text",
+          "text": "7.ลองกอง35บาท"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-14",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473063029,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-14",
+        "message": {
+          "id": "pr184-msg-14",
+          "type": "text",
+          "text": "36.6โล"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-15",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473063080,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-15",
+        "message": {
+          "id": "pr184-msg-15",
+          "type": "text",
+          "text": "8.พุทรานมสด40บาท"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-16",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473063128,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-16",
+        "message": {
+          "id": "pr184-msg-16",
+          "type": "text",
+          "text": "25.5โล"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-17",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473063168,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-17",
+        "message": {
+          "id": "pr184-msg-17",
+          "type": "text",
+          "text": "9.แก้วมังกรแดง40บาท"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-18",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473063216,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-18",
+        "message": {
+          "id": "pr184-msg-18",
+          "type": "text",
+          "text": "9.7โล"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-19",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473063268,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-19",
+        "message": {
+          "id": "pr184-msg-19",
+          "type": "text",
+          "text": "10.มะม่วงจิ้ว20บาท"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-20",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473063310,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-20",
+        "message": {
+          "id": "pr184-msg-20",
+          "type": "text",
+          "text": "2.7โล"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-21",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473063367,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-21",
+        "message": {
+          "id": "pr184-msg-21",
+          "type": "text",
+          "text": "11.ส้มเขียวหวาน40บาท"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-22",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473063409,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-22",
+        "message": {
+          "id": "pr184-msg-22",
+          "type": "text",
+          "text": "0.7โล"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-23",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473063445,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-23",
+        "message": {
+          "id": "pr184-msg-23",
+          "type": "text",
+          "text": "12.แอปเปิ้ลแคราะ40บาท"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-24",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473063485,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-24",
+        "message": {
+          "id": "pr184-msg-24",
+          "type": "text",
+          "text": "1.1โล"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-25",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473063526,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-25",
+        "message": {
+          "id": "pr184-msg-25",
+          "type": "text",
+          "text": "13.ส้มจีน50บาท"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-26",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473063565,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-26",
+        "message": {
+          "id": "pr184-msg-26",
+          "type": "text",
+          "text": "1.2โล"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-27",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473063604,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-27",
+        "message": {
+          "id": "pr184-msg-27",
+          "type": "text",
+          "text": "14.องุ่นจักรพรรดิ์80บาท"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-28",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473063700,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-28",
+        "message": {
+          "id": "pr184-msg-28",
+          "type": "text",
+          "text": "7.7โล"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-29",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473063746,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-29",
+        "message": {
+          "id": "pr184-msg-29",
+          "type": "text",
+          "text": "15.พุทราจีน100บาท"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-30",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473063788,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-30",
+        "message": {
+          "id": "pr184-msg-30",
+          "type": "text",
+          "text": "61.404999999999994โล"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-31",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473063833,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-31",
+        "message": {
+          "id": "pr184-msg-31",
+          "type": "text",
+          "text": "16.องุ่นคิมสัน130บาท"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-32",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473063878,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-32",
+        "message": {
+          "id": "pr184-msg-32",
+          "type": "text",
+          "text": "3.9โล"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-33",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473063918,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-33",
+        "message": {
+          "id": "pr184-msg-33",
+          "type": "text",
+          "text": "17.ลูกไหนดำ50บาท"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-34",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473063960,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-34",
+        "message": {
+          "id": "pr184-msg-34",
+          "type": "text",
+          "text": "6.1โล"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-35",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473064002,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-35",
+        "message": {
+          "id": "pr184-msg-35",
+          "type": "text",
+          "text": "18.สาลี่หอม40บาท"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-36",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473064039,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-36",
+        "message": {
+          "id": "pr184-msg-36",
+          "type": "text",
+          "text": "3.6โล"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-37",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473064079,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-37",
+        "message": {
+          "id": "pr184-msg-37",
+          "type": "text",
+          "text": "19.แตงไทย16บาท\n35ลูก"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-38",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473064116,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-38",
+        "message": {
+          "id": "pr184-msg-38",
+          "type": "text",
+          "text": "20.ส้มโอ30บาท\n3ลูก"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-39",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473064156,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-39",
+        "message": {
+          "id": "pr184-msg-39",
+          "type": "text",
+          "text": "21.แตงโม30บาท\n9ลูก"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-40",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473064204,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-40",
+        "message": {
+          "id": "pr184-msg-40",
+          "type": "text",
+          "text": "22.มะละกอ16บาท\n30ลูก"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-41",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473064244,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-41",
+        "message": {
+          "id": "pr184-msg-41",
+          "type": "text",
+          "text": "23.มะละกอ16บาท\n30ลูก"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-42",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473064285,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-42",
+        "message": {
+          "id": "pr184-msg-42",
+          "type": "text",
+          "text": "24.มะละกอ16บาท\n58ลูก"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-43",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473064332,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-43",
+        "message": {
+          "id": "pr184-msg-43",
+          "type": "text",
+          "text": "25.แอปเปิ้ล10บาท\n41ลูก"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-44",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473064369,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-44",
+        "message": {
+          "id": "pr184-msg-44",
+          "type": "text",
+          "text": "26.ทับทิม10บาท\n44ลูก"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-45",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473064406,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-45",
+        "message": {
+          "id": "pr184-msg-45",
+          "type": "text",
+          "text": "27.กล้วยหอม120บาท\n6หวี"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-46",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473064445,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-46",
+        "message": {
+          "id": "pr184-msg-46",
+          "type": "text",
+          "text": "28.ผลไม้กล่อง20บาท\n4กล่อง"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-47",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473064484,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-47",
+        "message": {
+          "id": "pr184-msg-47",
+          "type": "text",
+          "text": "จบรายการเบิก"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-48",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473064617,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-48",
+        "message": {
+          "id": "pr184-msg-48",
+          "type": "text",
+          "text": "จบรายการเบิก"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-49",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473103906,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-49",
+        "message": {
+          "id": "pr184-msg-49",
+          "type": "text",
+          "text": "ขวัญ-พาซิโอ้ผลไม้ ชั่งคืน 19/10/2569\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-50",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473104035,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-50",
+        "message": {
+          "id": "pr184-msg-50",
+          "type": "text",
+          "text": "1.ฝรั่ง35บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-51",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473104099,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-51",
+        "message": {
+          "id": "pr184-msg-51",
+          "type": "text",
+          "text": "29.9โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-52",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473104157,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-52",
+        "message": {
+          "id": "pr184-msg-52",
+          "type": "text",
+          "text": "2.ฝรั่งแดง35บาท\r\n26โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-53",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473104241,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-53",
+        "message": {
+          "id": "pr184-msg-53",
+          "type": "text",
+          "text": "3.น้อยหน่า40บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-54",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473104314,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-54",
+        "message": {
+          "id": "pr184-msg-54",
+          "type": "text",
+          "text": "37.5โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-55",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473104374,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-55",
+        "message": {
+          "id": "pr184-msg-55",
+          "type": "text",
+          "text": "4.แก้วมังกร45บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-56",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473104430,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-56",
+        "message": {
+          "id": "pr184-msg-56",
+          "type": "text",
+          "text": "3.9โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-57",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473104482,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-57",
+        "message": {
+          "id": "pr184-msg-57",
+          "type": "text",
+          "text": "5.มังคุด40บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-58",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473104538,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-58",
+        "message": {
+          "id": "pr184-msg-58",
+          "type": "text",
+          "text": "6.3โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-59",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473104598,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-59",
+        "message": {
+          "id": "pr184-msg-59",
+          "type": "text",
+          "text": "6.ส้มสายน้ำผึ้ง40บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-60",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473104657,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-60",
+        "message": {
+          "id": "pr184-msg-60",
+          "type": "text",
+          "text": "14.3โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-61",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473104705,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-61",
+        "message": {
+          "id": "pr184-msg-61",
+          "type": "text",
+          "text": "7.ลองกอง35บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-62",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473104757,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-62",
+        "message": {
+          "id": "pr184-msg-62",
+          "type": "text",
+          "text": "36.6โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-63",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473104803,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-63",
+        "message": {
+          "id": "pr184-msg-63",
+          "type": "text",
+          "text": "8.พุทรานมสด40บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-64",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473104850,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-64",
+        "message": {
+          "id": "pr184-msg-64",
+          "type": "text",
+          "text": "25.5โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-65",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473104898,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-65",
+        "message": {
+          "id": "pr184-msg-65",
+          "type": "text",
+          "text": "9.แก้วมังกรแดง40บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-66",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473104942,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-66",
+        "message": {
+          "id": "pr184-msg-66",
+          "type": "text",
+          "text": "9.7โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-67",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473104992,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-67",
+        "message": {
+          "id": "pr184-msg-67",
+          "type": "text",
+          "text": "10.มะม่วงจิ้ว40บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-68",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473105040,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-68",
+        "message": {
+          "id": "pr184-msg-68",
+          "type": "text",
+          "text": "2.7โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-69",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473105093,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-69",
+        "message": {
+          "id": "pr184-msg-69",
+          "type": "text",
+          "text": "11.ส้มเขียวหวาน40บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-70",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473105145,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-70",
+        "message": {
+          "id": "pr184-msg-70",
+          "type": "text",
+          "text": "0.7โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-71",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473105203,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-71",
+        "message": {
+          "id": "pr184-msg-71",
+          "type": "text",
+          "text": "12.แอปเปิ้ลแคราะ40บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-72",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473105245,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-72",
+        "message": {
+          "id": "pr184-msg-72",
+          "type": "text",
+          "text": "1.1โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-73",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473105296,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-73",
+        "message": {
+          "id": "pr184-msg-73",
+          "type": "text",
+          "text": "13.ส้มจีน50บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-74",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473105340,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-74",
+        "message": {
+          "id": "pr184-msg-74",
+          "type": "text",
+          "text": "1.2โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-75",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473105386,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-75",
+        "message": {
+          "id": "pr184-msg-75",
+          "type": "text",
+          "text": "14.องุ่นจักรพรรดิ์80บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-76",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473105438,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-76",
+        "message": {
+          "id": "pr184-msg-76",
+          "type": "text",
+          "text": "7.7โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-77",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473105488,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-77",
+        "message": {
+          "id": "pr184-msg-77",
+          "type": "text",
+          "text": "15.พุทราจีน100บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-78",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473105538,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-78",
+        "message": {
+          "id": "pr184-msg-78",
+          "type": "text",
+          "text": "2.8โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-79",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473105582,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-79",
+        "message": {
+          "id": "pr184-msg-79",
+          "type": "text",
+          "text": "16.องุ่นคิมสัน130บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-80",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473105628,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-80",
+        "message": {
+          "id": "pr184-msg-80",
+          "type": "text",
+          "text": "3.9โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-81",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473105669,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-81",
+        "message": {
+          "id": "pr184-msg-81",
+          "type": "text",
+          "text": "17.ลูกไหนดำ50บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-82",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473105717,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-82",
+        "message": {
+          "id": "pr184-msg-82",
+          "type": "text",
+          "text": "6.1โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-83",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473105767,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-83",
+        "message": {
+          "id": "pr184-msg-83",
+          "type": "text",
+          "text": "18.สาลี่หอม40บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-84",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473105810,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-84",
+        "message": {
+          "id": "pr184-msg-84",
+          "type": "text",
+          "text": "3.6โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-85",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473105854,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-85",
+        "message": {
+          "id": "pr184-msg-85",
+          "type": "text",
+          "text": "19.แตงไทย16บาท\r\n35ลูก\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-86",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473105899,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-86",
+        "message": {
+          "id": "pr184-msg-86",
+          "type": "text",
+          "text": "20.ส้มโอ30บาท\r\n3ลูก\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-87",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473105947,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-87",
+        "message": {
+          "id": "pr184-msg-87",
+          "type": "text",
+          "text": "21.แตงโม30บาท\r\n9ลูก\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-88",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473105994,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-88",
+        "message": {
+          "id": "pr184-msg-88",
+          "type": "text",
+          "text": "22.มะละกอ16บาท\r\n118ลูก\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-89",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473106039,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-89",
+        "message": {
+          "id": "pr184-msg-89",
+          "type": "text",
+          "text": "23.แอปเปิ้ล10บาท\r\n41ลูก\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-90",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473106086,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-90",
+        "message": {
+          "id": "pr184-msg-90",
+          "type": "text",
+          "text": "24.ทับทิม10บาท\r\n47ลูก\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-91",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473106140,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-91",
+        "message": {
+          "id": "pr184-msg-91",
+          "type": "text",
+          "text": "25.กล้วยหอม120บาท\r\n6หวี\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-92",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473106185,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-92",
+        "message": {
+          "id": "pr184-msg-92",
+          "type": "text",
+          "text": "26.ผลไม้กล่อง20บาท\r\n4กล่อง\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-93",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473106233,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-93",
+        "message": {
+          "id": "pr184-msg-93",
+          "type": "text",
+          "text": "จบรายกาาชั่งคืน"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-94",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473106565,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-94",
+        "message": {
+          "id": "pr184-msg-94",
+          "type": "text",
+          "text": "ขวัญ-พาซิโอ้ผลไม้ ชั่งคืน 19/10/2569\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-95",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473106621,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-95",
+        "message": {
+          "id": "pr184-msg-95",
+          "type": "text",
+          "text": "1.ฝรั่ง35บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-96",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473106667,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-96",
+        "message": {
+          "id": "pr184-msg-96",
+          "type": "text",
+          "text": "29.9โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-97",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473106714,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-97",
+        "message": {
+          "id": "pr184-msg-97",
+          "type": "text",
+          "text": "2.ฝรั่งแดง35บาท\r\n26โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-98",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473106765,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-98",
+        "message": {
+          "id": "pr184-msg-98",
+          "type": "text",
+          "text": "3.น้อยหน่า40บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-99",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473106813,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-99",
+        "message": {
+          "id": "pr184-msg-99",
+          "type": "text",
+          "text": "37.5โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-100",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473106864,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-100",
+        "message": {
+          "id": "pr184-msg-100",
+          "type": "text",
+          "text": "4.แก้วมังกร45บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-101",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473106913,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-101",
+        "message": {
+          "id": "pr184-msg-101",
+          "type": "text",
+          "text": "3.9โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-102",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473106970,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-102",
+        "message": {
+          "id": "pr184-msg-102",
+          "type": "text",
+          "text": "5.มังคุด40บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-103",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473107018,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-103",
+        "message": {
+          "id": "pr184-msg-103",
+          "type": "text",
+          "text": "6.3โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-104",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473107064,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-104",
+        "message": {
+          "id": "pr184-msg-104",
+          "type": "text",
+          "text": "6.ส้มสายน้ำผึ้ง40บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-105",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473107117,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-105",
+        "message": {
+          "id": "pr184-msg-105",
+          "type": "text",
+          "text": "14.3โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-106",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473107174,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-106",
+        "message": {
+          "id": "pr184-msg-106",
+          "type": "text",
+          "text": "7.ลองกอง35บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-107",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473107228,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-107",
+        "message": {
+          "id": "pr184-msg-107",
+          "type": "text",
+          "text": "36.6โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-108",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473107273,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-108",
+        "message": {
+          "id": "pr184-msg-108",
+          "type": "text",
+          "text": "8.พุทรานมสด40บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-109",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473107334,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-109",
+        "message": {
+          "id": "pr184-msg-109",
+          "type": "text",
+          "text": "25.5โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-110",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473107392,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-110",
+        "message": {
+          "id": "pr184-msg-110",
+          "type": "text",
+          "text": "9.แก้วมังกรแดง40บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-111",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473107446,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-111",
+        "message": {
+          "id": "pr184-msg-111",
+          "type": "text",
+          "text": "9.7โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-112",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473107500,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-112",
+        "message": {
+          "id": "pr184-msg-112",
+          "type": "text",
+          "text": "10.มะม่วงจิ้ว40บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-113",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473107565,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-113",
+        "message": {
+          "id": "pr184-msg-113",
+          "type": "text",
+          "text": "2.7โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-114",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473107625,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-114",
+        "message": {
+          "id": "pr184-msg-114",
+          "type": "text",
+          "text": "11.ส้มเขียวหวาน40บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-115",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473107705,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-115",
+        "message": {
+          "id": "pr184-msg-115",
+          "type": "text",
+          "text": "0.7โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-116",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473107793,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-116",
+        "message": {
+          "id": "pr184-msg-116",
+          "type": "text",
+          "text": "12.แอปเปิ้ลแคราะ40บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-117",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473107865,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-117",
+        "message": {
+          "id": "pr184-msg-117",
+          "type": "text",
+          "text": "1.1โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-118",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473107945,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-118",
+        "message": {
+          "id": "pr184-msg-118",
+          "type": "text",
+          "text": "13.ส้มจีน50บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-119",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473107998,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-119",
+        "message": {
+          "id": "pr184-msg-119",
+          "type": "text",
+          "text": "1.2โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-120",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473108046,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-120",
+        "message": {
+          "id": "pr184-msg-120",
+          "type": "text",
+          "text": "14.องุ่นจักรพรรดิ์80บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-121",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473108101,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-121",
+        "message": {
+          "id": "pr184-msg-121",
+          "type": "text",
+          "text": "7.7โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-122",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473108158,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-122",
+        "message": {
+          "id": "pr184-msg-122",
+          "type": "text",
+          "text": "15.พุทราจีน100บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-123",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473108219,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-123",
+        "message": {
+          "id": "pr184-msg-123",
+          "type": "text",
+          "text": "2.8โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-124",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473108264,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-124",
+        "message": {
+          "id": "pr184-msg-124",
+          "type": "text",
+          "text": "16.องุ่นคิมสัน130บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-125",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473108323,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-125",
+        "message": {
+          "id": "pr184-msg-125",
+          "type": "text",
+          "text": "3.9โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-126",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473108364,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-126",
+        "message": {
+          "id": "pr184-msg-126",
+          "type": "text",
+          "text": "17.ลูกไหนดำ50บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-127",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473108416,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-127",
+        "message": {
+          "id": "pr184-msg-127",
+          "type": "text",
+          "text": "6.1โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-128",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473108467,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-128",
+        "message": {
+          "id": "pr184-msg-128",
+          "type": "text",
+          "text": "18.สาลี่หอม40บาท\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-129",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473108507,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-129",
+        "message": {
+          "id": "pr184-msg-129",
+          "type": "text",
+          "text": "3.6โล\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-130",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473108563,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-130",
+        "message": {
+          "id": "pr184-msg-130",
+          "type": "text",
+          "text": "19.แตงไทย16บาท\r\n35ลูก\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-131",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473108614,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-131",
+        "message": {
+          "id": "pr184-msg-131",
+          "type": "text",
+          "text": "20.ส้มโอ30บาท\r\n3ลูก\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-132",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473108664,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-132",
+        "message": {
+          "id": "pr184-msg-132",
+          "type": "text",
+          "text": "21.แตงโม30บาท\r\n9ลูก\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-133",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473108713,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-133",
+        "message": {
+          "id": "pr184-msg-133",
+          "type": "text",
+          "text": "22.มะละกอ16บาท\r\n118ลูก\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-134",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473108764,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-134",
+        "message": {
+          "id": "pr184-msg-134",
+          "type": "text",
+          "text": "23.แอปเปิ้ล10บาท\r\n41ลูก\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-135",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473108814,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-135",
+        "message": {
+          "id": "pr184-msg-135",
+          "type": "text",
+          "text": "24.ทับทิม10บาท\r\n47ลูก\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-136",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473108867,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-136",
+        "message": {
+          "id": "pr184-msg-136",
+          "type": "text",
+          "text": "25.กล้วยหอม120บาท\r\n6หวี\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-137",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473108922,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-137",
+        "message": {
+          "id": "pr184-msg-137",
+          "type": "text",
+          "text": "26.ผลไม้กล่อง20บาท\r\n4กล่อง\r"
+        }
+      }
+    ]
+  },
+  {
+    "destination": "PR184-UAT-EMULATOR",
+    "events": [
+      {
+        "type": "message",
+        "webhookEventId": "pr184-uat-138",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "timestamp": 1792473108981,
+        "source": {
+          "type": "group",
+          "groupId": "C-pr184-uat-pasio",
+          "userId": "U-pr184-uat-khwan"
+        },
+        "mode": "active",
+        "replyToken": "uat-reply-138",
+        "message": {
+          "id": "pr184-msg-138",
+          "type": "text",
+          "text": "จบรายการชั่งคืน"
+        }
+      }
+    ]
+  }
+]

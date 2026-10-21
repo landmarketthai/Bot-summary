@@ -379,7 +379,7 @@ describe("quantity invariant", () => {
 
     expect(result.status).toBe("clean");
     expect(result.blocking).toEqual([]);
-    expect(kinds(result.advisories)).toEqual(["price_not_withdrawn"]);
+    expect(kinds(result.advisories)).toEqual(["price_not_withdrawn", "excess_return"]);
     expect(kinds(result.reconciliation)).toEqual(["return_exceeds_withdrawal"]);
   });
 
@@ -465,7 +465,7 @@ describe("duplicate printed item numbers", () => {
       "return_exceeds_withdrawal",
       "return_exceeds_withdrawal",
     ]);
-    expect(result.advisories).toEqual([]);
+    expect(kinds(result.advisories)).toEqual(["excess_return", "excess_return"]);
   });
 });
 

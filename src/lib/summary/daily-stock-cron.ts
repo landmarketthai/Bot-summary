@@ -114,10 +114,20 @@ export function morningBriefRetryKey(
   targetId: string,
   partIndex: number,
   retryNonce?: string,
+  reportScope: "fruit" | "vegetable" = "fruit",
 ): string {
+  if (reportScope === "vegetable") return retryKey("daily-morning-brief-vegetable", businessDate, targetId, partIndex, retryNonce ?? "");
   return retryNonce
     ? retryKey("daily-morning-brief", businessDate, targetId, partIndex, retryNonce)
     : retryKey("daily-morning-brief", businessDate, targetId, partIndex);
+}
+
+/** A fixed PDF part cannot collide with a changing number of text messages. */
+// shortcut: LINE retains retry keys for 24 hours; add durable receipts before automatic multi-day resends.
+export function morningBriefPdfRetryKey(
+  businessDate: string, targetId: string, reportScope: "fruit" | "vegetable", retryNonce?: string,
+): string {
+  return retryKey("daily-morning-brief-pdf", reportScope, businessDate, targetId, retryNonce ?? "");
 }
 
 /**

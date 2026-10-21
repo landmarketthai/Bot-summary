@@ -518,6 +518,31 @@ describe("what duplicate protection must not break", () => {
 });
 
 describe("the fingerprint the finalizer actually sends", () => {
+  it("19 October replay: expired 26-item draft, typo close, then 10:14 resend saves one return", async () => {
+    const products = ["มังคุด", "มะละกอ", "ทับทิม", "หมอนทอง", "สับปะรด", "แตงโม", "แตงไทย", "ฝรั่ง", "กล้วยไข่", "กล้วยน้ำว้า", "กล้วยหอม", "เงาะ", "ชมพู่", "ขนุน", "แก้วมังกร", "กระท้อน", "น้อยหน่า", "พีช", "พุทรา", "สาลี่", "องุ่น", "แอปเปิ้ล", "ลิ้นจี่", "ลำไย", "ลองกอง", "มะม่วง"];
+    const document = (type: string, closer: string) => [
+      `ขวัญ-พาซิโอ้ผลไม้ ${type} 19/10/2569`,
+      ...products.flatMap((product, i) => [`${i + 1}.${product}50บาท`, `${i === 25 ? (type === "เบิก" ? 137.51 : 99.5) : (type === "เบิก" ? 10 : 7)}โล`]),
+      closer,
+    ].join("\n");
+    const db = new FakeDatabase();
+    const identity = { sourceId: "C-pasio", lineUserId: "U-khwan" };
+    await finalize(db, db.addPending(document("เบิก", "จบรายการเบิก"), identity));
+    // A terminalized expired draft must never reach the financial write RPC.
+    const expired = db.addPending(document("ชั่งคืน", ""), identity);
+    expired.terminalized = true;
+    expired.finalization_status = "failed_closed";
+    await finalize(db, expired);
+    expect(db.rows("produce_sessions")).toHaveLength(1);
+    const first = await finalize(db, db.addPending(document("ชั่งคืน", "จบรายกาาชั่งคืน"), identity));
+    expect(first.result.status).toBe("finalized");
+    const replay = await finalize(db, db.addPending(document("ชั่งคืน", "จบรายการชั่งคืน"), identity));
+    expect(replay.result.status).toBe("duplicate");
+    const returns = db.rows("produce_transactions").filter((row) => row.transaction_type === "คืน");
+    expect(returns).toHaveLength(26);
+    expect(returns.reduce((sum, row) => sum + Number(row.quantity) * Number(row.price_per_unit), 0)).toBe(13_725);
+    expect(db.rows("produce_sessions")).toHaveLength(2);
+  });
   it("is identical for the two แทน documents", () => {
     expect(computeSessionHash(parseWeighSession(WITHDRAWAL)))
       .toBe(computeSessionHash(parseWeighSession(WITHDRAWAL_RESENT)));

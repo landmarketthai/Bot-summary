@@ -101,6 +101,7 @@ const REASON_LABELS: Record<SalesBlockReason, string> = {
   product_return_absent: "รอบนี้มีรายการชั่งคืน แต่ไม่พบสินค้านี้ในรายการชั่งคืน",
   return_without_withdrawal: "มีคืนแต่ไม่มีเบิก",
   returns_exceed_withdrawal: "คืน+เสีย มากกว่าเบิก",
+  return_price_mismatch: "ราคาเบิกและคืนไม่ตรงกัน",
   duplicate_main_session: "มีชุดหลักซ้ำในวันเดียวกัน",
   session_parser_errors: "อ่านข้อความไม่ครบ",
   session_item_count_mismatch: "จำนวนรายการที่บันทึกไม่ตรง",

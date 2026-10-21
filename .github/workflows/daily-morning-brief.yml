@@ -5,6 +5,12 @@ name: daily-morning-brief
 on:
   workflow_dispatch:
     inputs:
+      scope:
+        description: "Report market scope. Vegetable is manual-only until Production approval (13:00 Bangkok / 06:00 UTC)."
+        required: true
+        type: choice
+        options: [fruit, vegetable]
+        default: fruit
       date:
         description: "Optional business date override (YYYY-MM-DD). Leave blank for the previous business date."
         required: false
@@ -34,9 +40,9 @@ jobs:
       - name: Call daily-morning-brief cron
         run: |
           URL="https://bot-summary.vercel.app/api/cron/daily-morning-brief"
-          QUERY=""
+          QUERY="?scope=${{ inputs.scope }}"
           if [ -n "${{ inputs.date }}" ]; then
-            QUERY="?date=${{ inputs.date }}"
+            QUERY="$QUERY&date=${{ inputs.date }}"
           fi
           if [ -n "${{ inputs.target }}" ]; then
             if [ -n "$QUERY" ]; then QUERY="$QUERY&target=${{ inputs.target }}"; else QUERY="?target=${{ inputs.target }}"; fi

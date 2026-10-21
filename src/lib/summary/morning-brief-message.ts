@@ -85,17 +85,16 @@ function buildSalesBlock(report: MorningBriefReport): string {
     return "💰 ภาพรวมเงิน\nยังไม่มีข้อมูลเบิก–ชั่งคืนสำหรับคำนวณยอดขาย";
   }
   const sales = report.sales;
-  const totalLabel = sales.excludedFromSalesCount > 0
-    ? "ยอดขายรวมที่คำนวณได้ (บางส่วน)"
-    : "ยอดขายรวม";
-  const lines = ["💰 ภาพรวมเงิน", `${totalLabel} ${satangToBahtText(sales.totalSalesSatang)} บาท`];
+  const lines = ["💰 ภาพรวมเงิน", `ยอดขายยืนยันแล้ว ${satangToBahtText(sales.confirmedSalesSatang)} บาท`];
   if (sales.pendingReviewSalesSatang !== 0) {
     lines.push(
-      `ยอดยืนยันแล้ว ${satangToBahtText(sales.confirmedSalesSatang)} บาท`,
       `ยอดรอตรวจ ${satangToBahtText(sales.pendingReviewSalesSatang)} บาท`,
+      `ยอดขายคำนวณได้ (รวมรอตรวจ) ${satangToBahtText(sales.totalSalesSatang)} บาท`,
     );
   }
   if (sales.adjustmentSatang !== 0) lines.push(`ปรับราคา ${satangToBahtText(sales.adjustmentSatang)} บาท`);
+  if (sales.excludedFromSalesCount > 0) lines.push(`ยังคำนวณไม่ได้ ${sales.excludedFromSalesCount} รายการ`);
+  if (sales.awaitingReturnCount) lines.push(`รอชั่งคืน ${sales.awaitingReturnCount} รายการ`);
   return lines.join("\n");
 }
 
@@ -106,7 +105,10 @@ function buildProduceFinancialBlocks(report: MorningBriefReport): string[] {
     if (!financial) return [];
     return [[
       `${PRODUCE_SECTION_LABEL[section]} — ภาพรวมเงิน`,
-      `ยอดขาย ${satangToBahtText(financial.salesValueSatang)} บาท`,
+      `ยอดขายยืนยันแล้ว ${satangToBahtText(financial.salesValueSatang)} บาท`,
+      `ยอดรอตรวจ ${satangToBahtText(financial.pendingReviewSalesSatang ?? 0)} บาท`,
+      ...(financial.pendingReviewSalesSatang ? [`ยอดขายคำนวณได้ (รวมรอตรวจ) ${satangToBahtText(financial.salesValueSatang + financial.pendingReviewSalesSatang)} บาท`] : []),
+      ...(financial.awaitingReturnCount ? [`รอชั่งคืน ${financial.awaitingReturnCount} รายการ`] : []),
       `เบิก ${satangToBahtText(financial.withdrawalValueSatang)} บาท`,
       `ชั่งคืนดี ${satangToBahtText(financial.goodReturnValueSatang)} บาท`,
     ].join("\n")];
@@ -181,13 +183,13 @@ export function buildMorningBriefBlocks(report: MorningBriefReport): string[] {
   const readinessBlock = buildDataReadinessBlock(report);
   if (report.produceReadiness?.transactionCount === 0) {
     return [
-      `${MORNING_BRIEF_TITLE} — ${formatThaiDate(report.businessDate)}`,
+      `${MORNING_BRIEF_TITLE}${report.reportScope ? ` (${report.reportScope === "fruit" ? "ผลไม้" : "ผัก"})` : ""} — ${formatThaiDate(report.businessDate)}`,
       readinessBlock!,
       ...(report.houseStock.status === "available" ? [buildHouseStockBlock(report)] : []),
     ];
   }
   return [
-    `${MORNING_BRIEF_TITLE} — ${formatThaiDate(report.businessDate)}`,
+    `${MORNING_BRIEF_TITLE}${report.reportScope ? ` (${report.reportScope === "fruit" ? "ผลไม้" : "ผัก"})` : ""} — ${formatThaiDate(report.businessDate)}`,
     buildSalesBlock(report),
     ...buildProduceFinancialBlocks(report),
     ...(readinessBlock ? [readinessBlock] : []),

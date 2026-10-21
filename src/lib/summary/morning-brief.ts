@@ -1,5 +1,5 @@
 import { canonicalMarketLabel } from "@/lib/market";
-import { isSoldOutByAbsentReturn, type SalesReport } from "@/lib/sales/calculate";
+import { isSoldOutByAbsentReturn, type SalesReport, type SalesIdentityRow } from "@/lib/sales/calculate";
 import type { SalesValueStatus } from "@/lib/sales/calculate";
 import { PRODUCT_CODE_ENTRIES } from "@/lib/produce/product-code/dictionary";
 import { canonicalProduceProductIdentity } from "@/lib/produce/product-vocabulary";
@@ -101,6 +101,7 @@ export interface MorningBriefSalesReviewItem {
 }
 
 export interface MorningBriefSalesMarket {
+  awaitingReturnCount?: number;
   marketLabel: string;
   totalSalesSatang: number;
   confirmedSalesSatang: number;
@@ -116,6 +117,7 @@ export interface MorningBriefSalesMarket {
 }
 
 export interface MorningBriefSales {
+  awaitingReturnCount?: number;
   totalSalesSatang: number;
   confirmedSalesSatang: number;
   pendingReviewSalesSatang: number;
@@ -143,9 +145,9 @@ export function summarizeSales(report: SalesReport): MorningBriefSales {
   const rows = report.markets.flatMap((market) => market.rows);
 
   const hasPriceIssue = (reasons: readonly string[]) =>
-    reasons.includes("central_price_conflict") || reasons.includes("missing_central_price");
+    reasons.includes("central_price_conflict") || reasons.includes("missing_central_price") || reasons.includes("return_price_mismatch");
   const hasReturnIssue = (row: (typeof rows)[number]) =>
-    row.reasons.includes("product_return_absent") || Boolean(row.returnEvidenceIncomplete);
+    row.reasons.includes("missing_return_evidence") || row.reasons.includes("product_return_absent") || Boolean(row.returnEvidenceIncomplete);
 
   for (const market of report.markets) {
     for (const row of market.rows) {
@@ -158,6 +160,7 @@ export function summarizeSales(report: SalesReport): MorningBriefSales {
   }
 
   return {
+    awaitingReturnCount: rows.filter((row) => row.reasons.includes("missing_return_evidence")).length,
     totalSalesSatang: report.allMarkets.totalSalesSatang,
     confirmedSalesSatang: report.allMarkets.expectedSalesSatang,
     pendingReviewSalesSatang: report.allMarkets.pendingReviewSalesSatang,
@@ -175,6 +178,7 @@ export function summarizeSales(report: SalesReport): MorningBriefSales {
       (market) => canonicalMarketLabel(market.marketLabel) === "พาซิโอ้ผัก",
     ),
     markets: report.markets.map((market) => ({
+      awaitingReturnCount: market.rows.filter((row) => row.reasons.includes("missing_return_evidence")).length,
       marketLabel: market.marketLabel,
       totalSalesSatang: market.total.totalSalesSatang,
       confirmedSalesSatang: market.total.expectedSalesSatang,
@@ -241,6 +245,9 @@ export type MorningBriefReconciliation =
   | { status: "unavailable" };
 
 export interface MorningBriefFruitMarketSummary {
+  pendingReviewSalesSatang?: number;
+  unavailableCount?: number;
+  awaitingReturnCount?: number;
   marketLabel: string;
   withdrawalValueSatang: number;
   salesValueSatang: number;
@@ -248,6 +255,9 @@ export interface MorningBriefFruitMarketSummary {
 }
 
 export interface MorningBriefFruitFinancialSummary {
+  pendingReviewSalesSatang?: number;
+  unavailableCount?: number;
+  awaitingReturnCount?: number;
   withdrawalValueSatang: number;
   salesValueSatang: number;
   goodReturnValueSatang: number;
@@ -267,8 +277,14 @@ export interface MorningBriefProduceReadiness {
 }
 
 export type MorningBriefWhiteSheetStatus = "entered" | "missing" | "unavailable";
+export type MorningBriefScope = "fruit" | "vegetable";
 
 export interface MorningBriefReport {
+  reportScope?: MorningBriefScope;
+  /** Original calculator rows, including round identity and damage, without recomputing money. */
+  salesDetails?: SalesIdentityRow[];
+  sourceTransactions?: { id: string | null; sessionId: string | null; accountabilityRoundId: string | null }[];
+  readiness?: { status: "ready" | "not_ready"; reasons: string[] };
   businessDate: string;
   purchasePlanning: MorningBriefPurchasePlanning;
   sales: MorningBriefSales;

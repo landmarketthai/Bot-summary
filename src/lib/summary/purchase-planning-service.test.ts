@@ -338,14 +338,14 @@ describe("loadPurchasePlanningReport — unattributable withdrawal wiring", () =
   const TARGET_MS = Date.parse("2026-08-21T06:00:00.000Z");
   const OTHER_DAY_MS = Date.parse("2026-08-20T06:00:00.000Z");
 
-  test("an item-only rejected เบิก poisons only the named product", async () => {
+  test("a rejected unbound เบิก poisons only the named product", async () => {
     const db = highSellingDay()
       .seed("physical_inventory_snapshots", [snapshotRow()])
       .seed("physical_inventory_items", [itemRow({ quantity: 10 })])
       .seed("pending_produce_deferred_events", [{
         raw_message_id: "raw-unbound-withdraw",
         source_id: "Csource",
-        raw_text: "1.ทับทิม25บาท\n26ลูก",
+        raw_text: "เบิก 21/08/2569\n1.ทับทิม25บาท\n26ลูก",
         line_timestamp_ms: TARGET_MS,
         status: "rejected_after_close",
       }]);
