@@ -6,10 +6,12 @@ import {
   fetchAuthoritativeHouseStockItems,
 } from "@/lib/physical-inventory/house-stock-report";
 import { quantityTimesSatang, toMilliQuantity } from "@/lib/sales/calculate";
-import { fetchSalesProduceRows, loadSalesReport } from "@/lib/sales/load";
+import { fetchSalesProduceRows, loadSalesReport, loadProduceFailureScan, type SalesMarketFilter } from "@/lib/sales/load";
 import { canonicalMarketLabel } from "@/lib/market";
 import { isQaMarketLabel } from "@/lib/sales/qa-scopes";
 import { fetchReconciliationReport } from "@/lib/reconciliation-report-service";
+import { summarizeReconciliationReport } from "@/lib/reconciliation-report";
+import { baseTransactionType } from "@/lib/summary/transactions";
 import { loadPurchasePlanningReport } from "@/lib/summary/purchase-planning-service";
 import {
   morningBriefProductIdentity,
@@ -21,6 +23,7 @@ import {
   type MorningBriefReport,
   type MorningBriefProduceReadiness,
   type MorningBriefWhiteSheetStatus,
+  type MorningBriefScope,
 } from "@/lib/summary/morning-brief";
 
 import { PRODUCE_SECTIONS, produceSectionOf, type ProduceSection } from "@/lib/summary/produce-section";
@@ -65,7 +68,10 @@ function summarizeHouseStockRows(rows: readonly HouseRow[]): MorningBriefHouseSt
 async function loadHouseStock(
   supabase: Supabase,
   businessDate: string,
+  reportScope?: MorningBriefScope,
 ): Promise<MorningBriefHouseStock> {
+  // The warehouse snapshot has no allocation to the vegetable market.
+  if (reportScope === "vegetable") return { status: "missing" };
   try {
     const snapshot = await fetchAuthoritativeHouseStockItems(supabase, businessDate);
     if (!snapshot) return { status: "missing" };
@@ -88,20 +94,23 @@ async function loadHouseStock(
 async function loadReconciliation(
   supabase: Supabase,
   businessDate: string,
+  marketFilter?: SalesMarketFilter,
 ): Promise<MorningBriefReconciliation> {
   try {
     const report = await fetchReconciliationReport(supabase, {
       fromDate: businessDate,
       toDate: businessDate,
     });
-    if (report.rows.length === 0) return { status: "missing" };
+    const rows = report.rows.filter((row) => !marketFilter || marketFilter(row.market, row.accountability_round_id));
+    if (rows.length === 0) return { status: "missing" };
+    const summary = summarizeReconciliationReport(rows);
     return {
       status: "available",
-      submittedTransferBaht: report.summary.submitted_transfer_total,
-      checkedSlipBaht: report.summary.checked_slip_total,
-      differenceBaht: report.summary.difference_total,
-      needsReviewCount: report.summary.needs_review_count,
-      rows: report.rows.map((row) => ({
+      submittedTransferBaht: summary.submitted_transfer_total,
+      checkedSlipBaht: summary.checked_slip_total,
+      differenceBaht: summary.difference_total,
+      needsReviewCount: summary.needs_review_count,
+      rows: rows.map((row) => ({
         market: row.market,
         submittedTransferBaht: row.submitted_transfer_total,
         checkedSlipBaht: row.checked_slip_total,
@@ -121,14 +130,16 @@ async function loadReconciliation(
 async function loadWhiteSheetStatus(
   supabase: Supabase,
   businessDate: string,
+  marketFilter?: SalesMarketFilter,
 ): Promise<MorningBriefWhiteSheetStatus> {
   try {
     const { data, error } = await supabase
       .from("digital_white_sheet_cash_entries")
-      .select("white_sheet_sales")
+      .select("white_sheet_sales, market_label_normalized, accountability_round_id")
       .eq("business_date", businessDate);
     if (error) throw error;
-    return (data ?? []).some((row) => row.white_sheet_sales !== null)
+    return (data ?? []).some((row) => row.white_sheet_sales !== null
+      && (!marketFilter || marketFilter(row.market_label_normalized, row.accountability_round_id)))
       ? "entered"
       : "missing";
   } catch (error) {
@@ -224,14 +235,37 @@ export function summarizeReadiness(rows: readonly Pick<Awaited<ReturnType<typeof
 export async function loadMorningBriefReport(
   supabase: Supabase,
   businessDate: string,
+  reportScope?: MorningBriefScope,
 ): Promise<MorningBriefReport> {
-  const [purchasePlanning, sales, houseStock, reconciliation, whiteSheetStatus, produceRows] = await Promise.all([
-    loadPurchasePlanningReport(supabase, businessDate),
-    loadSalesReport(supabase, businessDate, { requireReturnEvidence: true }),
-    loadHouseStock(supabase, businessDate),
-    loadReconciliation(supabase, businessDate),
-    loadWhiteSheetStatus(supabase, businessDate),
-    fetchSalesProduceRows(supabase, businessDate),
+  const allRows = await fetchSalesProduceRows(supabase, businessDate);
+  const roundMarkets = new Map<string, string>();
+  if (reportScope) {
+    const ids = [...new Set(allRows.flatMap((row) => row.accountability_round_id ? [row.accountability_round_id] : []))];
+    for (let offset = 0; offset < ids.length; offset += 500) {
+      // Round tables use the same ungenerated schema boundary as round-return-status.
+      const { data, error } = await (supabase as SupabaseClient).from("accountability_rounds")
+        .select("id, market_label").in("id", ids.slice(offset, offset + 500));
+      if (error) throw new Error(`morning brief market scope lookup failed: ${error.message}`);
+      for (const round of (data ?? []) as { id: string; market_label: string | null }[]) roundMarkets.set(round.id, canonicalMarketLabel(round.market_label));
+    }
+  }
+  const marketFilter: SalesMarketFilter | undefined = reportScope ? (market, roundId) => {
+    const label = (roundId && roundMarkets.get(roundId)) || canonicalMarketLabel(market);
+    if (isQaMarketLabel(label)) return false;
+    const vegetable = label === "พาซิโอ้ผัก";
+    return reportScope === "vegetable" ? vegetable : !vegetable;
+  } : undefined;
+  const produceRows = allRows.filter((row) => !marketFilter || marketFilter(row.market_name, row.accountability_round_id));
+  const [houseStock, failures] = await Promise.all([
+    loadHouseStock(supabase, businessDate, reportScope),
+    loadProduceFailureScan(supabase, businessDate, marketFilter),
+  ]);
+  const [purchasePlanning, sales, reconciliation, whiteSheetStatus] = await Promise.all([
+    loadPurchasePlanningReport(supabase, businessDate, { rows: produceRows, marketFilter, failures,
+      houseStock: reportScope === "vegetable" ? { status: "none" } : undefined }),
+    loadSalesReport(supabase, businessDate, { requireReturnEvidence: true, rows: produceRows, marketFilter, failures, roundMarketLabels: roundMarkets }),
+    loadReconciliation(supabase, businessDate, marketFilter),
+    loadWhiteSheetStatus(supabase, businessDate, marketFilter),
   ]);
 
   const produceFinancial: NonNullable<MorningBriefReport["produceFinancial"]> = {};
@@ -246,6 +280,12 @@ export async function loadMorningBriefReport(
   }
 
   return {
+    ...(reportScope ? {
+      reportScope,
+      readiness: morningBriefReadiness(produceRows, reportScope),
+      salesDetails: sales.markets.flatMap((market) => market.rows),
+      sourceTransactions: produceRows.map((row) => ({ id: row.id, sessionId: row.session_id, accountabilityRoundId: row.accountability_round_id })),
+    } : {}),
     businessDate,
     purchasePlanning: summarizePurchasePlanning(purchasePlanning),
     sales: summarizeSales(sales),
@@ -253,7 +293,34 @@ export async function loadMorningBriefReport(
     produceFinancial,
     houseStock,
     whiteSheetStatus,
-    produceReadiness: summarizeReadiness(produceRows),
+    produceReadiness: summarizeReadiness(produceRows.map((row) => ({ ...row,
+      market_name: (row.accountability_round_id && roundMarkets.get(row.accountability_round_id)) || row.market_name }))),
     reconciliation,
   };
+}
+
+/** Both document kinds must share a non-legacy round; never join by market alone. */
+export function morningBriefReadiness(
+  rows: readonly Pick<Awaited<ReturnType<typeof fetchSalesProduceRows>>[number], "accountability_round_id" | "transaction_type">[],
+  reportScope: MorningBriefScope,
+): NonNullable<MorningBriefReport["readiness"]> {
+  if (reportScope === "fruit") return { status: "ready", reasons: [] };
+  const withdrawals = new Set<string>();
+  const returns = new Set<string>();
+  let unboundRound = false;
+  for (const row of rows) {
+    if (!row.accountability_round_id) {
+      unboundRound = true;
+      continue;
+    }
+    const kind = baseTransactionType(row.transaction_type);
+    if (kind === "เบิก") withdrawals.add(row.accountability_round_id);
+    if (kind === "คืน") returns.add(row.accountability_round_id);
+  }
+  const reasons: string[] = [];
+  if (unboundRound) reasons.push("unbound_accountability_round");
+  if (withdrawals.size === 0) reasons.push("missing_withdrawal");
+  if (returns.size === 0) reasons.push("missing_good_return");
+  if (withdrawals.size && returns.size && ![...withdrawals].some((id) => returns.has(id))) reasons.push("no_matching_accountability_round");
+  return { status: reasons.length ? "not_ready" : "ready", reasons };
 }

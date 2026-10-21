@@ -1,0 +1,54 @@
+{
+  "reads": 71,
+  "mutations": 0,
+  "results": [
+    {
+      "date": "2026-10-18",
+      "fruitConfirmedSatang": 1941650,
+      "vegetableConfirmedSatang": 168000,
+      "vegetablePendingSatang": -182000,
+      "vegetableUnavailable": 69,
+      "vegetableSources": 226,
+      "readiness": {
+        "status": "ready",
+        "reasons": []
+      },
+      "salesParity": "PASS",
+      "scopeIsolation": "PASS",
+      "vegetableDamagedItemCount": 32
+    },
+    {
+      "date": "2026-10-19",
+      "fruitConfirmedSatang": 1805650,
+      "vegetableConfirmedSatang": 295500,
+      "vegetablePendingSatang": -3000,
+      "vegetableUnavailable": 55,
+      "vegetableSources": 216,
+      "readiness": {
+        "status": "ready",
+        "reasons": []
+      },
+      "salesParity": "PASS",
+      "scopeIsolation": "PASS",
+      "vegetableDamagedItemCount": 43
+    },
+    {
+      "date": "2026-10-20",
+      "fruitConfirmedSatang": 1718500,
+      "vegetableConfirmedSatang": 0,
+      "vegetablePendingSatang": 0,
+      "vegetableUnavailable": 0,
+      "vegetableSources": 0,
+      "readiness": {
+        "status": "not_ready",
+        "reasons": [
+          "missing_withdrawal",
+          "missing_good_return"
+        ]
+      },
+      "salesParity": "PASS",
+      "scopeIsolation": "PASS",
+      "vegetableDamagedItemCount": 0
+    }
+  ]
+}

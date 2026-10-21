@@ -20,16 +20,10 @@ import {
 import {
   parseStockSummaryTargets,
   houseStockSummaryRetryKey,
-  stockSummaryPdfRetryKey,
   resolveStockSummaryDate,
   stockSummaryRetryKey,
   STOCK_SUMMARY_TARGETS_ENV,
 } from "@/lib/summary/daily-stock-cron";
-import { loadMorningBriefReport } from "@/lib/summary/morning-brief-service";
-import {
-  createMorningBriefPdfArtifact,
-  morningBriefPdfLineMessage,
-} from "@/lib/summary/morning-brief-pdf";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -272,27 +266,8 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  // Always materialize the Morning Brief artifact before deciding whether LINE
-  // has a destination. The artifact writer also upserts the date-scoped ref JSON,
-  // so the scheduled 08:00 run keeps one reference snapshot per business date
-  // even if LINE targets are temporarily missing.
-  let morningBriefPdfUrl: string;
-  try {
-    const morningBriefReport = await loadMorningBriefReport(supabase, businessDate);
-    const artifact = await createMorningBriefPdfArtifact(supabase, morningBriefReport);
-    morningBriefPdfUrl = artifact.signedUrl;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    logger.error("daily stock summary cron failed - morning brief PDF generation error", {
-      businessDate,
-      error: message,
-    });
-    return NextResponse.json({ error: message, businessDate, pdfDelivered: false }, { status: 500 });
-  }
-
+  // Morning Brief owns PDF + reference generation and delivery at 08:00.
   if (targets.length === 0) {
-    // LINE delivery is a successful no-op, but the 08:00 PDF + reference snapshot
-    // above is still persisted for the resolved business date.
     logger.warn("daily stock summary cron skipped LINE - no targets configured", {
       businessDate,
       envVar: STOCK_SUMMARY_TARGETS_ENV,
@@ -311,7 +286,7 @@ export async function GET(req: NextRequest) {
       hasAnomalies,
       targetCount: 0,
       pdfDelivered: false,
-      morningBriefReferencePersisted: true,
+      morningBriefReferencePersisted: false,
       houseStockFound: Boolean(houseStockReport),
       houseStockItemCount: houseStockReport?.itemCount ?? 0,
       houseStockGroupCount: houseStockReport?.groupCount ?? 0,
@@ -334,11 +309,6 @@ export async function GET(req: NextRequest) {
           houseStockSummaryRetryKey(businessDate, target, index),
         );
       }
-      await pushLineMessage(
-        target,
-        morningBriefPdfLineMessage(morningBriefPdfUrl),
-        stockSummaryPdfRetryKey(businessDate, target),
-      );
       sentCount += 1;
     } catch (error) {
       failedTargets.push(target);
@@ -362,7 +332,7 @@ export async function GET(req: NextRequest) {
         businessDate,
         sent: sentCount > 0,
         sentCount,
-        pdfDelivered: sentCount > 0,
+        pdfDelivered: false,
         failedCount: failedTargets.length,
         productCount,
         incompleteCount: stockSummary.incomplete.length,
@@ -402,7 +372,7 @@ export async function GET(req: NextRequest) {
     businessDate,
     sent: true,
     sentCount,
-    pdfDelivered: true,
+    pdfDelivered: false,
     productCount,
     incompleteCount: stockSummary.incomplete.length,
     incompleteMarketCount,

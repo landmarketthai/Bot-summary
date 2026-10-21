@@ -194,7 +194,7 @@ describe("P1 automatic message — executive summary", () => {
     expect(text).not.toContain(`ตลาดน้อย — ${SALES_VALUE_UNAVAILABLE}`);
   });
 
-  test("P4: pending-review money is labelled by review state, never under ยังไม่รวม", () => {
+  test("entered round prices stay confirmed despite a different central reference price", () => {
     const built = calculateSalesReport({
       businessDate: DATE,
       rows: [
@@ -206,7 +206,7 @@ describe("P1 automatic message — executive summary", () => {
     const text = buildSalesAutoMessages(built).join("\n");
 
     expect(text).toContain("ยอดขายรวม 1,300.00 บาท");
-    expect(text).toContain("รอตรวจราคา:\n• มังคุด");
+    expect(text).not.toContain("รอตรวจราคา:\n• มังคุด");
     const excludedSection = text.split(SALES_MARKET_EXCLUDED_HEADING)[1] ?? "";
     expect(excludedSection).not.toContain("มังคุด");
   });

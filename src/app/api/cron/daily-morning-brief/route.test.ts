@@ -25,10 +25,11 @@ const serviceClient = {
 };
 let loadedReport: unknown = { businessDate: "2026-08-22", financial: [] };
 let loadError: Error | null = null;
-let loadCalls: Array<{ client: unknown; businessDate: string }> = [];
+let loadCalls: Array<{ client: unknown; businessDate: string; reportScope: string }> = [];
 let formatterCalls: unknown[] = [];
 let formatterMessages = ["🌅 สรุปเช้า — 22 สิงหาคม 2569"];
 let pushCalls: Array<{ to: string; text: string; retryKey?: string }> = [];
+let acceptedRetryKeys = new Set<string>();
 let failingTarget: string | null = null;
 let pdfCalls: Array<{ client: unknown; report: unknown }> = [];
 let pdfError: Error | null = null;
@@ -39,8 +40,8 @@ mock.module("@/lib/supabase/server", () => ({
 }));
 
 mock.module("@/lib/summary/morning-brief-service", () => ({
-  loadMorningBriefReport: async (client: unknown, businessDate: string) => {
-    loadCalls.push({ client, businessDate });
+  loadMorningBriefReport: async (client: unknown, businessDate: string, reportScope: string) => {
+    loadCalls.push({ client, businessDate, reportScope });
     if (loadError) throw loadError;
     return loadedReport;
   },
@@ -66,6 +67,8 @@ mock.module("@/lib/line/reply", () => ({
   pushLineMessage: async (to: string, text: string, retryKey?: string) => {
     pushCalls.push({ to, text, retryKey });
     if (to === failingTarget) throw new Error("LINE unavailable");
+    if (retryKey && acceptedRetryKeys.has(retryKey)) return { status: "already_accepted" };
+    if (retryKey) acceptedRetryKeys.add(retryKey);
     return { status: "delivered" };
   },
 }));
@@ -74,6 +77,7 @@ const { GET } = await import("./route");
 
 const originalSecret = process.env.CRON_SECRET;
 const originalTargets = process.env.MORNING_BRIEF_LINE_TARGETS;
+const originalVegetableTargets = process.env.MORNING_BRIEF_VEGETABLE_LINE_TARGETS;
 const realDateNow = Date.now;
 
 function restore(name: string, value: string | undefined) {
@@ -88,6 +92,7 @@ function request(query = "", authorization: string | null = "Bearer brief-secret
 }
 
 beforeEach(() => {
+  delete process.env.MORNING_BRIEF_VEGETABLE_LINE_TARGETS;
   process.env.CRON_SECRET = "brief-secret";
   process.env.MORNING_BRIEF_LINE_TARGETS = "Cowner";
   markerSourceId = "Cmarker12345678901";
@@ -99,6 +104,7 @@ beforeEach(() => {
   formatterCalls = [];
   formatterMessages = ["🌅 สรุปเช้า — 22 สิงหาคม 2569"];
   pushCalls = [];
+  acceptedRetryKeys = new Set();
   failingTarget = null;
   pdfCalls = [];
   pdfError = null;
@@ -107,12 +113,54 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  restore("MORNING_BRIEF_VEGETABLE_LINE_TARGETS", originalVegetableTargets);
   restore("CRON_SECRET", originalSecret);
   restore("MORNING_BRIEF_LINE_TARGETS", originalTargets);
   Date.now = realDateNow;
 });
 
 describe("daily morning brief cron", () => {
+  test("a repeated vegetable cron is accepted once while fruit remains a separate delivery", async () => {
+    const query = "?date=2026-08-22&target=C12345678901";
+    await GET(request(`${query}&scope=vegetable`));
+    const accepted = acceptedRetryKeys.size;
+    expect(accepted).toBe(2);
+    await GET(request(`${query}&scope=vegetable`));
+    expect(acceptedRetryKeys.size).toBe(accepted);
+    await GET(request(`${query}&scope=fruit`));
+    expect(acceptedRetryKeys.size).toBe(accepted * 2);
+  });
+  test("rejects an unknown report scope before reading data", async () => {
+    expect((await GET(request("?scope=all"))).status).toBe(400);
+    expect(loadCalls).toHaveLength(0);
+  });
+
+  test("not_ready never formats, renders, uploads or delivers a vegetable report", async () => {
+    loadedReport = { readiness: { status: "not_ready", reasons: ["missing_good_return"] } };
+    const response = await GET(request("?date=2026-08-22&scope=vegetable"));
+    expect(await response.json()).toMatchObject({ status: "not_ready", sent: false, pdfDelivered: false });
+    expect(formatterCalls).toHaveLength(0);
+    expect(pdfCalls).toHaveLength(0);
+    expect(pushCalls).toHaveLength(0);
+  });
+
+  test("vegetable recipients never fall back to fruit recipients", async () => {
+    const response = await GET(request("?scope=vegetable"));
+    expect(await response.json()).toMatchObject({ reason: "no_targets_configured" });
+    expect(pushCalls).toHaveLength(0);
+    process.env.MORNING_BRIEF_VEGETABLE_LINE_TARGETS = "Cvegetable";
+    await GET(request("?scope=vegetable"));
+    expect(pushCalls.every((call) => call.to === "Cvegetable")).toBe(true);
+    expect(loadCalls.every((call) => call.reportScope === "vegetable")).toBe(true);
+  });
+
+  test("PDF retry identity does not depend on text message count", async () => {
+    await GET(request("?date=2026-08-22&scope=vegetable" + "&target=C12345678901"));
+    const firstPdfKey = pushCalls.at(-1)?.retryKey;
+    formatterMessages = ["part 1", "part 2"];
+    await GET(request("?date=2026-08-22&scope=vegetable&target=C12345678901"));
+    expect(pushCalls.at(-1)?.retryKey).toBe(firstPdfKey);
+  });
   test("rejects unauthorized calls and fails closed without CRON_SECRET", async () => {
     expect((await GET(request("", null))).status).toBe(401);
     expect((await GET(request("", "Bearer wrong"))).status).toBe(401);
@@ -133,13 +181,13 @@ describe("daily morning brief cron", () => {
 
     const response = await GET(request());
     expect(response.status).toBe(200);
-    expect(loadCalls).toEqual([{ client: serviceClient, businessDate: "2026-08-22" }]);
+    expect(loadCalls).toEqual([{ client: serviceClient, businessDate: "2026-08-22", reportScope: "fruit" }]);
     expect(formatterCalls).toEqual([loadedReport]);
   });
 
   test("an explicit ?date= is used verbatim, never shifted", async () => {
     await GET(request("?date=2026-01-05"));
-    expect(loadCalls).toEqual([{ client: serviceClient, businessDate: "2026-01-05" }]);
+    expect(loadCalls).toEqual([{ client: serviceClient, businessDate: "2026-01-05", reportScope: "fruit" }]);
   });
 
   test("pushes every formatter chunk in order with deterministic distinct keys", async () => {

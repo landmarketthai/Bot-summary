@@ -1,10 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { renderToStaticMarkup } from "react-dom/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
-import { DigitalWhiteSheetSummary } from "@/components/white-sheet/DigitalWhiteSheetSummary";
-import { buildWhiteSheetSummaryMessagesFromPageModel } from "@/lib/line/white-sheet-summary";
-import { requireTrustedWhiteSheetSummary, WhiteSheetHardStopError } from "./compose";
 import { loadDigitalWhiteSheetCalculation } from "./load";
 import { SYSTEM_WITHDRAWAL_SEED_ACTOR } from "./pricing";
 import { seedCentralPricesFromPersistedWithdrawals } from "./seed-from-withdrawal";
@@ -116,7 +112,7 @@ function makeCentralPriceTable(initial: CentralPriceRowInput[]) {
 }
 
 function makeDatabase(options: {
-  produceRows: ProduceRowInput[];
+  produceRows: Array<Omit<ProduceRowInput, "price_per_unit"> & { price_per_unit: number | null }>;
   centralPriceTable: ReturnType<typeof makeCentralPriceTable>;
 }) {
   const produceRows = options.produceRows.map((row) => ({
@@ -189,7 +185,7 @@ async function seedFromWithdrawalWrite(
 const ZERO_EXPENSES = { expenses: { labor: 0, locationFee: 0, bag: 0, snack: 0, other: 0 }, actualCashSubmitted: 0 };
 
 describe("Phase 12: cross-market central price", () => {
-  it("Market A and Market B both use the single central price, not their own historical withdrawal lot price", async () => {
+  it("each market keeps its persisted entered price despite a shared central reference", async () => {
     const MARKET_A = "ตลาดเอ";
     const MARKET_B = "ตลาดบี";
     const centralPriceTable = makeCentralPriceTable([{ product_key: "ทุเรียน", unit_key: "โล", price_satang: 2500 }]); // 25 baht
@@ -218,27 +214,15 @@ describe("Phase 12: cross-market central price", () => {
       ZERO_EXPENSES,
     );
 
-    // 10 โล × 25 (central) = 250 for both markets, despite historical lot
-    // prices of 20 and 30 respectively — no market-specific central price
-    // is ever created.
-    expect(calcA.expectedSales).toBe(250);
-    expect(calcB.expectedSales).toBe(250);
+    // Persisted entered prices are authoritative under PR #184.
+    expect(calcA.expectedSales).toBe(200);
+    expect(calcB.expectedSales).toBe(300);
   });
 });
 
 describe("Phase 13: old/carried stock vs current business date", () => {
-  it("a withdrawal recorded under the current business_date uses the CURRENT date's central price, not any prior date's", async () => {
-    // This repo's schema has no field distinguishing "acquired on an earlier
-    // date, sold today" from "acquired and sold today" — every produce_items
-    // row carries exactly one business_date (the session's transaction_date),
-    // which is what the White Sheet loader scopes by. There is no separate
-    // "stock acquisition date" to model carried-over inventory independently.
-    // Documented limitation: if a market genuinely carries physical stock
-    // across days, this schema cannot distinguish it from same-day stock —
-    // both are priced at the CURRENT business_date's central price, which is
-    // the correct, safe default per BR-01 (never use yesterday's historical
-    // lot price) but cannot be verified against a truly independent
-    // "carried stock" flag because none exists.
+  it("the business date selects evidence without replacing its persisted entered price", async () => {
+    // Business-date scoping must preserve the price recorded on the withdrawal.
     const MARKET = "ตลาดเก่า";
     const database = makeDatabase({
       produceRows: [
@@ -247,7 +231,7 @@ describe("Phase 13: old/carried stock vs current business date", () => {
           product_name: "ทุเรียน",
           quantity: 5,
           unit: "โล",
-          price_per_unit: 15, // yesterday's historical lot price, if it were carried
+          price_per_unit: 15,
           market_name: MARKET,
           session_id: "sess-old",
           raw_message_id: "raw-old",
@@ -263,47 +247,28 @@ describe("Phase 13: old/carried stock vs current business date", () => {
       ZERO_EXPENSES,
     );
 
-    // 5 โล × 22 (today's central price) = 110 — never 5 × 15 (the old lot price).
-    expect(calculation.expectedSales).toBe(110);
+    // 5 โล × 15 (persisted entered price) = 75.
+    expect(calculation.expectedSales).toBe(75);
   });
 });
 
-describe("Phase 14: missing central price fails closed", () => {
-  it("known sold quantity with no central price blocks trusted matched/short/over and the LINE formatter", async () => {
+describe("Phase 14: missing persisted price fails closed", () => {
+  it("an unpriced withdrawal is rejected before any financial summary can be built", async () => {
     // Withdrawal rows exist but write-path seeding never ran — White Sheet
     // load is read-only and must fail closed rather than invent a price.
     const MARKET = "ตลาดไม่มีราคา";
     const database = makeDatabase({
       produceRows: [
-        { id: "item-1", product_name: "ทุเรียน", quantity: 10, unit: "โล", price_per_unit: 20, market_name: MARKET, session_id: "sess-1", raw_message_id: "raw-1" },
+        { id: "item-1", product_name: "ทุเรียน", quantity: 10, unit: "โล", price_per_unit: null, market_name: MARKET, session_id: "sess-1", raw_message_id: "raw-1" },
       ],
       centralPriceTable: makeCentralPriceTable([]),
     });
 
-    const calculation = await loadDigitalWhiteSheetCalculation(
+    await expect(loadDigitalWhiteSheetCalculation(
       database,
       { sourceId: SOURCE_ID, marketKey: "no-price", marketLabel: MARKET, businessDate: BUSINESS_DATE },
-      { expenses: { labor: 0, locationFee: 0, bag: 0, snack: 0, other: 0 }, actualCashSubmitted: 500 },
-    );
-
-    expect(calculation.expectedSales).toBe(0); // never a guessed price
-    expect(calculation.warnings.some((w) => w.includes("ไม่พบราคากลางสำหรับ"))).toBe(true);
-
-    const pageModel = {
-      entryStatus: "submitted" as const,
-      summary: calculation,
-      finalizedAt: null,
-      finalizedBy: null,
-      profitability: { state: "round_unbound" as const },
-    };
-    expect(() => requireTrustedWhiteSheetSummary(pageModel)).toThrow(WhiteSheetHardStopError);
-    expect(() => buildWhiteSheetSummaryMessagesFromPageModel(pageModel)).toThrow(WhiteSheetHardStopError);
-
-    const html = renderToStaticMarkup(
-      <DigitalWhiteSheetSummary viewModel={calculation} entryStatus="submitted" />,
-    );
-    expect(html).toContain("white-sheet-hard-stop");
-    expect(html).toContain("white-sheet-status-blocked");
+      ZERO_EXPENSES,
+    )).rejects.toThrow("has no persisted price_per_unit");
   });
 });
 
@@ -369,7 +334,7 @@ describe("BR-01 seed rule: first withdrawal establishes the central price on wri
     expect(calcNoi.warnings).toEqual([]);
   });
 
-  it("C/D: a later withdrawal at a DIFFERENT price is a conflict — central price stays unchanged and every affected market fails closed", async () => {
+  it("C/D: different entered prices across markets leave the central reference unchanged and preserve each market value", async () => {
     const MARKET_KI = "ตลาดกี้";
     const MARKET_DAM = "ตลาดดำ";
     const centralPriceTable = makeCentralPriceTable([]);
@@ -390,10 +355,8 @@ describe("BR-01 seed rule: first withdrawal establishes the central price on wri
       ZERO_EXPENSES,
     );
 
-    expect(calcKi.expectedSales).toBe(0);
-    expect(calcKi.warnings).toContain(
-      "ราคากลางขัดแย้งกันสำหรับ แตงโม (ลูก) วันที่ 2026-07-24 ต้องรอผู้ดูแลระบบยืนยันราคาก่อนใช้ยอดสรุป",
-    );
+    expect(calcKi.expectedSales).toBe(80);
+    expect(calcKi.warnings).toEqual([]);
 
     const calcDam = await loadDigitalWhiteSheetCalculation(
       db,
@@ -401,10 +364,8 @@ describe("BR-01 seed rule: first withdrawal establishes the central price on wri
       ZERO_EXPENSES,
     );
 
-    expect(calcDam.expectedSales).toBe(0);
-    expect(calcDam.warnings).toContain(
-      "ราคากลางขัดแย้งกันสำหรับ แตงโม (ลูก) วันที่ 2026-07-24 ต้องรอผู้ดูแลระบบยืนยันราคาก่อนใช้ยอดสรุป",
-    );
+    expect(calcDam.expectedSales).toBe(35);
+    expect(calcDam.warnings).toEqual([]);
     expect(centralPriceTable.rows[0]?.price_satang).toBe(4000);
   });
 
@@ -443,7 +404,7 @@ describe("BR-01 seed rule: first withdrawal establishes the central price on wri
     expect(calculation.expectedSales).toBe(15); // (5 - 1 - 1) sold × 5
   });
 
-  it("H: an admin correction changes the price for every market and is auditable", async () => {
+  it("H: an admin correction updates the central reference without replacing persisted market prices", async () => {
     const MARKET_A = "ตลาดเอ";
     const MARKET_B = "ตลาดบี";
     const centralPriceTable = makeCentralPriceTable([
@@ -483,8 +444,8 @@ describe("BR-01 seed rule: first withdrawal establishes the central price on wri
       ZERO_EXPENSES,
     );
 
-    expect(calcA.expectedSales).toBe(90); // 2 × 45
-    expect(calcB.expectedSales).toBe(135); // 3 × 45
+    expect(calcA.expectedSales).toBe(80); // 2 × entered 40
+    expect(calcB.expectedSales).toBe(120); // 3 × entered 40
     expect(calcA.warnings.some((w) => w.startsWith("ราคากลางขัดแย้งกันสำหรับ"))).toBe(false);
     expect(calcB.warnings.some((w) => w.startsWith("ราคากลางขัดแย้งกันสำหรับ"))).toBe(false);
   });

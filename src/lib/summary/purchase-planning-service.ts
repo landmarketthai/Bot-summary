@@ -24,7 +24,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 import { logger } from "@/lib/logger";
-import { fetchSalesProduceRows, loadProduceFailureScan } from "@/lib/sales/load";
+import { fetchSalesProduceRows, loadProduceFailureScan, type SalesMarketFilter, type ProduceFailureScan } from "@/lib/sales/load";
 import {
   loadRoundReturnStatuses,
   roundsWithIncompleteReturn,
@@ -202,12 +202,18 @@ function unresolvedSessionCounts(
 export async function loadPurchasePlanningReport(
   supabase: Supabase,
   businessDate: string,
+  options: {
+    rows?: Awaited<ReturnType<typeof fetchSalesProduceRows>>;
+    marketFilter?: SalesMarketFilter;
+    failures?: ProduceFailureScan;
+    houseStock?: HouseStockSignal;
+  } = {},
 ): Promise<PurchasePlanningReport> {
   const [rows, roundStatuses, failures, houseStock] = await Promise.all([
-    fetchSalesProduceRows(supabase, businessDate),
+    options.rows ?? fetchSalesProduceRows(supabase, businessDate),
     loadRoundReturnStatuses(supabase, businessDate),
-    loadProduceFailureScan(supabase, businessDate),
-    loadHouseStockSignal(supabase, businessDate),
+    options.failures ?? loadProduceFailureScan(supabase, businessDate, options.marketFilter),
+    options.houseStock ?? loadHouseStockSignal(supabase, businessDate),
   ]);
 
   const roundReturnStates = new Map<string, RoundReturnState>(

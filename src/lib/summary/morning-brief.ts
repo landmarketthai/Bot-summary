@@ -1,5 +1,5 @@
 import { canonicalMarketLabel } from "@/lib/market";
-import { isSoldOutByAbsentReturn, type SalesReport } from "@/lib/sales/calculate";
+import { isSoldOutByAbsentReturn, type SalesReport, type SalesIdentityRow } from "@/lib/sales/calculate";
 import type { SalesValueStatus } from "@/lib/sales/calculate";
 import { PRODUCT_CODE_ENTRIES } from "@/lib/produce/product-code/dictionary";
 import { canonicalProduceProductIdentity } from "@/lib/produce/product-vocabulary";
@@ -277,8 +277,14 @@ export interface MorningBriefProduceReadiness {
 }
 
 export type MorningBriefWhiteSheetStatus = "entered" | "missing" | "unavailable";
+export type MorningBriefScope = "fruit" | "vegetable";
 
 export interface MorningBriefReport {
+  reportScope?: MorningBriefScope;
+  /** Original calculator rows, including round identity and damage, without recomputing money. */
+  salesDetails?: SalesIdentityRow[];
+  sourceTransactions?: { id: string | null; sessionId: string | null; accountabilityRoundId: string | null }[];
+  readiness?: { status: "ready" | "not_ready"; reasons: string[] };
   businessDate: string;
   purchasePlanning: MorningBriefPurchasePlanning;
   sales: MorningBriefSales;

@@ -6,6 +6,8 @@ import { registerFonts } from "@/lib/pdf/fonts";
 import { MorningBriefA4Doc } from "@/lib/pdf/MorningBriefA4Doc";
 import type { MorningBriefReport } from "@/lib/summary/morning-brief";
 import { morningBriefLayoutFixture } from "../../../docs/handoffs/pr184-pdf-layout-20261020/fixtures";
+import { DATE, scopeFixture } from "../../../docs/handoffs/split-morning-brief-20261021/fixtures";
+import { loadMorningBriefReport } from "./morning-brief-service";
 import {
   buildMorningBriefReferenceData,
   createMorningBriefPdfArtifact,
@@ -98,6 +100,31 @@ function collectRenderCallbacks(node: React.ReactNode): PdfRenderCallback[] {
 }
 
 describe("Morning Brief A4 PDF", () => {
+  test("fruit and vegetable PDFs show totals and stock without data-quality status or weighing entries", async () => {
+    for (const scope of ["fruit", "vegetable"] as const) {
+      for (const options of [{ damage: true }, { pending: true }, { invalidQuantity: true }]) {
+        const scoped = await loadMorningBriefReport(scopeFixture(options).client, DATE, scope);
+        scoped.sales.markets!.forEach(market => { market.awaitingReturnCount = 1; });
+        const before = JSON.stringify(scoped);
+        const text = collectText(MorningBriefA4Doc({ report: scoped, generatedAt: new Date("2026-10-20T13:00:00+07:00") }));
+        expect(text).toContain("ยอดขายยืนยันแล้ว");
+        expect(text).toContain("สรุปยอดตามตลาด");
+        expect(text).toContain(scope === "vegetable" ? "เฉพาะตลาดพาซิโอ้ผัก" : "ผลไม้");
+        if (!options.invalidQuantity) expect(text).toContain("รวมคงเหลือ");
+        for (const phrase of ["รายละเอียดสินค้าและสถานะยอดขาย", "สินค้า / หน่วย", "รายละเอียดการตรวจข้อมูล",
+          "สถานะข้อมูล", "รอตรวจ", "รอชั่งคืน", "ยังไม่คำนวณ", "รอจัดหมวด", "คำนวณไม่ได้", "รอยอดบ้าน", "รอข้อมูล"]) {
+          expect(text).not.toContain(phrase);
+        }
+        expect(JSON.stringify(scoped)).toBe(before);
+      }
+      const empty = await loadMorningBriefReport(scopeFixture().client, DATE, scope);
+      empty.produceReadiness!.transactionCount = 0;
+      const text = collectText(MorningBriefA4Doc({ report: empty, generatedAt: new Date("2026-10-20T13:00:00+07:00") }));
+      expect(text).toContain("ยังไม่มีข้อมูลสำหรับสรุปยอดขาย");
+      expect(text).not.toContain("สถานะ");
+      expect(text).not.toContain("0.00");
+    }
+  });
   for (const count of [3, 10, 30]) {
     test(`summarizes ${count} markets and retains missing evidence and financial exceptions`, async () => {
       const base: MorningBriefReport = await Bun.file(`${import.meta.dir}/../../../docs/handoffs/pr184-uat-20261020/after-return.report.json`).json();

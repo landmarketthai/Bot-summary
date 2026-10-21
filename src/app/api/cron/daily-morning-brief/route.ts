@@ -4,6 +4,7 @@ import { pushLineMessage } from "@/lib/line/reply";
 import { logger } from "@/lib/logger";
 import {
   morningBriefRetryKey,
+  morningBriefPdfRetryKey,
   parseStockSummaryTargets,
   resolveStockSummaryDate,
 } from "@/lib/summary/daily-stock-cron";
@@ -15,6 +16,8 @@ import {
 } from "@/lib/summary/morning-brief-pdf";
 
 const MORNING_BRIEF_TARGETS_ENV = "MORNING_BRIEF_LINE_TARGETS";
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 function isStrictBusinessDate(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
@@ -62,6 +65,11 @@ export async function GET(req: NextRequest) {
   }
 
   const debugMode = req.nextUrl.searchParams.get("debug") === "1";
+  const reportScope = req.nextUrl.searchParams.get("scope") ?? "fruit";
+  if (reportScope !== "fruit" && reportScope !== "vegetable") {
+    return NextResponse.json({ error: "scope must be fruit or vegetable" }, { status: 400 });
+  }
+  const targetsEnv = reportScope === "vegetable" ? "MORNING_BRIEF_VEGETABLE_LINE_TARGETS" : MORNING_BRIEF_TARGETS_ENV;
   const targetOverride = req.nextUrl.searchParams.get("target")?.trim() ?? "";
   const targetMarker = req.nextUrl.searchParams.get("target_marker")?.trim() ?? "";
   const retryNonce = req.nextUrl.searchParams.get("retry_nonce")?.trim() ?? "";
@@ -96,10 +104,11 @@ export async function GET(req: NextRequest) {
     }
     targets = [resolved.target];
   } else {
-    targets = parseStockSummaryTargets(process.env[MORNING_BRIEF_TARGETS_ENV]);
+    targets = parseStockSummaryTargets(process.env[targetsEnv]);
   }
 
   logger.info("morning brief cron started", {
+    reportScope,
     businessDate,
     hasDateParam: Boolean(dateParam),
     debugMode,
@@ -111,7 +120,11 @@ export async function GET(req: NextRequest) {
   let messages: string[];
   let report: Awaited<ReturnType<typeof loadMorningBriefReport>>;
   try {
-    report = await loadMorningBriefReport(supabase, businessDate);
+    report = await loadMorningBriefReport(supabase, businessDate, reportScope);
+    if (report.readiness?.status === "not_ready") {
+      return NextResponse.json({ ok: true, status: "not_ready", businessDate, reportScope,
+        reasons: report.readiness.reasons, sent: false, pdfDelivered: false, wouldSendLine: false });
+    }
     messages = buildMorningBriefMessages(report);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -129,26 +142,13 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       ok: true,
       debug: true,
+      reportScope,
+      readiness: report.readiness,
       businessDate,
       messageCount: messages.length,
       targetCount: targets.length,
       wouldSendLine: targets.length > 0,
       messages,
-    });
-  }
-
-  if (targets.length === 0) {
-    logger.warn("morning brief cron skipped - no LINE targets configured", {
-      businessDate,
-      envVar: MORNING_BRIEF_TARGETS_ENV,
-    });
-    return NextResponse.json({
-      ok: true,
-      businessDate,
-      sent: false,
-      reason: "no_targets_configured",
-      messageCount: messages.length,
-      targetCount: 0,
     });
   }
 
@@ -162,16 +162,34 @@ export async function GET(req: NextRequest) {
     logger.error("morning brief PDF generation failed", { businessDate, error: pdfError });
   }
 
+  if (targets.length === 0) {
+    logger.warn("morning brief cron skipped - no LINE targets configured", {
+      businessDate,
+      envVar: targetsEnv,
+    });
+    return NextResponse.json({
+      ok: !pdfError,
+      reportScope,
+      pdfDelivered: false,
+      morningBriefReferencePersisted: Boolean(pdfUrl),
+      businessDate,
+      sent: false,
+      reason: "no_targets_configured",
+      messageCount: messages.length,
+      targetCount: 0,
+    }, { status: pdfError ? 500 : 200 });
+  }
+
   let sentCount = 0;
   const failedTargets: string[] = [];
   for (const target of targets) {
     try {
       for (const [index, message] of messages.entries()) {
-        await pushLineMessage(target, message, morningBriefRetryKey(businessDate, target, index, retryNonce || undefined));
+        await pushLineMessage(target, message, morningBriefRetryKey(businessDate, target, index, retryNonce || undefined, reportScope));
       }
       if (pdfUrl) {
         const pdfMessage = morningBriefPdfLineMessage(pdfUrl);
-        await pushLineMessage(target, pdfMessage, morningBriefRetryKey(businessDate, target, messages.length, retryNonce || undefined));
+        await pushLineMessage(target, pdfMessage, morningBriefPdfRetryKey(businessDate, target, reportScope, retryNonce || undefined));
       }
       sentCount += 1;
     } catch (error) {
@@ -209,6 +227,7 @@ export async function GET(req: NextRequest) {
   logger.info("morning brief cron sent", { businessDate, sentCount });
   return NextResponse.json({
     ok: true,
+    reportScope,
     businessDate,
     sent: true,
     sentCount,

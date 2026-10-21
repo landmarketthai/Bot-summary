@@ -1,0 +1,293 @@
+{
+  "schemaVersion": 1,
+  "businessDate": "2026-10-19",
+  "generatedAt": "2026-10-20T06:00:00.000Z",
+  "pdf": {
+    "bucket": "morning-brief-pdfs",
+    "path": "2026-10-19/morning-brief-fruit-2026-10-19.pdf",
+    "filename": "morning-brief-fruit-2026-10-19.pdf"
+  },
+  "report": {
+    "reportScope": "fruit",
+    "readiness": {
+      "status": "ready",
+      "reasons": []
+    },
+    "salesDetails": [
+      {
+        "recordedWithdrawalSatang": 10000,
+        "recordedGoodReturnSatang": 2000,
+        "marketKey": "round\u0001durian",
+        "marketLabel": "พาซิโอ้ทุเรียน",
+        "sourceId": "Csynthetic",
+        "businessDate": "2026-10-19",
+        "productName": "หมอนทอง",
+        "unit": "โล",
+        "withdrawnQuantity": 5,
+        "goodReturnQuantity": 1,
+        "damagedReturnQuantity": 0,
+        "soldQuantity": 4,
+        "enteredPriceSatang": 2000,
+        "centralPriceSatang": null,
+        "expectedSalesSatang": 8000,
+        "pendingReviewSalesSatang": null,
+        "adjustmentSatang": 0,
+        "valueStatus": "CONFIRMED",
+        "status": "TRUSTED",
+        "reasons": [],
+        "returnEvidenceIncomplete": false,
+        "priceVariationAdvisory": false
+      },
+      {
+        "recordedWithdrawalSatang": 80000,
+        "recordedGoodReturnSatang": 20000,
+        "marketKey": "round\u0001fruit",
+        "marketLabel": "พาซิโอ้ผลไม้",
+        "sourceId": "Csynthetic",
+        "businessDate": "2026-10-19",
+        "productName": "ผักบุ้ง",
+        "unit": "โล",
+        "withdrawnQuantity": 40,
+        "goodReturnQuantity": 10,
+        "damagedReturnQuantity": 0,
+        "soldQuantity": 30,
+        "enteredPriceSatang": 2000,
+        "centralPriceSatang": null,
+        "expectedSalesSatang": 60000,
+        "pendingReviewSalesSatang": null,
+        "adjustmentSatang": 0,
+        "valueStatus": "CONFIRMED",
+        "status": "TRUSTED",
+        "reasons": [],
+        "returnEvidenceIncomplete": false,
+        "priceVariationAdvisory": false
+      }
+    ],
+    "sourceTransactions": [
+      {
+        "id": "durian-คืน",
+        "sessionId": "durian-คืน",
+        "accountabilityRoundId": "durian"
+      },
+      {
+        "id": "durian-เบิก",
+        "sessionId": "durian-เบิก",
+        "accountabilityRoundId": "durian"
+      },
+      {
+        "id": "fruit-คืน",
+        "sessionId": "fruit-คืน",
+        "accountabilityRoundId": "fruit"
+      },
+      {
+        "id": "fruit-เบิก",
+        "sessionId": "fruit-เบิก",
+        "accountabilityRoundId": "fruit"
+      }
+    ],
+    "businessDate": "2026-10-19",
+    "purchasePlanning": {
+      "strong": {
+        "count": 0,
+        "productNames": [],
+        "items": []
+      },
+      "surplus": {
+        "count": 2,
+        "productNames": [
+          "ผักบุ้ง",
+          "หมอนทอง"
+        ],
+        "items": [
+          {
+            "productName": "ผักบุ้ง",
+            "originalProductName": null,
+            "category": "ผัก",
+            "unit": "โล",
+            "uncertaintyReasons": [],
+            "marketStockQuantity": 10,
+            "houseStockQuantity": 100,
+            "totalRemainingQuantity": 110
+          },
+          {
+            "productName": "หมอนทอง",
+            "originalProductName": null,
+            "category": "ทุเรียน",
+            "unit": "โล",
+            "uncertaintyReasons": [],
+            "marketStockQuantity": 1,
+            "houseStockQuantity": 100,
+            "totalRemainingQuantity": 101
+          }
+        ]
+      },
+      "reduce": {
+        "count": 0,
+        "productNames": [],
+        "items": []
+      },
+      "unknown": {
+        "count": 0,
+        "productNames": [],
+        "items": []
+      }
+    },
+    "sales": {
+      "awaitingReturnCount": 0,
+      "totalSalesSatang": 68000,
+      "confirmedSalesSatang": 68000,
+      "pendingReviewSalesSatang": 0,
+      "adjustmentSatang": 0,
+      "valueAuthoritative": true,
+      "trustedCount": 2,
+      "unresolvedCount": 0,
+      "soldOutCount": 0,
+      "priceConflictCount": 0,
+      "priceConflictMarketCount": 0,
+      "priceIssueCount": 0,
+      "incompleteReturnIssueCount": 0,
+      "excludedFromSalesCount": 0,
+      "vegetableMarketDataPresent": false,
+      "markets": [
+        {
+          "awaitingReturnCount": 0,
+          "marketLabel": "พาซิโอ้ทุเรียน",
+          "totalSalesSatang": 8000,
+          "confirmedSalesSatang": 8000,
+          "pendingReviewSalesSatang": 0,
+          "adjustmentSatang": 0,
+          "valueAuthoritative": true,
+          "trustedCount": 1,
+          "unresolvedCount": 0,
+          "soldOutCount": 0,
+          "priceIssueCount": 0,
+          "incompleteReturnIssueCount": 0,
+          "excludedFromSalesCount": 0
+        },
+        {
+          "awaitingReturnCount": 0,
+          "marketLabel": "พาซิโอ้ผลไม้",
+          "totalSalesSatang": 60000,
+          "confirmedSalesSatang": 60000,
+          "pendingReviewSalesSatang": 0,
+          "adjustmentSatang": 0,
+          "valueAuthoritative": true,
+          "trustedCount": 1,
+          "unresolvedCount": 0,
+          "soldOutCount": 0,
+          "priceIssueCount": 0,
+          "incompleteReturnIssueCount": 0,
+          "excludedFromSalesCount": 0
+        }
+      ],
+      "reviewItems": []
+    },
+    "fruitFinancial": {
+      "withdrawalValueSatang": 10000,
+      "salesValueSatang": 8000,
+      "pendingReviewSalesSatang": 0,
+      "unavailableCount": 0,
+      "awaitingReturnCount": 0,
+      "goodReturnValueSatang": 2000,
+      "houseStockValueSatang": 200000,
+      "readyValueSatang": 202000,
+      "markets": [
+        {
+          "marketLabel": "พาซิโอ้ทุเรียน",
+          "withdrawalValueSatang": 10000,
+          "salesValueSatang": 8000,
+          "pendingReviewSalesSatang": 0,
+          "unavailableCount": 0,
+          "awaitingReturnCount": 0,
+          "goodReturnValueSatang": 2000
+        }
+      ]
+    },
+    "produceFinancial": {
+      "fruit": {
+        "withdrawalValueSatang": 10000,
+        "salesValueSatang": 8000,
+        "pendingReviewSalesSatang": 0,
+        "unavailableCount": 0,
+        "awaitingReturnCount": 0,
+        "goodReturnValueSatang": 2000,
+        "houseStockValueSatang": 200000,
+        "readyValueSatang": 202000,
+        "markets": [
+          {
+            "marketLabel": "พาซิโอ้ทุเรียน",
+            "withdrawalValueSatang": 10000,
+            "salesValueSatang": 8000,
+            "pendingReviewSalesSatang": 0,
+            "unavailableCount": 0,
+            "awaitingReturnCount": 0,
+            "goodReturnValueSatang": 2000
+          }
+        ]
+      },
+      "vegetable": {
+        "withdrawalValueSatang": 80000,
+        "salesValueSatang": 60000,
+        "pendingReviewSalesSatang": 0,
+        "unavailableCount": 0,
+        "awaitingReturnCount": 0,
+        "goodReturnValueSatang": 20000,
+        "houseStockValueSatang": 200000,
+        "readyValueSatang": 220000,
+        "markets": [
+          {
+            "marketLabel": "พาซิโอ้ผลไม้",
+            "withdrawalValueSatang": 80000,
+            "salesValueSatang": 60000,
+            "pendingReviewSalesSatang": 0,
+            "unavailableCount": 0,
+            "awaitingReturnCount": 0,
+            "goodReturnValueSatang": 20000
+          }
+        ]
+      }
+    },
+    "houseStock": {
+      "status": "available",
+      "groupCount": 2,
+      "totalValueSatang": 400000,
+      "items": [
+        {
+          "productName": "หมอนทอง",
+          "category": "ทุเรียน",
+          "unit": "โล",
+          "quantity": 100,
+          "unitPriceSatang": 2000,
+          "valueSatang": 200000
+        },
+        {
+          "productName": "ผักบุ้ง",
+          "category": "ผัก",
+          "unit": "โล",
+          "quantity": 100,
+          "unitPriceSatang": 2000,
+          "valueSatang": 200000
+        }
+      ]
+    },
+    "whiteSheetStatus": "missing",
+    "produceReadiness": {
+      "transactionCount": 4,
+      "markets": [
+        {
+          "marketLabel": "พาซิโอ้ทุเรียน",
+          "hasWithdrawal": true,
+          "hasReturn": true
+        },
+        {
+          "marketLabel": "พาซิโอ้ผลไม้",
+          "hasWithdrawal": true,
+          "hasReturn": true
+        }
+      ]
+    },
+    "reconciliation": {
+      "status": "missing"
+    }
+  }
+}

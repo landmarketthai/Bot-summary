@@ -183,13 +183,13 @@ export function buildMorningBriefBlocks(report: MorningBriefReport): string[] {
   const readinessBlock = buildDataReadinessBlock(report);
   if (report.produceReadiness?.transactionCount === 0) {
     return [
-      `${MORNING_BRIEF_TITLE} — ${formatThaiDate(report.businessDate)}`,
+      `${MORNING_BRIEF_TITLE}${report.reportScope ? ` (${report.reportScope === "fruit" ? "ผลไม้" : "ผัก"})` : ""} — ${formatThaiDate(report.businessDate)}`,
       readinessBlock!,
       ...(report.houseStock.status === "available" ? [buildHouseStockBlock(report)] : []),
     ];
   }
   return [
-    `${MORNING_BRIEF_TITLE} — ${formatThaiDate(report.businessDate)}`,
+    `${MORNING_BRIEF_TITLE}${report.reportScope ? ` (${report.reportScope === "fruit" ? "ผลไม้" : "ผัก"})` : ""} — ${formatThaiDate(report.businessDate)}`,
     buildSalesBlock(report),
     ...buildProduceFinancialBlocks(report),
     ...(readinessBlock ? [readinessBlock] : []),

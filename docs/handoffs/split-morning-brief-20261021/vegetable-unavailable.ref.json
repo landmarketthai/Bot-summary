@@ -1,0 +1,192 @@
+{
+  "schemaVersion": 1,
+  "businessDate": "2026-10-19",
+  "generatedAt": "2026-10-20T06:00:00.000Z",
+  "pdf": {
+    "bucket": "morning-brief-pdfs",
+    "path": "2026-10-19/morning-brief-vegetable-2026-10-19.pdf",
+    "filename": "morning-brief-vegetable-2026-10-19.pdf"
+  },
+  "report": {
+    "reportScope": "vegetable",
+    "readiness": {
+      "status": "ready",
+      "reasons": []
+    },
+    "salesDetails": [
+      {
+        "recordedWithdrawalSatang": 20000,
+        "recordedGoodReturnSatang": 0,
+        "marketKey": "round\u0001vegetable",
+        "marketLabel": "พาซิโอ้ผัก",
+        "sourceId": "Csynthetic",
+        "businessDate": "2026-10-19",
+        "productName": "ผักบุ้ง",
+        "unit": "โล",
+        "withdrawnQuantity": 10,
+        "goodReturnQuantity": 0,
+        "damagedReturnQuantity": 0,
+        "soldQuantity": null,
+        "enteredPriceSatang": 2000,
+        "centralPriceSatang": null,
+        "expectedSalesSatang": null,
+        "pendingReviewSalesSatang": null,
+        "adjustmentSatang": 0,
+        "valueStatus": "UNAVAILABLE",
+        "status": "QUANTITY_BLOCKED",
+        "reasons": [
+          "invalid_quantity",
+          "missing_return_evidence",
+          "product_return_absent"
+        ],
+        "returnEvidenceIncomplete": false,
+        "priceVariationAdvisory": false
+      }
+    ],
+    "sourceTransactions": [
+      {
+        "id": "vegetable-คืน",
+        "sessionId": "vegetable-คืน",
+        "accountabilityRoundId": "vegetable"
+      },
+      {
+        "id": "vegetable-เบิก",
+        "sessionId": "vegetable-เบิก",
+        "accountabilityRoundId": "vegetable"
+      }
+    ],
+    "businessDate": "2026-10-19",
+    "purchasePlanning": {
+      "strong": {
+        "count": 0,
+        "productNames": [],
+        "items": []
+      },
+      "surplus": {
+        "count": 0,
+        "productNames": [],
+        "items": []
+      },
+      "reduce": {
+        "count": 0,
+        "productNames": [],
+        "items": []
+      },
+      "unknown": {
+        "count": 1,
+        "productNames": [
+          "ผักบุ้ง"
+        ],
+        "items": [
+          {
+            "productName": "ผักบุ้ง",
+            "originalProductName": null,
+            "category": "ผัก",
+            "unit": "โล",
+            "uncertaintyReasons": [
+              "invalid_quantity"
+            ],
+            "marketStockQuantity": 0,
+            "houseStockQuantity": null,
+            "totalRemainingQuantity": null
+          }
+        ]
+      }
+    },
+    "sales": {
+      "awaitingReturnCount": 1,
+      "totalSalesSatang": 0,
+      "confirmedSalesSatang": 0,
+      "pendingReviewSalesSatang": 0,
+      "adjustmentSatang": 0,
+      "valueAuthoritative": false,
+      "trustedCount": 0,
+      "unresolvedCount": 1,
+      "soldOutCount": 0,
+      "priceConflictCount": 0,
+      "priceConflictMarketCount": 0,
+      "priceIssueCount": 0,
+      "incompleteReturnIssueCount": 1,
+      "excludedFromSalesCount": 1,
+      "vegetableMarketDataPresent": true,
+      "markets": [
+        {
+          "awaitingReturnCount": 1,
+          "marketLabel": "พาซิโอ้ผัก",
+          "totalSalesSatang": 0,
+          "confirmedSalesSatang": 0,
+          "pendingReviewSalesSatang": 0,
+          "adjustmentSatang": 0,
+          "valueAuthoritative": false,
+          "trustedCount": 0,
+          "unresolvedCount": 1,
+          "soldOutCount": 0,
+          "priceIssueCount": 0,
+          "incompleteReturnIssueCount": 1,
+          "excludedFromSalesCount": 1
+        }
+      ],
+      "reviewItems": [
+        {
+          "marketLabel": "พาซิโอ้ผัก",
+          "productName": "ผักบุ้ง",
+          "unit": "โล",
+          "status": "QUANTITY_BLOCKED",
+          "valueStatus": "UNAVAILABLE",
+          "reasons": [
+            "invalid_quantity",
+            "missing_return_evidence",
+            "product_return_absent"
+          ],
+          "soldQuantity": null,
+          "enteredPriceSatang": 2000,
+          "centralPriceSatang": null,
+          "confirmedSalesSatang": null,
+          "pendingReviewSalesSatang": null,
+          "adjustmentSatang": 0,
+          "returnEvidenceIncomplete": false
+        }
+      ]
+    },
+    "produceFinancial": {
+      "vegetable": {
+        "withdrawalValueSatang": 20000,
+        "salesValueSatang": 0,
+        "pendingReviewSalesSatang": 0,
+        "unavailableCount": 1,
+        "awaitingReturnCount": 1,
+        "goodReturnValueSatang": 0,
+        "houseStockValueSatang": null,
+        "readyValueSatang": null,
+        "markets": [
+          {
+            "marketLabel": "พาซิโอ้ผัก",
+            "withdrawalValueSatang": 20000,
+            "salesValueSatang": 0,
+            "pendingReviewSalesSatang": 0,
+            "unavailableCount": 1,
+            "awaitingReturnCount": 1,
+            "goodReturnValueSatang": 0
+          }
+        ]
+      }
+    },
+    "houseStock": {
+      "status": "missing"
+    },
+    "whiteSheetStatus": "missing",
+    "produceReadiness": {
+      "transactionCount": 2,
+      "markets": [
+        {
+          "marketLabel": "พาซิโอ้ผัก",
+          "hasWithdrawal": true,
+          "hasReturn": true
+        }
+      ]
+    },
+    "reconciliation": {
+      "status": "missing"
+    }
+  }
+}
