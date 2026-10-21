@@ -3,7 +3,6 @@ import { Document, Page, StyleSheet, Text, View } from "@react-pdf/renderer";
 import { formatThaiDate } from "@/lib/date";
 import { morningBriefProductIdentity, type MorningBriefReport, type MorningBriefFruitFinancialSummary } from "@/lib/summary/morning-brief";
 import { PRODUCE_SECTIONS, PRODUCE_SECTION_LABEL, produceSectionOf } from "@/lib/summary/produce-section";
-import { salesReasonLabel } from "@/lib/sales/message";
 
 function bahtFromSatang(satang: number): string {
   return (satang / 100).toLocaleString("en-US", {
@@ -390,32 +389,6 @@ function DataFooter({ generatedText }: { generatedText: string }) {
   </View>;
 }
 
-function SalesDetails({ report }: { report: MorningBriefReport }) {
-  return <View style={S.table}>
-    <View style={S.tr} fixed>
-      {[["สินค้า / หน่วย", "28%"], ["เบิก", "12%"], ["คืนดี", "12%"], ["คืนเสีย", "12%"], ["ขาย", "12%"], ["ราคา (บาท)", "24%"]].map(([label, width]) =>
-        <MarketCell key={label} width={width} tone="name" header>{label}</MarketCell>)}
-    </View>
-    {(report.salesDetails ?? []).map((row, index) => {
-      const recordedQuantity = (value: number) => row.status === "QUANTITY_BLOCKED" && value === 0 ? "ตรวจสอบไม่ได้" : qty(value);
-      return <View key={`${row.marketKey}-${index}`} wrap={false}>
-      <Text style={S.explanationText}><TableLabel>{row.marketLabel}</TableLabel></Text>
-      <View style={S.tr}>
-        <MarketCell width="28%" tone="name"><TableLabel>{row.productName}</TableLabel> ({displayUnit(row.unit)})</MarketCell>
-        <MarketCell width="12%" tone="withdrawal"><Text style={{ fontSize: 8.2 }}>{recordedQuantity(row.withdrawnQuantity)}</Text></MarketCell>
-        <MarketCell width="12%" tone="return"><Text style={{ fontSize: 8.2 }}>{row.reasons.includes("missing_return_evidence") ? "รอชั่งคืน" : recordedQuantity(row.goodReturnQuantity)}</Text></MarketCell>
-        <MarketCell width="12%" tone="return"><Text style={{ fontSize: 8.2 }}>{recordedQuantity(row.damagedReturnQuantity)}</Text></MarketCell>
-        <MarketCell width="12%" tone="sales"><Text style={{ fontSize: 8.2 }}>{row.soldQuantity == null ? "ตรวจสอบไม่ได้" : qty(row.soldQuantity)}</Text></MarketCell>
-        <MarketCell width="24%" tone="sales">{row.enteredPriceSatang == null ? "ยังไม่มีข้อมูล" : bahtFromSatang(row.enteredPriceSatang)}</MarketCell>
-      </View>
-      <Text style={S.explanationText}>ยืนยันแล้ว {row.expectedSalesSatang == null ? "ตรวจสอบไม่ได้" : `${bahtFromSatang(row.expectedSalesSatang)} บาท`}
-        {row.pendingReviewSalesSatang != null ? ` • รอตรวจ ${bahtFromSatang(row.pendingReviewSalesSatang)} บาท` : ""}
-        {row.reasons.length ? ` • ${row.reasons.map(salesReasonLabel).join(" / ")}` : ""}</Text>
-    </View>;
-    })}
-  </View>;
-}
-
 function MarketReadiness({ report }: { report: MorningBriefReport }) {
   if (!report.produceReadiness) return null;
   const markets = report.produceReadiness.markets;
@@ -648,11 +621,7 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
       </React.Fragment>)}
       <DataFooter generatedText={generatedText} />
     </Page> : null}
-    {report.salesDetails?.length ? <Page size="A4" style={S.page} wrap>
-      <Text style={S.coverSectionTitle}>รายละเอียดสินค้าและสถานะยอดขาย</Text>
-      <SalesDetails report={report} />
-      <DataFooter generatedText={generatedText} />
-    </Page> : null}</> : <Page size="A4" style={S.page}>
+    </> : <Page size="A4" style={S.page}>
       {noProduceEvidence ? <>
         {previewLabel ? <View style={S.emptyPreviewTag}><Text style={S.emptyPreviewText}>{previewLabel}</Text></View> : null}
         <View style={S.emptyHeader}>

@@ -16,6 +16,9 @@ rendered.mkdir(exist_ok=True)
 
 
 def render(pdf, prefix):
+    for stale in prefix.parent.glob(prefix.name + "-*.png"):
+        if re.fullmatch(re.escape(prefix.name) + r"-\d+", stale.stem):
+            stale.unlink()
     subprocess.run([str(poppler), "-scale-to", "1100", "-png", str(pdf), str(prefix)], check=True, capture_output=True)
     return sorted(prefix.parent.glob(prefix.name + "-*.png"))
 
@@ -36,20 +39,10 @@ for path in sorted((root / "pdf").glob("*.pdf")):
         for index, page in enumerate(pdf.pages, 1):
             bad = [c for c in page.chars if not (20 <= c["x0"] and c["x1"] <= 575.3 and 0 <= c["top"] < 836)]
             assert not bad, (path.name, index, bad[:2])
-            if path.stem == "vegetable-overflow":
-                # A number can be inside the page while overflowing its own cell.
-                cell_end = 24 + (float(page.width) - 48) * 0.40
-                for word in page.extract_words():
-                    if word["text"] == "1,234,567.125":
-                        assert word["x1"] <= cell_end - 2, (path.name, index, word)
     text = normalized("".join(texts))
-    assert "รายละเอียดสินค้าและสถานะยอดขาย" in text, path.name
-    assert "คืนเสีย" in text, path.name
-    if path.stem == "vegetable-overflow":
-        assert all(f"รายการ{index}ผัก" in text for index in range(1, 81)), path.name
-        assert "1,234,567.89" in "".join(texts), "price wrapped or clipped"
-        assert "1,234,567.125" in "".join(texts), "quantity wrapped or clipped"
-    elif path.stem.startswith("vegetable"):
+    assert "รายละเอียดสินค้าและสถานะยอดขาย" not in text, path.name
+    assert "สินค้า/หน่วย" not in text, path.name
+    if path.stem.startswith("vegetable"):
         assert "พาซิโอ้ผลไม้" not in text and "พาซิโอ้ทุเรียน" not in text, path.name
         assert "รอยอดบ้าน" in text, path.name
     else:
@@ -72,7 +65,7 @@ for name in ["before-return", "after-return", "multi-market", "overflow"]:
     pixels[name] = {"pages": len(old_images), "identical_pixels": True}
 
 thumbs = []
-for name in ["fruit", "vegetable", "vegetable-review", "vegetable-unavailable", "vegetable-overflow"]:
+for name in ["fruit", "vegetable", "vegetable-review", "vegetable-unavailable"]:
     for path in sorted(rendered.glob(name + "-*.png")):
         # Exact stem prevents a shorter prefix selecting another fixture.
         if not re.fullmatch(re.escape(name) + r"-\d+", path.stem):

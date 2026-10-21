@@ -1,23 +1,19 @@
 {
   "synthetic": {
     "fruit": {
-      "pages": 3,
-      "a4_footers_margins_content": "PASS"
-    },
-    "vegetable-overflow": {
-      "pages": 11,
-      "a4_footers_margins_content": "PASS"
-    },
-    "vegetable-review": {
-      "pages": 3,
-      "a4_footers_margins_content": "PASS"
-    },
-    "vegetable-unavailable": {
       "pages": 2,
       "a4_footers_margins_content": "PASS"
     },
+    "vegetable-review": {
+      "pages": 2,
+      "a4_footers_margins_content": "PASS"
+    },
+    "vegetable-unavailable": {
+      "pages": 1,
+      "a4_footers_margins_content": "PASS"
+    },
     "vegetable": {
-      "pages": 3,
+      "pages": 2,
       "a4_footers_margins_content": "PASS"
     }
   },

@@ -100,14 +100,15 @@ function collectRenderCallbacks(node: React.ReactNode): PdfRenderCallback[] {
 }
 
 describe("Morning Brief A4 PDF", () => {
-  test("scoped detail rows never present blocked unknown quantities as zero", async () => {
-    const scoped = await loadMorningBriefReport(scopeFixture({ invalidQuantity: true }).client, DATE, "vegetable");
-    const text = collectText(MorningBriefA4Doc({ report: scoped, generatedAt: new Date("2026-10-20T13:00:00+07:00") }));
-    const details = text.slice(text.indexOf("รายละเอียดสินค้าและสถานะยอดขาย"));
-    expect(details).toContain("รอชั่งคืน");
-    expect(details).toContain("ตรวจสอบไม่ได้");
-    expect(details).not.toMatch(/(^|\s)0(\s|$)/);
-    expect(text).toContain("เฉพาะตลาดพาซิโอ้ผัก");
+  test("scoped PDFs keep the summary and stock table without weighing entries", async () => {
+    for (const scope of ["fruit", "vegetable"] as const) {
+      const scoped = await loadMorningBriefReport(scopeFixture({ damage: true }).client, DATE, scope);
+      const text = collectText(MorningBriefA4Doc({ report: scoped, generatedAt: new Date("2026-10-20T13:00:00+07:00") }));
+      expect(text).toContain("รวมคงเหลือ");
+      expect(text).toContain(scope === "vegetable" ? "เฉพาะตลาดพาซิโอ้ผัก" : "ผลไม้");
+      expect(text).not.toContain("รายละเอียดสินค้าและสถานะยอดขาย");
+      expect(text).not.toContain("สินค้า / หน่วย");
+    }
   });
   for (const count of [3, 10, 30]) {
     test(`summarizes ${count} markets and retains missing evidence and financial exceptions`, async () => {

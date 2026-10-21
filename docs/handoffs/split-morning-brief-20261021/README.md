@@ -58,14 +58,14 @@ PDF retry key แยก scope/date/target และมี part identity คง�
 
 ## Template และ Field
 
-ทั้งสองใช้ `MorningBriefA4Doc` และ renderer เดียวกัน คง layout, font, KPI, table, pagination และสถานะเดิม เพิ่ม appendix ด้วย table styles เดิมเพื่อแสดงรายละเอียดที่ brief ระบุแต่ PR #184 ยังไม่มีเป็นรายแถว
+ทั้งสองใช้ `MorningBriefA4Doc` และ renderer เดียวกัน คง layout, font, KPI, table, pagination และสถานะเดิม ตามคำขอล่าสุดไม่เพิ่มรายการชั่งรายสินค้าใน PDF รายละเอียดหลักฐานยังเก็บใน reference JSON สำหรับตรวจสอบ
 
 | Field | การแสดงผล |
 | --- | --- |
-| เบิก / ชั่งคืนดี | KPI, market summary และรายละเอียดสินค้า |
-| คืนเสีย | จำนวนคืนเสียจาก calculator ใน appendix; calculator เดิมหักคืนเสียอยู่แล้ว |
-| ยืนยันแล้ว / รอตรวจ / คำนวณไม่ได้ / รอชั่งคืน | overview, สถานะตามตลาด และ appendix พร้อมเหตุผลเดิม |
-| สินค้า จำนวน หน่วย ราคา | stock matrix เดิมและ appendix; ราคาใช้ค่าจาก calculator |
+| เบิก / ชั่งคืนดี | KPI และ market summary เดิม |
+| คืนเสีย | calculator เดิมหักคืนเสียอยู่แล้ว; รายละเอียดอยู่ใน reference JSON |
+| ยืนยันแล้ว / รอตรวจ / คำนวณไม่ได้ / รอชั่งคืน | overview และสถานะตามตลาดเดิม |
+| สินค้า จำนวน หน่วย ราคา | stock matrix เดิม; ไม่เพิ่มตารางรายการชั่งหรือราคารายแถว |
 | คงเหลือตลาด / บ้าน / รวมคงเหลือ / มูลค่าพร้อมขาย | ตำแหน่งเดิม; บ้านผักและยอดรวมที่ต้องใช้บ้านเป็น unknown |
 | ใบขาว / reconciliation / adjustment / purchase planning | คง schema เดิม; กรอง market สำหรับข้อมูลที่มี market identity |
 | source transaction identity | PDF reference JSON เก็บ original item/session/round IDs พร้อม calculator rows |
@@ -81,7 +81,7 @@ PDF retry key แยก scope/date/target และมี part identity คง�
 | 3 | ผักมีเบิกและคืนดี | PASS — ready โดยไม่เปลี่ยน confirmation rules |
 | 4 | เบิกแต่ไม่มีคืนดี | PASS — not_ready / missing_good_return; ไม่ upload/send |
 | 5 | คืนดีแต่ไม่มีเบิก | PASS — not_ready / missing_withdrawal |
-| 6 | มีคืนเสีย | PASS — คำนวณผ่าน shared calculator และแสดง quantity ใน PDF |
+| 6 | มีคืนเสีย | PASS — คำนวณผ่าน shared calculator และเก็บ quantity ใน reference JSON |
 | 7 | ไม่มีคืนเสีย | PASS — ยัง ready เมื่อเบิกและคืนดีพร้อม |
 | 8 | รอตรวจ | PASS — return price mismatch แยก pending; ไม่รวม confirmed |
 | 9 | คำนวณไม่ได้ | PASS — invalid quantity คง null และ excluded count |
@@ -89,8 +89,8 @@ PDF retry key แยก scope/date/target และมี part identity คง�
 | 11 | ข้อมูลเข้าหลัง 13:00 | PASS — คง business date เดิม; manual rerun จาก not_ready เป็น ready ได้ |
 | 12 | รันซ้ำ | PASS — mock provider ยอมรับครั้งเดียวด้วย key เดิม; แยก fruit/vegetable และ fixed PDF key |
 | 13 | Path ไม่ชน | PASS — legacy/fruit/vegetable มี 6 paths ไม่ซ้ำ; real renderer + fake bucket ยืนยัน PDF/ref ของแต่ละ scope |
-| 14 | A4 / ตัวเลข / ตาราง | PASS — geometry, ทุกเลขหน้า, ชื่อสินค้าครบ, หลักล้านไม่ตัด, stress 80 แถว 11 หน้า และตรวจ PNG |
-| 15 | Field เทียบ PR #184 | PASS — shared template เดิมและ field inventory ด้านบน; ไม่มีการลด field |
+| 14 | A4 / ตัวเลข / ตาราง | PASS — geometry, ทุกเลขหน้า, ไม่มีหน้ารายการชั่ง, ตรวจ PNG และคง baseline overflow 64 สินค้า 4 หน้า |
+| 15 | Field เทียบ PR #184 | PASS — shared template เดิมและ field inventory ด้านบน; ไม่เพิ่มรายการชั่งตามคำขอล่าสุด |
 | 16 | 08:00 regression | PASS — input เดียวกัน 4 fixtures เทียบ clean main ได้ identical pixels ทุกหน้า |
 
 เพิ่มเติม: reviewed aliases, raw label ขัดกับ round label, legacy unbound round, voided/superseded archive evidence, debug ไม่ส่ง/ไม่ upload และ recipient แยก scope ผ่าน tests
@@ -111,9 +111,12 @@ Production view ตรวจแล้วว่า `produce_transactions` อ่�
 
 ไฟล์หลักฐาน: `read-only-results.json`, `read-only-pdf-verification.json`, `visual-verification.json`, `regression.json`, synthetic `pdf/`, synthetic `*.ref.json` และ `rendered/` ไม่ปะปนข้อมูล synthetic กับ Production
 
+สร้าง PDF จริงจาก snapshot เดิมใหม่หลังเอารายการชั่งออก: 5 ไฟล์ รวม 17 หน้า ผ่าน A4/margins และยืนยันว่าไม่มี appendix รายการชั่ง ไม่อ่าน Production ซ้ำ
+
 ### ตรวจ build / tests
 
 - Affected regression: **1,453 tests / 60 ไฟล์ ผ่านทั้งหมด** รันแต่ละไฟล์แยก process เพื่อกัน `mock.module` leakage ใน Bun ครอบคลุม summary, sales, physical inventory, white sheet, round returns, reconciliation, settlement, LINE reply และ cron ทั้ง 3 ตัว ดูผลราย suite ใน `regression.json`
+- หลังเอารายการชั่งออก รัน PDF/scope ซ้ำ **61 tests ผ่าน**, typecheck และ ESLint ผ่าน ตรวจ PNG synthetic ใหม่และเทียบ baseline ทั้ง 4 fixtures ได้ identical pixels ทุกหน้า
 - Typecheck และ Next.js build ผ่าน Build ใช้ Supabase URL `http://127.0.0.1:9` กับ placeholder keys เพื่อไม่ให้ prerender อ่าน Production
 - ESLint ของไฟล์ที่เปลี่ยนและ evidence scripts ผ่าน
 - ไม่รัน PostgreSQL migration tests ใน local เพราะไม่มี schema change; ให้ required GitHub CI ตรวจต่อบน PostgreSQL จริง

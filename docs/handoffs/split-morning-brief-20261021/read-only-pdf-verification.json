@@ -1,32 +1,27 @@
 [
   {
     "file": "fruit-2026-10-18.pdf",
-    "pages": 10,
-    "details": 106,
-    "all_product_names_and_margins": "PASS"
+    "pages": 2,
+    "summary_stock_no_weighing_entries_and_margins": "PASS"
   },
   {
     "file": "fruit-2026-10-19.pdf",
-    "pages": 12,
-    "details": 126,
-    "all_product_names_and_margins": "PASS"
+    "pages": 3,
+    "summary_stock_no_weighing_entries_and_margins": "PASS"
   },
   {
     "file": "fruit-2026-10-20.pdf",
-    "pages": 11,
-    "details": 122,
-    "all_product_names_and_margins": "PASS"
+    "pages": 2,
+    "summary_stock_no_weighing_entries_and_margins": "PASS"
   },
   {
     "file": "vegetable-2026-10-18.pdf",
-    "pages": 14,
-    "details": 125,
-    "all_product_names_and_margins": "PASS"
+    "pages": 5,
+    "summary_stock_no_weighing_entries_and_margins": "PASS"
   },
   {
     "file": "vegetable-2026-10-19.pdf",
-    "pages": 13,
-    "details": 114,
-    "all_product_names_and_margins": "PASS"
+    "pages": 5,
+    "summary_stock_no_weighing_entries_and_margins": "PASS"
   }
 ]
