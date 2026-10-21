@@ -26,7 +26,7 @@
 
 `calculateSalesReport`, purchase-planning calculator, settlement, white-sheet calculator และสูตรทางการเงินไม่ได้เปลี่ยน ค่า default ของ shared loaders ที่ caller อื่นใช้อยู่ยังคงเดิม Morning Brief ส่งแถวที่กรองแล้วและ failure scan เดียวกันให้ทั้ง sales และ purchase planning เพื่อให้ใช้หลักฐานชุดเดียวกัน
 
-ผักต้องมีเบิกและคืนดีในวันที่ขอที่แชร์ Accountability Round อย่างน้อยหนึ่งรอบ คืนเสียไม่ทดแทนคืนดี รอบอื่นที่ยังไม่ครบยังแสดงสถานะตาม calculator เดิม เอกสารครบไม่ยกระดับรายการให้เป็นยอดยืนยัน หากไม่มีคู่รอบที่พร้อมจะคืน HTTP 200, `status: not_ready`, `reasons`, `sent: false`, `pdfDelivered: false` ก่อน formatter, renderer, upload หรือ LINE
+ผักต้องมีเบิกและคืนดีในวันที่ขอที่แชร์ Accountability Round อย่างน้อยหนึ่งรอบ คืนเสียไม่ทดแทนคืนดี รอบอื่นที่ยังไม่ครบยังแสดงสถานะตาม calculator เดิม ถ้ามีเอกสาร legacy ที่ยังไม่ผูก round จะ not_ready (`unbound_accountability_round`) แม้รอบอื่นพร้อมแล้ว เพื่อไม่เปิดทางให้ legacy fallback จับคู่เอกสารโดยไม่มีหลักฐานรอบ เอกสารครบไม่ยกระดับรายการให้เป็นยอดยืนยัน หากไม่มีคู่รอบที่พร้อมจะคืน HTTP 200, `status: not_ready`, `reasons`, `sent: false`, `pdfDelivered: false` ก่อน formatter, renderer, upload หรือ LINE
 
 สต็อกบ้านฝั่งผลไม้คงข้อมูลส่วนกลางแบบเดิม ไม่ตีความว่าจัดสรรให้ตลาดใด ฝั่งผักไม่มีหลักฐาน allocation จึงแสดง unknown ทั้ง quantity, value และพร้อมขายรวมบ้าน ไม่เอาสต็อกบ้านทั้งหมดหรือชนิดสินค้าไปอ้างว่าเป็น allocation ของตลาดผัก
 
@@ -113,7 +113,7 @@ Production view ตรวจแล้วว่า `produce_transactions` อ่�
 
 ### ตรวจ build / tests
 
-- Affected regression: **1,452 tests / 60 ไฟล์ ผ่านทั้งหมด** รันแต่ละไฟล์แยก process เพื่อกัน `mock.module` leakage ใน Bun ครอบคลุม summary, sales, physical inventory, white sheet, round returns, reconciliation, settlement, LINE reply และ cron ทั้ง 3 ตัว ดูผลราย suite ใน `regression.json`
+- Affected regression: **1,453 tests / 60 ไฟล์ ผ่านทั้งหมด** รันแต่ละไฟล์แยก process เพื่อกัน `mock.module` leakage ใน Bun ครอบคลุม summary, sales, physical inventory, white sheet, round returns, reconciliation, settlement, LINE reply และ cron ทั้ง 3 ตัว ดูผลราย suite ใน `regression.json`
 - Typecheck และ Next.js build ผ่าน Build ใช้ Supabase URL `http://127.0.0.1:9` กับ placeholder keys เพื่อไม่ให้ prerender อ่าน Production
 - ESLint ของไฟล์ที่เปลี่ยนและ evidence scripts ผ่าน
 - ไม่รัน PostgreSQL migration tests ใน local เพราะไม่มี schema change; ให้ required GitHub CI ตรวจต่อบน PostgreSQL จริง

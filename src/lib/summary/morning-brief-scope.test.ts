@@ -119,6 +119,17 @@ describe("market-scoped Morning Brief UAT (synthetic, no network)", () => {
       { accountability_round_id: null, transaction_type: "คืน" }], "vegetable").status).toBe("not_ready");
   });
 
+  test("one ready round cannot authorize pairing additional unbound legacy documents", async () => {
+    const { client, db } = scopeFixture();
+    const copy = db.rows("produce_transactions").filter((row) => row.accountability_round_id === "vegetable")
+      .map((row) => ({ ...row, id: `legacy-${row.id}`, accountability_round_id: null }));
+    db.rows("produce_transactions").push(...copy);
+    const report = await loadMorningBriefReport(client, DATE, "vegetable");
+    expect(report.readiness?.status).toBe("not_ready");
+    expect(report.readiness?.reasons).toContain("unbound_accountability_round");
+    await expect(createMorningBriefPdfArtifact({} as never, report)).rejects.toThrow("not_ready");
+  });
+
   test("PDF and reference paths preserve old consumers and isolate both new scopes", () => {
     const paths = [undefined, "fruit", "vegetable"].flatMap((scope) => [
       morningBriefPdfPath(DATE, scope as "fruit" | "vegetable" | undefined),

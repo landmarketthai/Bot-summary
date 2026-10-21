@@ -307,13 +307,18 @@ export function morningBriefReadiness(
   if (reportScope === "fruit") return { status: "ready", reasons: [] };
   const withdrawals = new Set<string>();
   const returns = new Set<string>();
+  let unboundRound = false;
   for (const row of rows) {
-    if (!row.accountability_round_id) continue;
+    if (!row.accountability_round_id) {
+      unboundRound = true;
+      continue;
+    }
     const kind = baseTransactionType(row.transaction_type);
     if (kind === "เบิก") withdrawals.add(row.accountability_round_id);
     if (kind === "คืน") returns.add(row.accountability_round_id);
   }
   const reasons: string[] = [];
+  if (unboundRound) reasons.push("unbound_accountability_round");
   if (withdrawals.size === 0) reasons.push("missing_withdrawal");
   if (returns.size === 0) reasons.push("missing_good_return");
   if (withdrawals.size && returns.size && ![...withdrawals].some((id) => returns.has(id))) reasons.push("no_matching_accountability_round");
