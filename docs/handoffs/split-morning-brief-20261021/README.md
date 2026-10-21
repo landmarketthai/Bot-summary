@@ -58,19 +58,19 @@ PDF retry key แยก scope/date/target และมี part identity คง�
 
 ## Template และ Field
 
-ทั้งสองใช้ `MorningBriefA4Doc` และ renderer เดียวกัน คง layout, font, KPI, table, pagination และสถานะเดิม ตามคำขอล่าสุดไม่เพิ่มรายการชั่งรายสินค้าใน PDF รายละเอียดหลักฐานยังเก็บใน reference JSON สำหรับตรวจสอบ
+ทั้งสองใช้ `MorningBriefA4Doc` และ renderer เดียวกัน คง font, ยอดสรุป, KPI และตารางคงเหลือ ตามคำขอล่าสุด PDF ผลไม้และผักไม่แสดงรายการชั่งรายสินค้า กรอบรายละเอียดการตรวจข้อมูล สถานะตามตลาด ข้อความรอตรวจ/รอชั่งคืน/คำนวณไม่ได้ หรือข้อความเตือนใต้ KPI และตาราง ช่องมูลค่าที่ไม่ทราบใช้ “-” รายละเอียดหลักฐานและสถานะยังอยู่ใน reference JSON การคำนวณและ readiness ก่อนสร้างรายงานคงเดิม
 
 | Field | การแสดงผล |
 | --- | --- |
 | เบิก / ชั่งคืนดี | KPI และ market summary เดิม |
 | คืนเสีย | calculator เดิมหักคืนเสียอยู่แล้ว; รายละเอียดอยู่ใน reference JSON |
-| ยืนยันแล้ว / รอตรวจ / คำนวณไม่ได้ / รอชั่งคืน | overview และสถานะตามตลาดเดิม |
+| ยืนยันแล้ว / รอตรวจ / คำนวณไม่ได้ / รอชั่งคืน | PDF แสดงเฉพาะยอดขายยืนยันแล้ว; สถานะและรายละเอียดตรวจข้อมูลเก็บใน reference JSON |
 | สินค้า จำนวน หน่วย ราคา | stock matrix เดิม; ไม่เพิ่มตารางรายการชั่งหรือราคารายแถว |
-| คงเหลือตลาด / บ้าน / รวมคงเหลือ / มูลค่าพร้อมขาย | ตำแหน่งเดิม; บ้านผักและยอดรวมที่ต้องใช้บ้านเป็น unknown |
+| คงเหลือตลาด / บ้าน / รวมคงเหลือ / มูลค่าพร้อมขาย | ตำแหน่งเดิม; บ้านผักและยอดรวมที่ต้องใช้บ้านแสดง “-” เมื่อไม่ทราบ |
 | ใบขาว / reconciliation / adjustment / purchase planning | คง schema เดิม; กรอง market สำหรับข้อมูลที่มี market identity |
 | source transaction identity | PDF reference JSON เก็บ original item/session/round IDs พร้อม calculator rows |
 
-ไม่มีการตัด field เดิมเพราะข้อมูลไม่พร้อม `null` ยังแสดงตาม convention เดิม เช่น `-`, `รอข้อมูล`, `รอยอดบ้าน`, `ตรวจสอบไม่ได้` ยอดยืนยัน 0 ในรายงานที่พร้อมแต่มีรายการรอตรวจหมายถึงยอดส่วนที่ยืนยันได้ตามระบบเดิม ไม่ใช่การอ้างว่าขายจริงเป็นศูนย์
+ไม่มีการตัด field เดิมเพราะข้อมูลไม่พร้อม `null` ใน PDF ผลไม้/ผักแสดง `-` ยอดยืนยัน 0 ในรายงานที่พร้อมแต่มีรายการรอตรวจหมายถึงยอดส่วนที่ยืนยันได้ตามระบบเดิม (ไม่แสดงคำอธิบายรอตรวจใน PDF) ไม่ใช่การอ้างว่าขายจริงเป็นศูนย์
 
 ## UAT
 
@@ -111,12 +111,12 @@ Production view ตรวจแล้วว่า `produce_transactions` อ่�
 
 ไฟล์หลักฐาน: `read-only-results.json`, `read-only-pdf-verification.json`, `visual-verification.json`, `regression.json`, synthetic `pdf/`, synthetic `*.ref.json` และ `rendered/` ไม่ปะปนข้อมูล synthetic กับ Production
 
-สร้าง PDF จริงจาก snapshot เดิมใหม่หลังเอารายการชั่งออก: 5 ไฟล์ รวม 17 หน้า ผ่าน A4/margins และยืนยันว่าไม่มี appendix รายการชั่ง ไม่อ่าน Production ซ้ำ
+สร้าง PDF จริงจาก snapshot เดิมใหม่หลังเอารายการชั่งออก: 5 ไฟล์ รวม 17 หน้า ผ่าน A4/margins และยืนยันว่าไม่มีรายการชั่ง/สถานะ/ข้อความตรวจข้อมูล ไม่อ่าน Production ซ้ำ
 
 ### ตรวจ build / tests
 
 - Affected regression: **1,453 tests / 60 ไฟล์ ผ่านทั้งหมด** รันแต่ละไฟล์แยก process เพื่อกัน `mock.module` leakage ใน Bun ครอบคลุม summary, sales, physical inventory, white sheet, round returns, reconciliation, settlement, LINE reply และ cron ทั้ง 3 ตัว ดูผลราย suite ใน `regression.json`
-- หลังเอารายการชั่งออก รัน PDF/scope ซ้ำ **61 tests ผ่าน**, typecheck และ ESLint ผ่าน ตรวจ PNG synthetic ใหม่และเทียบ baseline ทั้ง 4 fixtures ได้ identical pixels ทุกหน้า
+- หลังเอาสถานะและรายละเอียดการตรวจข้อมูลออก รัน PDF/scope/sales integrity ซ้ำ **68 tests ผ่าน**, typecheck และ ESLint ผ่าน ตรวจ PNG synthetic ใหม่และเทียบ baseline ทั้ง 4 fixtures ได้ identical pixels ทุกหน้า
 - Typecheck และ Next.js build ผ่าน Build ใช้ Supabase URL `http://127.0.0.1:9` กับ placeholder keys เพื่อไม่ให้ prerender อ่าน Production
 - ESLint ของไฟล์ที่เปลี่ยนและ evidence scripts ผ่าน
 - ไม่รัน PostgreSQL migration tests ใน local เพราะไม่มี schema change; ให้ required GitHub CI ตรวจต่อบน PostgreSQL จริง

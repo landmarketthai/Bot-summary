@@ -2,19 +2,19 @@
   "synthetic": {
     "fruit": {
       "pages": 2,
-      "a4_footers_margins_content": "PASS"
+      "a4_footers_margins_no_status_or_weighing_entries": "PASS"
     },
     "vegetable-review": {
       "pages": 2,
-      "a4_footers_margins_content": "PASS"
+      "a4_footers_margins_no_status_or_weighing_entries": "PASS"
     },
     "vegetable-unavailable": {
       "pages": 1,
-      "a4_footers_margins_content": "PASS"
+      "a4_footers_margins_no_status_or_weighing_entries": "PASS"
     },
     "vegetable": {
       "pages": 2,
-      "a4_footers_margins_content": "PASS"
+      "a4_footers_margins_no_status_or_weighing_entries": "PASS"
     }
   },
   "pr184_pixel_regression": {

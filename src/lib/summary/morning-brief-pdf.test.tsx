@@ -100,14 +100,29 @@ function collectRenderCallbacks(node: React.ReactNode): PdfRenderCallback[] {
 }
 
 describe("Morning Brief A4 PDF", () => {
-  test("scoped PDFs keep the summary and stock table without weighing entries", async () => {
+  test("fruit and vegetable PDFs show totals and stock without data-quality status or weighing entries", async () => {
     for (const scope of ["fruit", "vegetable"] as const) {
-      const scoped = await loadMorningBriefReport(scopeFixture({ damage: true }).client, DATE, scope);
-      const text = collectText(MorningBriefA4Doc({ report: scoped, generatedAt: new Date("2026-10-20T13:00:00+07:00") }));
-      expect(text).toContain("รวมคงเหลือ");
-      expect(text).toContain(scope === "vegetable" ? "เฉพาะตลาดพาซิโอ้ผัก" : "ผลไม้");
-      expect(text).not.toContain("รายละเอียดสินค้าและสถานะยอดขาย");
-      expect(text).not.toContain("สินค้า / หน่วย");
+      for (const options of [{ damage: true }, { pending: true }, { invalidQuantity: true }]) {
+        const scoped = await loadMorningBriefReport(scopeFixture(options).client, DATE, scope);
+        scoped.sales.markets!.forEach(market => { market.awaitingReturnCount = 1; });
+        const before = JSON.stringify(scoped);
+        const text = collectText(MorningBriefA4Doc({ report: scoped, generatedAt: new Date("2026-10-20T13:00:00+07:00") }));
+        expect(text).toContain("ยอดขายยืนยันแล้ว");
+        expect(text).toContain("สรุปยอดตามตลาด");
+        expect(text).toContain(scope === "vegetable" ? "เฉพาะตลาดพาซิโอ้ผัก" : "ผลไม้");
+        if (!options.invalidQuantity) expect(text).toContain("รวมคงเหลือ");
+        for (const phrase of ["รายละเอียดสินค้าและสถานะยอดขาย", "สินค้า / หน่วย", "รายละเอียดการตรวจข้อมูล",
+          "สถานะข้อมูล", "รอตรวจ", "รอชั่งคืน", "ยังไม่คำนวณ", "รอจัดหมวด", "คำนวณไม่ได้", "รอยอดบ้าน", "รอข้อมูล"]) {
+          expect(text).not.toContain(phrase);
+        }
+        expect(JSON.stringify(scoped)).toBe(before);
+      }
+      const empty = await loadMorningBriefReport(scopeFixture().client, DATE, scope);
+      empty.produceReadiness!.transactionCount = 0;
+      const text = collectText(MorningBriefA4Doc({ report: empty, generatedAt: new Date("2026-10-20T13:00:00+07:00") }));
+      expect(text).toContain("ยังไม่มีข้อมูลสำหรับสรุปยอดขาย");
+      expect(text).not.toContain("สถานะ");
+      expect(text).not.toContain("0.00");
     }
   });
   for (const count of [3, 10, 30]) {

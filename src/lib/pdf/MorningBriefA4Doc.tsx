@@ -426,11 +426,12 @@ function MarketReadiness({ report }: { report: MorningBriefReport }) {
  * produce category immediately above its physical-stock table.
  * Null house/ready values stay unknown, never fabricated as zero.
  */
-function FinancialKpis({ label, financial, showTitle = true, compact = false }: {
+function FinancialKpis({ label, financial, showTitle = true, compact = false, showDataQuality = true }: {
   label: string;
   financial: MorningBriefFruitFinancialSummary;
   showTitle?: boolean;
   compact?: boolean;
+  showDataQuality?: boolean;
 }) {
   // Category names appear in the section title, not repeatedly in narrow cards.
   // Short, consistent labels make every row legible on an A4 printout.
@@ -438,9 +439,9 @@ function FinancialKpis({ label, financial, showTitle = true, compact = false }: 
     { label: "ยอดขายยืนยันแล้ว", value: bahtFromSatang(financial.salesValueSatang), hint: "บาท", tone: S.kpiSales },
     { label: "ยอดเบิกไปขาย", value: bahtFromSatang(financial.withdrawalValueSatang), hint: "บาท", tone: S.kpiWithdrawal },
     { label: "ยอดชั่งคืนดี", value: bahtFromSatang(financial.goodReturnValueSatang), hint: "บาท", tone: S.kpiReturn },
-    { label: "สต็อกที่บ้าน", value: financial.houseStockValueSatang == null ? "รอข้อมูล" : bahtFromSatang(financial.houseStockValueSatang),
-      hint: financial.houseStockValueSatang == null ? "ยังไม่มียอดบ้าน" : "บาท", tone: S.kpiHouse, unknown: financial.houseStockValueSatang == null },
-    { label: "คงเหลือพร้อมขาย", value: financial.readyValueSatang == null ? "รอยอดบ้าน" : bahtFromSatang(financial.readyValueSatang),
+    { label: "สต็อกที่บ้าน", value: financial.houseStockValueSatang == null ? (showDataQuality ? "รอข้อมูล" : "-") : bahtFromSatang(financial.houseStockValueSatang),
+      hint: financial.houseStockValueSatang == null && showDataQuality ? "ยังไม่มียอดบ้าน" : "บาท", tone: S.kpiHouse, unknown: financial.houseStockValueSatang == null },
+    { label: "คงเหลือพร้อมขาย", value: financial.readyValueSatang == null ? (showDataQuality ? "รอยอดบ้าน" : "-") : bahtFromSatang(financial.readyValueSatang),
       hint: "ชั่งคืนดี + สต็อกบ้าน", tone: S.kpiReady, unknown: financial.readyValueSatang == null },
   ];
   return <View wrap={false} style={{ marginTop: compact ? 0 : 5 }}>
@@ -459,8 +460,8 @@ function FinancialKpis({ label, financial, showTitle = true, compact = false }: 
         </View>
       </View>)}
     </View>}
-    {!compact || financial.pendingReviewSalesSatang || financial.unavailableCount || financial.awaitingReturnCount ? <Text style={S.explanationText}>ยอดรอตรวจ {bahtFromSatang(financial.pendingReviewSalesSatang ?? 0)} บาท • ยังไม่คำนวณ {financial.unavailableCount ?? 0} รายการ{financial.awaitingReturnCount ? ` • รอชั่งคืน ${financial.awaitingReturnCount} รายการ` : ""}</Text> : null}
-    {financial.pendingReviewSalesSatang ? <Text style={S.explanationText}>ยอดขายคำนวณได้ (รวมรอตรวจ) {bahtFromSatang(financial.salesValueSatang + financial.pendingReviewSalesSatang)} บาท • {financial.pendingReviewSalesSatang < 0 ? "ผลต่างติดลบจากราคา/จำนวนคืนต้องตรวจสอบ ยังไม่ยืนยัน" : "ยังไม่ใช่ยอดขายยืนยันแล้ว"}</Text> : null}
+    {showDataQuality && (!compact || financial.pendingReviewSalesSatang || financial.unavailableCount || financial.awaitingReturnCount) ? <Text style={S.explanationText}>ยอดรอตรวจ {bahtFromSatang(financial.pendingReviewSalesSatang ?? 0)} บาท • ยังไม่คำนวณ {financial.unavailableCount ?? 0} รายการ{financial.awaitingReturnCount ? ` • รอชั่งคืน ${financial.awaitingReturnCount} รายการ` : ""}</Text> : null}
+    {showDataQuality && financial.pendingReviewSalesSatang ? <Text style={S.explanationText}>ยอดขายคำนวณได้ (รวมรอตรวจ) {bahtFromSatang(financial.salesValueSatang + financial.pendingReviewSalesSatang)} บาท • {financial.pendingReviewSalesSatang < 0 ? "ผลต่างติดลบจากราคา/จำนวนคืนต้องตรวจสอบ ยังไม่ยืนยัน" : "ยังไม่ใช่ยอดขายยืนยันแล้ว"}</Text> : null}
   </View>;
 }
 
@@ -547,6 +548,7 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
     return hasStock ? [{ category, items, financial, hasStock }] : [];
   });
 
+  const showDataQuality = report.reportScope == null;
   const scopeLabel = report.reportScope === "fruit" ? "ผลไม้" : report.reportScope === "vegetable" ? "ผัก" : "";
   return <Document title={`Morning Brief ${scopeLabel} ${report.businessDate}`}>
     {hasDailyActivity ? <><Page size="A4" style={S.page} wrap>
@@ -559,10 +561,10 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
           ยอดขายยืนยันแล้ว — {thaiNumericDate(report.businessDate)}
         </Text>
         <Text style={S.dailyOverviewTotal}>{bahtFromSatang(report.sales.confirmedSalesSatang)} บาท</Text>
-        <Text style={S.dailyOverviewDetails}>{report.reportScope ? "ทุกสินค้าในขอบเขตรายงาน" : "ทุกหมวดสินค้าและทุกตลาด"} • ยอดรอตรวจและรอชั่งคืนแสดงแยกด้านล่าง</Text>
-        {report.sales.pendingReviewSalesSatang !== 0 ? <Text style={S.dailyOverviewDetails}>ยอดขายคำนวณได้ (รวมรอตรวจ) {bahtFromSatang(report.sales.totalSalesSatang)} บาท</Text> : null}
+        <Text style={S.dailyOverviewDetails}>{report.reportScope ? "ทุกสินค้าในขอบเขตรายงาน" : "ทุกหมวดสินค้าและทุกตลาด • ยอดรอตรวจและรอชั่งคืนแสดงแยกด้านล่าง"}</Text>
+        {showDataQuality && report.sales.pendingReviewSalesSatang !== 0 ? <Text style={S.dailyOverviewDetails}>ยอดขายคำนวณได้ (รวมรอตรวจ) {bahtFromSatang(report.sales.totalSalesSatang)} บาท</Text> : null}
       </View>
-      <FinancialKpis label="รวมทุกสินค้า" financial={combined} />
+      <FinancialKpis label="รวมทุกสินค้า" financial={combined} showDataQuality={showDataQuality} />
       {marketRows.length > 0 ? <View style={{ marginTop: 4 }}>
         <Text style={S.coverSectionTitle}>สรุปยอดตามตลาด (ทุกสินค้า)</Text>
         <View style={S.table}>
@@ -577,7 +579,7 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
             return <View key={`${market.marketLabel}-${index}`} style={S.tr} wrap={false}>
               <MarketCell width="28%" tone="name">{market.marketLabel}</MarketCell>
               <MarketCell width="24%" tone="withdrawal">{totals ? bahtFromSatang(totals.withdrawal) : "-"}</MarketCell>
-              <MarketCell width="24%" tone="sales">{bahtFromSatang(market.confirmedSalesSatang)}{market.awaitingReturnCount ? " • รอชั่งคืน" : ""}</MarketCell>
+              <MarketCell width="24%" tone="sales">{bahtFromSatang(market.confirmedSalesSatang)}{showDataQuality && market.awaitingReturnCount ? " • รอชั่งคืน" : ""}</MarketCell>
               <MarketCell width="24%" tone="return">{totals ? bahtFromSatang(totals.goodReturn) : "-"}</MarketCell>
             </View>;
           })}
@@ -589,7 +591,7 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
           </View>
         </View>
       </View> : null}
-      <View style={[S.explanation, { marginTop: 9 }]} wrap={false}>
+      {showDataQuality ? <><View style={[S.explanation, { marginTop: 9 }]} wrap={false}>
         <Text style={S.explanationTitle}>รายละเอียดการตรวจข้อมูล</Text>
         {unclassified && (unclassified.withdrawalValueSatang !== 0 || unclassified.goodReturnValueSatang !== 0 || unclassified.salesValueSatang !== 0) ? <Text style={S.explanationText}>มูลค่าสินค้ารอจัดหมวด {bahtFromSatang(unclassified.salesValueSatang)} บาท (รวมในยอดขายหน้าแรกแล้ว ไม่เพิ่มยอดซ้ำ) • เบิก {bahtFromSatang(unclassified.withdrawalValueSatang)} บาท • ชั่งคืน {bahtFromSatang(unclassified.goodReturnValueSatang)} บาท</Text> : null}
         <Text style={S.explanationText}>ยอดขายยืนยันแล้ว {bahtFromSatang(report.sales.confirmedSalesSatang)} บาท • ยอดรอตรวจ {bahtFromSatang(report.sales.pendingReviewSalesSatang)} บาท</Text>
@@ -598,11 +600,10 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
         {salesBreakdownDiffers ? <Text style={S.dailyOverviewWarning}>ยอดแยกหมวดรวม {bahtFromSatang(sectionSalesTotalSatang)} บาท ต่างจากยอดขายยืนยันแล้วในระบบ {bahtFromSatang(report.sales.confirmedSalesSatang)} บาท — โปรดตรวจสอบความครบถ้วนของข้อมูล ห้ามถือว่าเป็นยอดยืนยันเพิ่ม</Text> : null}
         {!report.sales.valueAuthoritative || report.sales.excludedFromSalesCount > 0 ? <Text style={S.dailyOverviewWarning}>ยอดขายมีรายการที่ยังไม่ครบหรือรอตรวจ กรุณาดูยอดยืนยันแล้วแยกต่างหาก</Text> : null}
       </View>
-
-      <MarketReadiness report={report} />
+      <MarketReadiness report={report} /></> : null}
       {financialSections.filter(({ section }) => section !== "other"
         && !stockSections.some(({ category }) => category === PRODUCE_SECTION_LABEL[section]))
-        .map(({ section, financial }) => <FinancialKpis key={section} label={PRODUCE_SECTION_LABEL[section]} financial={financial} compact />)}
+        .map(({ section, financial }) => <FinancialKpis key={section} label={PRODUCE_SECTION_LABEL[section]} financial={financial} compact showDataQuality={showDataQuality} />)}
       <DataFooter generatedText={generatedText} />
     </Page>
     {stockSections.length > 0 ? <Page size="A4" style={S.page} wrap>
@@ -615,14 +616,17 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
               รวมคงเหลือ = คงเหลือในบ้าน + ในตลาด • ในตลาด = ของดีชั่งคืน • ไม่ทราบยอดบ้านแสดง “-”
             </Text> : null}
           </View>
-          {financial ? <FinancialKpis label={category} financial={financial} showTitle={false} compact /> : null}
+          {financial ? <FinancialKpis label={category} financial={financial} showTitle={false} compact showDataQuality={showDataQuality} /> : null}
         </View>
         {hasStock ? <StockMatrix items={items} category={category} /> : null}
       </React.Fragment>)}
       <DataFooter generatedText={generatedText} />
     </Page> : null}
     </> : <Page size="A4" style={S.page}>
-      {noProduceEvidence ? <>
+      {!showDataQuality ? <>
+        <Text style={S.summaryTitle}>สรุปยอดขายประจำวัน ({scopeLabel}) - {formatThaiDate(report.businessDate)}</Text>
+        <Text style={S.subtitle}>ยังไม่มีข้อมูลสำหรับสรุปยอดขาย</Text>
+      </> : noProduceEvidence ? <>
         {previewLabel ? <View style={S.emptyPreviewTag}><Text style={S.emptyPreviewText}>{previewLabel}</Text></View> : null}
         <View style={S.emptyHeader}>
           <Text style={S.emptyHeaderKicker}>MORNING BRIEF / สถานะข้อมูลประจำวัน</Text>

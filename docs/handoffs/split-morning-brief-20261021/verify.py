@@ -42,15 +42,16 @@ for path in sorted((root / "pdf").glob("*.pdf")):
     text = normalized("".join(texts))
     assert "รายละเอียดสินค้าและสถานะยอดขาย" not in text, path.name
     assert "สินค้า/หน่วย" not in text, path.name
+    for phrase in ["รายละเอียดการตรวจข้อมูล", "สถานะข้อมูล", "รอตรวจ", "รอชั่งคืน", "ยังไม่คำนวณ", "รอยอดบ้าน", "รอข้อมูล"]:
+        assert phrase not in text, (path.name, phrase)
     if path.stem.startswith("vegetable"):
         assert "พาซิโอ้ผลไม้" not in text and "พาซิโอ้ทุเรียน" not in text, path.name
-        assert "รอยอดบ้าน" in text, path.name
     else:
         assert "พาซิโอ้ผัก" not in text, path.name
     images = [image for image in render(path, rendered / path.stem)
               if re.fullmatch(re.escape(path.stem) + r"-\d+", image.stem)]
     assert len(images) == len(pages)
-    results[path.stem] = {"pages": len(pages), "a4_footers_margins_content": "PASS"}
+    results[path.stem] = {"pages": len(pages), "a4_footers_margins_no_status_or_weighing_entries": "PASS"}
 
 # Compare identical unscoped inputs against the clean latest-main worktree.
 baseline = workspace.parent / "split-morning-baseline/.tmp-pr184-baseline/pdf"

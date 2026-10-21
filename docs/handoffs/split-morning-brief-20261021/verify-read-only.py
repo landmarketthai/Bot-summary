@@ -19,13 +19,15 @@ for source in sorted((workspace / ".tmp-live-uat").glob("*.report.json")):
     text = normalize("".join(page.extract_text() for page in reader.pages))
     assert "รายละเอียดสินค้าและสถานะยอดขาย" not in text, path.name
     assert "สินค้า/หน่วย" not in text, path.name
+    for phrase in ["รายละเอียดการตรวจข้อมูล", "สถานะข้อมูล", "รอตรวจ", "รอชั่งคืน", "ยังไม่คำนวณ", "รอยอดบ้าน", "รอข้อมูล"]:
+        assert phrase not in text, (path.name, phrase)
     assert "รวมคงเหลือ" in text, path.name
     assert all(row["valueStatus"] == "CONFIRMED" or row["expectedSalesSatang"] is None for row in report["salesDetails"]), path.name
     with pdfplumber.open(path) as pdf:
         for page in pdf.pages:
             assert abs(float(page.width) - 595.28) < 1 and abs(float(page.height) - 841.89) < 1
             assert all(20 <= char["x0"] and char["x1"] <= 575.3 and 0 <= char["top"] < 836 for char in page.chars), path.name
-    results.append({"file": path.name, "pages": len(reader.pages), "summary_stock_no_weighing_entries_and_margins": "PASS"})
+    results.append({"file": path.name, "pages": len(reader.pages), "summary_stock_no_status_or_weighing_entries_and_margins": "PASS"})
 assert len(results) == 5, "Run read-only-uat.tsx for all three approved dates first."
 Path(__file__).with_name("read-only-pdf-verification.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
 print(json.dumps(results))
