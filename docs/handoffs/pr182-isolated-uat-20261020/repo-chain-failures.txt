@@ -1,0 +1,42 @@
+0032_pending_session_finalization_barrier.sql: psql:<stdin>:28: ERROR:  column "close_event_timestamp_ms" does not exist
+0044_reconcile_pending_close_baseline.sql: psql:<stdin>:386: ERROR:  0044: pending_sessions.session_generation is missing
+0047_physical_inventory_capture.sql: psql:<stdin>:434: ERROR:  function extensions.digest(text, unknown) does not exist
+0048_pending_session_function_parity.sql: psql:<stdin>:204: ERROR:  0048: required table public.pending_session_ingest is missing (0042-era baseline absent)
+0049_produce_structured_session_foundation.sql: psql:<stdin>:58: ERROR:  0049: required table public.pending_session_ingest is missing (0042-era baseline absent)
+0050_produce_finalization_hold.sql: psql:<stdin>:43: ERROR:  0050: close_produce_structured_session missing; apply 0049 first
+20260730093019_atomic_guided_owner.sql: psql:<stdin>:18: ERROR:  0057: required function public.open_or_rotate_produce_structured_session is missing
+20260803122757_priced_house_stock.sql: psql:<stdin>:7: ERROR:  relation "public.physical_inventory_items" does not exist
+20260805130000_purchase_capture_sessions.sql: psql:<stdin>:317: ERROR:  function extensions.digest(text, unknown) does not exist
+20260805140000_purchase_capture_draft_finalization.sql: psql:<stdin>:111: ERROR:  relation "public.purchase_capture_sessions" does not exist
+20260805150000_purchase_capture_slice_b_contract_hardening.sql: psql:<stdin>:244: ERROR:  relation "public.purchase_capture_notifications" does not exist
+20260805160000_purchase_capture_confirm_post.sql: psql:<stdin>:254: ERROR:  relation "public.purchase_capture_sessions" does not exist
+20260806111646_pending_session_runtime_environment.sql: psql:<stdin>:28: ERROR:  column "terminalized" does not exist
+20260809045345_p2e_accountability_round_identity_expand.sql: psql:<stdin>:26: ERROR:  P2E: guided structured open RPC is missing
+20260809045849_p2e_accountability_round_identity_contract.sql: psql:<stdin>:73: ERROR:  P2E CONTRACT: EXPAND or compatible lifecycle RPCs are missing
+20260809075951_p3_profitability_snapshots.sql: psql:<stdin>:34: ERROR:  P3: required table public.accountability_rounds is missing
+20260810070313_p4a_produce_entry_validation_gate.sql: psql:<stdin>:30: ERROR:  P4A: required table public.accountability_rounds is missing
+20260810100414_p4a_plain_text_round_binding.sql: psql:<stdin>:25: ERROR:  P4A: accountability_rounds is missing (P2E is not applied)
+20260810112416_p4a_review_session_generation_uuid.sql: psql:<stdin>:49: ERROR:  P4A: produce_entry_validation_reviews is missing
+20260811181727_round_market_identity_consistency.sql: psql:<stdin>:46: ERROR:  P4A plain-text round binding is missing
+20260814104329_cross_user_accountability_round_binding.sql: psql:<stdin>:228: ERROR:  relation "public.accountability_rounds" does not exist
+20260815212227_cancel_duplicate_plain_text_round.sql: psql:<stdin>:108: ERROR:  relation "public.accountability_rounds" does not exist
+20260815213206_produce_market_identity_guard.sql: psql:<stdin>:56: ERROR:  P4A plain-text round binding is missing
+20260817080247_produce_same_day_round_reuse.sql: psql:<stdin>:73: ERROR:  P4A plain-text round binding is missing (migration 20260815160000 is not applied)
+20260817080346_produce_withdrawal_containment_guard.sql: psql:<stdin>:103: ERROR:  reviewed market identity functions are missing
+20260817080439_produce_pending_supersession_and_close_recovery.sql: psql:<stdin>:89: ERROR:  pending session / accountability round baseline is missing
+20260817085632_produce_supersession_runtime_environment.sql: psql:<stdin>:56: ERROR:  supersede_pending_generation is missing (20260817090200 is not applied)
+20260817090858_produce_historical_withdrawal_containment.sql: psql:<stdin>:70: ERROR:  produce_item_multiset_contains is missing (20260817090100 is not applied)
+20260818034244_produce_cancel_active_pending_draft.sql: psql:<stdin>:122: ERROR:  retire_empty_round_of_generation is missing (20260817090200 is not applied)
+20260821082438_fix_accountability_round_slip_date_parsing.sql: psql:<stdin>:139: ERROR:  relation "public.accountability_rounds" does not exist
+20260825092015_produce_finalized_session_replacement_lifecycle.sql: psql:<stdin>:49: ERROR:  accountability_round_same_market is missing (20260815160000 is not applied)
+20260826102627_house_stock_explicit_empty.sql: psql:<stdin>:7: ERROR:  relation "public.physical_inventory_snapshots" does not exist
+20260829090000_produce_pending_inactivity_lifecycle.sql: psql:<stdin>:129: ERROR:  20260829090000: required table public.pending_session_admission is missing (0042-era baseline absent)
+20260831120000_produce_close_validation_race.sql: psql:<stdin>:101: ERROR:  20260831120000: pending_sessions.ingest_revision is missing; apply 0032 first
+20260901090000_produce_finalizer_review_presentation.sql: psql:<stdin>:72: ERROR:  20260901090000: produce_entry_validation_reviews is missing; apply P4A first
+20260904090000_p4a_review_presentation_guard.sql: psql:<stdin>:53: ERROR:  20260904090000: produce_entry_validation_guard_update is missing; apply P4A (20260810070313) first
+20260915170000_pending_inactivity_generation_hardening.sql: psql:<stdin>:132: ERROR:  20260829090000: required table public.pending_session_admission is missing (0042-era baseline absent)
+20260918090000_house_stock_unsend_close_cancel.sql: psql:<stdin>:87: ERROR:  relation "public.physical_inventory_lifecycle_events" does not exist
+20260922100000_settlement_sheet_ocr_drafts.sql: psql:<stdin>:104: ERROR:  relation "public.accountability_rounds" does not exist
+20260924090000_produce_generation_rotation_carry_forward.sql: psql:<stdin>:34: ERROR:  20260924090000: public.pending_session_ingest is missing
+20260929102500_raw_messages_lost_produce_trgm_index.sql: psql:<stdin>:18: ERROR:  operator class "extensions.gin_trgm_ops" does not exist for access method "gin"
+20260930090100_paseo_vegetable_market_aliases.sql: psql:<stdin>:52: ERROR:  function public.accountability_round_market_code(unknown) does not exist

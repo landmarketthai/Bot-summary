@@ -8,17 +8,25 @@ export interface LineMessageContent {
 export async function downloadLineMessageContent(
   messageId: string,
   accessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN,
-  options: { maxBytes?: number; timeoutMs?: number } = {},
+  options: { maxBytes?: number; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<LineMessageContent> {
   if (!accessToken) {
     throw new Error("LINE_CHANNEL_ACCESS_TOKEN is not configured");
   }
 
+  // The timeout covers the headers AND the body read (fetch aborts both).
+  const signals: AbortSignal[] = [];
+  if (options.timeoutMs) signals.push(AbortSignal.timeout(options.timeoutMs));
+  if (options.signal) signals.push(options.signal);
+  const signal = signals.length === 0
+    ? undefined
+    : signals.length === 1 ? signals[0] : AbortSignal.any(signals);
+
   const response = await fetch(
     `${LINE_CONTENT_BASE_URL}/${encodeURIComponent(messageId)}/content`,
     {
       method: "GET",
-      ...(options.timeoutMs ? { signal: AbortSignal.timeout(options.timeoutMs) } : {}),
+      ...(signal ? { signal } : {}),
       headers: {
         Authorization: `Bearer ${accessToken}`,
       },

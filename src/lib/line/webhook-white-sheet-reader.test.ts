@@ -66,8 +66,10 @@ describe("@Botsummary read-white-sheet routing", () => {
     expect(s.slipLookups()).toBe(0);
   });
   it("does not repeat extraction on LINE redelivery", async () => {
-    const s = setup(), image = event("img");
-    await s.service.processEvents([event("cmd", "@Botsummary อ่านใบขาว"), image], "Ubot");
+    // LINE order: the command is sent before the image (claim order is LINE time).
+    const s = setup(), now = Date.now() - 1000;
+    const command = event("cmd", "@Botsummary อ่านใบขาว", "U1", now), image = event("img", undefined, "U1", now + 1);
+    await s.service.processEvents([command, image], "Ubot");
     const result = await s.service.processEvents([{ ...image, deliveryContext: { isRedelivery: true } }], "Ubot");
     expect(result[0].status).toBe("duplicate"); expect(s.images).toEqual(["img"]);
   });

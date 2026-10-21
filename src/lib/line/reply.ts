@@ -139,7 +139,15 @@ export function parseRetryAfterMs(
 //   { status: "delivered" }       — HTTP 2xx, message delivered now
 //   { status: "already_accepted" } — HTTP 409 + retryKey, idempotent re-send
 // Throws on any other non-2xx status or network error.
-export async function pushLineMessage(to: string, text: string, retryKey?: string): Promise<PushResult> {
+// `signal` aborts the request (caller's time budget). An aborted push has an
+// unknown outcome; it surfaces as a retryable error and the caller's retry with
+// the same retry key is deduplicated by LINE.
+export async function pushLineMessage(
+  to: string,
+  text: string,
+  retryKey?: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<PushResult> {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`,
     "Content-Type": "application/json",
@@ -155,6 +163,7 @@ export async function pushLineMessage(to: string, text: string, retryKey?: strin
         to,
         messages: [{ type: "text", text }],
       }),
+      signal: options.signal,
     });
   } catch {
     logger.error("LINE API request failed", {

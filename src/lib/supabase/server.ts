@@ -28,7 +28,8 @@ export async function createClient() {
   );
 }
 
-export function createServiceClient() {
+/** `fetch`: optional bounded fetch (see deadlineFetch) for callers with a hard time budget. */
+export function createServiceClient(options: { fetch?: typeof fetch } = {}) {
   return createSupabaseClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
@@ -37,6 +38,7 @@ export function createServiceClient() {
         persistSession: false,
         autoRefreshToken: false,
       },
+      ...(options.fetch ? { global: { fetch: options.fetch } } : {}),
     }
   );
 }

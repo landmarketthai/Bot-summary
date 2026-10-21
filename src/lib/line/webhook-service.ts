@@ -8,7 +8,7 @@ import type {
   LineTextMessage,
   LineUnsendEvent,
 } from "@/lib/line/types";
-import type { Database, LineMessageType } from "@/types/database";
+import type { Database, Json, LineMessageType } from "@/types/database";
 import { getSourceId, getUserId, getPendingSessionKey } from "@/lib/line/verify";
 import { parserRegistry } from "@/lib/parsers/registry";
 import { logger } from "@/lib/logger";
@@ -109,6 +109,8 @@ import {
   type SlipCheckProcessor,
 } from "@/lib/slips/check-service";
 import { SlipBatchService, type SlipBatchIngestor } from "@/lib/slips/batch-service";
+import { SlipImageIngestionService, type SlipImageResult } from "@/lib/slips/image-ingestion";
+import { attemptWorstCaseMs, cronRecoveryBudget, retryImageInRequest } from "@/lib/slips/ingest-policy";
 import {
   QuotedSlipAmountCorrectionService,
   parseQuotedSlipAmount,
@@ -574,6 +576,8 @@ interface WebhookServiceDependencies {
   guidedRoundService?: GuidedRoundService;
   guidedMenuStateService?: GuidedMenuStateService;
   scheduleBackgroundTask?: ScheduleBackgroundTask;
+  /** Test seam: how the in-request slip retry waits out the ledger backoff. */
+  slipRetrySleep?: (ms: number) => Promise<void>;
   physicalInventoryFinalizer?: PhysicalInventoryFinalizer;
   physicalInventoryService?: PhysicalInventorySessionGateway;
   dataEntrySessionOwnershipResolver?: DataEntrySessionOwnershipResolver;
@@ -734,6 +738,18 @@ function isGroupRoutableProduceText(
 }
 
 /**
+ * Slip session open/close share the per-source queue with slip images, so a
+ * payload [open, image1, image2, close] is processed in LINE order: the open
+ * runs (and binds already-received images) before any image worker, and the
+ * close never overtakes the images sent before it.
+ */
+export function isSlipSessionOrderingEvent(event: LineEvent): boolean {
+  if (event.type !== "message" || event.message.type !== "text") return false;
+  const { text } = extractGuidedMarker(event.message.text);
+  return isSlipCloseCommand(text) || parseSlipSessionHeader(text) !== null;
+}
+
+/**
  * House Stock state transitions must share the same durable per-source queue.
  * In particular, LINE can deliver unsend(close) adjacent to a new item/close;
  * processing the item ahead of the unsend would incorrectly reject it against
@@ -763,6 +779,12 @@ export class WebhookService {
   private readonly checkProcessor: SlipCheckProcessor;
   private readonly batchService: SlipBatchIngestor;
   private readonly slipSessionService: SlipSessionIngestor;
+  private readonly slipImageIngestion: SlipImageIngestionService;
+  /** Start of the request this instance serves; bounds in-request slip retries. */
+  private requestStartedAtMs = Date.now();
+  private readonly slipRetrySleep?: (ms: number) => Promise<void>;
+  /** Off during cron recovery: a sweep makes one attempt per image and never sleeps. */
+  private inRequestSlipRetry = true;
   private readonly settlementSheetImageHandler: SettlementSheetImageHandler;
   private readonly quotedSlipAmountCorrectionService: Pick<
     QuotedSlipAmountCorrectionService,
@@ -826,6 +848,14 @@ export class WebhookService {
           });
         });
       });
+    this.slipRetrySleep = dependencies.slipRetrySleep;
+    this.slipImageIngestion = new SlipImageIngestionService(
+      supabase,
+      this.evidenceIngestor,
+      (evidenceId) => this.scheduleBackgroundTask(
+        () => this.checkProcessor.processEvidence(evidenceId),
+      ),
+    );
     this.physicalInventoryService =
       dependencies.physicalInventoryService
       ?? new PhysicalInventorySessionService(this.supabase);
@@ -864,10 +894,74 @@ export class WebhookService {
     // LINE's array order is the only ordering guarantee inside one payload.
     // Persist every event before any worker starts so a later close can see
     // every earlier event in the durable queue.
+    this.requestStartedAtMs = Date.now();
     const receipts: EventReceipt[] = [];
     const immediate = new Map<string, WebhookProcessResult>();
+    const orderedByEventId = new Map<string, boolean>();
+    if (this.orderedQueueAvailable !== false) {
+      // Classified in LINE order: a session command earlier in this payload
+      // (e.g. อ่านใบขาว) is not persisted yet, so a later text from the same
+      // sender must inherit the ordered path instead of racing it. A superset
+      // is harmless — the queue worker resolves real ownership.
+      const orderedSenders = new Set<string>();
+      for (const event of events) {
+        const sender = `${getSourceId(event.source)}:${getUserId(event.source) ?? ""}`;
+        const inherits = event.type === "message" && event.message.type === "text"
+          && orderedSenders.has(sender);
+        const ordered = inherits || await this.shouldUseOrderedQueue(event, destination);
+        orderedByEventId.set(event.webhookEventId, ordered);
+        if (ordered) orderedSenders.add(sender);
+      }
+    }
+    const orderedEvents = events.filter((event) => orderedByEventId.get(event.webhookEventId));
+    const firstImage = orderedEvents.findIndex(
+      (event) => event.type === "message" && event.message.type === "image",
+    );
+    // A safe prefix such as the session-open command may commit independently.
+    // From the first image onward, receipt is atomic so a later close can never
+    // exist without every preceding image from this LINE payload.
+    const prefixEvents = firstImage > 0 ? orderedEvents.slice(0, firstImage) : [];
+    const atomicEvents = firstImage >= 0 ? orderedEvents.slice(firstImage) : orderedEvents;
+    const prefixReceipts = new Map<
+      string,
+      string | null | "error" | OrderedEventReceipt
+    >();
+    for (const event of prefixEvents) {
+      const saved = await this.saveRawMessage(event, destination, true);
+      prefixReceipts.set(event.webhookEventId, saved);
+      if (saved === "error") {
+        return events.map((item) => ({
+          eventId: item.webhookEventId,
+          eventType: item.type,
+          status: "error",
+          error: "ordered payload prefix receipt failed",
+          retryable: true,
+        }));
+      }
+    }
+    const payloadReceipts = atomicEvents.length > 1 && this.orderedQueueAvailable !== false
+      ? await this.saveOrderedPayload(atomicEvents, destination)
+      : null;
+    const payloadReceiptFailed = payloadReceipts === "error";
+    const atomicEventIds = new Set(atomicEvents.map((event) => event.webhookEventId));
     for (const event of events) {
-      const saved = await this.saveRawMessage(event, destination);
+      if (payloadReceiptFailed && atomicEventIds.has(event.webhookEventId)) {
+        immediate.set(event.webhookEventId, {
+          eventId: event.webhookEventId,
+          eventType: event.type,
+          status: "error",
+          error: "ordered payload receipt failed",
+          retryable: true,
+        });
+        continue;
+      }
+      const saved = prefixReceipts.get(event.webhookEventId)
+        ?? (payloadReceipts === "error" ? undefined : payloadReceipts?.get(event.webhookEventId))
+        ?? await this.saveRawMessage(
+          event,
+          destination,
+          orderedByEventId.get(event.webhookEventId) ?? false,
+        );
       if (saved === null) {
         immediate.set(event.webhookEventId, {
           eventId: event.webhookEventId,
@@ -882,6 +976,10 @@ export class WebhookService {
           error: "db insert failed",
           retryable: true,
         });
+        // Do not persist or process a later CLOSE when an image receipt in
+        // the same LINE payload was not durably recorded. LINE retries the
+        // entire payload; prior receipts are idempotent duplicates.
+        break;
       } else {
         const ordered = typeof saved === "object";
         if (ordered && saved.duplicate) {
@@ -3864,20 +3962,65 @@ export class WebhookService {
     const sourceId = getSourceId(event.source);
     const senderId = getUserId(event.source);
 
-    let activeSession: Awaited<ReturnType<SlipSessionIngestor["findActiveSession"]>>;
-    try {
-      activeSession = await this.slipSessionService.findActiveSession(sourceId);
-    } catch (error) {
-      log.error("slip session lookup failed — ignoring image", {
-        sourceId,
-        error: error instanceof Error ? error.message : String(error),
-      });
+    // Ledgered image (received while a slip batch was open): attribution was
+    // fixed at receipt by LINE time, every outcome is durable, and a failure
+    // schedules a bounded retry instead of blocking the images behind it. The
+    // queue event is therefore always safe to acknowledge.
+    const ledgered = await this.slipImageIngestion.process(message.id);
+    if (ledgered.outcome === "unavailable") {
+      // Ledger state unknown (timeout, network): never acknowledge and never
+      // guess with the legacy worker-time path. The queue releases the event
+      // and redelivery or the recovery sweep retries it.
       return {
         eventId,
         eventType: event.type,
-        status: "saved",
-        parsed: false,
+        status: "error",
+        error: "slip image ledger unavailable",
+        retryable: true,
       };
+    }
+    if (ledgered.outcome === "retry_pending" && this.inRequestSlipRetry) {
+      // Retry inside this request, as its OWN task so the ordered drain is not
+      // blocked while sleeping out the backoff. Goes through begin (lease and
+      // attempt token), so a racing cron sweep can never double-attach.
+      const startedAtMs = this.requestStartedAtMs;
+      this.scheduleBackgroundTask(async () => {
+        await retryImageInRequest(
+          ledgered,
+          () => this.slipImageIngestion.process(message.id),
+          { startedAtMs, sleep: this.slipRetrySleep },
+        );
+      });
+    }
+    if (ledgered.outcome !== "no_ledger" && ledgered.outcome !== "no_session") {
+      return this.finishLedgeredImage(event, ledgered, eventId, log);
+    }
+
+    let activeSession: Awaited<ReturnType<SlipSessionIngestor["findActiveSession"]>> = null;
+    // no_session: the ledger already decided, by LINE time, that no slip
+    // session covers this image — a worker-time session lookup must not
+    // override that.
+    if (ledgered.outcome === "no_ledger") {
+      try {
+        activeSession = await this.slipSessionService.findActiveSession(sourceId);
+        if (activeSession?.ledgerSchemaPresent) {
+          return {
+            eventId, eventType: event.type, status: "error",
+            error: "slip image ledger RPC missing on migrated schema", retryable: true,
+          };
+        }
+      } catch (error) {
+        log.error("slip session lookup failed — ignoring image", {
+          sourceId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return {
+          eventId,
+          eventType: event.type,
+          status: "saved",
+          parsed: false,
+        };
+      }
     }
 
     if (!activeSession) {
@@ -4050,6 +4193,30 @@ export class WebhookService {
     }
   }
 
+  private async finishLedgeredImage(
+    event: LineMessageEvent,
+    result: SlipImageResult,
+    eventId: string,
+    log: ChildLogger,
+  ): Promise<WebhookProcessResult> {
+    let reply: string | null = null;
+    if (result.outcome === "attached" && result.batchIndex === 1) {
+      reply = BATCH_FIRST_IMAGE_REPLY;
+    } else if (result.outcome === "excluded_after_close" || result.outcome === "late_after_finalize") {
+      reply = BATCH_FINALIZED_LATE_IMAGE_REPLY;
+    }
+    if (reply && event.replyToken) {
+      try {
+        await this.replyMessage(event.replyToken, reply);
+      } catch (error) {
+        log.error("slip image reply failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return { eventId, eventType: event.type, status: "saved", parsed: false };
+  }
+
   // ── Slip session: open ────────────────────────────────────────────────────
   private async processSlipOpen(
     event:     LineMessageEvent,
@@ -4102,6 +4269,7 @@ export class WebhookService {
     try {
       const result = await this.slipSessionService.openSession(
         sourceId, event.source.type, senderId, header, accountabilityRoundId,
+        Number.isFinite(event.timestamp) ? event.timestamp : null,
       );
 
       if (!result.opened) {
@@ -4170,13 +4338,40 @@ export class WebhookService {
       // fails and claimed is null — we reply with the already-closing message.
       const { data: claimed, error: claimError } = await this.supabase
         .from("slip_batches")
-        .update({ status: "closing", closing_at: new Date().toISOString() })
+        .update({
+          status: "closing",
+          closing_at: new Date().toISOString(),
+          // LINE time of the close command: images sent after it never join this batch.
+          close_event_ts_ms: Number.isFinite(event.timestamp) ? event.timestamp : null,
+        })
         .eq("id", active.batchId)
         .eq("status", "collecting")
         .select("id")
         .single();
 
-      if (claimError || !claimed) {
+      // "No row matched" (PGRST116 from .single()) is the only error that means
+      // the batch is already closing. Anything else — e.g. 42703/PGRST204 when
+      // close_event_ts_ms is absent because migration 20261017100000 is not
+      // applied — is a real failure, never reported to the operator as
+      // "already closing".
+      if (claimError?.code && claimError.code !== "PGRST116") {
+        if (claimError.code === "42703" || claimError.code === "PGRST204") {
+          // Deterministic until the migration is applied: retrying the queue
+          // event cannot help. Tell the operator now (the batch stays
+          // 'collecting', so จบสลิป can simply be sent again after migrating).
+          log.error("slip close failed: close_event_ts_ms missing — apply migration 20261017100000_slip_image_ingestion_ledger", {
+            code: claimError.code,
+          });
+          if (replyToken) {
+            await this.replyMessage(replyToken, "เกิดข้อผิดพลาดในการสรุปสลิป กรุณาลองอีกครั้ง");
+          }
+          return { eventId, eventType, status: "saved", parsed: false };
+        }
+        // Transient (timeout, connection): the catch below releases the queue
+        // event as retryable; the batch was not touched.
+        throw new Error(`slip close failed: ${claimError.code}`);
+      }
+      if (!claimed) {
         // Batch is already closing (a previous "จบสลิป" was accepted).
         log.info("slip close: batch already closing", { batchId: active.batchId });
         if (replyToken) await this.replyMessage(replyToken, ALREADY_CLOSING_REPLY);
@@ -4802,6 +4997,127 @@ export class WebhookService {
   }
 
   /**
+   * Cron-driven recovery for slip image ingestion. Bounded and best-effort per
+   * stage so one failing stage never starves the others:
+   *   1. drain queue sources that still hold never-started slip images,
+   *   2. retry ledger rows whose backoff elapsed or whose lease expired,
+   *   3. re-drive OCR that never started for already attached evidence.
+   */
+  async recoverSlipIngest(options: { maxQueueEvents?: number; budgetMs?: number } = {}): Promise<{
+    sources: number;
+    queueProcessed: number;
+    ledger: {
+      due: number; attached: number; retryPending: number; failedPermanent: number; other: number;
+      listFailed?: boolean;
+    };
+    ocrRedriven: number;
+    /** True when the ledger-source scan failed (distinct from "nothing to drain"). */
+    scanFailed?: boolean;
+  }> {
+    const priorInRequestRetry = this.inRequestSlipRetry;
+    this.inRequestSlipRetry = false;
+    try {
+      return await this.recoverSlipIngestInner(options);
+    } finally {
+      this.inRequestSlipRetry = priorInRequestRetry;
+    }
+  }
+
+  private async recoverSlipIngestInner(options: { maxQueueEvents?: number; budgetMs?: number }): Promise<Awaited<ReturnType<WebhookService["recoverSlipIngest"]>>> {
+    const deadlineMs = Date.now() + (options.budgetMs ?? cronRecoveryBudget().hardCapMs);
+    const maxQueueEvents = options.maxQueueEvents ?? 15;
+    const summary: Awaited<ReturnType<WebhookService["recoverSlipIngest"]>> = {
+      sources: 0,
+      queueProcessed: 0,
+      ledger: { due: 0, attached: 0, retryPending: 0, failedPermanent: 0, other: 0 },
+      ocrRedriven: 0,
+    };
+
+    // The three stages touch disjoint work (never-started queue events, due
+    // ledger rows, attached evidence without OCR) and every effect is fenced in
+    // SQL, so they run side by side: each gets the whole phase budget and a
+    // slow stage (e.g. a long queue drain) can no longer starve OCR recovery.
+    const drain = async () => {
+      try {
+        const { data, error } = await this.supabase
+          .from("slip_image_events")
+          .select("source_id")
+          .in("state", ["received", "unbound"])
+          .order("received_at", { ascending: true })
+          .limit(50);
+        // Sources with a not-yet-ingested ledger row, plus sources whose queue still
+        // holds a pending event (a ledger row already resolved by LINE time, e.g.
+        // excluded_after_close, or a slip open/close command released after an
+        // outage, would otherwise stay unacknowledged forever).
+        const { data: pendingQueue, error: queueError } = await this.supabase
+          .from("line_webhook_event_queue")
+          .select("source_id")
+          .eq("status", "pending")
+          .gte("received_at", new Date(Date.now() - 60 * 60 * 1000).toISOString())
+          .order("receive_order", { ascending: true })
+          .limit(50);
+        if (queueError) {
+          logger.error("slip ingest queue scan failed", { code: queueError.code });
+          summary.scanFailed = true;
+        }
+        if (error) {
+          logger.error("slip ingest source scan failed", { code: error.code });
+          summary.scanFailed = true;
+        }
+        const sourceIds = [...new Set([
+          ...(data ?? []).map((row) => row.source_id),
+          ...(pendingQueue ?? []).map((row) => row.source_id),
+        ])];
+        summary.sources = sourceIds.length;
+        const results = new Map<string, WebhookProcessResult>();
+        for (const sourceId of sourceIds) {
+          if (summary.queueProcessed >= maxQueueEvents || Date.now() >= deadlineMs) break;
+          summary.queueProcessed += await this.drainOrderedSource(
+            sourceId, "", results, maxQueueEvents - summary.queueProcessed, deadlineMs,
+            attemptWorstCaseMs(),
+          );
+        }
+      } catch (error) {
+        logger.error("slip ingest queue drain failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+
+    const ledger = async () => {
+      try {
+        summary.ledger = await this.slipImageIngestion.recoverDue(undefined, deadlineMs);
+      } catch (error) {
+        logger.error("slip image ledger recovery failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+
+    const ocr = async () => {
+      try {
+        summary.ocrRedriven = await this.slipImageIngestion.redriveOcr(
+          (evidenceId) => this.checkProcessor.processEvidence(evidenceId),
+          undefined,
+          deadlineMs,
+        );
+      } catch (error) {
+        logger.error("slip ocr redrive failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+
+    await Promise.all([drain(), ledger(), ocr()]);
+    return summary;
+  }
+
+  /** Bounded ledger health for internal cron output (null when not deployed). */
+  async slipImageHealth(): Promise<Record<string, number | null> | null> {
+    return this.slipImageIngestion.health();
+  }
+
+  /**
    * Quarantine queue rows older than 60 minutes as `stale` (never replayed),
    * surface each newly stale row exactly once, and read bounded queue metrics.
    * Null when the RPC is not deployed yet, so callers keep pre-migration
@@ -4826,9 +5142,10 @@ export class WebhookService {
     resultByEventId: Map<string, WebhookProcessResult>,
     maxEvents = Number.POSITIVE_INFINITY,
     deadlineMs = Number.POSITIVE_INFINITY,
+    minRemainingMs = 0,
   ): Promise<number> {
     let processed = 0;
-    while (processed < maxEvents && Date.now() < deadlineMs) {
+    while (processed < maxEvents && deadlineMs - Date.now() > minRemainingMs) {
       const claim = await this.claimOrderedEvent(sourceId);
       if (!claim) return processed;
       processed += 1;
@@ -4997,19 +5314,19 @@ export class WebhookService {
       : "";
     // Schema-cache misses are transient — never treat them as "infra missing".
     if (this.isOrderingSchemaCacheError(error)) return false;
-    const namesOrderingRpc =
-      message.includes("receive_line_webhook_event")
-      || message.includes("claim_line_webhook_event")
-      || message.includes("complete_line_webhook_event")
-      || message.includes("line_webhook_event_queue");
-    return code === "42883"
-      || code === "42P01"
-      || message.includes("42883")
-      || message.includes("42P01")
-      || (namesOrderingRpc && /does not exist/i.test(message))
-      // Unit-test doubles throw `unexpected rpc: <name>` when the queue RPCs
-      // are intentionally absent — that is genuine missing infra for doubles.
-      || (/unexpected(?: .*?)?rpc/i.test(message) && namesOrderingRpc);
+    // Unit doubles may implement receive but not claim/complete; real
+    // PostgREST/Postgres errors never say "unexpected rpc".
+    const namesReceiveRpc = /(?:receive|claim|complete)_line_webhook_event/.test(message);
+    // A missing *internal* trigger/helper can also raise 42883.
+    // Do not infer absent ordering infrastructure from SQLSTATE alone:
+    // raw-only fallback can persist an image without its queue/ledger.
+    const explicitlyMissingEntryPoint =
+      /function\s+(?:public\.)?receive_line_webhook_event\s*\(/i.test(message)
+      && /does not exist/i.test(message);
+    return (code === "42883" && explicitlyMissingEntryPoint)
+      || explicitlyMissingEntryPoint
+      // Legacy unit-test doubles deliberately lack the ordering RPC.
+      || (/unexpected(?: .*?)?rpc/i.test(message) && namesReceiveRpc);
   }
 
   private isWhiteSheetOrderingEvent(event: LineEvent): boolean {
@@ -5040,20 +5357,13 @@ export class WebhookService {
   private async saveRawMessage(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     event: any,
-    destination: string
+    destination: string,
+    useOrderedQueue = false,
   ): Promise<string | null | "error" | OrderedEventReceipt> {
     const source  = event.source  ?? {};
     const message = event.message as LineMessage | undefined;
 
-    if ((
-      this.isWhiteSheetOrderingEvent(event)
-      || isProduceOrderingEvent(event)
-      || isPhysicalInventoryOrderingEvent(event)
-      || (event.type === "message" && message?.type === "image")
-      || (event.type === "message" && message?.type === "text"
-        && whiteSheetReadCommand(message as LineTextMessage, destination) !== null)
-      || await this.mayOwnWhiteSheetSession(event as LineEvent, destination)
-    ) && this.orderedQueueAvailable !== false) {
+    if (useOrderedQueue && this.orderedQueueAvailable !== false) {
       let data: unknown;
       let error: { code?: string; message: string } | null = null;
       try {
@@ -5078,8 +5388,6 @@ export class WebhookService {
         };
         if (this.isMissingOrderingInfrastructure(caught)) {
           this.orderedQueueAvailable = false;
-        } else if (!this.isOrderingSchemaCacheError(caught)) {
-          throw caught;
         }
       }
       if (!error) {
@@ -5148,6 +5456,93 @@ export class WebhookService {
     }
 
     return data.id;
+  }
+
+  private async shouldUseOrderedQueue(event: LineEvent, destination: string): Promise<boolean> {
+    const message = event.type === "message" ? event.message : undefined;
+    return this.isWhiteSheetOrderingEvent(event)
+      || isProduceOrderingEvent(event)
+      || isPhysicalInventoryOrderingEvent(event)
+      || isSlipSessionOrderingEvent(event)
+      || message?.type === "image"
+      || (message?.type === "text"
+        && whiteSheetReadCommand(message as LineTextMessage, destination) !== null)
+      || await this.mayOwnWhiteSheetSession(event, destination);
+  }
+
+  /** Persist every ordered event in one PostgreSQL transaction before any can be claimed. */
+  private async saveOrderedPayload(
+    events: LineEvent[],
+    destination: string,
+  ): Promise<Map<string, OrderedEventReceipt> | "error" | null> {
+    const payload = events.map((event) => {
+      const source = event.source ?? {};
+      const message = event.type === "message" ? event.message : undefined;
+      return {
+        line_event_id: event.webhookEventId,
+        destination,
+        event_type: event.type,
+        source_type: source.type ?? "user",
+        source_id: getSourceId(source),
+        user_id: getUserId(source),
+        message_id: message?.id ?? null,
+        message_type: message?.type ?? null,
+        raw_text: message && "text" in message ? message.text : null,
+        payload: event,
+      };
+    });
+    let data: unknown;
+    let error: { code?: string; message: string } | null = null;
+    try {
+      ({ data, error } = await this.supabase.rpc("receive_line_webhook_payload", {
+        p_events: payload as unknown as Json,
+      }));
+    } catch (caught) {
+      error = {
+        message: caught instanceof Error ? caught.message : String(caught),
+        code: typeof caught === "object" && caught !== null && "code" in caught
+          ? String((caught as { code: unknown }).code)
+          : undefined,
+      };
+    }
+    // Legacy unit doubles without the payload RPC keep the per-event receipt
+    // path (which still stops at the first failed receipt). Real errors,
+    // including a missing function on a deployed database, fail closed.
+    if (error && /^unexpected(?: .*?)?rpc/i.test(error.message)
+        && error.message.includes("receive_line_webhook_payload")) return null;
+    if (error || !Array.isArray(data) || data.length !== events.length) {
+      logger.error("atomic ordered webhook payload receive failed", {
+        code: error?.code,
+        message: error?.message,
+        eventCount: events.length,
+      });
+      return "error";
+    }
+    const receipts = new Map<string, OrderedEventReceipt>();
+    for (const item of data) {
+      if (
+        typeof item !== "object"
+        || item === null
+        || typeof (item as { line_event_id?: unknown }).line_event_id !== "string"
+        || typeof (item as { raw_message_id?: unknown }).raw_message_id !== "string"
+        || typeof (item as { source_id?: unknown }).source_id !== "string"
+        || typeof (item as { duplicate?: unknown }).duplicate !== "boolean"
+      ) return "error";
+      const row = item as {
+        line_event_id: string;
+        raw_message_id: string;
+        source_id: string;
+        duplicate: boolean;
+      };
+      receipts.set(row.line_event_id, {
+        rawMessageId: row.raw_message_id,
+        sourceId: row.source_id,
+        duplicate: row.duplicate,
+      });
+    }
+    if (receipts.size !== events.length) return "error";
+    this.orderedQueueAvailable = true;
+    return receipts;
   }
 
   private async markRawMessageProcessed(rawMessageId: string, log: ChildLogger): Promise<void> {

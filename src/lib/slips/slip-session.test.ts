@@ -4,6 +4,9 @@ import {
   parseSlipSessionHeader,
   isSlipCloseCommand,
   SlipSessionService,
+  SlipSchemaNotReadyError,
+  SLIP_SCHEMA_NOT_READY_CODE,
+  isSlipLedgerColumnMissing,
 } from "./slip-session-service";
 import type { Database } from "@/types/database";
 
@@ -223,6 +226,42 @@ describe("SlipSessionService.openSession", () => {
         rawHeaderText: "กี้ ตลาด สลิปเงินโอน วันนี้", batchType: "TRANSFER_SLIPS",
       }),
     ).rejects.toThrow("unique constraint violated but no active session found");
+  });
+});
+
+describe("SlipSessionService.openSession on a database without the ledger migration", () => {
+  const header = {
+    sellerName: "กี้", marketName: "ตลาด", slipDate: null,
+    rawHeaderText: "กี้ ตลาด สลิปเงินโอน วันนี้", batchType: "TRANSFER_SLIPS" as const,
+  };
+
+  it.each([
+    ["PostgREST schema cache", { code: "PGRST204", message: "Could not find the 'open_event_ts_ms' column of 'slip_batches' in the schema cache" }],
+    ["Postgres undefined_column", { code: "42703", message: 'column "open_event_ts_ms" of relation "slip_batches" does not exist' }],
+  ])("fails explicitly (%s) instead of opening a ledger-less session", async (_name, error) => {
+    const calls: SupabaseCall[] = [];
+    const supabase = makeSessionSupabase(calls, { data: null, error: null }, { data: null, error });
+    const service = new SlipSessionService(supabase);
+
+    const failure = await service.openSession("group-1", "group", "user-1", header, null, 1_760_000_000_000)
+      .then(() => null, (e: unknown) => e);
+
+    expect(failure).toBeInstanceOf(SlipSchemaNotReadyError);
+    expect((failure as SlipSchemaNotReadyError).code).toBe(SLIP_SCHEMA_NOT_READY_CODE);
+    expect((failure as Error).message).toContain("20261017100000");
+    // No retry without the column: exactly one insert attempt, never a legacy one.
+    expect(calls.filter((c) => c.method === "insert")).toHaveLength(1);
+  });
+
+  it("does not misclassify other errors or unrelated missing columns", async () => {
+    expect(isSlipLedgerColumnMissing({ code: "42703", message: 'column "accountability_round_id" does not exist' })).toBe(false);
+    expect(isSlipLedgerColumnMissing({ code: "57014", message: "open_event_ts_ms statement timeout" })).toBe(false);
+    expect(isSlipLedgerColumnMissing({ code: "PGRST204", message: "Could not find the 'close_event_ts_ms' column" })).toBe(true);
+    expect(isSlipLedgerColumnMissing(null)).toBe(false);
+
+    const supabase = makeSessionSupabase([], { data: null, error: null }, { data: null, error: { code: "57014", message: "timeout" } });
+    await expect(new SlipSessionService(supabase).openSession("g", "group", null, header))
+      .rejects.toThrow("openSession insert failed: timeout");
   });
 });
 

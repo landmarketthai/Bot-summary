@@ -1,0 +1,12 @@
+import { createHash } from "node:crypto";
+import { writeFileSync } from "node:fs";
+import { sql, setPlan, sleep, text, image, webhook, batchFor } from "./drive.mjs";
+const g = `C${createHash("md5").update(`inflight:${Date.now()}`).digest("hex")}`;
+const id = `${g.slice(1, 13)}-stuck`;
+setPlan({ content: { [id]: { failAlways: true } } });
+await webhook([text(g, "ยูเอที-ราชพฤกษ์ สลิปเงินโอน 20/10/2569")]);
+for (let i = 0; i < 40 && !batchFor(g); i++) await sleep(250);
+await webhook([image(g, id)]);
+for (let i = 0; i < 40 && sql(`select state from slip_image_events where line_message_id='${id}'`) !== "retry_pending"; i++) await sleep(250);
+writeFileSync(new URL("./inflight-state.json", import.meta.url), JSON.stringify({ g, id, batch: batchFor(g) }));
+console.log(JSON.stringify({ g, state: sql(`select state from slip_image_events where line_message_id='${id}'`) }));
