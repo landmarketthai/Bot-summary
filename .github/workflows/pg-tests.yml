@@ -31,6 +31,10 @@ jobs:
         with:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned: Bun 1.4.4 rejects BEGIN on pooled Bun.sql (ERR_POSTGRES_UNSAFE_TRANSACTION)
+          # used by the slip pg suites. Unpin after those suites move to sql.begin / max: 1.
+          bun-version: 1.4.3
       - run: bun install
       # Fail CI when the local disposable PostgreSQL is unavailable instead of silently skipping tests.
       - name: Require local PostgreSQL 17
@@ -106,6 +110,10 @@ jobs:
         with:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned: Bun 1.4.4 rejects BEGIN on pooled Bun.sql (ERR_POSTGRES_UNSAFE_TRANSACTION)
+          # used by the slip pg suites. Unpin after those suites move to sql.begin / max: 1.
+          bun-version: 1.4.3
       - run: bun install
       - name: P2E real-PostgreSQL identity and constraint suite
         run: bun run test:pg:p2e
@@ -148,6 +156,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned: Bun 1.4.4 rejects BEGIN on pooled Bun.sql (ERR_POSTGRES_UNSAFE_TRANSACTION)
+          # used by the slip pg suites. Unpin after those suites move to sql.begin / max: 1.
+          bun-version: 1.4.3
       - run: bun install
       - run: bun run test:pg:0059
 
@@ -182,6 +194,10 @@ jobs:
         with:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned: Bun 1.4.4 rejects BEGIN on pooled Bun.sql (ERR_POSTGRES_UNSAFE_TRANSACTION)
+          # used by the slip pg suites. Unpin after those suites move to sql.begin / max: 1.
+          bun-version: 1.4.3
       - run: bun install
       - name: Slice A real-PostgreSQL migration/hardening/concurrency suite
         run: bunx bun test src/lib/purchase-capture/migration-slice-a.pg.test.ts
@@ -225,6 +241,10 @@ jobs:
         with:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned: Bun 1.4.4 rejects BEGIN on pooled Bun.sql (ERR_POSTGRES_UNSAFE_TRANSACTION)
+          # used by the slip pg suites. Unpin after those suites move to sql.begin / max: 1.
+          bun-version: 1.4.3
       - run: bun install
       - name: Slice B real-PostgreSQL migration/hardening suite
         run: bunx bun test src/lib/purchase-capture/migration-slice-b.pg.test.ts
@@ -282,6 +302,10 @@ jobs:
         with:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned: Bun 1.4.4 rejects BEGIN on pooled Bun.sql (ERR_POSTGRES_UNSAFE_TRANSACTION)
+          # used by the slip pg suites. Unpin after those suites move to sql.begin / max: 1.
+          bun-version: 1.4.3
       - run: bun install
       - name: Slice C1 real-PostgreSQL migration/hardening/concurrency suite
         run: bunx bun test src/lib/purchase-capture/migration-slice-c.pg.test.ts
@@ -326,6 +350,10 @@ jobs:
         with:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned: Bun 1.4.4 rejects BEGIN on pooled Bun.sql (ERR_POSTGRES_UNSAFE_TRANSACTION)
+          # used by the slip pg suites. Unpin after those suites move to sql.begin / max: 1.
+          bun-version: 1.4.3
       - run: bun install
       - name: Slice C2-C5 end-to-end real-PostgreSQL integration suite
         run: bunx bun test src/lib/purchase-capture/integration-slice-c2.pg.test.ts
@@ -398,6 +426,10 @@ jobs:
         with:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned: Bun 1.4.4 rejects BEGIN on pooled Bun.sql (ERR_POSTGRES_UNSAFE_TRANSACTION)
+          # used by the slip pg suites. Unpin after those suites move to sql.begin / max: 1.
+          bun-version: 1.4.3
       - run: bun install
       - name: P3 real-PostgreSQL profitability snapshot suite
         run: bun run test:pg:p3
@@ -441,6 +473,10 @@ jobs:
         with:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned: Bun 1.4.4 rejects BEGIN on pooled Bun.sql (ERR_POSTGRES_UNSAFE_TRANSACTION)
+          # used by the slip pg suites. Unpin after those suites move to sql.begin / max: 1.
+          bun-version: 1.4.3
       - run: bun install
       - name: Migration 0054 real-PostgreSQL valuation suite
         run: bunx bun test src/lib/inventory-cost/migration-0054.pg.test.ts
@@ -493,6 +529,10 @@ jobs:
         with:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned: Bun 1.4.4 rejects BEGIN on pooled Bun.sql (ERR_POSTGRES_UNSAFE_TRANSACTION)
+          # used by the slip pg suites. Unpin after those suites move to sql.begin / max: 1.
+          bun-version: 1.4.3
       - run: bun install
       - name: P4A real-PostgreSQL entry validation gate suite
         run: bun run test:pg:p4a
@@ -547,6 +587,10 @@ jobs:
         with:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned: Bun 1.4.4 rejects BEGIN on pooled Bun.sql (ERR_POSTGRES_UNSAFE_TRANSACTION)
+          # used by the slip pg suites. Unpin after those suites move to sql.begin / max: 1.
+          bun-version: 1.4.3
       - run: bun install
       - name: Product Code Dictionary real-PostgreSQL migration suite
         run: bun run test:pg:product-code
@@ -616,6 +660,10 @@ jobs:
         with:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned: Bun 1.4.4 rejects BEGIN on pooled Bun.sql (ERR_POSTGRES_UNSAFE_TRANSACTION)
+          # used by the slip pg suites. Unpin after those suites move to sql.begin / max: 1.
+          bun-version: 1.4.3
       - run: bun install
       - name: P0-A same-day round reuse real-PostgreSQL suite
         run: bun run test:pg:round-reuse
