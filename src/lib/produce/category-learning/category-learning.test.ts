@@ -17,7 +17,7 @@ afterEach(() => setApprovedCategoryRules([]));
 const ID = "11111111-2222-4333-8444-555555555555";
 const GROUP = "Ctestgroup";
 const ADMIN = "Uadmin";
-const ENV = { CATEGORY_REVIEW_LINE_GROUP_IDS: GROUP, CATEGORY_REVIEW_ADMIN_LINE_USER_IDS: ADMIN } as NodeJS.ProcessEnv;
+const ENV = { CATEGORY_REVIEW_LINE_GROUP_IDS: GROUP, CATEGORY_REVIEW_ADMIN_LINE_USER_IDS: ADMIN } as unknown as NodeJS.ProcessEnv;
 
 /** Every report surface's view of one name, as fruit / vegetable / other. */
 function surfaces(name: string) {
@@ -139,9 +139,9 @@ describe("discovery", () => {
     const push = async (to: string) => { pushes.push(to); };
     const window = { fromDate: "2026-10-07", toDate: "2026-10-20" };
 
-    const off = await runCategoryDiscovery(client as never, window, push, {} as NodeJS.ProcessEnv);
+    const off = await runCategoryDiscovery(client as never, window, push, {} as unknown as NodeJS.ProcessEnv);
     expect(off).toMatchObject({ discovered: 1, notifyMode: "disabled" });
-    const noGroup = await runCategoryDiscovery(client as never, window, push, { CATEGORY_REVIEW_NOTIFY_ENABLED: "true" } as NodeJS.ProcessEnv);
+    const noGroup = await runCategoryDiscovery(client as never, window, push, { CATEGORY_REVIEW_NOTIFY_ENABLED: "true" } as unknown as NodeJS.ProcessEnv);
     expect(noGroup.notifyMode).toBe("no_recipient");
     expect(pushes).toEqual([]);
     const on = await runCategoryDiscovery(client as never, window, push, { ...ENV, CATEGORY_REVIEW_NOTIFY_ENABLED: "true" });
@@ -199,7 +199,7 @@ describe("LINE review postback", () => {
     expect(await handleCategoryReviewPostback({ data, lineEventId: "e3", userId: ADMIN, sourceType: "user", sourceId: ADMIN }, deps))
       .toBeNull();
     expect(await handleCategoryReviewPostback({ data, lineEventId: "e4", userId: ADMIN, sourceType: "group", sourceId: GROUP },
-      { ...deps, env: {} as NodeJS.ProcessEnv })).toBeNull();
+      { ...deps, env: {} as unknown as NodeJS.ProcessEnv })).toBeNull();
     expect(calls).toEqual([]);
   });
 
