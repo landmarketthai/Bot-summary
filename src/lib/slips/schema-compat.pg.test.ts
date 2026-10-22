@@ -123,8 +123,8 @@ async function makeEnv(prefix: string, migrations: string[]): Promise<Env> {
       processEvidence: async (evidenceId: string) => {
         ocrRuns.push(evidenceId);
         await db.query(
-          `INSERT INTO slip_checks (evidence_id, status, slip_type, transfer_amount, transaction_time)
-           VALUES ('${evidenceId}', 'EXTRACTED', 'BANK_SLIP_QR', 100, '2026-10-16T12:00:00+07')
+          `INSERT INTO slip_checks (evidence_id, status, slip_type, transfer_amount, transaction_time, reference_id)
+           VALUES ('${evidenceId}', 'EXTRACTED', 'BANK_SLIP_QR', 100, '2026-10-16T12:00:00+07', 'REF-${evidenceId}')
            ON CONFLICT (evidence_id) DO NOTHING`,
         );
       },
@@ -310,8 +310,8 @@ describe.skipIf(!pgAvailable)("C. OLD application on the NEW schema", () => {
       );
       await env.db.query(`SELECT attach_evidence_to_slip_batch('${batchId}', '${ev}')`);
       await env.db.query(
-        `INSERT INTO slip_checks (evidence_id, status, slip_type, transfer_amount, transaction_time)
-         VALUES ('${ev}', 'EXTRACTED', 'BANK_SLIP_QR', 100, '2026-10-16T12:00:00+07')`,
+        `INSERT INTO slip_checks (evidence_id, status, slip_type, transfer_amount, transaction_time, reference_id)
+         VALUES ('${ev}', 'EXTRACTED', 'BANK_SLIP_QR', 100, '2026-10-16T12:00:00+07', 'REF-${ev}')`,
       );
       await env.db.query(`UPDATE raw_messages SET is_processed = true WHERE message_id='${msg}'`);
     }

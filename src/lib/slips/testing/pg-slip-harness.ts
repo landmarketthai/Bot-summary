@@ -39,6 +39,7 @@ export const SLIP_PIPELINE_MIGRATIONS = [
   "20261017100000_slip_image_ingestion_ledger.sql",
   "20261017110000_slip_ocr_claim_fencing.sql",
   "20261019120000_slip_ingest_health_alert.sql",
+  "20261019143000_guard_global_slip_transaction_reference.sql",
 ];
 
 const BOOTSTRAP_SQL = `

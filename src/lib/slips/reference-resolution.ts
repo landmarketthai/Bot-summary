@@ -36,6 +36,8 @@ export interface ResolvedSlipCheckReference {
   referenceId: string;
   actor: string;
   resolvedAt: string;
+  status?: string;
+  reviewReason?: string | null;
 }
 
 export async function resolveSlipCheckReference(
@@ -57,7 +59,7 @@ export async function resolveSlipCheckReference(
 
   const { data: existing, error: fetchError } = await supabase
     .from("slip_checks")
-    .select("id, status, reference_id")
+    .select("id, status, reference_id, failure_reason, slip_type, transaction_time, transfer_amount, paid_amount, gross_amount")
     .eq("id", checkId)
     .maybeSingle();
 
@@ -67,7 +69,9 @@ export async function resolveSlipCheckReference(
   if (!existing) {
     throw new ReferenceResolutionError(`slip check ${checkId} not found`);
   }
-  if (!isVerifiedSlipCheckStatus(existing.status)) {
+  const heldMissingReference = existing.status === "NEED_REVIEW"
+    && existing.failure_reason === "missing_transaction_reference_global";
+  if (!isVerifiedSlipCheckStatus(existing.status) && !heldMissingReference) {
     throw new ReferenceResolutionError(
       `slip check ${checkId} is not in a verified status (${existing.status})`,
     );
@@ -78,14 +82,28 @@ export async function resolveSlipCheckReference(
     );
   }
 
+  // A held check can only be reinstated after an authorized manual reference
+  // and a visible transaction timestamp + positive visible amount. Other
+  // NEED_REVIEW categories must never be accepted via this endpoint.
+  if (heldMissingReference && (
+    !existing.transaction_time
+    || !["THAI_HELP_THAI", "GWALLET", "BANK_SLIP_QR", "BANK_SLIP_NO_QR"].includes(existing.slip_type)
+    || ![existing.transfer_amount, existing.paid_amount, existing.gross_amount]
+      .some((amount) => typeof amount === "number" && Number.isFinite(amount) && amount > 0)
+  )) {
+    throw new ReferenceResolutionError("held slip needs visible transaction time and positive amount before manual reference resolution");
+  }
+
   // Atomic guard: only succeeds if reference_id is still NULL at write time,
   // so two concurrent resolutions for the same check cannot both apply.
   const { data: updated, error: updateError } = await supabase
     .from("slip_checks")
-    .update({ reference_id: referenceId })
+    .update(heldMissingReference
+      ? { reference_id: referenceId, status: "PARTIAL_EXTRACTED", failure_reason: null }
+      : { reference_id: referenceId })
     .eq("id", checkId)
     .is("reference_id", null)
-    .select("id")
+    .select("id, status, failure_reason")
     .maybeSingle();
 
   if (updateError) {
@@ -106,5 +124,8 @@ export async function resolveSlipCheckReference(
     throw new ReferenceResolutionError(`reference resolution audit insert failed: ${auditError.message}`);
   }
 
-  return { checkId, referenceId, actor, resolvedAt };
+  // The global database trigger can still downgrade a manually supplied
+  // duplicate reference; report the persisted status, never claim verification.
+  return { checkId, referenceId, actor, resolvedAt,
+    status: updated.status, reviewReason: updated.failure_reason };
 }
