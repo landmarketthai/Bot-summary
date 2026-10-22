@@ -14,6 +14,7 @@ const DATABASE = `pcl_${randomBytes(4).toString("hex")}`;
 const ALLOWED_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 const BOOTSTRAP = join(ROOT, "supabase", "tests", "produce_product_code_dictionary_bootstrap.sql");
 const MIGRATION = join(ROOT, "supabase", "migrations", "20261022120000_produce_category_learning.sql");
+const QUEUE_MIGRATION = join(ROOT, "supabase", "migrations", "20261022130000_produce_category_announce_queue.sql");
 
 type PsqlResult = { code: number; stdout: string; stderr: string };
 
@@ -71,7 +72,7 @@ describe.skipIf(!pgAvailable)("produce category learning migration", () => {
     const created = await psql(["-d", "postgres", "-c", `CREATE DATABASE ${DATABASE}`], "postgres");
     expect(created.code, created.stderr).toBe(0);
     databaseCreated = true;
-    for (const file of [BOOTSTRAP, MIGRATION]) {
+    for (const file of [BOOTSTRAP, MIGRATION, QUEUE_MIGRATION]) {
       const applied = await psql(["-v", "ON_ERROR_STOP=1", "-f", file]);
       expect(applied.code, `${file}\n${applied.stderr}`).toBe(0);
     }
@@ -138,6 +139,31 @@ describe.skipIf(!pgAvailable)("produce category learning migration", () => {
     expect(results.filter((r) => r.status === "applied")).toHaveLength(1);
     expect(results.filter((r) => r.status === "stale")).toHaveLength(2);
     expect(await scalar(`SELECT count(*) FROM public.produce_category_decisions WHERE candidate_id = ${q(c.id)}`)).toBe("1");
+  });
+
+  test("announcement queue reaches candidates beyond the busiest 50, FIFO", async () => {
+    await scalar(`SELECT count(*) FROM generate_series(0, 64) i, LATERAL public.observe_produce_category_candidate(
+      'คิว' || lpad(i::text, 3, '0'), NULL, 'low', 'test', NULL, 1000 - i, 1,
+      DATE '2026-10-19', DATE '2026-10-20', ARRAY[]::text[])`);
+    // The 50 busiest are already announced.
+    await scalar(`UPDATE public.produce_category_candidates SET notified_revision = revision
+      WHERE product_name IN (SELECT product_name FROM public.produce_category_candidates
+        WHERE product_name LIKE 'คิว%' ORDER BY occurrence_count DESC LIMIT 50) RETURNING 1`);
+    const next = () => scalar(`SELECT string_agg(product_name, ',' ORDER BY created_at, product_name) FROM (
+      SELECT product_name, created_at FROM public.produce_category_candidates
+      WHERE needs_announcement AND product_name LIKE 'คิว%' ORDER BY created_at, product_name LIMIT 10) q`);
+    const first = (await next()).split(",");
+    expect(first).toHaveLength(10);
+    expect(first.every((n) => Number(n.slice(3)) >= 50)).toBe(true);
+    await scalar(`UPDATE public.produce_category_candidates SET notified_revision = revision
+      WHERE product_name = ANY(string_to_array(${q(first.join(","))}, ',')) RETURNING 1`);
+    expect((await next()).split(",")).toHaveLength(5);
+    // A changed proposal re-queues; a decided candidate never does.
+    const bumped = await observe("คิว000", "ม", "มะม่วง", 1000);
+    expect(bumped.needs_announcement).toBe(true);
+    await decide(bumped.id, bumped.revision, "legitimate_other", null, "evt-queue");
+    expect(await scalar(`SELECT needs_announcement FROM public.produce_category_candidates WHERE product_name = 'คิว000'`)).toBe("f");
+    expect(await scalar(`SELECT count(*) FROM pg_indexes WHERE indexname = 'produce_category_candidates_announce_queue_idx'`)).toBe("1");
   });
 
   test("decisions are append-only and clients have no access", async () => {

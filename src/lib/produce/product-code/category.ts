@@ -114,23 +114,37 @@ const BUSINESS_CATEGORY_RULES: ReadonlyArray<readonly [string, ApprovedCategoryC
   ["เต้าหู้แผ่น", "other"],
 ];
 
-// ponytail: process-wide snapshot, refreshed by each report load; per-request
-// injection only if rules ever need to differ between concurrent reports.
-let approvedRules: ReadonlyMap<string, ApprovedCategoryCode> = new Map(BUSINESS_CATEGORY_RULES);
+/** One complete, immutable rule set. A report reads exactly one for its whole run. */
+export type CategoryPolicy = ReadonlyMap<string, ApprovedCategoryCode>;
 
-export function setApprovedCategoryRules(rules: Iterable<readonly [string, string]>): void {
-  const next = new Map<string, ApprovedCategoryCode>(BUSINESS_CATEGORY_RULES);
+/** Business rules + the given admin rows. Never mutated after it is built. */
+export function buildCategoryPolicy(rules: Iterable<readonly [string, string]>): CategoryPolicy {
+  const policy = new Map<string, ApprovedCategoryCode>(BUSINESS_CATEGORY_RULES);
   for (const [name, code] of rules) {
     const key = name.normalize("NFC").trim();
     if (key && (APPROVED_CATEGORY_CODES as readonly string[]).includes(code)) {
-      next.set(key, code as ApprovedCategoryCode);
+      policy.set(key, code as ApprovedCategoryCode);
     }
   }
-  approvedRules = next;
+  return policy;
+}
+
+export const BUSINESS_CATEGORY_POLICY: CategoryPolicy = buildCategoryPolicy([]);
+
+/**
+ * Where the current report's policy comes from. This module stays free of
+ * server-only imports; category-learning/rules.ts registers a per-request
+ * (AsyncLocalStorage) source. Outside a report run — e.g. session-close
+ * receipts on the ingestion path — only the shipped business rules apply.
+ */
+let policySource: () => CategoryPolicy | undefined = () => undefined;
+
+export function setCategoryPolicySource(source: () => CategoryPolicy | undefined): void {
+  policySource = source;
 }
 
 export function approvedCategoryFor(productName: string): ApprovedCategoryCode | undefined {
-  return approvedRules.get(productName.normalize("NFC").trim());
+  return (policySource() ?? BUSINESS_CATEGORY_POLICY).get(productName.normalize("NFC").trim());
 }
 
 /** Dictionary entry for an exact canonical name, or null if unknown. */

@@ -1,23 +1,35 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
   approvedCategoryFor,
+  buildCategoryPolicy,
   dictionaryCategoryFor,
-  setApprovedCategoryRules,
 } from "@/lib/produce/product-code/category";
 import { produceSectionOf } from "@/lib/summary/produce-section";
 import { stockCategoryFor } from "@/lib/summary/stock-categories";
 import { morningBriefProductIdentity } from "@/lib/summary/morning-brief";
 import { produceCategoryTotals } from "@/lib/summary/produce-category-totals";
-import { discoverCategoryCandidates, needsCategoryReview, runCategoryDiscovery, suggestCategory } from "./discovery";
-import { loadApprovedCategoryRules } from "./rules";
+import { ANNOUNCE_PER_RUN, discoverCategoryCandidates, needsCategoryReview, runCategoryDiscovery, suggestCategory } from "./discovery";
+import {
+  CATEGORY_RULES_PAGE_SIZE,
+  enterCategoryPolicy,
+  loadApprovedCategoryPolicy,
+  runWithCategoryPolicy,
+  withApprovedCategoryRules,
+} from "./rules";
 import { buildCategoryReviewMessage, handleCategoryReviewPostback, parseCategoryReviewPostback } from "./review";
-
-afterEach(() => setApprovedCategoryRules([]));
+import { fakeDb } from "./test-fake-db";
 
 const ID = "11111111-2222-4333-8444-555555555555";
 const GROUP = "Ctestgroup";
 const ADMIN = "Uadmin";
 const ENV = { CATEGORY_REVIEW_LINE_GROUP_IDS: GROUP, CATEGORY_REVIEW_ADMIN_LINE_USER_IDS: ADMIN } as unknown as NodeJS.ProcessEnv;
+const NOTIFY_ENV = { ...ENV, CATEGORY_REVIEW_NOTIFY_ENABLED: "true" } as NodeJS.ProcessEnv;
+
+const rulesDb = (rules: [string, string][], failOn?: (i: number) => boolean) =>
+  fakeDb({ produce_category_rules: rules.map(([product_name, category_code]) => ({ product_name, category_code })) },
+    { failOn: failOn && ((i) => failOn(i)) });
+const withPolicy = <T>(rules: [string, string][], run: () => T) => runWithCategoryPolicy(buildCategoryPolicy(rules), run);
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /** Every report surface's view of one name, as fruit / vegetable / other. */
 function surfaces(name: string) {
@@ -29,6 +41,89 @@ function surfaces(name: string) {
     morningBriefCategory: morningBriefProductIdentity(name, "กก.").category,
   };
 }
+
+describe("category policy snapshot (order matters: first test needs a fresh process state)", () => {
+  test("10. no rules loaded yet + failing DB: business rules only, never throws", async () => {
+    const policy = await loadApprovedCategoryPolicy({ from: () => { throw new Error("relation does not exist"); } });
+    expect(policy.get("มะละกอดิบ")).toBe("ผ");
+    expect(policy.size).toBe(2);
+  });
+
+  test("P2. more than 1,000 rules load completely via keyset pages", async () => {
+    const rules: [string, string][] = Array.from({ length: 2345 }, (_, i) => [`สินค้า${String(i).padStart(5, "0")}`, i % 2 ? "ผ" : "ม"]);
+    const db = rulesDb(rules);
+    const policy = await loadApprovedCategoryPolicy(db.client);
+    expect(policy.size).toBe(2345 + 2); // + business rules
+    expect(policy.get("สินค้า02344")).toBe("ม");
+    expect(policy.get("สินค้า00999")).toBe("ผ");
+    expect(policy.get("สินค้า01000")).toBe("ม");
+    expect(db.requests.map((r) => r.filters)).toEqual([[], ["product_name>สินค้า00999"], ["product_name>สินค้า01999"]]);
+  });
+
+  test("P2. an exact multiple of the page size still terminates and is complete", async () => {
+    const rules: [string, string][] = Array.from({ length: CATEGORY_RULES_PAGE_SIZE * 2 }, (_, i) => [`ช${String(i).padStart(5, "0")}`, "ผ"]);
+    const policy = await loadApprovedCategoryPolicy(rulesDb(rules).client);
+    expect(policy.size).toBe(CATEGORY_RULES_PAGE_SIZE * 2 + 2);
+  });
+
+  test("P2. a failing later page never yields a partial snapshot — last complete one is kept", async () => {
+    const complete = await loadApprovedCategoryPolicy(rulesDb([["ผักทดสอบใหม่", "ผ"]]).client);
+    const rules: [string, string][] = Array.from({ length: 1500 }, (_, i) => [`ข${String(i).padStart(5, "0")}`, "ม"]);
+    const partial = await loadApprovedCategoryPolicy(rulesDb(rules, (i) => i === 1).client);
+    expect(partial).toBe(complete);
+    expect(partial.get("ข00000")).toBeUndefined();
+  });
+
+  test("P1. concurrent reports each keep their own snapshot across awaits", async () => {
+    let releaseA!: () => void;
+    const gateA = new Promise<void>((resolve) => { releaseA = resolve; });
+    const reportA = withApprovedCategoryRules(rulesDb([["ชื่อแข่ง", "ผ"]]).client, async () => {
+      const before = produceSectionOf("ชื่อแข่ง");
+      await gateA; // report B loads a different snapshot meanwhile
+      return [before, produceSectionOf("ชื่อแข่ง"), stockCategoryFor("ชื่อแข่ง")];
+    });
+    await tick();
+    const reportB = await withApprovedCategoryRules(rulesDb([["ชื่อแข่ง", "ม"]]).client, async () => {
+      await tick();
+      return [produceSectionOf("ชื่อแข่ง"), stockCategoryFor("ชื่อแข่ง")];
+    });
+    releaseA();
+    expect(await reportA).toEqual(["vegetable", "vegetable", "ผัก"]);
+    expect(reportB).toEqual(["fruit", "ผลไม้"]);
+    expect(produceSectionOf("ชื่อแข่ง")).toBe("other"); // outside any report: business rules only
+  });
+
+  test("P1. enterCategoryPolicy pins a route handler's own snapshot under interleaving", async () => {
+    const route = async (rules: [string, string][], wait: Promise<unknown>) => {
+      enterCategoryPolicy(await loadApprovedCategoryPolicy(rulesDb(rules).client));
+      const first = produceSectionOf("ชื่อเส้นทาง");
+      await wait;
+      return [first, produceSectionOf("ชื่อเส้นทาง")];
+    };
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const a = route([["ชื่อเส้นทาง", "ผ"]], gate);
+    const b = route([["ชื่อเส้นทาง", "ม"]], tick());
+    expect(await b).toEqual(["fruit", "fruit"]);
+    release();
+    expect(await a).toEqual(["vegetable", "vegetable"]);
+    expect(produceSectionOf("ชื่อเส้นทาง")).toBe("other");
+  });
+
+  test("P1. a failed refresh reuses the last complete snapshot for the next report", async () => {
+    await loadApprovedCategoryPolicy(rulesDb([["ผักทดสอบใหม่", "ผ"]]).client);
+    const section = await withApprovedCategoryRules(rulesDb([], () => true).client, () => produceSectionOf("ผักทดสอบใหม่"));
+    expect(section).toBe("vegetable");
+  });
+
+  test("nested report helpers reuse the outer snapshot without reloading", async () => {
+    const inner = rulesDb([["ชื่อซ้อน", "ม"]]);
+    const result = await withApprovedCategoryRules(rulesDb([["ชื่อซ้อน", "ผ"]]).client,
+      () => withApprovedCategoryRules(inner.client, () => produceSectionOf("ชื่อซ้อน")));
+    expect(result).toBe("vegetable");
+    expect(inner.requests).toHaveLength(0);
+  });
+});
 
 describe("business-approved category rules", () => {
   test("1. มะละกอดิบ is vegetable on every surface", () => {
@@ -56,30 +151,24 @@ describe("business-approved category rules", () => {
 describe("runtime approved rules", () => {
   test("3. a DB-approved category reaches every surface without a deployment", async () => {
     expect(surfaces("ผักทดสอบใหม่").morningBriefAndPdf).toBe("other");
-    await loadApprovedCategoryRules({
-      from: () => ({ select: async () => ({ data: [{ product_name: "ผักทดสอบใหม่", category_code: "ผ" }], error: null }) }),
-    });
-    expect(surfaces("ผักทดสอบใหม่")).toEqual({
+    const seen = await withApprovedCategoryRules(rulesDb([["ผักทดสอบใหม่", "ผ"]]).client, () => ({
+      surfaces: surfaces("ผักทดสอบใหม่"),
+      business: approvedCategoryFor("มะละกอดิบ"),
+    }));
+    expect(seen.surfaces).toEqual({
       stockSummary: "vegetable", morningBriefAndPdf: "vegetable", lineCategory: "ผ",
       morningBriefCategory: "ผัก / สมุนไพร / เครื่องประกอบอาหาร",
     });
-    // Built-in business rules survive a DB refresh.
-    expect(approvedCategoryFor("มะละกอดิบ")).toBe("ผ");
+    expect(seen.business).toBe("ผ"); // business rules survive a DB snapshot
   });
 
   test("9. surfaces agree for every rule code", () => {
-    setApprovedCategoryRules([["ก", "ท"], ["ข", "ม"], ["ค", "ผ"], ["ง", "ห"], ["จ", "ป"], ["ฉ", "พ"], ["ช", "other"]]);
-    for (const name of ["ก", "ข", "ค", "ง", "จ", "ฉ", "ช"]) {
-      const s = surfaces(name);
-      expect(s.stockSummary).toBe(s.morningBriefAndPdf);
-    }
-  });
-
-  test("10. rule load failure keeps the previous snapshot and never throws", async () => {
-    setApprovedCategoryRules([["ผักทดสอบใหม่", "ผ"]]);
-    await loadApprovedCategoryRules({ from: () => { throw new Error("relation does not exist"); } });
-    await loadApprovedCategoryRules({ from: () => ({ select: async () => ({ data: null, error: { message: "timeout" } }) }) });
-    expect(approvedCategoryFor("ผักทดสอบใหม่")).toBe("ผ");
+    withPolicy([["ก", "ท"], ["ข", "ม"], ["ค", "ผ"], ["ง", "ห"], ["จ", "ป"], ["ฉ", "พ"], ["ช", "other"]], () => {
+      for (const name of ["ก", "ข", "ค", "ง", "จ", "ฉ", "ช"]) {
+        const s = surfaces(name);
+        expect(s.stockSummary).toBe(s.morningBriefAndPdf);
+      }
+    });
   });
 
   test("8. a rule changes category only — money and item counts are unchanged", () => {
@@ -89,8 +178,7 @@ describe("runtime approved rules", () => {
       { product_name: "ผักทดสอบใหม่", transaction_type: "คืน", total_amount: 20.1 },
     ];
     const before = produceCategoryTotals(rows);
-    setApprovedCategoryRules([["ผักทดสอบใหม่", "ผ"]]);
-    const after = produceCategoryTotals(rows);
+    const after = withPolicy([["ผักทดสอบใหม่", "ผ"]], () => produceCategoryTotals(rows));
     expect(after.netSatang).toBe(before.netSatang);
     for (const bucket of ["เบิก", "คืน", "คืนเสีย"] as const) {
       expect(after[bucket].totalSatang).toBe(before[bucket].totalSatang);
@@ -122,33 +210,64 @@ describe("discovery", () => {
     expect(produceSectionOf("มะม่วงง")).toBe("other"); // until an admin approves
   });
 
-  test("notifications are opt-in and only go to the review group", async () => {
-    const pushes: string[] = [];
-    const candidate = { id: ID, product_name: "สินค้าลึกลับ", suggested_category: null, confidence: "low", suggestion_reason: "-",
-      similar_product_name: null, occurrence_count: 1, distinct_dates: 1, first_seen: "2026-10-20", last_seen: "2026-10-20",
-      sample_markets: [], revision: 1, notified_revision: null };
-    const chain = (result: unknown): unknown => new Proxy(() => {}, {
-      get: (_, prop) => prop === "then" ? (resolve: (v: unknown) => void) => resolve(result) : () => chain(result),
-    });
-    const client = {
-      from: (table: string) => chain(table === "produce_transactions"
-        ? { data: [row("สินค้าลึกลับ")], error: null }
-        : { data: table === "produce_category_candidates" ? [candidate] : [], error: null }),
-      rpc: async () => ({ data: null, error: null }),
-    };
-    const push = async (to: string) => { pushes.push(to); };
-    const window = { fromDate: "2026-10-07", toDate: "2026-10-20" };
+  const candidateRow = (i: number, extra: Record<string, unknown> = {}) => ({
+    id: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`, product_name: `ผู้สมัคร${String(i).padStart(3, "0")}`,
+    status: "pending", suggested_category: null, confidence: "low", suggestion_reason: "-", similar_product_name: null,
+    occurrence_count: 1000 - i, distinct_dates: 1, first_seen: "2026-10-20", last_seen: "2026-10-20", sample_markets: [],
+    revision: 1, notified_revision: null as number | null,
+    created_at: `2026-10-01T00:${String(Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}Z`,
+    ...extra,
+  });
+  const window = { fromDate: "2026-10-07", toDate: "2026-10-20" };
 
-    const off = await runCategoryDiscovery(client as never, window, push, {} as unknown as NodeJS.ProcessEnv);
-    expect(off).toMatchObject({ discovered: 1, notifyMode: "disabled" });
-    const noGroup = await runCategoryDiscovery(client as never, window, push, { CATEGORY_REVIEW_NOTIFY_ENABLED: "true" } as unknown as NodeJS.ProcessEnv);
-    expect(noGroup.notifyMode).toBe("no_recipient");
+  test("notifications are opt-in and only go to the review group", async () => {
+    const db = fakeDb({ produce_transactions: [row("สินค้าลึกลับ")], produce_category_rules: [], produce_category_candidates: [candidateRow(1)] });
+    const pushes: string[] = [];
+    const push = async (to: string) => { pushes.push(to); };
+    expect(await runCategoryDiscovery(db.client as never, window, push, {} as unknown as NodeJS.ProcessEnv))
+      .toMatchObject({ discovered: 1, notifyMode: "disabled" });
+    expect((await runCategoryDiscovery(db.client as never, window, push,
+      { CATEGORY_REVIEW_NOTIFY_ENABLED: "true" } as unknown as NodeJS.ProcessEnv)).notifyMode).toBe("no_recipient");
     expect(pushes).toEqual([]);
-    const on = await runCategoryDiscovery(client as never, window, push, { ...ENV, CATEGORY_REVIEW_NOTIFY_ENABLED: "true" });
-    expect(on).toMatchObject({ notified: 1, notifyMode: "sent" });
+    expect(await runCategoryDiscovery(db.client as never, window, push, NOTIFY_ENV)).toMatchObject({ notified: 1, notifyMode: "sent" });
     expect(pushes).toEqual([GROUP]);
   });
+
+  test("P1. candidates beyond the 50 busiest are still announced (no queue starvation)", async () => {
+    // 50 high-volume candidates already announced; 15 low-volume ones waiting.
+    const candidates = [
+      ...Array.from({ length: 50 }, (_, i) => candidateRow(i, { notified_revision: 1 })),
+      ...Array.from({ length: 15 }, (_, i) => candidateRow(50 + i)),
+    ];
+    const db = fakeDb({ produce_transactions: [], produce_category_rules: [], produce_category_candidates: candidates });
+    const pushed: string[] = [];
+    const push = async (_to: string, _m: unknown, retryKey: string) => { pushed.push(retryKey); };
+    expect((await runCategoryDiscovery(db.client as never, window, push, NOTIFY_ENV)).notified).toBe(ANNOUNCE_PER_RUN);
+    expect((await runCategoryDiscovery(db.client as never, window, push, NOTIFY_ENV)).notified).toBe(5);
+    expect((await runCategoryDiscovery(db.client as never, window, push, NOTIFY_ENV)).notified).toBe(0);
+    expect(new Set(pushed).size).toBe(15); // each waiting candidate exactly once
+    expect(candidates.slice(50).every((c) => c.notified_revision === 1)).toBe(true);
+    const queueQuery = db.requests.find((r) => r.table === "produce_category_candidates")!;
+    expect(queueQuery.filters).toEqual(["needs_announcement=true"]);
+  });
+
+  test("P1. 60 fresh candidates drain FIFO in 6 runs of at most 10; a new revision re-queues once", async () => {
+    const candidates = Array.from({ length: 60 }, (_, i) => candidateRow(i));
+    const db = fakeDb({ produce_transactions: [], produce_category_rules: [], produce_category_candidates: candidates });
+    const order: string[] = [];
+    const push = async (_to: string, messages: unknown) => {
+      order.push(JSON.stringify(messages).match(/ผู้สมัคร\d{3}/)![0]);
+    };
+    for (let run = 0; run < 6; run++) {
+      expect((await runCategoryDiscovery(db.client as never, window, push, NOTIFY_ENV)).notified).toBe(10);
+    }
+    expect(order).toEqual(candidates.map((c) => c.product_name));
+    candidates[59]!.revision = 2; // proposal changed
+    expect((await runCategoryDiscovery(db.client as never, window, push, NOTIFY_ENV)).notified).toBe(1);
+    expect((await runCategoryDiscovery(db.client as never, window, push, NOTIFY_ENV)).notified).toBe(0);
+  });
 });
+
 
 describe("LINE review postback", () => {
   const candidate = {

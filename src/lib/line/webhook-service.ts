@@ -12,6 +12,7 @@ import type { Database, Json, LineMessageType } from "@/types/database";
 import { getSourceId, getUserId, getPendingSessionKey } from "@/lib/line/verify";
 import { handleCategoryReviewPostback, isCategoryReviewPostback } from "@/lib/produce/category-learning/review";
 import { policyCodeFor } from "@/lib/produce/category-learning/discovery";
+import { withApprovedCategoryRules } from "@/lib/produce/category-learning/rules";
 import { parserRegistry } from "@/lib/parsers/registry";
 import { logger } from "@/lib/logger";
 import {
@@ -1098,13 +1099,13 @@ export class WebhookService {
     // idempotent on the event id as a second guard.
     if (event.type === "postback" && isCategoryReviewPostback((event as LinePostbackEvent).postback?.data ?? "")) {
       const postbackEvent = event as LinePostbackEvent;
-      const reply = await handleCategoryReviewPostback({
+      const reply = await withApprovedCategoryRules(this.supabase, () => handleCategoryReviewPostback({
         data: postbackEvent.postback.data,
         lineEventId: eventId,
         userId: getUserId(postbackEvent.source) ?? null,
         sourceType: postbackEvent.source.type,
         sourceId: getSourceId(postbackEvent.source),
-      }, { supabase: this.supabase as unknown as SupabaseClient, aliasCodeFor: policyCodeFor });
+      }, { supabase: this.supabase as unknown as SupabaseClient, aliasCodeFor: policyCodeFor }));
       if (reply && postbackEvent.replyToken) await replyMessage(postbackEvent.replyToken, reply);
       return { eventId, eventType: event.type, status: "saved" };
     }

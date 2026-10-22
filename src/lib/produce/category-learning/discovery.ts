@@ -12,7 +12,7 @@ import { PRODUCT_CODE_ENTRIES } from "@/lib/produce/product-code/dictionary";
 import { canonicalProduceProductIdentity } from "@/lib/produce/product-vocabulary";
 import { produceSectionOf } from "@/lib/summary/produce-section";
 import { stockCategoryEntries, stockCategoryFor } from "@/lib/summary/stock-categories";
-import { loadApprovedCategoryRules } from "./rules";
+import { enterCategoryPolicy, loadApprovedCategoryPolicy } from "./rules";
 import { buildCategoryReviewMessage, categoryReviewGroupIds, type CategoryCandidate } from "./review";
 
 /**
@@ -164,6 +164,9 @@ function retryKey(...parts: string[]): string {
 
 export type PushMessages = (to: string, messages: Record<string, unknown>[], retryKey: string) => Promise<unknown>;
 
+/** Cap per run so a first backfill cannot flood the review group. */
+export const ANNOUNCE_PER_RUN = 10;
+
 export interface DiscoveryResult {
   scannedRows: number;
   discovered: number;
@@ -183,7 +186,8 @@ export async function runCategoryDiscovery(
   push: PushMessages,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<DiscoveryResult> {
-  await loadApprovedCategoryRules(supabase);
+  // One category snapshot for the whole run (rules.ts).
+  enterCategoryPolicy(await loadApprovedCategoryPolicy(supabase));
   const rows = await fetchTransactionNames(supabase, window.fromDate, window.toDate);
   const discovered = discoverCategoryCandidates(rows);
 
@@ -211,14 +215,15 @@ export async function runCategoryDiscovery(
   const { data, error } = await supabase
     .from("produce_category_candidates")
     .select("id, product_name, suggested_category, confidence, suggestion_reason, similar_product_name, occurrence_count, distinct_dates, first_seen, last_seen, sample_markets, revision, notified_revision")
-    .eq("status", "pending")
-    .order("occurrence_count", { ascending: false })
-    .limit(50);
+    // FIFO over exactly the unannounced revisions (generated column, migration
+    // 20261022130000), so the queue drains and nothing waits behind others forever.
+    .eq("needs_announcement", true)
+    .order("created_at", { ascending: true })
+    .order("product_name", { ascending: true })
+    .limit(ANNOUNCE_PER_RUN);
   if (error) throw new Error(`category candidate read failed: ${error.message}`);
 
-  const unannounced = ((data ?? []) as (CategoryCandidate & { notified_revision: number | null })[])
-    .filter((c) => c.notified_revision === null || c.notified_revision < c.revision)
-    .slice(0, 10); // ponytail: cap per run so a first backfill cannot flood the group
+  const unannounced = (data ?? []) as CategoryCandidate[];
   for (const candidate of unannounced) {
     const message = buildCategoryReviewMessage(candidate, policyCodeFor(candidate.similar_product_name ?? ""));
     for (const group of groups) {

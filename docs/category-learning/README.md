@@ -15,10 +15,20 @@ report, without touching product identity or money.
   - Stock Summary — `stockCategoryFor`
   - Morning Brief LINE + PDF sections — `produceSectionOf`, `morningBriefProductIdentity`
   - LINE category totals / good-return value — `dictionaryCategoryFor`
-- **Rules without a deployment.** Reports call `loadApprovedCategoryRules()`
-  before classifying (`fetchRemainingFruitRows`, `loadMorningBriefReport`,
-  `/api/cron/daily-summary`). A failed load keeps the previous snapshot; a
-  report never fails because of this feature.
+- **Rules without a deployment, one snapshot per report.** Each report loads
+  ONE complete immutable snapshot (`loadApprovedCategoryPolicy`, keyset pages
+  of 1,000 by `product_name`) and pins it for its whole async run with
+  AsyncLocalStorage (`withApprovedCategoryRules` / `enterCategoryPolicy`), so a
+  concurrent report's refresh can never change categories midway. Pinned in:
+  `/api/cron/daily-stock-summary`, `/api/cron/daily-morning-brief` (report, PDF,
+  messages), `/api/cron/daily-summary`, `loadStockSummary`, discovery, review
+  postbacks.
+- **Failure never yields a partial snapshot.** Any page error → the last
+  complete snapshot this process loaded, else business rules only. A report
+  never fails because of this feature.
+- **Ingestion path stays DB-free.** Session-close receipts (`reply.ts`,
+  failed-session recovery) run outside a report and use business rules only;
+  Produce ingestion never waits on the rule table.
 
 Business rules shipped in code (`BUSINESS_CATEGORY_RULES`):
 `มะละกอดิบ → ผ` (separate product from `มะละกอ`, which stays fruit) and
@@ -34,7 +44,8 @@ Business rules shipped in code (`BUSINESS_CATEGORY_RULES`):
   → suggestCategory: 1-letter typo of a known name (high) | known prefix (medium) | none (low)
   → observe_produce_category_candidate (durable per name; evidence: count, dates, markets)
   → if CATEGORY_REVIEW_NOTIFY_ENABLED=true: Flex card to CATEGORY_REVIEW_LINE_GROUP_IDS
-    for each pending candidate whose revision was not yet announced (max 10/run,
+    for the next unannounced revisions, FIFO (`needs_announcement`, ordered by
+    created_at, product_name; max 10/run, so the queue always drains;
     LINE retry key = candidate+revision+group)
 
 LINE postback  pcat1|<candidate>|<revision>|<action>|<code>
@@ -52,7 +63,7 @@ engineering identity review, never applied at run time) · register distinct new
 product (category rule, no product code) · reject (reopens only for a different
 suggestion) · mark legitimate other (never re-alerted).
 
-## Tables (migration `20261022120000_produce_category_learning.sql`)
+## Tables (migrations `20261022120000_produce_category_learning.sql`, `20261022130000_produce_category_announce_queue.sql`)
 
 | Table | Purpose |
 |---|---|

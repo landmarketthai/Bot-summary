@@ -232,7 +232,10 @@ describe("daily morning brief cron", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ targetMode: "marker", targetCount: 1, sentCount: 1 });
     expect(pushCalls.every((call) => call.to === "Cmarker12345678901")).toBe(true);
-    expect(markerOps).toEqual([
+    // The marker lookup comes first; the report's category-rule load follows it.
+    const rulesLoad = markerOps.findIndex(([op, table]) => op === "from" && table === "produce_category_rules");
+    expect(rulesLoad).toBeGreaterThan(0);
+    expect(markerOps.slice(0, rulesLoad)).toEqual([
       ["from", "raw_messages"],
       ["select", "source_id"],
       ["eq", "raw_text", "Make down"],
