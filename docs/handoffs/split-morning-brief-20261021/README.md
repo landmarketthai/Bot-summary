@@ -1,6 +1,8 @@
-# แยก Morning Brief ผลไม้ 08:00 / ผัก 13:00
+# แยก Morning Brief ผลไม้ 08:00 / ผัก 14:00
 
 ฐานงาน: `80a38e9dc6e266a011b19dd693e0ae767a35b0d4` (latest main รวม PR #184)
+
+อัปเดต 22 ต.ค. 2569: เปลี่ยนเวลาผักที่กำหนดไว้เป็น **14:00 Asia/Bangkok / 07:00 UTC** งานนี้แก้ configuration, tests และคู่มือเท่านั้น **ยังไม่เปลี่ยน Production Cron และไม่ส่ง LINE จริง** เวลา 13:00 ที่อยู่ใน PDF/JSON snapshots และสคริปต์ render เดิมเป็นเวลาสร้างหลักฐานย้อนหลัง ไม่ใช่ scheduler
 
 ## ไฟล์ที่เปลี่ยน
 
@@ -16,7 +18,7 @@
 | รายงาน | เวลา Bangkok | Endpoint | ผู้รับ LINE |
 | --- | --- | --- | --- |
 | ผลไม้ | 08:00 / 01:00 UTC | `/api/cron/daily-morning-brief` หรือ `?scope=fruit` | `MORNING_BRIEF_LINE_TARGETS` |
-| ผัก | 13:00 / 06:00 UTC — **ยังไม่เปิด schedule** | `/api/cron/daily-morning-brief?scope=vegetable` | `MORNING_BRIEF_VEGETABLE_LINE_TARGETS` |
+| ผัก | 14:00 / 07:00 UTC — **รออนุมัติเปลี่ยน Production** | `/api/cron/daily-morning-brief?scope=vegetable` | `MORNING_BRIEF_VEGETABLE_LINE_TARGETS` |
 
 ทั้งสองใช้ business date ก่อนหน้าจาก helper เดิม (`resolveStockSummaryDate`) และรองรับ `?date=YYYY-MM-DD` สำหรับ backfill โดยไม่เลื่อนวัน ข้อมูลอ้างอิง `produce_transactions.transaction_date` ไม่ใช่เวลาเข้า LINE
 
@@ -86,7 +88,7 @@ PDF retry key แยก scope/date/target และมี part identity คง�
 | 8 | รอตรวจ | PASS — return price mismatch แยก pending; ไม่รวม confirmed |
 | 9 | คำนวณไม่ได้ | PASS — invalid quantity คง null และ excluded count |
 | 10 | เบิก/คืนต่างรอบ | PASS — no_matching_accountability_round; ไม่จับคู่ข้ามรอบ |
-| 11 | ข้อมูลเข้าหลัง 13:00 | PASS — คง business date เดิม; manual rerun จาก not_ready เป็น ready ได้ |
+| 11 | ข้อมูลเข้าหลัง 14:00 | PASS — คง business date เดิม; manual rerun จาก not_ready เป็น ready ได้ |
 | 12 | รันซ้ำ | PASS — mock provider ยอมรับครั้งเดียวด้วย key เดิม; แยก fruit/vegetable และ fixed PDF key |
 | 13 | Path ไม่ชน | PASS — legacy/fruit/vegetable มี 6 paths ไม่ซ้ำ; real renderer + fake bucket ยืนยัน PDF/ref ของแต่ละ scope |
 | 14 | A4 / ตัวเลข / ตาราง | PASS — geometry, ทุกเลขหน้า, ไม่มีหน้ารายการชั่ง, ตรวจ PNG และคง baseline overflow 64 สินค้า 4 หน้า |
@@ -115,6 +117,7 @@ Production view ตรวจแล้วว่า `produce_transactions` อ่�
 
 ### ตรวจ build / tests
 
+- เปลี่ยนเวลา 22 ต.ค. 2569: **112 tests / 5 suites ผ่านทั้งหมด** — scheduler configuration 21, scoped readiness/fields/idempotency 23, PDF 39, sales integrity 7 และ Morning Brief route 22; typecheck, ESLint ของ tests ที่แก้ และ `git diff --check` ผ่าน ใช้ synthetic/mocked I/O เท่านั้น ไม่อ่านข้อมูลธุรกิจ Production และไม่ส่ง LINE จริง ตรวจ SQL เป็น configuration contract เท่านั้น ยังไม่ได้ execute หรือเปลี่ยน Production Cron
 - Affected regression: **1,453 tests / 60 ไฟล์ ผ่านทั้งหมด** รันแต่ละไฟล์แยก process เพื่อกัน `mock.module` leakage ใน Bun ครอบคลุม summary, sales, physical inventory, white sheet, round returns, reconciliation, settlement, LINE reply และ cron ทั้ง 3 ตัว ดูผลราย suite ใน `regression.json`
 - หลังเอาสถานะและรายละเอียดการตรวจข้อมูลออก รัน PDF/scope/sales integrity ซ้ำ **68 tests ผ่าน**, typecheck และ ESLint ผ่าน ตรวจ PNG synthetic ใหม่และเทียบ baseline ทั้ง 4 fixtures ได้ identical pixels ทุกหน้า
 - Typecheck และ Next.js build ผ่าน Build ใช้ Supabase URL `http://127.0.0.1:9` กับ placeholder keys เพื่อไม่ให้ prerender อ่าน Production
@@ -124,17 +127,19 @@ Production view ตรวจแล้วว่า `produce_transactions` อ่�
 
 ทำซ้ำ synthetic: `bun test --timeout 30000 src/lib/summary/morning-brief-scope.test.ts`, `bun docs/handoffs/split-morning-brief-20261021/render.tsx` และ Python `verify.py` (ต้องมี baseline checkout และ Poppler ตาม path ใน script)
 
-## Production activation — ยังไม่ได้ดำเนินการ
+## เปลี่ยน Production เป็น 14:00 — รออนุมัติ ยังไม่ได้ดำเนินการ
 
-1. ตรวจ PR/CI แล้วจึง merge และ deploy ตามขั้นตอนของเจ้าของระบบ งานนี้หยุดก่อน merge/deploy
-2. ก่อน deploy ตรวจ external legacy consumers และรายชื่อผู้รับ PDF เดิมของ 08:05 ให้ครบใน Morning Brief ผู้รับข้อความสต็อกเดิมไม่ต้องเปลี่ยน ถ้าต้องการให้คนละกลุ่มได้ข้อความสต็อกกับ PDF ให้ตกลงรายชื่อ Morning Brief โดยชัดเจน
-3. เรียก endpoint แบบ authenticated พร้อม `scope=fruit&debug=1` และ `scope=vegetable&date=YYYY-MM-DD&debug=1` เพื่อตรวจ scope/date/สถานะ โดยไม่ส่ง LINE และไม่ upload
-4. คง Supabase Cron 08:00, 08:05, 08:10 ตามเดิม ไม่เพิ่ม GitHub schedule หรือ Vercel cron ซ้อน
-5. หลังได้รับอนุมัติเปิดผักจริงเท่านั้น ตั้ง `MORNING_BRIEF_VEGETABLE_LINE_TARGETS` และสร้าง **หนึ่ง** Supabase Cron ที่ `0 6 * * *` ใช้วิธี auth เดียวกับงานเดิม เรียก `/api/cron/daily-morning-brief?scope=vegetable` โดยไม่ใส่ date/target/retry_nonce
-6. เปิดที่ขอบวันรายงานใหม่เพื่อลดความเสี่ยงส่งซ้ำจากการเปลี่ยน PDF namespace ระหว่างวัน ตรวจ HTTP response, not_ready reasons, scoped paths และผู้รับหลังรันจริง ไม่มี hourly retry ใน phase นี้
+Automatic scheduling อยู่ที่ Supabase Cron เท่านั้น GitHub Actions คง manual-only และไม่เพิ่ม Vercel cron รอบนี้ไม่ต้อง rebuild รายงานหรือเปลี่ยน endpoint, ผู้รับ, PDF fields, calculator, validation หรือ readiness: ผักยังต้องมีเอกสารเบิกและคืนดีของพาซิโอ้ผักที่ผูก Accountability Round ตามเงื่อนไขเดิม คืนเสียเป็น optional และยังใช้ calculator เดิม
 
-## Rollback
+1. ต้องได้รับ explicit approval ก่อนเปลี่ยน Production Cron หรือส่ง LINE จริง รอบนี้ไม่ได้อ่านข้อมูลธุรกิจจาก Production
+2. หลังอนุมัติ operator ตรวจ metadata ของ job `daily-morning-brief-vegetable` และ timezone ของ Cron ว่าเป็น UTC/GMT โดยไม่อ่านข้อมูลธุรกิจ
+3. ใช้ [reschedule-vegetable-1400.sql](./reschedule-vegetable-1400.sql) เพื่อแก้ **job เดิม** ด้วย `cron.alter_job` เป็น `0 7 * * *` สคริปต์ไม่สร้าง job ใหม่ ไม่เปลี่ยน active state, command, auth หรือผู้รับ และไม่เรียก endpoint/ส่ง LINE หากไม่พบ job เดิม พบหลาย job ชื่อเดียวกัน หรือพบ job ผักอื่นที่ active สคริปต์จะหยุดก่อนเปลี่ยนเวลา ให้ operator ตรวจและจัดการ duplicate ภายใต้การอนุมัติก่อนรันใหม่
+4. ตรวจหลังเปลี่ยนว่ามี active Vegetable job เพียงตัวเดียวที่ `0 7 * * *` และไม่มี Vegetable job เก่าที่ `0 6 * * *` active ควบคู่กัน ถ้า job เดิม inactive ให้คง inactive จนได้รับอนุมัติเปิด แถวผลไม้ `daily-morning-brief` ต้องยังเป็น `0 1 * * *` (08:00 ไทย) และงาน 08:05/08:10 คงเดิม
+5. ใช้ business date ก่อนหน้าจาก `resolveStockSummaryDate` เดิม ไม่ส่ง date/target/retry_nonce override ใน cron เวลา 13:00 และ 14:00 ของวันเดียวกันยัง resolve เป็นวันขายเดียวกัน และสร้าง LINE text/PDF retry keys เดียวกัน จึงไม่เปิด namespace ใหม่จากการเลื่อนเวลา
+6. ถ้ารอบ 13:00 ของวันเปลี่ยนส่งสำเร็จไปแล้ว ไม่สั่ง manual resend/nonce เพื่อบังคับส่งซ้ำตอน 14:00 การกันซ้ำยังอยู่ใน LINE retry-key window 24 ชั่วโมงตามเดิม ไม่มี hourly retry ใหม่
 
-หากยังไม่เปิด 13:00 ให้ย้อน deployment/commit เท่านั้น ถ้าเปิดแล้วให้ปิดเฉพาะ job ผักที่เพิ่มใหม่ก่อนย้อน deployment และคืน target config ที่เปลี่ยนไว้ ไม่แก้ sales, slips, white sheet, settlements หรือข้อมูลธุรกิจ ไม่ลบ legacy/scoped PDFs และไม่ต้อง rollback migration เพราะไม่มี migration ใหม่ อย่ารัน manual resend พร้อม retry_nonce ระหว่าง rollback โดยไม่ตั้งใจ
+## Rollback เฉพาะการเลื่อนเวลา
+
+หลังได้รับอนุมัติเท่านั้น ให้แก้ schedule ของ **job เดิมตัวเดียว** กลับเป็น `0 6 * * *` และตรวจว่าไม่มีรอบ 14:00 active แยกอยู่ ไม่สร้าง job ใหม่ ไม่ต้องย้อน PDF/calculator/deployment หรือแก้ข้อมูลธุรกิจ เพราะรอบนี้ไม่ได้เปลี่ยน implementation ของรายงาน ไม่มี migration และไม่เปลี่ยนผู้รับหรือ retry identities
 
 ข้อจำกัด: ระบบยังไม่มี allocation สต็อกบ้านให้ผัก และยังไม่มี hourly retry การป้องกันส่งซ้ำใช้ [LINE retry-key window 24 ชั่วโมง](https://developers.line.biz/en/docs/messaging-api/retrying-api-request/) ตามระบบเดิม ไม่รับประกันการรันย้อนหลังหลายวันว่าจะไม่ส่งซ้ำ ต้องเพิ่ม durable receipts ก่อนรองรับ automatic multi-day resend

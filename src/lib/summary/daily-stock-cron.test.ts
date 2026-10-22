@@ -166,6 +166,22 @@ describe("scheduler configuration", () => {
     expect(yaml).toContain("Supabase Cron");
     expect(yaml).toContain("/api/cron/daily-morning-brief");
     expect(yaml).toContain("Authorization: Bearer ${{ secrets.CRON_SECRET }}");
+    expect(yaml).toContain("Fruit 08:00");
+    expect(yaml).toContain("Vegetable 14:00");
+    expect(yaml).toContain("07:00 UTC");
+    expect(yaml).not.toContain("13:00");
+  });
+
+  test("the approval-only Vegetable change replaces the old job schedule without adding or activating a job", async () => {
+    const sql = await Bun.file(
+      `${import.meta.dir}/../../../docs/handoffs/split-morning-brief-20261021/reschedule-vegetable-1400.sql`,
+    ).text();
+    expect(sql).toContain("cron.alter_job(job_id := vegetable_job_id, schedule := '0 7 * * *')");
+    expect(sql).toContain("jobname = 'daily-morning-brief-vegetable'");
+    expect(sql).toContain("jobid <> vegetable_job_id and active");
+    expect(sql).toContain("raise exception 'Another active Vegetable job exists");
+    expect(sql).not.toMatch(/cron\.(schedule|unschedule)\s*\(/);
+    expect(sql).not.toMatch(/active\s*:=|command\s*:=|net\.http_|0 6 \* \* \*/);
   });
 
   test("daily-stock-summary is NOT a vercel.json cron (Hobby plan firing is approximate)", async () => {

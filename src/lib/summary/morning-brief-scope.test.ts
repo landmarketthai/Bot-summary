@@ -110,7 +110,7 @@ describe("market-scoped Morning Brief UAT (synthetic, no network)", () => {
     const report = await loadMorningBriefReport(client, DATE, "vegetable");
     expect(report.readiness?.status).toBe("ready");
     expect(report.businessDate).toBe(DATE);
-    expect(resolveStockSummaryDate(null, Date.parse("2026-10-20T13:00:00+07:00"))).toBe(DATE);
+    expect(resolveStockSummaryDate(null, Date.parse("2026-10-20T14:00:00+07:00"))).toBe(DATE);
     expect(resolveStockSummaryDate(null, Date.parse("2026-10-20T08:00:00+07:00"))).toBe(DATE);
   });
 
@@ -148,7 +148,7 @@ describe("market-scoped Morning Brief UAT (synthetic, no network)", () => {
     const { client } = scopeFixture({ damage: true });
     for (const scope of ["fruit", "vegetable"] as const) {
       const report = await loadMorningBriefReport(client, DATE, scope);
-      await createMorningBriefPdfArtifact(storage, report, new Date("2026-10-20T13:00:00+07:00"));
+      await createMorningBriefPdfArtifact(storage, report, new Date("2026-10-20T14:00:00+07:00"));
     }
     expect(new Set(uploads.map((upload) => upload.path)).size).toBe(4);
     const references = uploads.filter((upload) => upload.path.endsWith(".json"))
@@ -164,5 +164,18 @@ describe("market-scoped Morning Brief UAT (synthetic, no network)", () => {
     expect(fruit).not.toBe(morningBriefPdfRetryKey(DATE, "Csynthetic", "vegetable"));
     expect(morningBriefRetryKey(DATE, "Csynthetic", 0)).not.toBe(morningBriefRetryKey(DATE, "Csynthetic", 0, undefined, "vegetable"));
     for (let part = 0; part < 5; part++) expect(fruit).not.toBe(morningBriefRetryKey(DATE, "Csynthetic", part));
+  });
+
+  test("moving Vegetable from 13:00 to 14:00 keeps the business date and LINE delivery identities", () => {
+    const dates = ["13:00", "14:00"].map(time =>
+      resolveStockSummaryDate(null, Date.parse(`2026-10-20T${time}:00+07:00`)));
+    expect(dates).toEqual([DATE, DATE]);
+    const pdfKeys = dates.map(date => morningBriefPdfRetryKey(date, "Csynthetic", "vegetable"));
+    expect(new Set(pdfKeys).size).toBe(1);
+    for (let part = 0; part < 5; part++) {
+      const keys = dates.map(date => morningBriefRetryKey(date, "Csynthetic", part, undefined, "vegetable"));
+      expect(new Set(keys).size).toBe(1);
+    }
+    expect(resolveStockSummaryDate(null, Date.parse("2026-10-20T07:00:00Z"))).toBe(DATE);
   });
 });
