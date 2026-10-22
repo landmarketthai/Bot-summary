@@ -1,12 +1,12 @@
 name: daily-morning-brief
 
-# Automatic 08:00 Asia/Bangkok delivery is owned by Supabase Cron.
+# Supabase Cron owns Fruit 08:00 and Vegetable 14:00 Asia/Bangkok delivery.
 # Keep GitHub Actions manual-only so two schedulers cannot race the same report.
 on:
   workflow_dispatch:
     inputs:
       scope:
-        description: "Report market scope. Vegetable is manual-only until Production approval (13:00 Bangkok / 06:00 UTC)."
+        description: "Report market scope. Fruit 08:00 / Vegetable 14:00 Bangkok (07:00 UTC); Production schedule changes require approval."
         required: true
         type: choice
         options: [fruit, vegetable]
