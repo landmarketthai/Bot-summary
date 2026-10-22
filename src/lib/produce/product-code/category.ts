@@ -81,6 +81,58 @@ function buildCanonicalMap(): ReadonlyMap<string, ProductCodeEntry> {
 
 const BY_CANONICAL_NAME = buildCanonicalMap();
 
+/**
+ * Admin-approved runtime CATEGORY rules (produce_category_rules). Exact NFC
+ * name → category only: never identity, never a product code. "other" marks a
+ * reviewed legitimate other. Every report surface reads these through
+ * approvedCategoryFor so one approval reaches Stock Summary, Morning Brief,
+ * PDF and LINE category totals without a deployment.
+ */
+export type ApprovedCategoryCode = Exclude<ReportCategoryId, typeof UNCATEGORIZED_CATEGORY_ID> | "other";
+export const APPROVED_CATEGORY_CODES: readonly ApprovedCategoryCode[] = ["ท", "ม", "ผ", "ป", "ห", "พ", "other"];
+
+/** Dictionary category names (dictionary.csv `category`) per code. */
+export const DICTIONARY_CATEGORY_NAME: Record<ApprovedCategoryCode, string> = {
+  ท: "ทุเรียน",
+  ม: "ผลไม้",
+  ผ: "ผัก / สมุนไพร / เครื่องประกอบอาหาร",
+  ป: "ปลา / อาหารแห้ง / ของแห้ง",
+  ห: "เห็ด",
+  พ: "รายการพิเศษ",
+  other: "อื่นๆ",
+};
+
+/**
+ * Business-approved rules shipped in code; admin rules from the database are
+ * layered on top. Category only — มะละกอดิบ (green papaya, vegetable) and
+ * มะละกอ (ripe papaya, fruit) stay two separate products.
+ */
+const BUSINESS_CATEGORY_RULES: ReadonlyArray<readonly [string, ApprovedCategoryCode]> = [
+  ["มะละกอดิบ", "ผ"],
+  // Legitimately "other" per business; listed so it never raises a review.
+  // (ปลาทู / ขนมจีน are already ป in the code table.)
+  ["เต้าหู้แผ่น", "other"],
+];
+
+// ponytail: process-wide snapshot, refreshed by each report load; per-request
+// injection only if rules ever need to differ between concurrent reports.
+let approvedRules: ReadonlyMap<string, ApprovedCategoryCode> = new Map(BUSINESS_CATEGORY_RULES);
+
+export function setApprovedCategoryRules(rules: Iterable<readonly [string, string]>): void {
+  const next = new Map<string, ApprovedCategoryCode>(BUSINESS_CATEGORY_RULES);
+  for (const [name, code] of rules) {
+    const key = name.normalize("NFC").trim();
+    if (key && (APPROVED_CATEGORY_CODES as readonly string[]).includes(code)) {
+      next.set(key, code as ApprovedCategoryCode);
+    }
+  }
+  approvedRules = next;
+}
+
+export function approvedCategoryFor(productName: string): ApprovedCategoryCode | undefined {
+  return approvedRules.get(productName.normalize("NFC").trim());
+}
+
 /** Dictionary entry for an exact canonical name, or null if unknown. */
 export function dictionaryEntryFor(productName: string): ProductCodeEntry | null {
   const key = productName.normalize("NFC").trim();
@@ -93,6 +145,8 @@ export function dictionaryEntryFor(productName: string): ProductCodeEntry | null
  * Unknown / blank names return ไม่จัดหมวด. Never guesses.
  */
 export function dictionaryCategoryFor(productName: string): ReportCategoryId {
+  const approved = approvedCategoryFor(productName);
+  if (approved) return approved === "other" ? UNCATEGORIZED_CATEGORY_ID : approved;
   const entry = dictionaryEntryFor(productName);
   if (!entry) return UNCATEGORIZED_CATEGORY_ID;
   return isDictionaryCategoryId(entry.categoryCode) ? entry.categoryCode : UNCATEGORIZED_CATEGORY_ID;

@@ -1,3 +1,4 @@
+import { loadApprovedCategoryRules } from "@/lib/produce/category-learning/rules";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 import { logger } from "@/lib/logger";
@@ -237,6 +238,7 @@ export async function loadMorningBriefReport(
   businessDate: string,
   reportScope?: MorningBriefScope,
 ): Promise<MorningBriefReport> {
+  await loadApprovedCategoryRules(supabase);
   const allRows = await fetchSalesProduceRows(supabase, businessDate);
   const roundMarkets = new Map<string, string>();
   if (reportScope) {

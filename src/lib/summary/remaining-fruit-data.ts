@@ -1,3 +1,4 @@
+import { loadApprovedCategoryRules } from "@/lib/produce/category-learning/rules";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 import { KNOWN_TX_TYPES, transactionBucket } from "@/lib/summary/transactions";
@@ -22,6 +23,7 @@ export async function fetchRemainingFruitRows(
   date: string,
   marketFilter?: string | null,
 ): Promise<RemainingFruitSourceRow[]> {
+  await loadApprovedCategoryRules(supabase);
   const rows: RemainingFruitSourceRow[] = [];
   let offset = 0;
 

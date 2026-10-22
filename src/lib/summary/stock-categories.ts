@@ -24,7 +24,7 @@
  * business disagrees.
  */
 
-import { dictionaryCategoryFor } from "@/lib/produce/product-code/category";
+import { approvedCategoryFor, dictionaryCategoryFor, type ApprovedCategoryCode } from "@/lib/produce/product-code/category";
 
 export type StockCategory = "ทุเรียน" | "ผลไม้" | "ผัก" | "ไม่จัดหมวด";
 
@@ -383,6 +383,12 @@ function buildMap(): ReadonlyMap<string, StockCategory> {
 
 const CATEGORY_BY_PRODUCT = buildMap();
 
+// Mushrooms sell in the ผัก section; fish / dry goods / special packs and
+// reviewed "other" have no Stock category of their own.
+const STOCK_CATEGORY_BY_CODE: Record<ApprovedCategoryCode, StockCategory> = {
+  ท: "ทุเรียน", ม: "ผลไม้", ผ: "ผัก", ห: "ผัก", ป: UNCATEGORIZED, พ: UNCATEGORIZED, other: UNCATEGORIZED,
+};
+
 /**
  * Resolve a canonical product name to its Stock category.
  * Unmapped products return UNCATEGORIZED — they stay in the report.
@@ -390,6 +396,10 @@ const CATEGORY_BY_PRODUCT = buildMap();
 export function stockCategoryFor(canonicalProductName: string): StockCategory {
   const name = canonicalProductName.normalize("NFC").trim();
   if (!name) return UNCATEGORIZED;
+
+  // Approved category rules are the one cross-report policy and win first.
+  const approved = approvedCategoryFor(name);
+  if (approved) return STOCK_CATEGORY_BY_CODE[approved];
 
   const explicit = CATEGORY_BY_PRODUCT.get(name);
   if (explicit) return explicit;
