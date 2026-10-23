@@ -13,6 +13,20 @@ Scope: category classification only. Out of scope: PR #158, PR #174.
 
 The five independent cases map to: F1a, F1b, F2 (`manual สรุปคงเหลือ …`), F3a, F3b.
 
+## Round 2 (053313c): exhausted pending delivery after a crash
+
+| | |
+|---|---|
+| Root cause | claim increments `attempts` before the push; a crash before `complete_…` leaves the row `pending`. At `attempts = max` claim skipped it (`attempts < max`) and requeue skipped it (`blocked`/`retryable` only). |
+| Fix | new migration `20261023120000_produce_category_delivery_exhaustion.sql` (rollback `supabase/rollback/20261023120000_produce_category_delivery_exhaustion.down.sql` restores the 20261023100000 definitions). `claim_…` first moves exhausted, unleased, current-revision `pending`/`retryable` rows to `blocked` (token + lease cleared). `requeue_…` also restores `pending` rows with spent attempts, and for every status only when no lease is active, so one `?requeue=blocked&group=` request recovers them. Same signatures; grants kept. |
+| Regression | `category-delivery.pg.test.ts` → `exhausted claims after a crash (round 2 P1)`, 7 tests: 1 discovery blocks, 2 ONE handler request recovers (reconciled or not), 3 active final-attempt lease untouched + late completion honoured, 4+5 only A's card, B untouched, no duplicate to delivered, 6 concurrent runs + superseded token ignored, 7 health exact, 8 retry key stable. Rollback test asserts the restored definitions. |
+| Before / after | without 20261023120000: 6 fail / 1 pass (test 3, the active-lease guard). With it: 7 / 7. |
+
+```bash
+ALLOW_DISPOSABLE_POSTGRES_TESTS=1 REQUIRE_CATEGORY_LEARNING_POSTGRES=1 PGHOST=localhost PGUSER=postgres PGPASSWORD=postgres \
+  bun test src/lib/produce/category-learning/category-delivery.pg.test.ts -t "round 2"
+```
+
 ## High-risk code
 
 | File | Functions | What to check |

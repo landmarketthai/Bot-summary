@@ -151,13 +151,20 @@ describe.skipIf(!pgAvailable)("produce category learning migration", () => {
       for (const file of CATEGORY_MIGRATIONS) await apply(file);
       expect(Number(await objects())).toBeGreaterThan(0);
       // Reverse order; each step leaves a consistent schema.
-      await apply(CATEGORY_ROLLBACKS[0]!);
-      expect((await psql(["-tAc", "SELECT count(*) FROM pg_trigger WHERE tgname = 'produce_category_decisions_no_truncate'"], db)).stdout.trim()).toBe("0");
+      const definitionHas = async (fn: string, text: string) => (await psql(["-tAc",
+        `SELECT position('${text}' IN pg_get_functiondef('public.${fn}'::regproc)) > 0`], db)).stdout.trim();
+      expect(await definitionHas("claim_produce_category_deliveries", "attempts exhausted")).toBe("t");
+      await apply(CATEGORY_ROLLBACKS[0]!); // 20261023120000: original claim / requeue restored
+      expect(await definitionHas("claim_produce_category_deliveries", "attempts exhausted")).toBe("f");
+      expect(await definitionHas("requeue_produce_category_deliveries", "d.attempts > 0")).toBe("f");
+      expect((await psql(["-tAc", "SELECT has_function_privilege('service_role', 'public.claim_produce_category_deliveries(text[],integer,integer,integer)', 'EXECUTE')"], db)).stdout.trim()).toBe("t");
       await apply(CATEGORY_ROLLBACKS[1]!);
-      expect((await psql(["-tAc", "SELECT to_regclass('public.produce_category_deliveries') IS NULL"], db)).stdout.trim()).toBe("t");
+      expect((await psql(["-tAc", "SELECT count(*) FROM pg_trigger WHERE tgname = 'produce_category_decisions_no_truncate'"], db)).stdout.trim()).toBe("0");
       await apply(CATEGORY_ROLLBACKS[2]!);
-      expect((await psql(["-tAc", `SELECT count(*) FROM information_schema.columns WHERE column_name = 'needs_announcement'`], db)).stdout.trim()).toBe("0");
+      expect((await psql(["-tAc", "SELECT to_regclass('public.produce_category_deliveries') IS NULL"], db)).stdout.trim()).toBe("t");
       await apply(CATEGORY_ROLLBACKS[3]!);
+      expect((await psql(["-tAc", `SELECT count(*) FROM information_schema.columns WHERE column_name = 'needs_announcement'`], db)).stdout.trim()).toBe("0");
+      await apply(CATEGORY_ROLLBACKS[4]!);
       expect(await objects()).toBe("0");
       expect(await business()).toBe(before);
       for (const file of CATEGORY_MIGRATIONS) await apply(file);

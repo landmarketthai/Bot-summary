@@ -15,6 +15,7 @@ import { LinePushError } from "@/lib/line/reply";
 import { MAX_DELIVERY_ATTEMPTS, requeueCategoryDeliveries, runCategoryDiscovery, type PushMessages } from "./discovery";
 import { fakeDb } from "./test-fake-db";
 import { pgHarness, sqlLiteral } from "./test-pg-harness";
+import { handleCategoryDiscovery } from "@/app/api/cron/category-discovery/handler";
 
 // Each run is several psql round trips; CI runners are slower than a laptop.
 setDefaultTimeout(60_000);
@@ -202,6 +203,181 @@ describe.skipIf(!pgAvailable)("category review delivery ledger (PostgreSQL 17, s
   test("health exposes counts only — no error text, token or payload", async () => {
     const { data } = await rpc("produce_category_delivery_health");
     for (const row of data as Record<string, unknown>[]) expect(Object.keys(row).sort()).toEqual(["deliveries", "group_id", "status"]);
+  });
+
+  // ── Independent review round 2 (053313c), P1: a claim that crashes before
+  // completing spends an attempt but leaves the row pending. After the final
+  // attempt it was neither claimable nor requeueable. Fixed by 20261023120000.
+  describe("exhausted claims after a crash (round 2 P1)", () => {
+    const ONLY_A = { CATEGORY_REVIEW_NOTIFY_ENABLED: "true", CATEGORY_REVIEW_LINE_GROUP_IDS: A } as unknown as NodeJS.ProcessEnv;
+
+    /** Real claim RPC, then "crash": no completion. Returns the claim token(s). */
+    async function crashClaim(groups: string[]): Promise<string[]> {
+      const { data, error } = await rpc("claim_produce_category_deliveries",
+        { p_groups: groups, p_limit: 10, p_lease_seconds: 300, p_max_attempts: MAX_DELIVERY_ATTEMPTS });
+      expect(error).toBeNull();
+      return (data as { claim_token: string }[]).map((row) => row.claim_token);
+    }
+    const expireLeases = () => pg.scalar(`UPDATE public.produce_category_deliveries
+      SET claimed_until = now() - interval '1 second' WHERE claimed_until IS NOT NULL RETURNING 1`).catch(() => "");
+    async function exhaust(groups: string[]): Promise<void> {
+      for (let i = 0; i < MAX_DELIVERY_ATTEMPTS; i++) {
+        expect(await crashClaim(groups)).toHaveLength(groups.length);
+        await expireLeases();
+      }
+    }
+    const row = (name: string, group: string) => pg.scalar(`SELECT d.status || '|' || d.attempts || '|' ||
+        coalesce(d.claim_token::text, '-') || '|' || coalesce(d.claimed_until::text, '-')
+      FROM public.produce_category_deliveries d JOIN public.produce_category_candidates c ON c.id = d.candidate_id
+      WHERE c.product_name = ${sqlLiteral(name)} AND d.group_id = ${sqlLiteral(group)} AND d.revision = c.revision`);
+    async function health(): Promise<Record<string, number>> {
+      const counts: Record<string, number> = {};
+      for (const r of (await rpc("produce_category_delivery_health")).data as { group_id: string; status: string; deliveries: number }[]) {
+        counts[`${r.group_id}:${r.status}`] = Number(r.deliveries);
+      }
+      return counts;
+    }
+
+    /** One authenticated ?requeue=blocked request through the real route handler. */
+    async function requeueRequest(query: string, push: PushMessages, groups = A) {
+      const saved = { ...process.env };
+      Object.assign(process.env, { CRON_SECRET: "test-cron", CATEGORY_REVIEW_NOTIFY_ENABLED: "true", CATEGORY_REVIEW_LINE_GROUP_IDS: groups });
+      try {
+        const res = await handleCategoryDiscovery(
+          new Request(`http://local/api/cron/category-discovery${query}`, { headers: { authorization: "Bearer test-cron" } }),
+          { getClient: () => client() as never, push });
+        return { status: res.status, body: await res.json() as Record<string, unknown> };
+      } finally {
+        process.env = saved;
+      }
+    }
+
+    test("1. crash on the final attempt + expired lease: discovery blocks it instead of stranding it", async () => {
+      await reset();
+      await seed("ค้างถาวร");
+      await exhaust([A]);
+      expect((await row("ค้างถาวร", A)).split("|").slice(0, 2)).toEqual(["pending", "5"]);
+      const sent = recorder();
+      const result = await runCategoryDiscovery(client(), window, sent.push, ONLY_A);
+      expect(sent.sent).toEqual([]);
+      expect(await row("ค้างถาวร", A)).toBe("blocked|5|-|-");
+      expect(result.queue).toMatchObject({ blocked: 1, pending: 0 });
+      expect(result.notified + result.retrying + result.blocked).toBe(0); // reconciled, not attempted
+    });
+
+    test("2. ONE authenticated ?requeue=blocked&group=A request recovers an exhausted pending row, reconciled or not", async () => {
+      await reset();
+      await seed("ค้างไม่ทันรีคอนไซล์");
+      await exhaust([A]); // still pending: no discovery ran since the crash
+      const first = recorder();
+      const res = await requeueRequest(`?requeue=blocked&group=${A}`, first.push);
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ ok: true, requeued: 1, notified: 1 });
+      expect(first.sent.map((s) => `${s.name}@${s.group}`)).toEqual([`ค้างไม่ทันรีคอนไซล์@${A}`]);
+      expect((await row("ค้างไม่ทันรีคอนไซล์", A)).startsWith("delivered|1|-|-")).toBe(true);
+      // The already-reconciled (blocked) path recovers with one request too.
+      await seed("ค้างหลังรีคอนไซล์");
+      await exhaust([A]);
+      await runCategoryDiscovery(client(), window, recorder().push, ONLY_A);
+      expect((await row("ค้างหลังรีคอนไซล์", A)).startsWith("blocked|")).toBe(true);
+      const second = recorder();
+      expect((await requeueRequest(`?requeue=blocked&group=${A}`, second.push)).body).toMatchObject({ requeued: 1, notified: 1 });
+      expect(second.sent.map((s) => s.name)).toEqual(["ค้างหลังรีคอนไซล์"]);
+    });
+
+    test("3. an active final-attempt lease is never modified; its late completion is honoured", async () => {
+      await reset();
+      await seed("ยังส่งอยู่");
+      for (let i = 0; i < MAX_DELIVERY_ATTEMPTS - 1; i++) { await crashClaim([A]); await expireLeases(); }
+      const [token] = await crashClaim([A]); // attempt 5, lease active
+      const before = await row("ยังส่งอยู่", A);
+      expect(before.split("|").slice(0, 3)).toEqual(["pending", "5", token]);
+      const sent = recorder();
+      await runCategoryDiscovery(client(), window, sent.push, ONLY_A);
+      expect((await requeueRequest(`?requeue=blocked&group=${A}`, sent.push)).body).toMatchObject({ requeued: 0, notified: 0 });
+      expect(sent.sent).toEqual([]);
+      expect(await row("ยังส่งอยู่", A)).toBe(before);
+      const id = await pg.scalar(`SELECT id FROM public.produce_category_candidates WHERE product_name = 'ยังส่งอยู่'`);
+      const done = await rpc("complete_produce_category_delivery", {
+        p_candidate_id: id, p_revision: 1, p_group_id: A, p_claim_token: token, p_outcome: "delivered",
+        p_error_code: null, p_error: null, p_max_attempts: MAX_DELIVERY_ATTEMPTS });
+      expect(done.data).toBe("delivered");
+    });
+
+    test("4 + 5. recovering group A sends only A's missing card: no duplicate to delivered recipients, group B untouched", async () => {
+      await reset();
+      await seed("ส่งแล้ว", "ค้างสองกลุ่ม");
+      // "ส่งแล้ว" reaches both groups normally; "ค้างสองกลุ่ม" is then exhausted in both.
+      await runCategoryDiscovery(client(), window, recorder((_g, name) => (name === "ค้างสองกลุ่ม" ? http(500) : undefined)).push, ENV);
+      await pg.scalar(`UPDATE public.produce_category_deliveries d SET status = 'pending', attempts = 1
+        FROM public.produce_category_candidates c WHERE c.id = d.candidate_id AND c.product_name = 'ค้างสองกลุ่ม' RETURNING 1`);
+      for (let i = 1; i < MAX_DELIVERY_ATTEMPTS; i++) { await crashClaim([A, B]); await expireLeases(); }
+      expect((await row("ค้างสองกลุ่ม", A)).split("|").slice(0, 2)).toEqual(["pending", "5"]);
+      expect((await row("ค้างสองกลุ่ม", B)).split("|").slice(0, 2)).toEqual(["pending", "5"]);
+      const recovered = recorder();
+      expect((await requeueRequest(`?requeue=blocked&group=${A}`, recovered.push, `${A},${B}`)).body).toMatchObject({ requeued: 1, notified: 1 });
+      expect(recovered.sent.map((s) => `${s.name}@${s.group}`)).toEqual([`ค้างสองกลุ่ม@${A}`]);
+      expect((await row("ค้างสองกลุ่ม", B)).split("|").slice(0, 2)).toEqual(["blocked", "5"]); // reconciled, not requeued
+      expect((await row("ส่งแล้ว", A)).startsWith("delivered|")).toBe(true);
+      expect((await row("ส่งแล้ว", B)).startsWith("delivered|")).toBe(true);
+    });
+
+    test("6. concurrent cron runs on exhausted rows stay consistent; a late completion of a superseded claim is ignored", async () => {
+      await reset();
+      await seed("แข่งค้าง");
+      await exhaust([A]);
+      const quiet = recorder();
+      await Promise.all([1, 2, 3].map(() => runCategoryDiscovery(client(), window, quiet.push, ONLY_A)));
+      expect(quiet.sent).toEqual([]);
+      expect(await row("แข่งค้าง", A)).toBe("blocked|5|-|-");
+      expect(await rpc("requeue_produce_category_deliveries", { p_group_id: A })).toMatchObject({ data: 1 });
+      const racers = recorder();
+      await Promise.all([1, 2, 3].map(() => runCategoryDiscovery(client(), window, racers.push, ONLY_A)));
+      expect(racers.sent).toHaveLength(1);
+      // Superseded token: claimed, lease expired, re-claimed by another run.
+      await reset();
+      await seed("ช้า");
+      const [stale] = await crashClaim([A]);
+      await expireLeases();
+      const [fresh] = await crashClaim([A]);
+      const id = await pg.scalar(`SELECT id FROM public.produce_category_candidates WHERE product_name = 'ช้า'`);
+      const complete = (token: string) => rpc("complete_produce_category_delivery", {
+        p_candidate_id: id, p_revision: 1, p_group_id: A, p_claim_token: token, p_outcome: "delivered",
+        p_error_code: null, p_error: null, p_max_attempts: MAX_DELIVERY_ATTEMPTS });
+      expect((await complete(stale!)).data).toBe("ignored");
+      expect((await complete(fresh!)).data).toBe("delivered");
+    });
+
+    test("7. health distinguishes blocked, pending and delivered exactly", async () => {
+      await reset();
+      await seed("ส่งได้", "ค้างนาน", "รอส่ง");
+      await runCategoryDiscovery(client(), window, recorder((_g, name) => (name === "ส่งได้" ? undefined : http(503))).push, ONLY_A);
+      await pg.scalar(`UPDATE public.produce_category_deliveries d SET status = 'pending', attempts = 0
+        FROM public.produce_category_candidates c WHERE c.id = d.candidate_id AND c.product_name <> 'ส่งได้' RETURNING 1`);
+      // "ค้างนาน" crashes to exhaustion; "รอส่ง" stays untouched pending.
+      await pg.scalar(`UPDATE public.produce_category_deliveries d SET attempts = ${MAX_DELIVERY_ATTEMPTS}
+        FROM public.produce_category_candidates c WHERE c.id = d.candidate_id AND c.product_name = 'ค้างนาน' RETURNING 1`);
+      const result = await runCategoryDiscovery(client(), window, recorder(() => http(503)).push, ONLY_A);
+      expect(await health()).toEqual({ [`${A}:blocked`]: 1, [`${A}:delivered`]: 1, [`${A}:retryable`]: 1 });
+      expect(result.queue).toEqual({ pending: 0, retryable: 1, delivered: 1, blocked: 1 });
+    });
+
+    test("8. the LINE retry key is identical before the crash and after recovery", async () => {
+      await reset();
+      await seed("คีย์เดิม");
+      const lossy: typeof rpc = (name, args) =>
+        name === "complete_produce_category_delivery" ? Promise.resolve({ data: null, error: { message: "crash" } }) : rpc(name, args);
+      const crashes = recorder();
+      for (let i = 0; i < MAX_DELIVERY_ATTEMPTS; i++) {
+        await runCategoryDiscovery(client({ rpc: lossy }), window, crashes.push, ONLY_A);
+        await expireLeases();
+      }
+      expect(crashes.sent).toHaveLength(MAX_DELIVERY_ATTEMPTS);
+      expect(new Set(crashes.sent.map((s) => s.key)).size).toBe(1);
+      const recovered = recorder();
+      await requeueRequest(`?requeue=blocked&group=${A}`, recovered.push);
+      expect(recovered.sent.map((s) => s.key)).toEqual([crashes.sent[0]!.key]);
+    });
   });
 });
 

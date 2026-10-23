@@ -22,6 +22,7 @@ const NAMES = [
   "20261022130000_produce_category_announce_queue",
   "20261023100000_produce_category_delivery_ledger",
   "20261023110000_produce_category_privilege_hardening",
+  "20261023120000_produce_category_delivery_exhaustion",
 ];
 
 export const BOOTSTRAP = join(ROOT, "supabase", "tests", "produce_product_code_dictionary_bootstrap.sql");

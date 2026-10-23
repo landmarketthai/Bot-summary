@@ -106,6 +106,11 @@ default ACL. Every write goes through a SECURITY DEFINER RPC (pinned
     so a fixed token or group permission recovers automatically.
   - any other 4xx → `blocked` at once.
   - `retryable` after 5 attempts → `blocked` (bounded, no flooding).
+  - a claim that crashed before recording its outcome spends an attempt but
+    stays `pending`; once attempts are exhausted and the lease has expired the
+    next claim moves it to `blocked` (20261023120000). `?requeue=blocked` also
+    restores crashed `pending` rows directly, so ONE request recovers them
+    whether or not discovery has run. Active leases are never touched.
 - `blocked` rows leave the queue, so they cannot starve later candidates;
   `?requeue=blocked` puts them back with a fresh attempt budget.
 - Partial delivery is per group: a delivered group is not re-sent when
@@ -151,12 +156,13 @@ Apply in order, all additive and transactional:
 2. `20261022130000_produce_category_announce_queue.sql`
 3. `20261023100000_produce_category_delivery_ledger.sql`
 4. `20261023110000_produce_category_privilege_hardening.sql`
+5. `20261023120000_produce_category_delivery_exhaustion.sql`
 
 Deploying the app before the migrations is safe: rule loads fail and reports
 fall back to the code rules. Keep `CATEGORY_REVIEW_NOTIFY_ENABLED` off and do
-not schedule discovery until all four are applied.
+not schedule discovery until all five are applied.
 
-Rollback, exactly in reverse (`supabase/rollback/*.down.sql`): 20261023110000
+Rollback, exactly in reverse (`supabase/rollback/*.down.sql`): 20261023120000 → 20261023110000
 → 20261023100000 → 20261022130000 → 20261022120000. Export
 `produce_category_decisions` first if the audit must be kept. No business
 table is touched; reports return to code-only rules (restart the app to drop a
@@ -167,7 +173,7 @@ ACL: forward → down → forward, with `produce_transactions` byte-identical.
 
 `pg-tests.yml` job `category-learning` (Bun 1.4.3, PostgreSQL 17 service):
 both PostgreSQL suites with `REQUIRE_CATEGORY_LEARNING_POSTGRES=1` (no silent
-skip; all four migrations and rollbacks, broad default ACL, RPCs as
+skip; all five migrations and rollbacks, broad default ACL, RPCs as
 service_role), focused unit / webhook / manual-stock / route tests,
 report-surface regressions, settlement / reconciliation / fingerprint / dedup
 guards, `tsc`, `eslint --max-warnings=0` on the feature files, `git diff --check`.
@@ -175,12 +181,12 @@ guards, `tsc`, `eslint --max-warnings=0` on the feature files, `git diff --check
 ## Preview UAT (isolated)
 
 Requirements: a Preview deployment pointed at a **non-Production** Supabase
-database with all four migrations applied, and a **test-only** LINE group.
+database with all five migrations applied, and a **test-only** LINE group.
 Never point Preview at Production data or an operational group.
 
 ## UAT checklist (test group only)
 
-1. Apply all four migrations to the isolated database; deploy a Preview against it.
+1. Apply all five migrations to the isolated database; deploy a Preview against it.
 2. Set the three env vars to the test group and one admin user.
 3. `GET /api/cron/category-discovery` with the cron secret → JSON shows `discovered`, `notified`, `queue`.
 4. Test group receives at most 10 cards; Operations groups receive nothing.
@@ -195,3 +201,4 @@ Never point Preview at Production data or an operational group.
 13. Temporarily set a wrong LINE token on the Preview → run → `retrying` > 0, no card; restore the token → run → each card arrives once per group.
 14. Remove the bot from a second test group (403) → only that group stays `retryable`; re-add → only that group receives the card.
 15. After 5 failed runs a delivery is `blocked`; `?requeue=blocked` restores it.
+16. Interrupt the discovery cron after the push but before it records the outcome, five times (or set `attempts = 5` and expire the lease in the isolated DB) → one `?requeue=blocked&group=<id>` request delivers the missing card exactly once.
