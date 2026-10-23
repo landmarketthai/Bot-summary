@@ -347,4 +347,69 @@ describe("LINE review postback", () => {
     );
     expect(calls[0]).toMatchObject({ p_action: "approve_alias", p_category_code: "ม", p_alias_target: "มะม่วง" });
   });
+
+  test("unauthorized alias taps never read candidates or category rules", async () => {
+    const alias = postbacks().find((d) => d.includes("|al|"))!;
+    let reads = 0;
+    const supabase = { from: () => { reads += 1; throw new Error("must not read"); }, rpc: () => { throw new Error("must not decide"); } };
+    const aliasCodeFor = () => { reads += 1; return "ม" as const; };
+    for (const [userId, sourceId] of [["Uother", GROUP], [ADMIN, "Coperations"]] as const) {
+      await handleCategoryReviewPostback(
+        { data: alias, lineEventId: `evt-${userId}`, userId, sourceType: "group", sourceId },
+        { supabase: supabase as never, aliasCodeFor, env: ENV },
+      );
+    }
+    expect(reads).toBe(0);
+  });
+
+  test("button labels stay within LINE's 40 code points without splitting characters", () => {
+    const long = { ...candidate, similar_product_name: "🍉".repeat(30) + "ชื่อยาวมากเกินกว่าปุ่มจะรับได้" };
+    const message = buildCategoryReviewMessage(long, "ม") as { contents: { footer: { contents: { action: { label: string } }[] } } };
+    for (const { action } of message.contents.footer.contents) {
+      expect([...action.label].length).toBeLessThanOrEqual(40);
+      expect(action.label).not.toMatch(/[\uD800-\uDBFF]$/); // no dangling high surrogate
+    }
+  });
+});
+
+describe("notification retry and queue recovery", () => {
+  const pending = (i: number) => ({
+    id: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`, product_name: `คิว${i}`, status: "pending",
+    suggested_category: null, confidence: "low", suggestion_reason: "-", similar_product_name: null,
+    occurrence_count: 1, distinct_dates: 1, first_seen: "2026-10-20", last_seen: "2026-10-20", sample_markets: [],
+    revision: 1, notified_revision: null as number | null, created_at: `2026-10-01T00:00:0${i}Z`,
+  });
+  const window = { fromDate: "2026-10-07", toDate: "2026-10-20" };
+  const lineError = (retryable: boolean) => Object.assign(new Error(retryable ? "LINE push HTTP 500" : "LINE push HTTP 400"), { retryable });
+
+  test("a card LINE rejects (4xx) is skipped and does not block the queue head", async () => {
+    const candidates = [pending(1), pending(2), pending(3)];
+    const db = fakeDb({ produce_transactions: [], produce_category_rules: [], produce_category_candidates: candidates });
+    const sent: string[] = [];
+    const push = async (_to: string, messages: unknown) => {
+      const name = JSON.stringify(messages).match(/คิว\d/)![0];
+      if (name === "คิว1") throw lineError(false);
+      sent.push(name);
+    };
+    expect(await runCategoryDiscovery(db.client as never, window, push, NOTIFY_ENV))
+      .toMatchObject({ notified: 2, undeliverable: 1 });
+    expect(sent).toEqual(["คิว2", "คิว3"]);
+    expect(candidates.every((c) => c.notified_revision === 1)).toBe(true);
+  });
+
+  test("a retryable failure stops the run unmarked; the retry reuses the same LINE retry key", async () => {
+    const candidates = [pending(1), pending(2)];
+    const db = fakeDb({ produce_transactions: [], produce_category_rules: [], produce_category_candidates: candidates });
+    const keys: string[] = [];
+    let fail = true;
+    const push = async (_to: string, _m: unknown, retryKey: string) => {
+      keys.push(retryKey);
+      if (fail && keys.length === 2) throw lineError(true);
+    };
+    await expect(runCategoryDiscovery(db.client as never, window, push, NOTIFY_ENV)).rejects.toThrow("HTTP 500");
+    expect(candidates.map((c) => c.notified_revision)).toEqual([1, null]);
+    fail = false;
+    expect((await runCategoryDiscovery(db.client as never, window, push, NOTIFY_ENV)).notified).toBe(1);
+    expect(keys[2]).toBe(keys[1]); // same candidate+revision+group key → LINE de-duplicates
+  });
 });

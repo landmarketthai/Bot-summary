@@ -171,6 +171,8 @@ export interface DiscoveryResult {
   scannedRows: number;
   discovered: number;
   notified: number;
+  /** Cards LINE definitively rejected (4xx); skipped so the queue keeps moving. */
+  undeliverable: number;
   notifyMode: "disabled" | "no_recipient" | "sent";
 }
 
@@ -207,7 +209,7 @@ export async function runCategoryDiscovery(
     if (error) throw new Error(`observe category candidate failed: ${error.message}`);
   }
 
-  const result: DiscoveryResult = { scannedRows: rows.length, discovered: discovered.length, notified: 0, notifyMode: "disabled" };
+  const result: DiscoveryResult = { scannedRows: rows.length, discovered: discovered.length, notified: 0, undeliverable: 0, notifyMode: "disabled" };
   if (env.CATEGORY_REVIEW_NOTIFY_ENABLED !== "true") return result;
   const groups = [...categoryReviewGroupIds(env)];
   if (groups.length === 0) return { ...result, notifyMode: "no_recipient" };
@@ -226,9 +228,25 @@ export async function runCategoryDiscovery(
   const unannounced = (data ?? []) as CategoryCandidate[];
   for (const candidate of unannounced) {
     const message = buildCategoryReviewMessage(candidate, policyCodeFor(candidate.similar_product_name ?? ""));
+    let rejected = false;
     for (const group of groups) {
-      await push(group, [message], retryKey(candidate.id, String(candidate.revision), group));
+      try {
+        await push(group, [message], retryKey(candidate.id, String(candidate.revision), group));
+      } catch (error) {
+        // Retryable / unknown (network, 429, 5xx): stop; the next run resends
+        // with the same retry key and LINE de-duplicates. A definite rejection
+        // (4xx) would fail forever, so it is logged and skipped instead of
+        // blocking the FIFO queue head.
+        if ((error as { retryable?: unknown }).retryable !== false) throw error;
+        rejected = true;
+        logger.error("category review card rejected by LINE; skipped", {
+          candidateId: candidate.id,
+          revision: candidate.revision,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
+    if (rejected) result.undeliverable += 1;
     // Only this revision is marked: a newer revision races in as unannounced.
     const { error: markError } = await supabase
       .from("produce_category_candidates")
@@ -236,7 +254,7 @@ export async function runCategoryDiscovery(
       .eq("id", candidate.id)
       .eq("revision", candidate.revision);
     if (markError) logger.warn("category candidate notify mark failed", { candidateId: candidate.id });
-    result.notified += 1;
+    if (!rejected) result.notified += 1;
   }
   return { ...result, notifyMode: "sent" };
 }

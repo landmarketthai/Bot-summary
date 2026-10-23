@@ -15,6 +15,8 @@ const ALLOWED_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 const BOOTSTRAP = join(ROOT, "supabase", "tests", "produce_product_code_dictionary_bootstrap.sql");
 const MIGRATION = join(ROOT, "supabase", "migrations", "20261022120000_produce_category_learning.sql");
 const QUEUE_MIGRATION = join(ROOT, "supabase", "migrations", "20261022130000_produce_category_announce_queue.sql");
+const ROLLBACK = join(ROOT, "supabase", "rollback", "20261022120000_produce_category_learning.down.sql");
+const QUEUE_ROLLBACK = join(ROOT, "supabase", "rollback", "20261022130000_produce_category_announce_queue.down.sql");
 
 type PsqlResult = { code: number; stdout: string; stderr: string };
 
@@ -176,4 +178,32 @@ describe.skipIf(!pgAvailable)("produce category learning migration", () => {
       expect(call.stderr).toContain("permission denied");
     }
   });
+
+  test("rollback scripts remove every object in reverse order and forward re-apply succeeds", async () => {
+    const db = `${DATABASE}_rb`;
+    const apply = async (file: string) => {
+      const result = await psql(["-v", "ON_ERROR_STOP=1", "-f", file], db);
+      expect(result.code, `${file}\n${result.stderr}`).toBe(0);
+    };
+    const objects = async () => (await psql(["-tAc", `SELECT
+      (SELECT count(*) FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relname LIKE 'produce_category_%')
+      + (SELECT count(*) FROM pg_proc WHERE pronamespace = 'public'::regnamespace
+         AND proname IN ('observe_produce_category_candidate','decide_produce_category_candidate','produce_category_decisions_append_only'))`], db)).stdout.trim();
+    expect((await psql(["-d", "postgres", "-c", `CREATE DATABASE ${db}`], "postgres")).code).toBe(0);
+    try {
+      await apply(BOOTSTRAP);
+      await apply(MIGRATION);
+      await apply(QUEUE_MIGRATION);
+      expect(Number(await objects())).toBeGreaterThan(0);
+      await apply(QUEUE_ROLLBACK);
+      expect((await psql(["-tAc", `SELECT count(*) FROM information_schema.columns WHERE column_name = 'needs_announcement'`], db)).stdout.trim()).toBe("0");
+      await apply(ROLLBACK);
+      expect(await objects()).toBe("0");
+      await apply(MIGRATION);
+      await apply(QUEUE_MIGRATION);
+      expect(Number(await objects())).toBeGreaterThan(0);
+    } finally {
+      await psql(["-d", "postgres", "-c", `DROP DATABASE IF EXISTS ${db} WITH (FORCE)`], "postgres");
+    }
+  }, 30_000);
 });

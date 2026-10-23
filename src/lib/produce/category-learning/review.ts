@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { logger } from "@/lib/logger";
+import { FLEX_BUTTON_LABEL_MAX } from "@/lib/line/guided-menu/ux-types";
 import { REPORT_CATEGORY_LABEL } from "@/lib/produce/product-code/category";
 
 /**
@@ -62,7 +63,9 @@ function postback(candidate: CategoryCandidate, action: ActionKey, code = ""): s
 }
 
 function button(label: string, data: string, style: "primary" | "secondary" = "secondary") {
-  return { type: "button", style, height: "sm", margin: "sm", action: { type: "postback", label: label.slice(0, 40), data } };
+  // LINE counts code points; never split a surrogate pair.
+  const safe = [...label].slice(0, FLEX_BUTTON_LABEL_MAX).join("");
+  return { type: "button", style, height: "sm", margin: "sm", action: { type: "postback", label: safe, data } };
 }
 
 /** Flex card for the review group. `aliasCode` = category of the similar name. */
@@ -137,8 +140,11 @@ export interface CategoryReviewInput {
 
 export interface CategoryReviewDeps {
   supabase: SupabaseClient;
-  /** Category the current policy gives the similar (alias) name. */
-  aliasCodeFor: (name: string) => ReviewCode | null;
+  /**
+   * Category the current policy gives the similar (alias) name. Called only
+   * after authorization, so unauthorized taps never read the rule table.
+   */
+  aliasCodeFor: (name: string) => ReviewCode | null | Promise<ReviewCode | null>;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -170,7 +176,7 @@ export async function handleCategoryReviewPostback(
       .maybeSingle();
     if (error) return "❌ บันทึกไม่สำเร็จ ลองใหม่อีกครั้ง";
     aliasTarget = (data as { similar_product_name: string | null } | null)?.similar_product_name ?? null;
-    category = aliasTarget ? deps.aliasCodeFor(aliasTarget) : null;
+    category = aliasTarget ? await deps.aliasCodeFor(aliasTarget) : null;
     if (!aliasTarget || !category) return "⚠️ ไม่พบหมวดของชื่อที่ใกล้เคียง กรุณาเลือกหมวดเอง";
   }
 

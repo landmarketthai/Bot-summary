@@ -721,3 +721,84 @@ jobs:
         run: npm run type-check
       - name: git diff --check against the PR base
         run: git diff --check "origin/${{ github.base_ref }}...HEAD"
+
+  category-learning:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      ALLOW_DISPOSABLE_POSTGRES_TESTS: "1"
+      PGHOST: localhost
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGPORT: "5432"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+      - run: bun install
+      - name: Require local PostgreSQL 17
+        run: |
+          pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER"
+          version="$(psql -d postgres -tAc 'SHOW server_version_num')"
+          test "$version" -ge 170000
+      # The suite applies 20261022120000 then 20261022130000 to its own disposable
+      # database; REQUIRE_* turns an unreachable PostgreSQL into a failure, not a skip.
+      - name: Category learning migrations (real PostgreSQL)
+        run: >-
+          REQUIRE_CATEGORY_LEARNING_POSTGRES=1 bun test
+          src/lib/produce/category-learning/migration-category-learning.pg.test.ts
+      - name: Category learning policy, discovery, review and authorization
+        run: >-
+          bun test
+          src/lib/produce/category-learning/category-learning.test.ts
+          src/lib/line/webhook-category-review.test.ts
+          src/app/api/cron/category-discovery/handler.test.ts
+      - name: Report surfaces that read the category policy
+        run: >-
+          bun test
+          src/lib/summary/stock-categories.test.ts
+          src/lib/summary/stock-summary.test.ts
+          src/lib/summary/produce-section.test.ts
+          src/lib/summary/produce-category-totals.test.ts
+          src/lib/summary/morning-brief.test.ts
+          src/lib/summary/morning-brief-message.test.ts
+          src/lib/summary/morning-brief-pdf.test.tsx
+          src/lib/summary/daily-good-return-value.test.ts
+          src/app/api/cron/daily-morning-brief/route.test.ts
+          src/app/api/cron/daily-stock-summary/route.test.ts
+          src/lib/line/daily-summary-cron.test.ts
+          src/lib/line/daily-summary-message.test.ts
+      - name: Typecheck
+        run: npm run type-check
+      - name: Lint category learning files
+        run: >-
+          npx eslint --max-warnings=0
+          src/lib/produce/category-learning
+          src/lib/produce/product-code/category.ts
+          src/lib/summary/stock-categories.ts
+          src/lib/summary/produce-section.ts
+          src/lib/summary/morning-brief.ts
+          src/lib/summary/stock-summary-service.ts
+          src/app/api/cron/category-discovery
+          src/app/api/cron/daily-morning-brief
+          src/app/api/cron/daily-stock-summary
+          src/app/api/cron/daily-summary
+          src/lib/line/webhook-category-review.test.ts
+      - name: Whitespace check
+        run: git diff --check "origin/${{ github.base_ref }}...HEAD"
