@@ -21,7 +21,8 @@ report, without touching product identity or money.
   AsyncLocalStorage (`withApprovedCategoryRules` / `enterCategoryPolicy`), so a
   concurrent report's refresh can never change categories midway. Pinned in:
   `/api/cron/daily-stock-summary`, `/api/cron/daily-morning-brief` (report, PDF,
-  messages), `/api/cron/daily-summary`, `loadStockSummary`, discovery, review
+  messages), `/api/cron/daily-summary`, `loadStockSummary`, manual LINE
+  `สรุปคงเหลือ`, discovery, review
   postbacks.
 - **Failure never yields a partial snapshot.** Any page error → the last
   complete snapshot this process loaded, else business rules only. A report
@@ -43,10 +44,11 @@ Business rules shipped in code (`BUSINESS_CATEGORY_RULES`):
     that no rule / code-table entry classifies
   → suggestCategory: 1-letter typo of a known name (high) | known prefix (medium) | none (low)
   → observe_produce_category_candidate (durable per name; evidence: count, dates, markets)
-  → if CATEGORY_REVIEW_NOTIFY_ENABLED=true: Flex card to CATEGORY_REVIEW_LINE_GROUP_IDS
-    for the next unannounced revisions, FIFO (`needs_announcement`, ordered by
-    created_at, product_name; max 10/run, so the queue always drains;
-    LINE retry key = candidate+revision+group)
+  → if CATEGORY_REVIEW_NOTIFY_ENABLED=true: deliver review cards through the
+    per-recipient ledger (see "Notification delivery")
+
+/api/cron/category-discovery?requeue=blocked[&group=<review group id>]
+  explicit recovery after the LINE token or a group's permission is fixed
 
 LINE postback  pcat1|<candidate>|<revision>|<action>|<code>
   raw event persisted first (replay = duplicate, never re-processed)
@@ -63,15 +65,25 @@ engineering identity review, never applied at run time) · register distinct new
 product (category rule, no product code) · reject (reopens only for a different
 suggestion) · mark legitimate other (never re-alerted).
 
-## Tables (migrations `20261022120000_produce_category_learning.sql`, `20261022130000_produce_category_announce_queue.sql`)
+Manual `สรุปคงเหลือ` in LINE classifies inside the same approved-category
+snapshot as the scheduled Stock Summary (one rule read per command).
 
-| Table | Purpose |
-|---|---|
-| `produce_category_candidates` | one row per discovered name, evidence, status, revision, notified_revision |
-| `produce_category_rules` | approved name → category (`ท ม ผ ป ห พ other`) |
-| `produce_category_decisions` | append-only audit: who, which group, which LINE event, which revision |
+## Tables
 
-RLS on, no `anon` / `authenticated` access, RPCs `service_role` only.
+| Table | Migration | Purpose |
+|---|---|---|
+| `produce_category_candidates` | 20261022120000 | one row per discovered name, evidence, status, revision (`notified_revision` / `needs_announcement` from 20261022130000 are superseded by the ledger and unused) |
+| `produce_category_rules` | 20261022120000 | approved name → category (`ท ม ผ ป ห พ other`) |
+| `produce_category_decisions` | 20261022120000 | append-only audit: who, which group, which LINE event, which revision; UPDATE / DELETE / TRUNCATE rejected by trigger |
+| `produce_category_deliveries` | 20261023100000 | one row per (candidate, revision, group): pending / retryable / delivered / blocked, attempts, lease, last error code |
+
+Privileges (20261023110000): RLS on; `PUBLIC`, `anon`, `authenticated` have
+nothing; `service_role` has **SELECT only**, including against Supabase's broad
+default ACL. Every write goes through a SECURITY DEFINER RPC (pinned
+`search_path`, migration-role owner, EXECUTE for `service_role` only):
+`observe_…`, `decide_…`, `claim_produce_category_deliveries`,
+`complete_produce_category_delivery`, `requeue_produce_category_deliveries`,
+`produce_category_delivery_health`.
 
 ## Environment
 
@@ -81,29 +93,43 @@ RLS on, no `anon` / `authenticated` access, RPCs `service_role` only.
 | `CATEGORY_REVIEW_LINE_GROUP_IDS` | empty (fail closed) | the LINE **test group** only, until owner approval |
 | `CATEGORY_REVIEW_ADMIN_LINE_USER_IDS` | empty (fail closed) | LINE user ids allowed to decide |
 
-## Notification delivery
+## Notification delivery (durable ledger)
 
-- Retryable / unknown push failure (network, 429, 5xx): the run stops with the
-  candidate unmarked; the next run resends with the same retry key
-  (candidate + revision + group) and LINE de-duplicates it.
-- Definite rejection (4xx): logged, counted as `undeliverable`, marked as
-  announced so it cannot block the FIFO queue head. Its card is lost until
-  the next revision; fix the cause from the log.
-- Two concurrent runs select the same rows and send the same retry keys.
+- Each run claims up to 10 deliveries FIFO (candidate created_at, name, group)
+  with `FOR UPDATE SKIP LOCKED` and a 300 s lease; each claim is one attempt.
+  Overlapping runs never claim the same delivery.
+- Push retry key = hash(candidate, revision, group): a re-sent card after a
+  crash or lost acknowledgement is de-duplicated by LINE.
+- Outcome per recipient:
+  - accepted → `delivered`; never sent again for that revision.
+  - network / 429 / 5xx / **401 / 403** → `retryable`; retried on later runs,
+    so a fixed token or group permission recovers automatically.
+  - any other 4xx → `blocked` at once.
+  - `retryable` after 5 attempts → `blocked` (bounded, no flooding).
+- `blocked` rows leave the queue, so they cannot starve later candidates;
+  `?requeue=blocked` puts them back with a fresh attempt budget.
+- Partial delivery is per group: a delivered group is not re-sent when
+  another group is recovered.
+- Only the current revision of a pending candidate is ever claimed; a stale
+  card cannot be approved (`decide` checks the revision).
+- The cron response reports this run's `notified / retrying / blocked` and
+  `queue` counts by status. The ledger stores only an HTTP status label — no
+  token, payload or raw error text.
 
 ## Risk assessment
 
 | Risk | Control | Evidence |
 |---|---|---|
-| Wrong category in a report | admin-only rule, one snapshot per report | unit 1–3, 9; concurrency tests |
+| Wrong category in a report | admin-only rule, one snapshot per report incl. manual `สรุปคงเหลือ` | unit 1–3, 9; concurrency tests; webhook manual-stock test |
 | Identity / SKU merge | rules key on exact name, store category only; no alias, code or vocabulary change | diff touches no `product-vocabulary`, `dictionary.ts`, fingerprint code; test 5 |
-| Money / quantity change | category is grouping only | test 8: identical satang + item counts |
+| Money / quantity change | category is grouping only | test 8; financial guard suites (settlement, reconciliation, fingerprint, dedup) |
 | Leak to operational groups | send + reply only for `CATEGORY_REVIEW_LINE_GROUP_IDS`; other groups silent, no DB read | webhook + review tests |
 | Unauthorized approval | group AND admin allowlist, fail closed when unset | tests 7, unauthorized alias test |
+| Audit bypass by a privileged role | service_role SELECT-only; TRUNCATE trigger | PG grants suite under broad default ACL |
 | Replay / double tap / race | raw-event dedup, event-id unique, row lock, revision | PG: replay, stale, 3-way race |
 | Rule table unavailable / partial | last complete snapshot, else code rules; never partial | P2 + failure tests |
-| Queue starvation / poison card | FIFO generated column; 4xx skipped | queue tests (unit + PG) |
-| Ingestion / daily close blocked | no rule read on ingestion path; discovery is its own cron | test 10, route test |
+| Lost / duplicated / starved cards | per-recipient ledger, lease, stable retry key, bounded retries, blocked excluded | PG delivery suite (401 / 403 recovery, 400 block, overlap, lease, revision) |
+| Ingestion / daily close blocked | no rule read on ingestion path; discovery is its own cron | test 10, ordinary-message test, route test |
 
 ## Migration preflight and rollback (owner-run)
 
@@ -112,49 +138,60 @@ Preflight on the target database, read-only:
 ```sql
 SELECT to_regclass('public.produce_category_candidates'),   -- expect NULL
        to_regclass('public.produce_category_rules'),        -- expect NULL
-       to_regclass('public.produce_category_decisions');    -- expect NULL
+       to_regclass('public.produce_category_decisions'),    -- expect NULL
+       to_regclass('public.produce_category_deliveries');   -- expect NULL
 SELECT current_setting('server_version_num')::int >= 130000; -- gen_random_uuid, normalize()
 SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname = current_database(); -- UTF8
+SELECT pg_has_role('service_role', current_user, 'MEMBER');  -- expect false (definer owner)
 ```
 
-Apply in order: `20261022120000_produce_category_learning.sql`, then
-`20261022130000_produce_category_announce_queue.sql`. Both are additive (new
-objects only) and transactional. Deploying the app before the migrations is
-safe: rule loads fail and reports fall back to the code rules; keep
-`CATEGORY_REVIEW_NOTIFY_ENABLED` off and do not schedule discovery until both
-are applied.
+Apply in order, all additive and transactional:
 
-Rollback, in reverse order: `supabase/rollback/20261022130000_*.down.sql`,
-then `supabase/rollback/20261022120000_*.down.sql` (export
-`produce_category_decisions` first if the audit must be kept). No business
-table is touched; reports return to code-only rules. Proven on PostgreSQL 17:
-forward → down → forward.
+1. `20261022120000_produce_category_learning.sql`
+2. `20261022130000_produce_category_announce_queue.sql`
+3. `20261023100000_produce_category_delivery_ledger.sql`
+4. `20261023110000_produce_category_privilege_hardening.sql`
+
+Deploying the app before the migrations is safe: rule loads fail and reports
+fall back to the code rules. Keep `CATEGORY_REVIEW_NOTIFY_ENABLED` off and do
+not schedule discovery until all four are applied.
+
+Rollback, exactly in reverse (`supabase/rollback/*.down.sql`): 20261023110000
+→ 20261023100000 → 20261022130000 → 20261022120000. Export
+`produce_category_decisions` first if the audit must be kept. No business
+table is touched; reports return to code-only rules (restart the app to drop a
+warm process's last snapshot). Proven on PostgreSQL 17 under the broad default
+ACL: forward → down → forward, with `produce_transactions` byte-identical.
 
 ## CI
 
 `pg-tests.yml` job `category-learning` (Bun 1.4.3, PostgreSQL 17 service):
-PostgreSQL suite with `REQUIRE_CATEGORY_LEARNING_POSTGRES=1` (no silent skip;
-applies both migrations and both rollbacks), focused unit/webhook/route tests,
-report-surface regressions, `tsc`, `eslint --max-warnings=0` on the feature
-files, `git diff --check`.
+both PostgreSQL suites with `REQUIRE_CATEGORY_LEARNING_POSTGRES=1` (no silent
+skip; all four migrations and rollbacks, broad default ACL, RPCs as
+service_role), focused unit / webhook / manual-stock / route tests,
+report-surface regressions, settlement / reconciliation / fingerprint / dedup
+guards, `tsc`, `eslint --max-warnings=0` on the feature files, `git diff --check`.
 
 ## Preview UAT (isolated)
 
 Requirements: a Preview deployment pointed at a **non-Production** Supabase
-database with both migrations applied, and a **test-only** LINE group. Never
-point Preview at Production data or an operational group.
+database with all four migrations applied, and a **test-only** LINE group.
+Never point Preview at Production data or an operational group.
 
 ## UAT checklist (test group only)
 
-1. Apply both migrations to the isolated database; deploy a Preview against it.
+1. Apply all four migrations to the isolated database; deploy a Preview against it.
 2. Set the three env vars to the test group and one admin user.
-3. `GET /api/cron/category-discovery` with the cron secret → JSON shows `discovered` and `notified`.
+3. `GET /api/cron/category-discovery` with the cron secret → JSON shows `discovered`, `notified`, `queue`.
 4. Test group receives at most 10 cards; Operations groups receive nothing.
 5. Re-run discovery → no new card for unchanged candidates.
 6. Admin taps "เลือก: ผัก" on a card → reply `✅ บันทึกแล้ว … → ผัก`.
 7. Tap the same button again → `ℹ️`/`⚠️` reply; one row in `produce_category_decisions`.
 8. A non-admin member taps a button → `⛔ ไม่มีสิทธิ์…`; no decision row.
-9. Next Stock Summary, Morning Brief LINE + PDF show the name under ผัก; totals and quantities equal the previous run.
+9. Next Stock Summary, Morning Brief LINE + PDF **and manual `สรุปคงเหลือ`** show the name under ผัก; totals and quantities equal the previous run.
 10. Tap "📦 เป็นสินค้าอื่นๆ จริง" on another card; re-run discovery → no new card for it.
-11. `มะละกอดิบ` is under ผัก and `มะละกอ` under ผลไม้ in all three reports.
+11. `มะละกอดิบ` is under ผัก and `มะละกอ` under ผลไม้ in all reports.
 12. Stop discovery (or break the DB URL) → Produce ingestion and daily close unaffected.
+13. Temporarily set a wrong LINE token on the Preview → run → `retrying` > 0, no card; restore the token → run → each card arrives once per group.
+14. Remove the bot from a second test group (403) → only that group stays `retryable`; re-add → only that group receives the card.
+15. After 5 failed runs a delivery is `blocked`; `?requeue=blocked` restores it.

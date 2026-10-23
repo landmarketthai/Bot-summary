@@ -13,19 +13,12 @@ export interface FakeDb {
   requests: { table: string; filters: string[] }[];
 }
 
-const COMPUTED: Record<string, Record<string, (row: Row) => unknown>> = {
-  produce_category_candidates: {
-    needs_announcement: (r) => r.status === "pending"
-      && (r.notified_revision === null || (r.notified_revision as number) < (r.revision as number)),
-  },
-};
-
 export function fakeDb(
   tables: Record<string, Row[]>,
   options: { failOn?: (requestIndex: number, table: string) => boolean } = {},
 ): FakeDb {
   const requests: FakeDb["requests"] = [];
-  const value = (table: string, row: Row, column: string) => COMPUTED[table]?.[column]?.(row) ?? row[column];
+  const value = (_table: string, row: Row, column: string) => row[column];
   const cmp = (a: unknown, b: unknown) => (a === b ? 0 : (a as never) < (b as never) ? -1 : 1);
 
   const from = (table: string) => {

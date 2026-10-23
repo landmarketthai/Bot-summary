@@ -3,7 +3,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { logger } from "@/lib/logger";
 import { checkCronAuth } from "@/app/api/cron/finalize-slip-batches/auth";
 import { bangkokBusinessDateFromTimestamp } from "@/lib/business-date";
-import { runCategoryDiscovery, type PushMessages } from "@/lib/produce/category-learning/discovery";
+import { requeueCategoryDeliveries, runCategoryDiscovery, type PushMessages } from "@/lib/produce/category-learning/discovery";
+import { categoryReviewGroupIds } from "@/lib/produce/category-learning/review";
 
 export interface CategoryDiscoveryDeps {
   getClient: () => SupabaseClient;
@@ -32,10 +33,22 @@ export async function handleCategoryDiscovery(
   from.setUTCDate(from.getUTCDate() - (WINDOW_DAYS - 1));
   const fromDate = from.toISOString().slice(0, 10);
 
+  // `?requeue=blocked[&group=<id>]`: explicit recovery after the LINE token or
+  // a group's permission is fixed. Only configured review groups qualify.
+  const params = new URL(req.url).searchParams;
+  const requeue = params.get("requeue");
+  const requeueGroup = params.get("group");
+  if (requeue !== null && (requeue !== "blocked"
+    || (requeueGroup !== null && !categoryReviewGroupIds().has(requeueGroup)))) {
+    return NextResponse.json({ ok: false, error: "invalid requeue request" }, { status: 400 });
+  }
+
   try {
-    const result = await runCategoryDiscovery(deps.getClient(), { fromDate, toDate }, deps.push);
-    logger.info("category discovery finished", { fromDate, toDate, ...result });
-    return NextResponse.json({ ok: true, fromDate, toDate, ...result });
+    const client = deps.getClient();
+    const requeued = requeue === null ? undefined : await requeueCategoryDeliveries(client, requeueGroup);
+    const result = await runCategoryDiscovery(client, { fromDate, toDate }, deps.push);
+    logger.info("category discovery finished", { fromDate, toDate, requeued, ...result });
+    return NextResponse.json({ ok: true, fromDate, toDate, requeued, ...result });
   } catch (error) {
     logger.error("category discovery failed", { error: error instanceof Error ? error.message : String(error) });
     return NextResponse.json({ ok: false, error: "category discovery failed" }, { status: 500 });

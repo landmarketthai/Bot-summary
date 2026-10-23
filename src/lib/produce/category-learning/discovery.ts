@@ -164,23 +164,80 @@ function retryKey(...parts: string[]): string {
 
 export type PushMessages = (to: string, messages: Record<string, unknown>[], retryKey: string) => Promise<unknown>;
 
-/** Cap per run so a first backfill cannot flood the review group. */
+/** Cap per run (deliveries, across groups) so a backfill cannot flood the review group. */
 export const ANNOUNCE_PER_RUN = 10;
+/** Attempts per (candidate, revision, group) before it is blocked for an explicit requeue. */
+export const MAX_DELIVERY_ATTEMPTS = 5;
+/** A claim not completed within this lease (crash, timeout) becomes claimable again. */
+export const DELIVERY_LEASE_SECONDS = 300;
+
+export type DeliveryStatus = "pending" | "retryable" | "delivered" | "blocked";
 
 export interface DiscoveryResult {
   scannedRows: number;
   discovered: number;
+  /** Cards LINE accepted in this run. */
   notified: number;
-  /** Cards LINE definitively rejected (4xx); skipped so the queue keeps moving. */
-  undeliverable: number;
+  /** Deliveries that failed in this run and will be retried (bounded). */
+  retrying: number;
+  /** Deliveries blocked in this run (definitive rejection or attempts exhausted). */
+  blocked: number;
+  /** Current-revision deliveries by status across review groups; null when notify is off. */
+  queue: Record<DeliveryStatus, number> | null;
   notifyMode: "disabled" | "no_recipient" | "sent";
 }
 
 /**
- * Discover → record candidates → notify the review group about candidates
- * whose current revision has not been announced. Announcing is opt-in
+ * How a failed push is recorded. Network / 429 / 5xx and 401 / 403 (token or
+ * group permission — configuration that an operator fixes) are retried,
+ * bounded by MAX_DELIVERY_ATTEMPTS; any other 4xx is a definitive rejection
+ * and is blocked at once. The reason is a fixed label: never a token, body or
+ * raw error text.
+ */
+export function classifyPushFailure(error: unknown): { outcome: "retryable" | "blocked"; code: number | null; reason: string } {
+  const { httpStatus, retryable } = (error ?? {}) as { httpStatus?: unknown; retryable?: unknown };
+  const code = typeof httpStatus === "number" ? httpStatus : null;
+  if (retryable === true) return { outcome: "retryable", code, reason: code === null ? "network" : `HTTP ${code}` };
+  if (code === 401 || code === 403) return { outcome: "retryable", code, reason: `HTTP ${code} (credentials or group permission)` };
+  if (code !== null && code >= 400 && code < 500) return { outcome: "blocked", code, reason: `HTTP ${code}` };
+  return { outcome: "retryable", code, reason: "unknown" };
+}
+
+interface ClaimedDelivery extends Omit<CategoryCandidate, "id"> {
+  candidate_id: string;
+  group_id: string;
+  claim_token: string;
+  attempts: number;
+}
+
+async function deliveryQueue(supabase: SupabaseClient): Promise<Record<DeliveryStatus, number>> {
+  const queue: Record<DeliveryStatus, number> = { pending: 0, retryable: 0, delivered: 0, blocked: 0 };
+  const { data, error } = await supabase.rpc("produce_category_delivery_health");
+  if (error) throw new Error(`category delivery health failed: ${error.message}`);
+  for (const row of (data ?? []) as { status: DeliveryStatus; deliveries: number | string }[]) {
+    queue[row.status] += Number(row.deliveries);
+  }
+  return queue;
+}
+
+/** Explicit recovery after credentials / group config are fixed. null = every group. */
+export async function requeueCategoryDeliveries(supabase: SupabaseClient, groupId: string | null): Promise<number> {
+  const { data, error } = await supabase.rpc("requeue_produce_category_deliveries", { p_group_id: groupId });
+  if (error) throw new Error(`category delivery requeue failed: ${error.message}`);
+  return Number(data ?? 0);
+}
+
+/**
+ * Discover → record candidates → deliver review cards through the durable
+ * per-recipient ledger (migration 20261023100000). Announcing is opt-in
  * (CATEGORY_REVIEW_NOTIFY_ENABLED=true) and only ever goes to
  * CATEGORY_REVIEW_LINE_GROUP_IDS (the test group until owner approval).
+ *
+ * Each (candidate, revision, group) is claimed under a lease, pushed with a
+ * retry key derived from exactly that identity, and completed as delivered /
+ * retryable / blocked. A delivered recipient is never sent the same revision
+ * again; a failed one is never recorded as delivered; blocked rows leave the
+ * queue so they cannot starve it.
  */
 export async function runCategoryDiscovery(
   supabase: SupabaseClient,
@@ -209,52 +266,53 @@ export async function runCategoryDiscovery(
     if (error) throw new Error(`observe category candidate failed: ${error.message}`);
   }
 
-  const result: DiscoveryResult = { scannedRows: rows.length, discovered: discovered.length, notified: 0, undeliverable: 0, notifyMode: "disabled" };
+  const result: DiscoveryResult = {
+    scannedRows: rows.length, discovered: discovered.length,
+    notified: 0, retrying: 0, blocked: 0, queue: null, notifyMode: "disabled",
+  };
   if (env.CATEGORY_REVIEW_NOTIFY_ENABLED !== "true") return result;
   const groups = [...categoryReviewGroupIds(env)];
   if (groups.length === 0) return { ...result, notifyMode: "no_recipient" };
 
-  const { data, error } = await supabase
-    .from("produce_category_candidates")
-    .select("id, product_name, suggested_category, confidence, suggestion_reason, similar_product_name, occurrence_count, distinct_dates, first_seen, last_seen, sample_markets, revision, notified_revision")
-    // FIFO over exactly the unannounced revisions (generated column, migration
-    // 20261022130000), so the queue drains and nothing waits behind others forever.
-    .eq("needs_announcement", true)
-    .order("created_at", { ascending: true })
-    .order("product_name", { ascending: true })
-    .limit(ANNOUNCE_PER_RUN);
-  if (error) throw new Error(`category candidate read failed: ${error.message}`);
+  const { data, error } = await supabase.rpc("claim_produce_category_deliveries", {
+    p_groups: groups,
+    p_limit: ANNOUNCE_PER_RUN,
+    p_lease_seconds: DELIVERY_LEASE_SECONDS,
+    p_max_attempts: MAX_DELIVERY_ATTEMPTS,
+  });
+  if (error) throw new Error(`category delivery claim failed: ${error.message}`);
 
-  const unannounced = (data ?? []) as CategoryCandidate[];
-  for (const candidate of unannounced) {
+  for (const delivery of (data ?? []) as ClaimedDelivery[]) {
+    const candidate: CategoryCandidate = { ...delivery, id: delivery.candidate_id };
     const message = buildCategoryReviewMessage(candidate, policyCodeFor(candidate.similar_product_name ?? ""));
-    let rejected = false;
-    for (const group of groups) {
-      try {
-        await push(group, [message], retryKey(candidate.id, String(candidate.revision), group));
-      } catch (error) {
-        // Retryable / unknown (network, 429, 5xx): stop; the next run resends
-        // with the same retry key and LINE de-duplicates. A definite rejection
-        // (4xx) would fail forever, so it is logged and skipped instead of
-        // blocking the FIFO queue head.
-        if ((error as { retryable?: unknown }).retryable !== false) throw error;
-        rejected = true;
-        logger.error("category review card rejected by LINE; skipped", {
-          candidateId: candidate.id,
-          revision: candidate.revision,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
+    let outcome: "delivered" | "retryable" | "blocked" = "delivered";
+    let code: number | null = null;
+    let reason: string | null = null;
+    try {
+      await push(delivery.group_id, [message], retryKey(delivery.candidate_id, String(delivery.revision), delivery.group_id));
+    } catch (pushError) {
+      ({ outcome, code, reason } = classifyPushFailure(pushError));
+      logger.warn("category review card not delivered", {
+        candidateId: delivery.candidate_id, revision: delivery.revision, attempt: delivery.attempts, outcome, reason,
+      });
     }
-    if (rejected) result.undeliverable += 1;
-    // Only this revision is marked: a newer revision races in as unannounced.
-    const { error: markError } = await supabase
-      .from("produce_category_candidates")
-      .update({ notified_revision: candidate.revision })
-      .eq("id", candidate.id)
-      .eq("revision", candidate.revision);
-    if (markError) logger.warn("category candidate notify mark failed", { candidateId: candidate.id });
-    if (!rejected) result.notified += 1;
+    const { data: recorded, error: completeError } = await supabase.rpc("complete_produce_category_delivery", {
+      p_candidate_id: delivery.candidate_id,
+      p_revision: delivery.revision,
+      p_group_id: delivery.group_id,
+      p_claim_token: delivery.claim_token,
+      p_outcome: outcome,
+      p_error_code: code,
+      p_error: reason,
+      p_max_attempts: MAX_DELIVERY_ATTEMPTS,
+    });
+    // An unrecorded outcome is safe: the lease expires and the same retry key
+    // is reused, so LINE de-duplicates an already accepted card.
+    if (completeError) logger.warn("category delivery outcome not recorded", { candidateId: delivery.candidate_id });
+    const status = completeError ? outcome : String(recorded);
+    if (status === "delivered") result.notified += 1;
+    else if (status === "blocked") result.blocked += 1;
+    else if (status === "retryable") result.retrying += 1;
   }
-  return { ...result, notifyMode: "sent" };
+  return { ...result, queue: await deliveryQueue(supabase), notifyMode: "sent" };
 }

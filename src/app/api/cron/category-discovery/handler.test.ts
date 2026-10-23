@@ -21,4 +21,26 @@ describe("category discovery cron", () => {
     expect(res.status).toBe(500);
     expect(await res.json()).toEqual({ ok: false, error: "category discovery failed" });
   });
+
+  test("requeue accepts only `blocked` and a configured review group", async () => {
+    process.env.CRON_SECRET = "s3cret";
+    const savedGroups = process.env.CATEGORY_REVIEW_LINE_GROUP_IDS;
+    process.env.CATEGORY_REVIEW_LINE_GROUP_IDS = "C-review";
+    try {
+      for (const query of ["?requeue=all", "?requeue=blocked&group=C-operations"]) {
+        const res = await handleCategoryDiscovery(new Request(`http://x/${query}`, { headers: { authorization: "Bearer s3cret" } }),
+          deps(() => { throw new Error("must not connect"); }));
+        expect(res.status).toBe(400);
+      }
+      const calls: unknown[] = [];
+      const client = {
+        rpc: async (name: string, args: unknown) => { calls.push([name, args]); throw new Error("stop after requeue"); },
+      };
+      await handleCategoryDiscovery(new Request("http://x/?requeue=blocked&group=C-review", { headers: { authorization: "Bearer s3cret" } }),
+        deps(() => client as never));
+      expect(calls).toEqual([["requeue_produce_category_deliveries", { p_group_id: "C-review" }]]);
+    } finally {
+      process.env.CATEGORY_REVIEW_LINE_GROUP_IDS = savedGroups;
+    }
+  });
 });

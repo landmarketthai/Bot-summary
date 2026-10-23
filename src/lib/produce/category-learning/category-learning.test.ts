@@ -8,7 +8,16 @@ import { produceSectionOf } from "@/lib/summary/produce-section";
 import { stockCategoryFor } from "@/lib/summary/stock-categories";
 import { morningBriefProductIdentity } from "@/lib/summary/morning-brief";
 import { produceCategoryTotals } from "@/lib/summary/produce-category-totals";
-import { ANNOUNCE_PER_RUN, discoverCategoryCandidates, needsCategoryReview, runCategoryDiscovery, suggestCategory } from "./discovery";
+import { LinePushError } from "@/lib/line/reply";
+import {
+  ANNOUNCE_PER_RUN,
+  MAX_DELIVERY_ATTEMPTS,
+  classifyPushFailure,
+  discoverCategoryCandidates,
+  needsCategoryReview,
+  runCategoryDiscovery,
+  suggestCategory,
+} from "./discovery";
 import {
   CATEGORY_RULES_PAGE_SIZE,
   enterCategoryPolicy,
@@ -42,11 +51,13 @@ function surfaces(name: string) {
   };
 }
 
-describe("category policy snapshot (order matters: first test needs a fresh process state)", () => {
-  test("10. no rules loaded yet + failing DB: business rules only, never throws", async () => {
+describe("category policy snapshot", () => {
+  test("10. a failing DB never throws and always keeps the business rules", async () => {
+    // Falls back to the last complete snapshot (process-wide, so possibly
+    // loaded by another test file) or to business rules only.
     const policy = await loadApprovedCategoryPolicy({ from: () => { throw new Error("relation does not exist"); } });
     expect(policy.get("มะละกอดิบ")).toBe("ผ");
-    expect(policy.size).toBe(2);
+    expect(policy.get("เต้าหู้แผ่น")).toBe("other");
   });
 
   test("P2. more than 1,000 rules load completely via keyset pages", async () => {
@@ -210,63 +221,76 @@ describe("discovery", () => {
     expect(produceSectionOf("มะม่วงง")).toBe("other"); // until an admin approves
   });
 
-  const candidateRow = (i: number, extra: Record<string, unknown> = {}) => ({
-    id: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`, product_name: `ผู้สมัคร${String(i).padStart(3, "0")}`,
-    status: "pending", suggested_category: null, confidence: "low", suggestion_reason: "-", similar_product_name: null,
-    occurrence_count: 1000 - i, distinct_dates: 1, first_seen: "2026-10-20", last_seen: "2026-10-20", sample_markets: [],
-    revision: 1, notified_revision: null as number | null,
-    created_at: `2026-10-01T00:${String(Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}Z`,
-    ...extra,
-  });
   const window = { fromDate: "2026-10-07", toDate: "2026-10-20" };
 
+  /** Fake ledger RPCs; the real state machine is proven in category-delivery.pg.test.ts. */
+  function ledger(claimed: Record<string, unknown>[]) {
+    const calls: [string, Record<string, unknown>][] = [];
+    const db = fakeDb({ produce_transactions: [row("สินค้าลึกลับ")], produce_category_rules: [] });
+    const client = {
+      from: (db.client as { from: unknown }).from,
+      rpc: async (name: string, args: Record<string, unknown>) => {
+        calls.push([name, args]);
+        if (name === "claim_produce_category_deliveries") return { data: claimed, error: null };
+        if (name === "complete_produce_category_delivery") return { data: args.p_outcome, error: null };
+        if (name === "produce_category_delivery_health") return { data: [{ group_id: GROUP, status: "delivered", deliveries: 1 }], error: null };
+        return { data: null, error: null };
+      },
+    };
+    return { client: client as never, calls };
+  }
+  const claim = (group = GROUP) => ({
+    candidate_id: ID, revision: 3, group_id: group, claim_token: "00000000-0000-4000-8000-0000000000aa", attempts: 1,
+    product_name: "สินค้าลึกลับ", suggested_category: null, confidence: "low", suggestion_reason: "-",
+    similar_product_name: null, occurrence_count: 1, distinct_dates: 1, first_seen: "2026-10-20",
+    last_seen: "2026-10-20", sample_markets: [],
+  });
+
   test("notifications are opt-in and only go to the review group", async () => {
-    const db = fakeDb({ produce_transactions: [row("สินค้าลึกลับ")], produce_category_rules: [], produce_category_candidates: [candidateRow(1)] });
     const pushes: string[] = [];
     const push = async (to: string) => { pushes.push(to); };
-    expect(await runCategoryDiscovery(db.client as never, window, push, {} as unknown as NodeJS.ProcessEnv))
-      .toMatchObject({ discovered: 1, notifyMode: "disabled" });
-    expect((await runCategoryDiscovery(db.client as never, window, push,
+    const off = ledger([claim()]);
+    expect(await runCategoryDiscovery(off.client, window, push, {} as unknown as NodeJS.ProcessEnv))
+      .toMatchObject({ discovered: 1, notifyMode: "disabled", queue: null });
+    expect(off.calls.map(([n]) => n)).toEqual(["observe_produce_category_candidate"]);
+    const noGroup = ledger([claim()]);
+    expect((await runCategoryDiscovery(noGroup.client, window, push,
       { CATEGORY_REVIEW_NOTIFY_ENABLED: "true" } as unknown as NodeJS.ProcessEnv)).notifyMode).toBe("no_recipient");
+    expect(noGroup.calls.map(([n]) => n)).not.toContain("claim_produce_category_deliveries");
     expect(pushes).toEqual([]);
-    expect(await runCategoryDiscovery(db.client as never, window, push, NOTIFY_ENV)).toMatchObject({ notified: 1, notifyMode: "sent" });
+
+    const on = ledger([claim()]);
+    expect(await runCategoryDiscovery(on.client, window, push, NOTIFY_ENV))
+      .toMatchObject({ notified: 1, notifyMode: "sent", queue: { delivered: 1 } });
     expect(pushes).toEqual([GROUP]);
+    expect(on.calls.find(([n]) => n === "claim_produce_category_deliveries")![1])
+      .toMatchObject({ p_groups: [GROUP], p_limit: ANNOUNCE_PER_RUN, p_max_attempts: MAX_DELIVERY_ATTEMPTS });
   });
 
-  test("P1. candidates beyond the 50 busiest are still announced (no queue starvation)", async () => {
-    // 50 high-volume candidates already announced; 15 low-volume ones waiting.
-    const candidates = [
-      ...Array.from({ length: 50 }, (_, i) => candidateRow(i, { notified_revision: 1 })),
-      ...Array.from({ length: 15 }, (_, i) => candidateRow(50 + i)),
-    ];
-    const db = fakeDb({ produce_transactions: [], produce_category_rules: [], produce_category_candidates: candidates });
-    const pushed: string[] = [];
-    const push = async (_to: string, _m: unknown, retryKey: string) => { pushed.push(retryKey); };
-    expect((await runCategoryDiscovery(db.client as never, window, push, NOTIFY_ENV)).notified).toBe(ANNOUNCE_PER_RUN);
-    expect((await runCategoryDiscovery(db.client as never, window, push, NOTIFY_ENV)).notified).toBe(5);
-    expect((await runCategoryDiscovery(db.client as never, window, push, NOTIFY_ENV)).notified).toBe(0);
-    expect(new Set(pushed).size).toBe(15); // each waiting candidate exactly once
-    expect(candidates.slice(50).every((c) => c.notified_revision === 1)).toBe(true);
-    const queueQuery = db.requests.find((r) => r.table === "produce_category_candidates")!;
-    expect(queueQuery.filters).toEqual(["needs_announcement=true"]);
+  test("each claimed delivery is completed with its claim token and a classified outcome", async () => {
+    const { client, calls } = ledger([claim(GROUP), claim("C-other")]);
+    const push = async (to: string) => { if (to === "C-other") throw new LinePushError("LINE push HTTP 400", 400, false); };
+    const result = await runCategoryDiscovery(client, window, push, NOTIFY_ENV);
+    expect(result).toMatchObject({ notified: 1, blocked: 1, retrying: 0 });
+    const completes = calls.filter(([n]) => n === "complete_produce_category_delivery").map(([, a]) => a);
+    expect(completes).toEqual([
+      expect.objectContaining({ p_group_id: GROUP, p_revision: 3, p_claim_token: claim().claim_token, p_outcome: "delivered", p_error: null }),
+      expect.objectContaining({ p_group_id: "C-other", p_outcome: "blocked", p_error_code: 400, p_error: "HTTP 400" }),
+    ]);
   });
 
-  test("P1. 60 fresh candidates drain FIFO in 6 runs of at most 10; a new revision re-queues once", async () => {
-    const candidates = Array.from({ length: 60 }, (_, i) => candidateRow(i));
-    const db = fakeDb({ produce_transactions: [], produce_category_rules: [], produce_category_candidates: candidates });
-    const order: string[] = [];
-    const push = async (_to: string, messages: unknown) => {
-      order.push(JSON.stringify(messages).match(/ผู้สมัคร\d{3}/)![0]);
-    };
-    for (let run = 0; run < 6; run++) {
-      expect((await runCategoryDiscovery(db.client as never, window, push, NOTIFY_ENV)).notified).toBe(10);
-    }
-    expect(order).toEqual(candidates.map((c) => c.product_name));
-    candidates[59]!.revision = 2; // proposal changed
-    expect((await runCategoryDiscovery(db.client as never, window, push, NOTIFY_ENV)).notified).toBe(1);
-    expect((await runCategoryDiscovery(db.client as never, window, push, NOTIFY_ENV)).notified).toBe(0);
+  test("push failures are classified without leaking error text", () => {
+    expect(classifyPushFailure(new LinePushError("LINE push HTTP 401", 401, false))).toEqual(
+      { outcome: "retryable", code: 401, reason: "HTTP 401 (credentials or group permission)" });
+    expect(classifyPushFailure(new LinePushError("x", 403, false)).outcome).toBe("retryable");
+    expect(classifyPushFailure(new LinePushError("x", 429, true))).toEqual({ outcome: "retryable", code: 429, reason: "HTTP 429" });
+    expect(classifyPushFailure(new LinePushError("x", 500, true)).outcome).toBe("retryable");
+    expect(classifyPushFailure(new LinePushError("x", null, true))).toEqual({ outcome: "retryable", code: null, reason: "network" });
+    expect(classifyPushFailure(new LinePushError("x", 400, false))).toEqual({ outcome: "blocked", code: 400, reason: "HTTP 400" });
+    expect(classifyPushFailure(new Error("Bearer secret-token leaked?"))).toEqual({ outcome: "retryable", code: null, reason: "unknown" });
   });
 });
+
 
 
 describe("LINE review postback", () => {
@@ -369,47 +393,5 @@ describe("LINE review postback", () => {
       expect([...action.label].length).toBeLessThanOrEqual(40);
       expect(action.label).not.toMatch(/[\uD800-\uDBFF]$/); // no dangling high surrogate
     }
-  });
-});
-
-describe("notification retry and queue recovery", () => {
-  const pending = (i: number) => ({
-    id: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`, product_name: `คิว${i}`, status: "pending",
-    suggested_category: null, confidence: "low", suggestion_reason: "-", similar_product_name: null,
-    occurrence_count: 1, distinct_dates: 1, first_seen: "2026-10-20", last_seen: "2026-10-20", sample_markets: [],
-    revision: 1, notified_revision: null as number | null, created_at: `2026-10-01T00:00:0${i}Z`,
-  });
-  const window = { fromDate: "2026-10-07", toDate: "2026-10-20" };
-  const lineError = (retryable: boolean) => Object.assign(new Error(retryable ? "LINE push HTTP 500" : "LINE push HTTP 400"), { retryable });
-
-  test("a card LINE rejects (4xx) is skipped and does not block the queue head", async () => {
-    const candidates = [pending(1), pending(2), pending(3)];
-    const db = fakeDb({ produce_transactions: [], produce_category_rules: [], produce_category_candidates: candidates });
-    const sent: string[] = [];
-    const push = async (_to: string, messages: unknown) => {
-      const name = JSON.stringify(messages).match(/คิว\d/)![0];
-      if (name === "คิว1") throw lineError(false);
-      sent.push(name);
-    };
-    expect(await runCategoryDiscovery(db.client as never, window, push, NOTIFY_ENV))
-      .toMatchObject({ notified: 2, undeliverable: 1 });
-    expect(sent).toEqual(["คิว2", "คิว3"]);
-    expect(candidates.every((c) => c.notified_revision === 1)).toBe(true);
-  });
-
-  test("a retryable failure stops the run unmarked; the retry reuses the same LINE retry key", async () => {
-    const candidates = [pending(1), pending(2)];
-    const db = fakeDb({ produce_transactions: [], produce_category_rules: [], produce_category_candidates: candidates });
-    const keys: string[] = [];
-    let fail = true;
-    const push = async (_to: string, _m: unknown, retryKey: string) => {
-      keys.push(retryKey);
-      if (fail && keys.length === 2) throw lineError(true);
-    };
-    await expect(runCategoryDiscovery(db.client as never, window, push, NOTIFY_ENV)).rejects.toThrow("HTTP 500");
-    expect(candidates.map((c) => c.notified_revision)).toEqual([1, null]);
-    fail = false;
-    expect((await runCategoryDiscovery(db.client as never, window, push, NOTIFY_ENV)).notified).toBe(1);
-    expect(keys[2]).toBe(keys[1]); // same candidate+revision+group key → LINE de-duplicates
   });
 });

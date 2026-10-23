@@ -757,17 +757,21 @@ jobs:
           pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER"
           version="$(psql -d postgres -tAc 'SHOW server_version_num')"
           test "$version" -ge 170000
-      # The suite applies 20261022120000 then 20261022130000 to its own disposable
-      # database; REQUIRE_* turns an unreachable PostgreSQL into a failure, not a skip.
-      - name: Category learning migrations (real PostgreSQL)
+      # The suites apply all four category migrations in release order, under the
+      # broad Supabase default ACL, to their own disposable databases (delivery
+      # ledger + least-privilege grants run AS service_role). REQUIRE_* turns an
+      # unreachable PostgreSQL into a failure, not a skip.
+      - name: Category learning migrations, delivery ledger and grants (real PostgreSQL)
         run: >-
           REQUIRE_CATEGORY_LEARNING_POSTGRES=1 bun test
           src/lib/produce/category-learning/migration-category-learning.pg.test.ts
+          src/lib/produce/category-learning/category-delivery.pg.test.ts
       - name: Category learning policy, discovery, review and authorization
         run: >-
           bun test
           src/lib/produce/category-learning/category-learning.test.ts
           src/lib/line/webhook-category-review.test.ts
+          src/lib/line/webhook-manual-stock-category.test.ts
           src/app/api/cron/category-discovery/handler.test.ts
       - name: Report surfaces that read the category policy
         run: >-
@@ -784,6 +788,21 @@ jobs:
           src/app/api/cron/daily-stock-summary/route.test.ts
           src/lib/line/daily-summary-cron.test.ts
           src/lib/line/daily-summary-message.test.ts
+      - name: Settlement, reconciliation, fingerprint and dedup guards
+        run: >-
+          bun test
+          src/lib/settlement/daily-financial-settlement-loader.test.ts
+          src/lib/settlement/daily-financial-settlement-message.test.ts
+          src/lib/settlement/daily-financial-settlement.test.ts
+          src/lib/settlement/produce-financial-integrity.test.ts
+          src/lib/settlement/produce-value-status.test.ts
+          src/lib/reconciliation.test.ts
+          src/lib/reconciliation-report.test.ts
+          src/lib/reconciliation-report-service.test.ts
+          src/lib/settlement-finalizer.test.ts
+          src/lib/line/session-dedup-provenance.test.ts
+          src/lib/produce/business-fingerprint.test.ts
+          src/lib/produce/fingerprint-compatibility.test.ts
       - name: Typecheck
         run: npm run type-check
       - name: Lint category learning files
@@ -800,5 +819,6 @@ jobs:
           src/app/api/cron/daily-stock-summary
           src/app/api/cron/daily-summary
           src/lib/line/webhook-category-review.test.ts
+          src/lib/line/webhook-manual-stock-category.test.ts
       - name: Whitespace check
         run: git diff --check "origin/${{ github.base_ref }}...HEAD"

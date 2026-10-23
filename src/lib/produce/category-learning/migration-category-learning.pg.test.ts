@@ -1,55 +1,11 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
-import { randomBytes } from "node:crypto";
+import { BOOTSTRAP, CATEGORY_MIGRATIONS, CATEGORY_ROLLBACKS, SUPABASE_DEFAULT_ACL, pgHarness } from "./test-pg-harness";
 
-const ROOT = join(import.meta.dir, "..", "..", "..", "..");
-const PSQL = existsSync("C:\\Program Files\\PostgreSQL\\17\\bin\\psql.exe")
-  ? "C:\\Program Files\\PostgreSQL\\17\\bin\\psql.exe" : "psql";
-const PGHOST = process.env.PGHOST ?? "localhost";
-const PGUSER = process.env.PGUSER ?? "postgres";
-const PGPASSWORD = process.env.PGPASSWORD ?? "postgres";
-const PGPORT = process.env.PGPORT ?? "5432";
-const DATABASE = `pcl_${randomBytes(4).toString("hex")}`;
-const ALLOWED_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
-const BOOTSTRAP = join(ROOT, "supabase", "tests", "produce_product_code_dictionary_bootstrap.sql");
-const MIGRATION = join(ROOT, "supabase", "migrations", "20261022120000_produce_category_learning.sql");
-const QUEUE_MIGRATION = join(ROOT, "supabase", "migrations", "20261022130000_produce_category_announce_queue.sql");
-const ROLLBACK = join(ROOT, "supabase", "rollback", "20261022120000_produce_category_learning.down.sql");
-const QUEUE_ROLLBACK = join(ROOT, "supabase", "rollback", "20261022130000_produce_category_announce_queue.down.sql");
+const pg = pgHarness("pcl");
+const { psql, run, scalar } = pg;
+const DATABASE = pg.database;
 
-type PsqlResult = { code: number; stdout: string; stderr: string };
-
-async function psql(args: string[], database = DATABASE, stdin?: string): Promise<PsqlResult> {
-  const proc = Bun.spawn([PSQL, "-X", ...args], {
-    cwd: ROOT,
-    stdin: stdin === undefined ? undefined : new TextEncoder().encode(stdin),
-    env: { ...process.env, PGHOST, PGUSER, PGPASSWORD, PGPORT, PGDATABASE: database, PGCLIENTENCODING: "UTF8" },
-    stdout: "pipe", stderr: "pipe",
-  });
-  const [stdout, stderr, code] = await Promise.all([
-    new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited,
-  ]);
-  return { code, stdout, stderr };
-}
-
-async function run(sql: string): Promise<PsqlResult> {
-  return psql(["-v", "ON_ERROR_STOP=1", "-tA", "-f", "-"], DATABASE, sql);
-}
-
-async function scalar(sql: string): Promise<string> {
-  const result = await run(sql);
-  if (result.code !== 0) throw new Error(`${result.stderr || result.stdout}\nSQL: ${sql}`);
-  return result.stdout.split("\n").map((line) => line.trim()).find(Boolean) ?? "";
-}
-
-async function probe(): Promise<boolean> {
-  if (process.env.ALLOW_DISPOSABLE_POSTGRES_TESTS !== "1" || !ALLOWED_HOSTS.has(PGHOST)) return false;
-  const result = await psql(["-tAc", "SHOW server_version_num"], "postgres");
-  return result.code === 0 && Number(result.stdout.trim()) >= 140000;
-}
-
-const pgAvailable = await probe();
+const pgAvailable = await pg.available();
 let databaseCreated = false;
 if (!pgAvailable && process.env.REQUIRE_CATEGORY_LEARNING_POSTGRES === "1") {
   throw new Error("REQUIRE_CATEGORY_LEARNING_POSTGRES=1 but PostgreSQL is unavailable");
@@ -58,30 +14,26 @@ if (!pgAvailable && process.env.REQUIRE_CATEGORY_LEARNING_POSTGRES === "1") {
 const q = (value: string | null) => (value === null ? "NULL" : `'${value.replaceAll("'", "''")}'`);
 
 function observe(name: string, suggested: string | null, similar: string | null = null, occurrences = 3) {
-  return scalar(`SELECT row_to_json(c)::text FROM public.observe_produce_category_candidate(
+  // Runtime role: every RPC call below runs as service_role under the broad ACL.
+  return scalar(`SET ROLE service_role; SELECT row_to_json(c)::text FROM public.observe_produce_category_candidate(
     ${q(name)}, ${q(suggested)}, 'medium', 'test', ${q(similar)}, ${occurrences}, 2,
     DATE '2026-10-19', DATE '2026-10-20', ARRAY['ตลาดA']) c`).then((text) => JSON.parse(text));
 }
 
 function decide(id: string, revision: number, action: string, category: string | null, eventId: string, alias: string | null = null) {
-  return scalar(`SELECT public.decide_produce_category_candidate(
+  return scalar(`SET ROLE service_role; SELECT public.decide_produce_category_candidate(
     ${q(id)}::uuid, ${revision}, ${q(action)}, ${q(category)}, ${q(alias)}, 'Uadmin', 'Ctestgroup', ${q(eventId)})::text`)
     .then((text) => JSON.parse(text));
 }
 
 describe.skipIf(!pgAvailable)("produce category learning migration", () => {
   beforeAll(async () => {
-    const created = await psql(["-d", "postgres", "-c", `CREATE DATABASE ${DATABASE}`], "postgres");
-    expect(created.code, created.stderr).toBe(0);
     databaseCreated = true;
-    for (const file of [BOOTSTRAP, MIGRATION, QUEUE_MIGRATION]) {
-      const applied = await psql(["-v", "ON_ERROR_STOP=1", "-f", file]);
-      expect(applied.code, `${file}\n${applied.stderr}`).toBe(0);
-    }
+    await pg.setup();
   });
 
   afterAll(async () => {
-    if (databaseCreated) await psql(["-d", "postgres", "-c", `DROP DATABASE IF EXISTS ${DATABASE} WITH (FORCE)`], "postgres");
+    if (databaseCreated) await pg.drop();
   });
 
   test("approval writes one rule and one audit row; a replayed LINE event is a no-op", async () => {
@@ -186,22 +138,31 @@ describe.skipIf(!pgAvailable)("produce category learning migration", () => {
       expect(result.code, `${file}\n${result.stderr}`).toBe(0);
     };
     const objects = async () => (await psql(["-tAc", `SELECT
-      (SELECT count(*) FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relname LIKE 'produce_category_%')
+      (SELECT count(*) FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relname LIKE 'produce\\_category\\_%')
       + (SELECT count(*) FROM pg_proc WHERE pronamespace = 'public'::regnamespace
-         AND proname IN ('observe_produce_category_candidate','decide_produce_category_candidate','produce_category_decisions_append_only'))`], db)).stdout.trim();
+         AND (proname LIKE '%produce\\_category%'))`], db)).stdout.trim();
+    const business = async () => (await psql(["-tAc",
+      "SELECT md5(coalesce(string_agg(row_to_json(t)::text, chr(10) ORDER BY row_to_json(t)::text), '')) FROM public.produce_transactions t"], db)).stdout.trim();
     expect((await psql(["-d", "postgres", "-c", `CREATE DATABASE ${db}`], "postgres")).code).toBe(0);
     try {
       await apply(BOOTSTRAP);
-      await apply(MIGRATION);
-      await apply(QUEUE_MIGRATION);
+      expect((await psql(["-v", "ON_ERROR_STOP=1", "-c", SUPABASE_DEFAULT_ACL], db)).code).toBe(0);
+      const before = await business();
+      for (const file of CATEGORY_MIGRATIONS) await apply(file);
       expect(Number(await objects())).toBeGreaterThan(0);
-      await apply(QUEUE_ROLLBACK);
+      // Reverse order; each step leaves a consistent schema.
+      await apply(CATEGORY_ROLLBACKS[0]!);
+      expect((await psql(["-tAc", "SELECT count(*) FROM pg_trigger WHERE tgname = 'produce_category_decisions_no_truncate'"], db)).stdout.trim()).toBe("0");
+      await apply(CATEGORY_ROLLBACKS[1]!);
+      expect((await psql(["-tAc", "SELECT to_regclass('public.produce_category_deliveries') IS NULL"], db)).stdout.trim()).toBe("t");
+      await apply(CATEGORY_ROLLBACKS[2]!);
       expect((await psql(["-tAc", `SELECT count(*) FROM information_schema.columns WHERE column_name = 'needs_announcement'`], db)).stdout.trim()).toBe("0");
-      await apply(ROLLBACK);
+      await apply(CATEGORY_ROLLBACKS[3]!);
       expect(await objects()).toBe("0");
-      await apply(MIGRATION);
-      await apply(QUEUE_MIGRATION);
+      expect(await business()).toBe(before);
+      for (const file of CATEGORY_MIGRATIONS) await apply(file);
       expect(Number(await objects())).toBeGreaterThan(0);
+      expect(await business()).toBe(before);
     } finally {
       await psql(["-d", "postgres", "-c", `DROP DATABASE IF EXISTS ${db} WITH (FORCE)`], "postgres");
     }

@@ -3,51 +3,71 @@
 Review the PR head SHA stated in the PR description, against `origin/main`.
 Scope: category classification only. Out of scope: PR #158, PR #174.
 
+## Re-review of the 53c6acf findings
+
+| Finding | Fix | Permanent regression |
+|---|---|---|
+| F1 P1: a 4xx (401/403) was marked announced; no per-recipient state | durable ledger `produce_category_deliveries` (migration 20261023100000) with claim / complete / requeue RPCs; 401/403 retryable (bounded), other 4xx blocked, blocked excluded from the queue | `category-delivery.pg.test.ts`: `F1a: a fixed 401 …`, `F1b: group A delivered, group B 403 …`, 400 block + requeue, bounded retries, overlapping runs, lease, revision |
+| F2 P1: manual `สรุปคงเหลือ` ignored approved rules | `processRemainingFruitCommand` fetches and builds inside `withApprovedCategoryRules` | `webhook-manual-stock-category.test.ts` through `WebhookService.processEvents` (fails on 53c6acf, passes now) |
+| F3 P2: inherited default-ACL privileges let service_role UPDATE rules / TRUNCATE audit | migration 20261023110000: REVOKE ALL from PUBLIC/anon/authenticated/service_role, GRANT SELECT to service_role, TRUNCATE trigger on decisions | `category-delivery.pg.test.ts`: `F3a …`, `F3b …`, effective privileges, SECURITY DEFINER owner / search_path / EXECUTE, RPC still works |
+
+The five independent cases map to: F1a, F1b, F2 (`manual สรุปคงเหลือ …`), F3a, F3b.
+
 ## High-risk code
 
 | File | Functions | What to check |
 |---|---|---|
-| `src/lib/produce/product-code/category.ts` | `approvedCategoryFor`, `buildCategoryPolicy`, `setCategoryPolicySource`, `dictionaryCategoryFor` | business rules always present; no mutable shared policy; outside a report only code rules |
-| `src/lib/produce/category-learning/rules.ts` | `fetchAllRules`, `loadApprovedCategoryPolicy`, `withApprovedCategoryRules`, `enterCategoryPolicy` | keyset paging complete; any error → last complete snapshot, never partial; `enterWith` only called in the route function after an await |
-| `src/lib/produce/category-learning/review.ts` | `handleCategoryReviewPostback`, `parseCategoryReviewPostback`, `buildCategoryReviewMessage` | group + admin check before any DB read; alias category resolved server-side; label ≤ 40 code points |
-| `src/lib/produce/category-learning/discovery.ts` | `runCategoryDiscovery`, `needsCategoryReview`, `suggestCategory` | notify opt-in; FIFO queue; 4xx skip vs retryable stop; retry key stability; suggestions never change identity |
-| `src/lib/line/webhook-service.ts` | `pcat1` branch in `processOne` | runs after raw-event persist (replay = duplicate) |
-| `src/app/api/cron/{daily-stock-summary,daily-morning-brief,daily-summary}/route.ts`, `src/lib/summary/stock-summary-service.ts` | policy pinning | snapshot pinned before classification, covers PDF + messages |
-| `supabase/migrations/20261022120000_produce_category_learning.sql` | `observe_produce_category_candidate`, `decide_produce_category_candidate` | SECURITY DEFINER search_path; event-id idempotency; `FOR UPDATE`; stale revision; alias target must equal reviewed `similar_product_name`; append-only trigger; grants |
-| `supabase/migrations/20261022130000_produce_category_announce_queue.sql` | `needs_announcement` | generated expression matches the notifier |
-| `supabase/rollback/2026102212*.down.sql`, `2026102213*.down.sql` | | reverse order, no business table |
+| `src/lib/produce/category-learning/discovery.ts` | `runCategoryDiscovery`, `classifyPushFailure`, `requeueCategoryDeliveries` | never records an unsuccessful push as delivered; retry key = candidate + revision + group; outcome recorded with the claim token |
+| `supabase/migrations/20261023100000_produce_category_delivery_ledger.sql` | `claim_…`, `complete_…`, `requeue_…`, `…_health` | enqueue only current revisions of pending candidates; `FOR UPDATE SKIP LOCKED` + lease; complete only with the current token; retryable → blocked at max attempts; health exposes counts only |
+| `supabase/migrations/20261023110000_produce_category_privilege_hardening.sql` | grants, TRUNCATE trigger | effective privileges under the broad default ACL |
+| `src/lib/line/webhook-service.ts` | `processRemainingFruitCommand`, `pcat1` branch | one snapshot per command; no rule read on ordinary Produce messages |
+| `src/app/api/cron/category-discovery/handler.ts` | `?requeue=blocked[&group=]` | only `blocked`, only configured review groups |
+| `src/lib/produce/category-learning/rules.ts`, `product-code/category.ts` | snapshot pinning | unchanged since 53c6acf |
+| `supabase/rollback/*.down.sql` | four scripts | reverse order, no business table |
 
 ## Commands
 
 ```bash
 bun install
-bun test src/lib/produce/category-learning/category-learning.test.ts src/lib/line/webhook-category-review.test.ts src/app/api/cron/category-discovery/handler.test.ts
-ALLOW_DISPOSABLE_POSTGRES_TESTS=1 REQUIRE_CATEGORY_LEARNING_POSTGRES=1 PGHOST=localhost PGUSER=postgres PGPASSWORD=postgres bun test src/lib/produce/category-learning/migration-category-learning.pg.test.ts
-bun test src/lib/summary src/app/api/cron/daily-morning-brief src/app/api/cron/daily-stock-summary src/lib/line/daily-summary-cron.test.ts src/lib/line/daily-summary-message.test.ts
+bun test src/lib/produce/category-learning/category-learning.test.ts src/lib/line/webhook-category-review.test.ts src/lib/line/webhook-manual-stock-category.test.ts src/app/api/cron/category-discovery/handler.test.ts
+ALLOW_DISPOSABLE_POSTGRES_TESTS=1 REQUIRE_CATEGORY_LEARNING_POSTGRES=1 PGHOST=localhost PGUSER=postgres PGPASSWORD=postgres \
+  bun test src/lib/produce/category-learning/migration-category-learning.pg.test.ts src/lib/produce/category-learning/category-delivery.pg.test.ts
+# just the five previously failing cases:
+ALLOW_DISPOSABLE_POSTGRES_TESTS=1 REQUIRE_CATEGORY_LEARNING_POSTGRES=1 PGHOST=localhost PGUSER=postgres PGPASSWORD=postgres \
+  bun test src/lib/produce/category-learning/category-delivery.pg.test.ts -t "F1a|F1b|F3a|F3b"
+bun test src/lib/line/webhook-manual-stock-category.test.ts
 npx tsc --noEmit
 ```
 
-The repository-wide `bun test` hangs on `origin/main` too. Compare scoped runs
-against `origin/main` instead; the 11 failures there are pre-existing.
+The PostgreSQL suites apply the broad Supabase default ACL before the
+migrations and run every RPC `SET ROLE service_role`. Codex's own
+`review-independent*.js` files exercise the old `notified_revision` contract
+and the fake DB without ledger RPCs; the cases above replace them against the
+real database.
+
+The repository-wide `bun test` hangs on `origin/main` too; compare scoped runs
+with `origin/main` (pre-existing failures are identical).
 
 ## Races to probe
 
-1. Two admins tap different buttons on one card at the same time: exactly one `applied`, the other `stale`.
+1. Two admins tap different buttons on one card: exactly one `applied`, the other `stale`.
 2. LINE redelivers the same postback event: `duplicate`, one decision row.
-3. Discovery re-observes a pending candidate with a new suggestion while an admin taps the old card: revision bump → `stale`.
-4. Two discovery runs overlap: same rows, same retry keys; `notified_revision` set only with `revision` unchanged.
-5. A report starts, another report refreshes rules, the first resumes: the first keeps its snapshot.
+3. A revision changes while its card is in flight: the old revision is never claimed again, its card is `stale`, the new revision is delivered once per group.
+4. Two discovery runs overlap: disjoint claims (SKIP LOCKED + lease), no delivery pushed twice.
+5. A push is accepted but its outcome is not recorded: re-claimed only after the lease, with the same retry key.
+6. A report starts, another refreshes rules, the first resumes: the first keeps its snapshot.
 
 ## Authorization
 
 - Fail closed: an empty `CATEGORY_REVIEW_LINE_GROUP_IDS` / `CATEGORY_REVIEW_ADMIN_LINE_USER_IDS` allows nothing.
 - Non-group sources and other groups get no reply and no DB read; non-admins in the review group get a refusal with no candidate data.
-- Identity comes only from the signature-verified webhook `source`; nothing in the postback data is trusted for identity or for the alias category.
+- Identity comes only from the signature-verified webhook `source`.
+- Database: `service_role` SELECT-only on all four tables; writes only through SECURITY DEFINER RPCs owned by the migration role.
 
 ## Invariants that must hold
 
-- `มะละกอดิบ` → ผัก, `มะละกอ` → ผลไม้, and they stay two products.
-- `เต้าหู้แผ่น`, `ปลาทู`, `ขนมจีน` stay other and raise no review.
+- `มะละกอดิบ` → ผัก, `มะละกอ` → ผลไม้, two products.
+- `เต้าหู้แผ่น`, `ปลาทู`, `ขนมจีน` stay other, no review.
 - No change to transactions, quantities, prices, satang totals, fingerprints, product codes, `PRODUCT_ALIASES` or vocabulary.
-- An approved rule affects the next report without a deployment.
-- LLM/API failure cannot block ingestion or daily close: no LLM in this PR, and no rule read on the ingestion path.
+- Approved rules affect the next report, including manual `สรุปคงเหลือ`, without deployment.
+- No category-rule read on Produce ingestion or financial close.

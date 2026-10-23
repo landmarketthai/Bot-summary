@@ -3506,14 +3506,18 @@ export class WebhookService {
     });
 
     try {
-      const rows = await fetchRemainingFruitRows(
-        this.supabase,
-        businessDate,
-        command.marketFilter,
-      );
-      const messages = buildRemainingFruitMessagesFromRows(businessDate, rows, {
-        marketFilter: command.marketFilter,
-        includeOverall: !command.marketFilter,
+      // Fetch and classify against one approved-category snapshot, exactly
+      // like the scheduled Stock Summary (category-learning/rules.ts).
+      const messages = await withApprovedCategoryRules(this.supabase, async () => {
+        const rows = await fetchRemainingFruitRows(
+          this.supabase,
+          businessDate,
+          command.marketFilter,
+        );
+        return buildRemainingFruitMessagesFromRows(businessDate, rows, {
+          marketFilter: command.marketFilter,
+          includeOverall: !command.marketFilter,
+        });
       });
       if (replyToken) await this.replyMessages(replyToken, messages);
       return { eventId, eventType, status: "saved", parsed: false };
