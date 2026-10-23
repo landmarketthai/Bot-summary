@@ -10,6 +10,9 @@ import type {
 } from "@/lib/line/types";
 import type { Database, Json, LineMessageType } from "@/types/database";
 import { getSourceId, getUserId, getPendingSessionKey } from "@/lib/line/verify";
+import { handleCategoryReviewPostback, isCategoryReviewPostback } from "@/lib/produce/category-learning/review";
+import { policyCodeFor } from "@/lib/produce/category-learning/discovery";
+import { withApprovedCategoryRules } from "@/lib/produce/category-learning/rules";
 import { parserRegistry } from "@/lib/parsers/registry";
 import { logger } from "@/lib/logger";
 import {
@@ -1090,6 +1093,26 @@ export class WebhookService {
     }
 
     log.debug("raw message saved", { rawMessageId });
+
+    // ── 1b. Category review postback (pcat1) — after the raw persist above, so a
+    // replayed LINE event is already "duplicate"; the decision RPC is
+    // idempotent on the event id as a second guard.
+    if (event.type === "postback" && isCategoryReviewPostback((event as LinePostbackEvent).postback?.data ?? "")) {
+      const postbackEvent = event as LinePostbackEvent;
+      const reply = await handleCategoryReviewPostback({
+        data: postbackEvent.postback.data,
+        lineEventId: eventId,
+        userId: getUserId(postbackEvent.source) ?? null,
+        sourceType: postbackEvent.source.type,
+        sourceId: getSourceId(postbackEvent.source),
+      }, {
+        supabase: this.supabase as unknown as SupabaseClient,
+        // Rules are read only on the alias path, after authorization.
+        aliasCodeFor: (name) => withApprovedCategoryRules(this.supabase, () => policyCodeFor(name)),
+      });
+      if (reply && postbackEvent.replyToken) await replyMessage(postbackEvent.replyToken, reply);
+      return { eventId, eventType: event.type, status: "saved" };
+    }
 
     // ── 2. Guided Menu postback (opaque gpm1 tokens) ──────────────────────────
     if (event.type === "postback") {
@@ -3483,14 +3506,18 @@ export class WebhookService {
     });
 
     try {
-      const rows = await fetchRemainingFruitRows(
-        this.supabase,
-        businessDate,
-        command.marketFilter,
-      );
-      const messages = buildRemainingFruitMessagesFromRows(businessDate, rows, {
-        marketFilter: command.marketFilter,
-        includeOverall: !command.marketFilter,
+      // Fetch and classify against one approved-category snapshot, exactly
+      // like the scheduled Stock Summary (category-learning/rules.ts).
+      const messages = await withApprovedCategoryRules(this.supabase, async () => {
+        const rows = await fetchRemainingFruitRows(
+          this.supabase,
+          businessDate,
+          command.marketFilter,
+        );
+        return buildRemainingFruitMessagesFromRows(businessDate, rows, {
+          marketFilter: command.marketFilter,
+          includeOverall: !command.marketFilter,
+        });
       });
       if (replyToken) await this.replyMessages(replyToken, messages);
       return { eventId, eventType, status: "saved", parsed: false };

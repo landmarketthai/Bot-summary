@@ -31,6 +31,10 @@ jobs:
         with:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned: Bun 1.4.4 rejects BEGIN on pooled Bun.sql (ERR_POSTGRES_UNSAFE_TRANSACTION)
+          # used by the slip pg suites. Unpin after those suites move to sql.begin / max: 1.
+          bun-version: 1.4.3
       - run: bun install
       # Fail CI when the local disposable PostgreSQL is unavailable instead of silently skipping tests.
       - name: Require local PostgreSQL 17
@@ -106,6 +110,10 @@ jobs:
         with:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned: Bun 1.4.4 rejects BEGIN on pooled Bun.sql (ERR_POSTGRES_UNSAFE_TRANSACTION)
+          # used by the slip pg suites. Unpin after those suites move to sql.begin / max: 1.
+          bun-version: 1.4.3
       - run: bun install
       - name: P2E real-PostgreSQL identity and constraint suite
         run: bun run test:pg:p2e
@@ -148,6 +156,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned: Bun 1.4.4 rejects BEGIN on pooled Bun.sql (ERR_POSTGRES_UNSAFE_TRANSACTION)
+          # used by the slip pg suites. Unpin after those suites move to sql.begin / max: 1.
+          bun-version: 1.4.3
       - run: bun install
       - run: bun run test:pg:0059
 
@@ -182,6 +194,10 @@ jobs:
         with:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned: Bun 1.4.4 rejects BEGIN on pooled Bun.sql (ERR_POSTGRES_UNSAFE_TRANSACTION)
+          # used by the slip pg suites. Unpin after those suites move to sql.begin / max: 1.
+          bun-version: 1.4.3
       - run: bun install
       - name: Slice A real-PostgreSQL migration/hardening/concurrency suite
         run: bunx bun test src/lib/purchase-capture/migration-slice-a.pg.test.ts
@@ -225,6 +241,10 @@ jobs:
         with:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned: Bun 1.4.4 rejects BEGIN on pooled Bun.sql (ERR_POSTGRES_UNSAFE_TRANSACTION)
+          # used by the slip pg suites. Unpin after those suites move to sql.begin / max: 1.
+          bun-version: 1.4.3
       - run: bun install
       - name: Slice B real-PostgreSQL migration/hardening suite
         run: bunx bun test src/lib/purchase-capture/migration-slice-b.pg.test.ts
@@ -282,6 +302,10 @@ jobs:
         with:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned: Bun 1.4.4 rejects BEGIN on pooled Bun.sql (ERR_POSTGRES_UNSAFE_TRANSACTION)
+          # used by the slip pg suites. Unpin after those suites move to sql.begin / max: 1.
+          bun-version: 1.4.3
       - run: bun install
       - name: Slice C1 real-PostgreSQL migration/hardening/concurrency suite
         run: bunx bun test src/lib/purchase-capture/migration-slice-c.pg.test.ts
@@ -326,6 +350,10 @@ jobs:
         with:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned: Bun 1.4.4 rejects BEGIN on pooled Bun.sql (ERR_POSTGRES_UNSAFE_TRANSACTION)
+          # used by the slip pg suites. Unpin after those suites move to sql.begin / max: 1.
+          bun-version: 1.4.3
       - run: bun install
       - name: Slice C2-C5 end-to-end real-PostgreSQL integration suite
         run: bunx bun test src/lib/purchase-capture/integration-slice-c2.pg.test.ts
@@ -398,6 +426,10 @@ jobs:
         with:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned: Bun 1.4.4 rejects BEGIN on pooled Bun.sql (ERR_POSTGRES_UNSAFE_TRANSACTION)
+          # used by the slip pg suites. Unpin after those suites move to sql.begin / max: 1.
+          bun-version: 1.4.3
       - run: bun install
       - name: P3 real-PostgreSQL profitability snapshot suite
         run: bun run test:pg:p3
@@ -441,6 +473,10 @@ jobs:
         with:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned: Bun 1.4.4 rejects BEGIN on pooled Bun.sql (ERR_POSTGRES_UNSAFE_TRANSACTION)
+          # used by the slip pg suites. Unpin after those suites move to sql.begin / max: 1.
+          bun-version: 1.4.3
       - run: bun install
       - name: Migration 0054 real-PostgreSQL valuation suite
         run: bunx bun test src/lib/inventory-cost/migration-0054.pg.test.ts
@@ -493,6 +529,10 @@ jobs:
         with:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned: Bun 1.4.4 rejects BEGIN on pooled Bun.sql (ERR_POSTGRES_UNSAFE_TRANSACTION)
+          # used by the slip pg suites. Unpin after those suites move to sql.begin / max: 1.
+          bun-version: 1.4.3
       - run: bun install
       - name: P4A real-PostgreSQL entry validation gate suite
         run: bun run test:pg:p4a
@@ -547,6 +587,10 @@ jobs:
         with:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned: Bun 1.4.4 rejects BEGIN on pooled Bun.sql (ERR_POSTGRES_UNSAFE_TRANSACTION)
+          # used by the slip pg suites. Unpin after those suites move to sql.begin / max: 1.
+          bun-version: 1.4.3
       - run: bun install
       - name: Product Code Dictionary real-PostgreSQL migration suite
         run: bun run test:pg:product-code
@@ -616,6 +660,10 @@ jobs:
         with:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned: Bun 1.4.4 rejects BEGIN on pooled Bun.sql (ERR_POSTGRES_UNSAFE_TRANSACTION)
+          # used by the slip pg suites. Unpin after those suites move to sql.begin / max: 1.
+          bun-version: 1.4.3
       - run: bun install
       - name: P0-A same-day round reuse real-PostgreSQL suite
         run: bun run test:pg:round-reuse
@@ -672,4 +720,105 @@ jobs:
       - name: Typecheck
         run: npm run type-check
       - name: git diff --check against the PR base
+        run: git diff --check "origin/${{ github.base_ref }}...HEAD"
+
+  category-learning:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      ALLOW_DISPOSABLE_POSTGRES_TESTS: "1"
+      PGHOST: localhost
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGPORT: "5432"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+      - run: bun install
+      - name: Require local PostgreSQL 17
+        run: |
+          pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER"
+          version="$(psql -d postgres -tAc 'SHOW server_version_num')"
+          test "$version" -ge 170000
+      # The suites apply all five category migrations in release order, under the
+      # broad Supabase default ACL, to their own disposable databases (delivery
+      # ledger + least-privilege grants run AS service_role). REQUIRE_* turns an
+      # unreachable PostgreSQL into a failure, not a skip.
+      - name: Category learning migrations, delivery ledger and grants (real PostgreSQL)
+        run: >-
+          REQUIRE_CATEGORY_LEARNING_POSTGRES=1 bun test
+          src/lib/produce/category-learning/migration-category-learning.pg.test.ts
+          src/lib/produce/category-learning/category-delivery.pg.test.ts
+      - name: Category learning policy, discovery, review and authorization
+        run: >-
+          bun test
+          src/lib/produce/category-learning/category-learning.test.ts
+          src/lib/line/webhook-category-review.test.ts
+          src/lib/line/webhook-manual-stock-category.test.ts
+          src/app/api/cron/category-discovery/handler.test.ts
+      - name: Report surfaces that read the category policy
+        run: >-
+          bun test
+          src/lib/summary/stock-categories.test.ts
+          src/lib/summary/stock-summary.test.ts
+          src/lib/summary/produce-section.test.ts
+          src/lib/summary/produce-category-totals.test.ts
+          src/lib/summary/morning-brief.test.ts
+          src/lib/summary/morning-brief-message.test.ts
+          src/lib/summary/morning-brief-pdf.test.tsx
+          src/lib/summary/daily-good-return-value.test.ts
+          src/app/api/cron/daily-morning-brief/route.test.ts
+          src/app/api/cron/daily-stock-summary/route.test.ts
+          src/lib/line/daily-summary-cron.test.ts
+          src/lib/line/daily-summary-message.test.ts
+      - name: Settlement, reconciliation, fingerprint and dedup guards
+        run: >-
+          bun test
+          src/lib/settlement/daily-financial-settlement-loader.test.ts
+          src/lib/settlement/daily-financial-settlement-message.test.ts
+          src/lib/settlement/daily-financial-settlement.test.ts
+          src/lib/settlement/produce-financial-integrity.test.ts
+          src/lib/settlement/produce-value-status.test.ts
+          src/lib/reconciliation.test.ts
+          src/lib/reconciliation-report.test.ts
+          src/lib/reconciliation-report-service.test.ts
+          src/lib/settlement-finalizer.test.ts
+          src/lib/line/session-dedup-provenance.test.ts
+          src/lib/produce/business-fingerprint.test.ts
+          src/lib/produce/fingerprint-compatibility.test.ts
+      - name: Typecheck
+        run: npm run type-check
+      - name: Lint category learning files
+        run: >-
+          npx eslint --max-warnings=0
+          src/lib/produce/category-learning
+          src/lib/produce/product-code/category.ts
+          src/lib/summary/stock-categories.ts
+          src/lib/summary/produce-section.ts
+          src/lib/summary/morning-brief.ts
+          src/lib/summary/stock-summary-service.ts
+          src/app/api/cron/category-discovery
+          src/app/api/cron/daily-morning-brief
+          src/app/api/cron/daily-stock-summary
+          src/app/api/cron/daily-summary
+          src/lib/line/webhook-category-review.test.ts
+          src/lib/line/webhook-manual-stock-category.test.ts
+      - name: Whitespace check
         run: git diff --check "origin/${{ github.base_ref }}...HEAD"

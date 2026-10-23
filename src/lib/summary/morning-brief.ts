@@ -1,6 +1,7 @@
 import { canonicalMarketLabel } from "@/lib/market";
 import { isSoldOutByAbsentReturn, type SalesReport, type SalesIdentityRow } from "@/lib/sales/calculate";
 import type { SalesValueStatus } from "@/lib/sales/calculate";
+import { approvedCategoryFor, DICTIONARY_CATEGORY_NAME } from "@/lib/produce/product-code/category";
 import { PRODUCT_CODE_ENTRIES } from "@/lib/produce/product-code/dictionary";
 import { canonicalProduceProductIdentity } from "@/lib/produce/product-vocabulary";
 import type {
@@ -45,7 +46,10 @@ export function morningBriefProductIdentity(productName: string, unit: string): 
 } {
   const canonical = canonicalProduceProductIdentity(productName, unit);
   const section = produceSectionOf(canonical);
-  const category = CATEGORY_BY_PRODUCT.get(canonical) ?? stockCategoryFor(canonical);
+  const approved = approvedCategoryFor(canonical);
+  const category = approved
+    ? DICTIONARY_CATEGORY_NAME[approved]
+    : CATEGORY_BY_PRODUCT.get(canonical) ?? stockCategoryFor(canonical);
   return {
     productName: canonical,
     // Special packs contain both fruit and vegetables; assign their explicit section.
