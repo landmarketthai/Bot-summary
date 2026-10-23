@@ -244,4 +244,107 @@ describe("SlipCheckService", () => {
     expect(pushes).toHaveLength(1);
     expect(pushes[0].text).not.toContain("สลิปนี้ถูกส่งและตรวจสอบแล้วในกลุ่มนี้");
   });
+
+  // EasySlip opt-in integration must preserve OCR fallback, terminal status,
+  // existing batch/dedupe semantics and no unconfirmed revenue.
+  async function inEasySlipTest(fn: () => Promise<void>) {
+    const priorEnabled = process.env.EASYSLIP_BANK_VERIFICATION_ENABLED;
+    const priorSources = process.env.EASYSLIP_LINE_SOURCE_IDS;
+    process.env.EASYSLIP_BANK_VERIFICATION_ENABLED = "true";
+    process.env.EASYSLIP_LINE_SOURCE_IDS = "group-1";
+    try { await fn(); } finally {
+      if (priorEnabled === undefined) delete process.env.EASYSLIP_BANK_VERIFICATION_ENABLED;
+      else process.env.EASYSLIP_BANK_VERIFICATION_ENABLED = priorEnabled;
+      if (priorSources === undefined) delete process.env.EASYSLIP_LINE_SOURCE_IDS;
+      else process.env.EASYSLIP_LINE_SOURCE_IDS = priorSources;
+    }
+  }
+
+  it("EasySlip QR success bypasses AI and saves bank confirmation metadata", () => inEasySlipTest(async () => {
+    const fake = createFakeSupabase();
+    const messages: string[] = [];
+    let aiCalls = 0;
+    const service = new SlipCheckService(fake.client, {
+      async extract() { aiCalls++; return extraction; },
+    }, async (_to, text) => { messages.push(text); }, 300, {
+      async verifyImage() {
+        return { kind: "verified", isDuplicate: false, accountMatched: true,
+          extraction: { ...extraction, slipType: "BANK_SLIP_QR" } };
+      },
+    });
+    await service.processEvidence("evidence-1");
+    expect(aiCalls).toBe(0);
+    expect(fake.updatedChecks[0]).toMatchObject({ status: "EXTRACTED",
+      slip_type: "BANK_SLIP_QR",
+      extracted_json: { verification: { bank_verified: true, provider: "easyslip" } },
+    });
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toContain("EasySlip ตรวจสอบ");
+  }));
+
+  it.each([
+    [true, true], [false, false],
+  ] as const)("EasySlip duplicate=%s, matched=%s is quarantined as NEED_REVIEW", (duplicate, matched) =>
+    inEasySlipTest(async () => {
+      const fake = createFakeSupabase();
+      const messages: string[] = [];
+      const service = new SlipCheckService(fake.client, { async extract() { throw new Error("AI must not run"); } },
+        async (_to, text) => { messages.push(text); }, 300, {
+          async verifyImage() {
+            return { kind: "verified", isDuplicate: duplicate, accountMatched: matched,
+              extraction: { ...extraction, slipType: "BANK_SLIP_QR" } };
+          },
+        });
+      await service.processEvidence("evidence-1");
+      expect(fake.updatedChecks[0]).toMatchObject({ status: "NEED_REVIEW",
+        extracted_json: { verification: { bank_verified: false } },
+      });
+      expect(messages[0]).toContain("ยังไม่รวมยอดเงินอัตโนมัติ");
+    }));
+
+  it("EasySlip SLIP_NOT_FOUND falls back to OCR but never verifies an OCR-only bank slip", () =>
+    inEasySlipTest(async () => {
+      const fake = createFakeSupabase();
+      let aiCalls = 0;
+      const messages: string[] = [];
+      const service = new SlipCheckService(fake.client, { async extract() { aiCalls++; return extraction; } },
+        async (_to, text) => { messages.push(text); }, 300, {
+          async verifyImage() { return { kind: "not_found" }; },
+        });
+      await service.processEvidence("evidence-1");
+      expect(aiCalls).toBe(1);
+      expect(fake.updatedChecks[0]).toMatchObject({ status: "NEED_REVIEW",
+        extracted_json: { verification: { bank_verified: false, reason: "slip_not_found" } },
+      });
+      expect(messages[0]).toContain("ยังไม่รวมยอดเงินอัตโนมัติ");
+    }));
+
+  it("EasySlip SLIP_NOT_FOUND preserves government receipt OCR behavior", () =>
+    inEasySlipTest(async () => {
+      const fake = createFakeSupabase();
+      const government: SlipExtraction = { ...extraction, slipType: "THAI_HELP_THAI",
+        grossAmount: 50, paidAmount: 20, discountAmount: 30, transferAmount: null };
+      const service = new SlipCheckService(fake.client, { async extract() { return government; } },
+        async () => {}, 300, { async verifyImage() { return { kind: "not_found" }; } });
+      await service.processEvidence("evidence-1");
+      expect(fake.updatedChecks[0]).toMatchObject({ status: "EXTRACTED",
+        slip_type: "THAI_HELP_THAI",
+      });
+    }));
+
+  it("EasySlip provider error never uses AI to approve a bank payment", () =>
+    inEasySlipTest(async () => {
+      const fake = createFakeSupabase();
+      let aiCalls = 0;
+      const messages: string[] = [];
+      const service = new SlipCheckService(fake.client, { async extract() { aiCalls++; return extraction; } },
+        async (_to, text) => { messages.push(text); }, 300, {
+          async verifyImage() { throw new Error("EasySlip API unavailable"); },
+        });
+      await service.processEvidence("evidence-1");
+      expect(aiCalls).toBe(0);
+      expect(fake.updatedChecks[0]).toMatchObject({ status: "FAILED" });
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).not.toContain("🟢");
+    }));
 });

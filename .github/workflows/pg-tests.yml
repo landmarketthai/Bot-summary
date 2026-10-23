@@ -31,6 +31,10 @@ jobs:
         with:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned: Bun 1.4.4 rejects BEGIN on pooled Bun.sql (ERR_POSTGRES_UNSAFE_TRANSACTION)
+          # used by the slip pg suites. Unpin after those suites move to sql.begin / max: 1.
+          bun-version: 1.4.3
       - run: bun install
       # Fail CI when the local disposable PostgreSQL is unavailable instead of silently skipping tests.
       - name: Require local PostgreSQL 17
