@@ -86,6 +86,12 @@ export interface SlipTestDb {
   /** Run a statement; returns rows as plain objects. */
   query<T = Record<string, unknown>>(statement: string): Promise<T[]>;
   scalar(statement: string): Promise<string>;
+  /**
+   * Run a whole migration or rollback file through psql, as rollout applies it.
+   * These files carry their own BEGIN/COMMIT, which Bun's pooled SQL rejects
+   * (ERR_POSTGRES_UNSAFE_TRANSACTION since Bun 1.4).
+   */
+  exec(script: string): Promise<void>;
   drop(): Promise<void>;
 }
 
@@ -136,6 +142,10 @@ export async function createSlipTestDb(
       const value = Object.values(first)[0];
       if (value === null || value === undefined) return "";
       return typeof value === "object" ? JSON.stringify(value) : String(value);
+    },
+    async exec(script: string) {
+      const result = await psql(["-v", "ON_ERROR_STOP=1", "-f", "-"], name, script);
+      if (result.code !== 0) throw new Error(result.stderr);
     },
     async drop() {
       await sql.close();
