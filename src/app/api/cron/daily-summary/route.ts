@@ -1,3 +1,4 @@
+import { enterCategoryPolicy, loadApprovedCategoryPolicy } from "@/lib/produce/category-learning/rules";
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
 import { logger } from "@/lib/logger";
@@ -39,6 +40,8 @@ export async function GET(req: NextRequest) {
   });
 
   const supabase = createServiceClient();
+  // One complete category snapshot for this whole report (see category-learning/rules.ts).
+  enterCategoryPolicy(await loadApprovedCategoryPolicy(supabase));
   const { data: txData, error: txError } = await supabase
     .from("produce_transactions")
     .select("raw_message_id,staff_name,market_name,transaction_type,total_amount,product_name")

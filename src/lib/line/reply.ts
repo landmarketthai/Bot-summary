@@ -144,7 +144,7 @@ export function parseRetryAfterMs(
 // the same retry key is deduplicated by LINE.
 export async function pushLineMessage(
   to: string,
-  text: string,
+  text: string | LineApiMessage[],
   retryKey?: string,
   options: { signal?: AbortSignal } = {},
 ): Promise<PushResult> {
@@ -161,7 +161,7 @@ export async function pushLineMessage(
       headers,
       body: JSON.stringify({
         to,
-        messages: [{ type: "text", text }],
+        messages: typeof text === "string" ? [{ type: "text", text }] : text,
       }),
       signal: options.signal,
     });

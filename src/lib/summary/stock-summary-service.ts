@@ -1,3 +1,4 @@
+import { withApprovedCategoryRules } from "@/lib/produce/category-learning/rules";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 import { fetchRemainingFruitRows } from "@/lib/summary/remaining-fruit-data";
@@ -16,6 +17,9 @@ export async function loadStockSummary(
   businessDate: string,
   marketFilter: string | null = null,
 ): Promise<StockSummary> {
-  const rows = await fetchRemainingFruitRows(supabase, businessDate, marketFilter);
-  return buildStockSummaryFromRows(businessDate, rows, { marketFilter });
+  // Fetch and classify against one category snapshot (category-learning/rules.ts).
+  return withApprovedCategoryRules(supabase, async () => {
+    const rows = await fetchRemainingFruitRows(supabase, businessDate, marketFilter);
+    return buildStockSummaryFromRows(businessDate, rows, { marketFilter });
+  });
 }
