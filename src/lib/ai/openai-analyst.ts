@@ -37,17 +37,55 @@ export type OpenAIResponseOutputItem =
 export type OpenAIResponsePayload = {
   id?: string;
   status?: string;
+  model?: string;
   output?: OpenAIResponseOutputItem[];
   error?: {
     message?: string;
     code?: string;
   } | null;
   usage?: {
+    /** Includes the cached tokens reported in input_tokens_details. */
     input_tokens?: number;
+    input_tokens_details?: { cached_tokens?: number };
     output_tokens?: number;
     total_tokens?: number;
   };
 };
+
+export type AnalystTokenUsage = {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+};
+
+function usdPerMillionTokens(env: Record<string, string | undefined>, name: string): number | null {
+  const raw = env[name]?.trim();
+  if (!raw) return null;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/**
+ * Estimated API cost in USD from env prices (USD per 1M tokens) for the
+ * configured model. Unknown, never zero: a missing input or output price
+ * returns null.
+ */
+export function estimateAnalystCostUsd(
+  usage: AnalystTokenUsage,
+  env: Record<string, string | undefined> = process.env,
+): number | null {
+  const input = usdPerMillionTokens(env, "BOT_SUMMARY_ANALYST_INPUT_USD_PER_MTOK");
+  const output = usdPerMillionTokens(env, "BOT_SUMMARY_ANALYST_OUTPUT_USD_PER_MTOK");
+  if (input === null || output === null) return null;
+  // ponytail: without a cached price, cached tokens are billed at the full input price, so the estimate errs high.
+  const cached = usdPerMillionTokens(env, "BOT_SUMMARY_ANALYST_CACHED_INPUT_USD_PER_MTOK") ?? input;
+  const cachedTokens = Math.min(usage.cachedInputTokens, usage.inputTokens);
+  return (
+    (usage.inputTokens - cachedTokens) * input
+    + cachedTokens * cached
+    + usage.outputTokens * output
+  ) / 1_000_000;
+}
 
 export type OpenAIResponseRequest = {
   instructions: string;

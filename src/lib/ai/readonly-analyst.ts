@@ -1,11 +1,14 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 import { bangkokBusinessDateNow } from "@/lib/business-date";
+import { logger } from "@/lib/logger";
 import {
   BOT_SUMMARY_ANALYST_INSTRUCTIONS,
   createOpenAIResponse,
+  estimateAnalystCostUsd,
   extractOpenAIFunctionCalls,
   extractOpenAIOutputText,
+  type AnalystTokenUsage,
   type OpenAIAnalystOptions,
   type OpenAIResponsePayload,
 } from "./openai-analyst";
@@ -28,8 +31,16 @@ export type ReadonlyAnalystResult = {
   answer: string;
 };
 
+export type ReadonlyAnalystOptions = OpenAIAnalystOptions & {
+  /** Wall-clock budget for the whole answer: every model round and tool call. */
+  budgetMs?: number;
+};
+
 const MAX_TOOL_ROUNDS = 3;
 const MAX_TOOL_CALLS_TOTAL = 6;
+// The answer runs inside the LINE webhook request (route maxDuration 60 s);
+// without a total budget, four 20 s model calls could outlive the request.
+const DEFAULT_BUDGET_MS = 30_000;
 
 const TOOL_DEFINITIONS = [
   {
@@ -436,63 +447,128 @@ async function runToolCalls(
   return outputs;
 }
 
+function optionsWithinDeadline(
+  options: OpenAIAnalystOptions,
+  deadlineAt: number | undefined,
+): OpenAIAnalystOptions {
+  if (deadlineAt === undefined) return options;
+  const remainingMs = deadlineAt - Date.now();
+  if (remainingMs < 1_000) throw new Error("OpenAI analyst request timed out.");
+  return { ...options, timeoutMs: Math.min(options.timeoutMs ?? remainingMs, remainingMs) };
+}
+
+/** Token and cost telemetry for one question. No question text, tool arguments or answer. */
+class AnalystUsageLog {
+  private readonly startedAt = Date.now();
+  private readonly usage: AnalystTokenUsage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
+  private attemptedCalls = 0;
+  private completedCalls = 0;
+  private usageMissing = false;
+  private model: string | null = null;
+
+  async call(send: () => Promise<OpenAIResponsePayload>): Promise<OpenAIResponsePayload> {
+    this.attemptedCalls += 1;
+    const payload = await send();
+    this.completedCalls += 1;
+    this.model = payload.model ?? this.model;
+    const usage = payload.usage;
+    if (typeof usage?.input_tokens !== "number" || typeof usage.output_tokens !== "number") {
+      this.usageMissing = true;
+      return payload;
+    }
+    this.usage.inputTokens += usage.input_tokens;
+    this.usage.cachedInputTokens += usage.input_tokens_details?.cached_tokens ?? 0;
+    this.usage.outputTokens += usage.output_tokens;
+    return payload;
+  }
+
+  write(fields: { businessDate: string; outcome: "answered" | "error"; executions: AnalystToolExecution[] }) {
+    // A failed or usage-less call may still be billed: the counts are then a
+    // lower bound and the cost is unknown (null), never zero.
+    const usageComplete = !this.usageMissing && this.attemptedCalls === this.completedCalls;
+    logger.info("bot summary analyst usage", {
+      model: this.model,
+      businessDate: fields.businessDate,
+      outcome: fields.outcome,
+      modelCalls: this.attemptedCalls,
+      toolCalls: fields.executions.map((execution) => execution.tool),
+      usageComplete,
+      inputTokens: this.usage.inputTokens,
+      cachedInputTokens: this.usage.cachedInputTokens,
+      outputTokens: this.usage.outputTokens,
+      estimatedCostUsd: usageComplete ? estimateAnalystCostUsd(this.usage) : null,
+      durationMs: Date.now() - this.startedAt,
+    });
+  }
+}
+
 export async function answerWithReadonlyTools(
   supabase: Supabase,
   question: string,
-  options: OpenAIAnalystOptions = {},
+  options: ReadonlyAnalystOptions = {},
   businessDate = resolveAnalystBusinessDate(question),
 ): Promise<ReadonlyAnalystResult> {
   const trimmed = question.trim();
   if (!trimmed) throw new Error("Analyst question must not be empty.");
 
+  const { budgetMs, ...openaiOptions } = options;
+  const deadlineAt = Date.now() + (budgetMs ?? DEFAULT_BUDGET_MS);
+  const usageLog = new AnalystUsageLog();
   const executions: AnalystToolExecution[] = [];
-  let payload = await createOpenAIResponse(
+  let outcome: "answered" | "error" = "error";
+  // store:false means the API keeps no history: every round must resend the
+  // question and all earlier rounds, or the model answers without the question.
+  const history: unknown[] = [
     {
-      instructions: analystInstructions(businessDate),
-      input: [
-        {
-          role: "user",
-          content: [{ type: "input_text", text: trimmed }],
-        },
-      ],
-      tools: [...TOOL_DEFINITIONS],
-      tool_choice: "auto",
-      parallel_tool_calls: true,
-      maxOutputTokens: 420,
+      role: "user",
+      content: [{ type: "input_text", text: trimmed }],
     },
-    options,
-  );
-
-  for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
-    const calls = extractOpenAIFunctionCalls(payload);
-    if (calls.length === 0) {
-      const answer = extractOpenAIOutputText(payload);
-      if (!answer) throw new Error("OpenAI analyst returned an empty answer.");
-      return { businessDate, toolExecutions: executions, answer };
-    }
-
-    const toolOutputs = await runToolCalls(
-      supabase,
-      payload,
-      businessDate,
-      executions,
-    );
-
-    payload = await createOpenAIResponse(
+  ];
+  try {
+    let payload = await usageLog.call(() => createOpenAIResponse(
       {
         instructions: analystInstructions(businessDate),
-        input: [
-          ...(payload.output ?? []),
-          ...toolOutputs,
-        ],
+        input: history,
         tools: [...TOOL_DEFINITIONS],
         tool_choice: "auto",
         parallel_tool_calls: true,
         maxOutputTokens: 420,
       },
-      options,
-    );
-  }
+      optionsWithinDeadline(openaiOptions, deadlineAt),
+    ));
 
-  throw new Error("OpenAI analyst exceeded the tool-call round limit.");
+    for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+      const calls = extractOpenAIFunctionCalls(payload);
+      if (calls.length === 0) {
+        const answer = extractOpenAIOutputText(payload);
+        if (!answer) throw new Error("OpenAI analyst returned an empty answer.");
+        outcome = "answered";
+        return { businessDate, toolExecutions: executions, answer };
+      }
+
+      const toolOutputs = await runToolCalls(
+        supabase,
+        payload,
+        businessDate,
+        executions,
+      );
+      history.push(...(payload.output ?? []), ...toolOutputs);
+
+      payload = await usageLog.call(() => createOpenAIResponse(
+        {
+          instructions: analystInstructions(businessDate),
+          input: history,
+          tools: [...TOOL_DEFINITIONS],
+          tool_choice: "auto",
+          parallel_tool_calls: true,
+          maxOutputTokens: 420,
+        },
+        optionsWithinDeadline(openaiOptions, deadlineAt),
+      ));
+    }
+
+    throw new Error("OpenAI analyst exceeded the tool-call round limit.");
+  } finally {
+    usageLog.write({ businessDate, outcome, executions });
+  }
 }
