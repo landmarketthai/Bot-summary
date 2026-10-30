@@ -3,6 +3,7 @@ import type { SlipCheckStatus, SlipType } from "@/types/database";
 export type ValidationReason =
   | "ยอดเงินสูงผิดปกติ"
   | "สลิปซ้ำ"
+  | "ไม่พบรหัสอ้างอิง"
   | "วันที่รายการไม่ตรงกับรอบ"
   | "วันที่รายการไม่ถูกต้อง"
   | "ไม่พบวันที่รายการ"
@@ -204,6 +205,11 @@ export function computeValidationFlags(
     const isTerminal = e.checkStatus === "EXTRACTED" || e.checkStatus === "PARTIAL_EXTRACTED";
 
     if (isTerminal) {
+      // Missing reference is pending manual verification, never proven unique.
+      if (!e.referenceId?.trim()) {
+        reasons.push("ไม่พบรหัสอ้างอิง");
+      }
+
       // Duplicate guard — independent of amount validity
       if (isDuplicate[i] || e.globallyDuplicate === true) {
         reasons.push("สลิปซ้ำ");

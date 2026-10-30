@@ -4,6 +4,43 @@ on:
   pull_request:
 
 jobs:
+  slip-global-dedupe-p1:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      REQUIRE_SLIP_GLOBAL_PG: "1"
+      PGHOST: localhost
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGPORT: "5432"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Atomic cross-market and near-image deduplication (real PostgreSQL)
+        run: >-
+          bun test src/lib/slips/global-slip-dedupe.pg.test.ts
+          src/lib/slips/global-slip-dedupe-summary.test.ts
+          src/lib/slips/visual-hash.test.ts
+          src/lib/slips/reference-resolution.test.ts
+      - name: Slip processing regressions
+        run: bun test src/lib/slips
+      - name: Typecheck
+        run: bun x tsc --noEmit --incremental false
+
   p0-slip-image-ingestion:
     runs-on: ubuntu-latest
     services:
@@ -51,6 +88,7 @@ jobs:
           src/lib/slips/cron-cohort-recovery.pg.test.ts
           src/lib/slips/slip-ledger-alert.pg.test.ts
           src/lib/slips/full-rollback-sequence.pg.test.ts
+          src/lib/slips/global-dedupe-integration.pg.test.ts
       - name: P0 slip finalizer, retry and webhook regressions
         run: >-
           bun test

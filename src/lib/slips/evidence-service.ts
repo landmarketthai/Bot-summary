@@ -5,6 +5,7 @@ import { downloadLineMessageContent, type LineMessageContent } from "@/lib/line/
 import { logger } from "@/lib/logger";
 import { SLIP_INGEST_POLICY } from "@/lib/slips/ingest-policy";
 import { IoTimeoutError, withTimeout } from "@/lib/slips/io-timeout";
+import { computeSlipVisualHashes } from "@/lib/slips/visual-hash";
 import {
   DOWNLOAD_FAILED_SHA256,
   SLIP_EVIDENCE_BUCKET,
@@ -52,6 +53,16 @@ export function buildSlipEvidencePath(input: {
     safePathSegment(input.sourceId),
     `${safePathSegment(input.lineMessageId)}.jpg`,
   ].join("/");
+}
+
+type VisualHashColumns = { visual_hash_full?: string | null; visual_hash_center?: string | null };
+
+/** Postgres 42703 / PostgREST PGRST204 naming a visual_hash column, nothing broader. */
+export function isVisualHashColumnMissing(
+  error: { code?: string | null; message?: string | null } | null | undefined,
+): boolean {
+  if (!error || (error.code !== "42703" && error.code !== "PGRST204")) return false;
+  return (error.message ?? "").includes("visual_hash_");
 }
 
 export function computeSha256(bytes: Uint8Array): string {
@@ -109,6 +120,8 @@ export class SlipEvidenceService implements SlipEvidenceIngestor {
     }
 
     const sha256 = computeSha256(content.bytes);
+    const visualHashes = await computeSlipVisualHashes(content.bytes);
+    if (!visualHashes) log.warn("slip visual fingerprint unavailable", { reason: "image_decode_failed" });
     // A hung upload is cut off at the timeout and recorded as STORAGE_FAILED.
     // If it completes later it writes the same bytes to the same
     // message-id-derived path (upsert) and nothing else: the evidence row and
@@ -150,6 +163,8 @@ export class SlipEvidenceService implements SlipEvidenceIngestor {
       mimeType: content.mimeType,
       byteSize: content.bytes.byteLength,
       sha256,
+      visualHashFull: visualHashes?.full ?? null,
+      visualHashCenter: visualHashes?.center ?? null,
       status: "RECEIVED",
     });
     const evidenceId = recorded.id;
@@ -186,10 +201,28 @@ export class SlipEvidenceService implements SlipEvidenceIngestor {
       mimeType: string | null;
       byteSize: number;
       sha256: string;
+      visualHashFull?: string | null;
+      visualHashCenter?: string | null;
       status: SlipEvidenceStatus;
     },
   ): Promise<{ id: string; status: SlipEvidenceStatus }> {
-    const { data, error } = await this.supabase
+    const visual: VisualHashColumns = evidence.visualHashFull || evidence.visualHashCenter
+      ? { visual_hash_full: evidence.visualHashFull ?? null, visual_hash_center: evidence.visualHashCenter ?? null }
+      : {};
+    // Fingerprints are optional (20261019143000). A schema without those
+    // columns must still record the image: never lose a slip over a hash.
+    const writeWithVisual = async <T extends { error: { code?: string; message?: string } | null }>(
+      write: (columns: VisualHashColumns) => PromiseLike<T>,
+    ): Promise<T> => {
+      const result = await write(visual);
+      if (!isVisualHashColumnMissing(result.error) || Object.keys(visual).length === 0) return result;
+      logger.warn("slip visual fingerprint not stored: schema lacks visual_hash columns", {
+        lineMessageId: input.lineMessageId,
+      });
+      return write({});
+    };
+
+    const { data, error } = await writeWithVisual((columns) => this.supabase
       .from("slip_evidences")
       .insert({
         raw_message_id: input.rawMessageId,
@@ -202,10 +235,11 @@ export class SlipEvidenceService implements SlipEvidenceIngestor {
         mime_type: evidence.mimeType,
         byte_size: evidence.byteSize,
         sha256: evidence.sha256,
+        ...columns,
         status: evidence.status,
       })
       .select("id")
-      .single();
+      .single());
 
     if (!error && data) return { id: data.id, status: evidence.status };
 
@@ -219,16 +253,19 @@ export class SlipEvidenceService implements SlipEvidenceIngestor {
         if (existing.status === "RECEIVED") {
           return { id: existing.id, status: "RECEIVED" };
         }
-        const { error: updateError } = await this.supabase
+        // A retry after STORAGE_FAILED must carry the fingerprint too, or the
+        // recovered image would be invisible to near-duplicate review.
+        const { error: updateError } = await writeWithVisual((columns) => this.supabase
           .from("slip_evidences")
           .update({
             storage_path: evidence.storagePath,
             mime_type: evidence.mimeType,
             byte_size: evidence.byteSize,
             sha256: evidence.sha256,
+            ...columns,
             status: evidence.status,
           })
-          .eq("id", existing.id);
+          .eq("id", existing.id));
         if (!updateError) return { id: existing.id, status: evidence.status };
         throw new Error(`slip_evidence update failed: ${updateError.message}`);
       }

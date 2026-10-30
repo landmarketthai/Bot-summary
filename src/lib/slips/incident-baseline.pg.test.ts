@@ -58,8 +58,8 @@ describe.skipIf(!pgAvailable)("incident baseline (pre-fix schema, legacy path)",
       checkProcessor: {
         processEvidence: async (evidenceId: string) => {
           await db.query(
-            `INSERT INTO slip_checks (evidence_id, status, slip_type, transfer_amount, transaction_time)
-             VALUES ('${evidenceId}', 'EXTRACTED', 'BANK_SLIP_QR', 100, '2026-10-16T12:00:00+07')
+            `INSERT INTO slip_checks (evidence_id, status, slip_type, transfer_amount, transaction_time, reference_id)
+             VALUES ('${evidenceId}', 'EXTRACTED', 'BANK_SLIP_QR', 100, '2026-10-16T12:00:00+07', 'REF-${evidenceId}')
              ON CONFLICT (evidence_id) DO NOTHING`,
           );
         },

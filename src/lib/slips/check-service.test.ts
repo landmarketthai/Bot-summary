@@ -9,6 +9,8 @@ function createFakeSupabase(opts: {
   // empty means "no duplicate found" (the default for existing tests).
   duplicateChecks?: Array<{ id: string; evidence_id: string; created_at: string }>;
   evidenceSourceId?: string;
+  persistedStatus?: string;
+  persistedFailureReason?: string | null;
 } = {}) {
   const insertedChecks: Array<Record<string, unknown>> = [];
   const updatedChecks: Array<Record<string, unknown>> = [];
@@ -91,7 +93,13 @@ function createFakeSupabase(opts: {
             };
           },
           // Used by the transaction-dedupe lookup after a successful extraction.
-          select() {
+          select(columns?: string) {
+            if (columns === "status, failure_reason") {
+              return { eq: () => ({ single: async () => ({
+                data: { status: opts.persistedStatus ?? updatedChecks.at(-1)?.status ?? "EXTRACTED", failure_reason: opts.persistedFailureReason ?? null },
+                error: null,
+              }) }) };
+            }
             const chain = {
               eq: () => chain,
               in: () => chain,
@@ -222,6 +230,40 @@ describe("SlipCheckService", () => {
     expect(pushes).toHaveLength(1);
     expect(pushes[0].text).toContain("สลิปนี้ถูกส่งและตรวจสอบแล้วในกลุ่มนี้");
     expect(pushes[0].text).not.toContain("ยอดโอน 315 บาท");
+  });
+
+  it("reports an identical-image collision from the persisted database decision", async () => {
+    const fake = createFakeSupabase({
+      persistedStatus: "NEED_REVIEW",
+      persistedFailureReason: "duplicate_image_sha256_global",
+    });
+    const pushes: string[] = [];
+    const service = new SlipCheckService(
+      fake.client,
+      { async extract() { return extraction; } },
+      async (_to, message) => { pushes.push(message); },
+    );
+    await service.processEvidence("evidence-1");
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]).toContain("รูปสลิปเดิม");
+    expect(pushes[0]).not.toContain("ยอดโอน 315 บาท");
+  });
+
+  it("holds unreferenced payment evidence for manual review", async () => {
+    const fake = createFakeSupabase({
+      persistedStatus: "NEED_REVIEW",
+      persistedFailureReason: "missing_transaction_reference_global",
+    });
+    const pushes: string[] = [];
+    const service = new SlipCheckService(
+      fake.client,
+      { async extract() { return {...extraction, referenceId: null}; } },
+      async (_to, message) => { pushes.push(message); },
+    );
+    await service.processEvidence("evidence-1");
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]).toContain("ตรวจสอบด้วยมือ");
+    expect(pushes[0]).not.toContain("ยอดโอน 315 บาท");
   });
 
   it("marks the check FAILED and pushes no duplicate warning when the provider fails (no verified entry)", async () => {
