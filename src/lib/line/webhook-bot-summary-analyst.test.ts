@@ -10,6 +10,7 @@ import {
 } from "@/lib/ai/assistant/dispatch";
 import { MemoryAssistantJobStore } from "@/lib/ai/assistant/testing/memory-job-store";
 import { WebhookService } from "./webhook-service";
+import { webhookResponseStatus } from "./webhook-response";
 
 function client(db: FakeDatabase): SupabaseClient<Database> {
   return db as unknown as SupabaseClient<Database>;
@@ -95,7 +96,7 @@ describe("@Botsummary webhook routing", () => {
     expect(s.background).toHaveLength(0);
   });
 
-  test("an enqueue failure is contained in analyst mode and answered with a retry hint", async () => {
+  test("an enqueue failure is not acknowledged: retryable, raw message left unprocessed, no data-entry fall-through", async () => {
     const s = setup({
       botSummaryAssistantDispatcher: async () => { throw Object.assign(new Error("db down: ดำ 500"), { code: "PGRST000" }); },
     });
@@ -105,9 +106,11 @@ describe("@Botsummary webhook routing", () => {
       "Ubot",
     );
 
-    expect(result[0]?.status).toBe("saved");
-    expect(result[0]?.parsed).toBe(true);
-    expect(s.replies[0]?.text).toContain("อ่านข้อมูลให้ไม่สำเร็จ");
+    expect(result[0]).toMatchObject({ status: "error", retryable: true });
+    expect(webhookResponseStatus(result)).toBe(503);
+    expect(s.db.rows("raw_messages")[0]?.is_processed).not.toBe(true);
+    // The redelivery answers; no premature "try again".
+    expect(s.replies).toEqual([]);
     expect(s.db.appendCalls).toBe(0);
     expect(s.background).toHaveLength(0);
   });

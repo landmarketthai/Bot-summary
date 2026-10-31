@@ -980,7 +980,10 @@ export class WebhookService {
           destination,
           orderedByEventId.get(event.webhookEventId) ?? false,
         );
-      if (saved === null) {
+      const unfinished = saved === null ? await this.unfinishedAssistantQuestion(event, destination) : null;
+      if (unfinished) {
+        receipts.push({ event, rawMessageId: unfinished, ordered: false, sourceId: getSourceId(event.source) });
+      } else if (saved === null) {
         immediate.set(event.webhookEventId, {
           eventId: event.webhookEventId,
           eventType: event.type,
@@ -1244,8 +1247,23 @@ export class WebhookService {
     }
 
     if (botSummaryQuestion !== null) {
-      await this.markRawMessageProcessed(rawMessageId, log);
       const sourceAllowed = this.botSummaryAnalystSourceAllowed(sourceId);
+      const whiteSheetCommand = whiteSheetReadCommand(message as LineTextMessage, destination);
+      const isQuestion = this.botSummaryAnalystEnabled && sourceAllowed && Boolean(botSummaryQuestion)
+        && !(whiteSheetCommand && (whiteSheetCommand !== "end" || this.whiteSheetReaderEnabled));
+      if (isQuestion) {
+        // The event is acknowledged (processed, HTTP 200) only once its job
+        // durably exists. A failed enqueue leaves the raw message unprocessed
+        // and asks LINE to redeliver; the redelivery is processed again
+        // (unfinishedAssistantQuestion) and the job is created exactly once.
+        const outcome = await this.dispatchAssistantQuestion(msgEvent, botSummaryQuestion, destination, rawMessageId, replyMessage, log);
+        if (outcome === "error") {
+          return { eventId, eventType: event.type, status: "error", error: "assistant enqueue failed", retryable: true };
+        }
+        await this.markRawMessageProcessed(rawMessageId, log);
+        return { eventId, eventType: event.type, status: "saved", parsed: true };
+      }
+      await this.markRawMessageProcessed(rawMessageId, log);
       if (replyToken) {
         if (!this.botSummaryAnalystEnabled || !sourceAllowed) {
           await replyMessage(replyToken, BOT_SUMMARY_NOT_AVAILABLE_REPLY);
@@ -1277,13 +1295,7 @@ export class WebhookService {
           }
         } else if (!botSummaryQuestion) {
           await replyMessage(replyToken, BOT_SUMMARY_USAGE_REPLY);
-        } else {
-          await this.dispatchAssistantQuestion(msgEvent, botSummaryQuestion, destination, rawMessageId, replyMessage, log);
         }
-      } else if (this.botSummaryAnalystEnabled && sourceAllowed && botSummaryQuestion
-        && !whiteSheetReadCommand(message as LineTextMessage, destination)) {
-        // No reply token (e.g. a redelivery): still answered, by push if enabled.
-        await this.dispatchAssistantQuestion(msgEvent, botSummaryQuestion, destination, rawMessageId, replyMessage, log);
       }
       return { eventId, eventType: event.type, status: "saved", parsed: true };
     }
@@ -4992,7 +5004,7 @@ export class WebhookService {
     rawMessageId: string,
     replyMessage: ReplyLineMessage,
     log: ChildLogger,
-  ): Promise<void> {
+  ): Promise<Awaited<ReturnType<AssistantDispatcher>>["outcome"]> {
     let outcome: Awaited<ReturnType<AssistantDispatcher>>["outcome"];
     try {
       outcome = (await this.botSummaryAssistantDispatcher({ event, question, destination, rawMessageId })).outcome;
@@ -5003,7 +5015,8 @@ export class WebhookService {
       outcome = "error";
     }
     log.info("Bot Summary assistant question dispatched", { outcome });
-    const immediate = dispatchReplyText(outcome, BOT_SUMMARY_TEMPORARY_ERROR_REPLY);
+    // An enqueue error is retried through redelivery, so no "try again" reply.
+    const immediate = outcome === "error" ? null : dispatchReplyText(outcome, BOT_SUMMARY_TEMPORARY_ERROR_REPLY);
     if (immediate && event.replyToken) await replyMessage(event.replyToken, immediate);
     const kick = this.botSummaryAssistantKick;
     if (outcome === "queued" && kick && !this.assistantKickScheduled) {
@@ -5015,6 +5028,26 @@ export class WebhookService {
         this.scheduleBackgroundTask(() => kick(budgetMs));
       }
     }
+    return outcome;
+  }
+
+  /**
+   * A redelivered @Botsummary question whose earlier processing never
+   * enqueued its job (raw message still unprocessed): the raw message id to
+   * process it again, else null. Only assistant questions take this path;
+   * every other duplicate keeps its existing behaviour.
+   */
+  private async unfinishedAssistantQuestion(event: LineEvent, destination: string): Promise<string | null> {
+    if (!this.botSummaryAnalystEnabled || event.type !== "message" || event.message.type !== "text") return null;
+    const question = extractBotSummaryQuestion(event.message as LineTextMessage, destination);
+    if (!question || !this.botSummaryAnalystSourceAllowed(getSourceId(event.source))) return null;
+    const { data, error } = await this.supabase
+      .from("raw_messages")
+      .select("id, is_processed")
+      .eq("line_event_id", event.webhookEventId)
+      .maybeSingle();
+    if (error || !data || data.is_processed) return null;
+    return data.id;
   }
 
   // ── DB helpers ────────────────────────────────────────────────────────────
