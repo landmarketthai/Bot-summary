@@ -192,7 +192,12 @@ import {
   isExactCancelActiveDraftCommand,
 } from "@/lib/produce/cancel-active-draft";
 import { getRuntimeEnvironment } from "@/lib/runtime-environment";
-import { answerWithReadonlyTools } from "@/lib/ai/readonly-analyst";
+import {
+  createAssistantDispatcher,
+  dispatchReplyText,
+  type AssistantDispatcher,
+} from "@/lib/ai/assistant/dispatch";
+import { SupabaseAssistantJobStore } from "@/lib/ai/assistant/job-store";
 import {
   isReadableWhiteSheetImage, isUncertainApprovalConfirmation, isWhiteSheetApproval, isWhiteSheetReaderEnabled,
   otherUserWhiteSheetSessionActive, resolveWhiteSheetSession, whiteSheetReadCommand, whiteSheetReviewInput,
@@ -273,7 +278,8 @@ type PhysicalInventorySessionGateway = Pick<
   "closeOpenEvent" | "listIngestTexts" | "findCloseIngestByLineMessageId" | "cancelClose"
 >>;
 type RecordDataQualityIssue = (candidate: DataQualityIssueCandidate) => Promise<unknown>;
-type BotSummaryAnalystAnswerer = (question: string) => Promise<string>;
+/** Post-response worker run that answers queued @Botsummary jobs early. */
+type BotSummaryAssistantKick = (budgetMs: number) => Promise<void>;
 type BotSummaryAnalystSourceAllowed = (sourceId: string) => boolean;
 
 const BATCH_FIRST_IMAGE_REPLY = [
@@ -582,7 +588,15 @@ interface WebhookServiceDependencies {
   physicalInventoryService?: PhysicalInventorySessionGateway;
   dataEntrySessionOwnershipResolver?: DataEntrySessionOwnershipResolver;
   recordDataQualityIssue?: RecordDataQualityIssue;
-  botSummaryAnalystAnswerer?: BotSummaryAnalystAnswerer;
+  /** Enqueues a @Botsummary question as a durable job (the only AI work in the webhook). */
+  botSummaryAssistantDispatcher?: AssistantDispatcher;
+  /**
+   * Only the LINE webhook route passes this. Other callers (slip/produce
+   * recovery crons) drain the same ordered queue inside their own bounded
+   * phases and must never run the assistant there; their questions wait
+   * for the assistant worker cron.
+   */
+  botSummaryAssistantKick?: BotSummaryAssistantKick;
   botSummaryAnalystEnabled?: boolean;
   botSummaryAnalystSourceAllowed?: BotSummaryAnalystSourceAllowed;
   whiteSheetReaderEnabled?: boolean;
@@ -802,7 +816,9 @@ export class WebhookService {
   private readonly physicalInventoryService: PhysicalInventorySessionGateway;
   private readonly dataEntrySessionOwnershipResolver: DataEntrySessionOwnershipResolver;
   private readonly recordDataQualityIssue: RecordDataQualityIssue;
-  private readonly botSummaryAnalystAnswerer: BotSummaryAnalystAnswerer;
+  private readonly botSummaryAssistantDispatcher: AssistantDispatcher;
+  private readonly botSummaryAssistantKick: BotSummaryAssistantKick | null;
+  private assistantKickScheduled = false;
   private readonly botSummaryAnalystEnabled: boolean;
   private readonly botSummaryAnalystSourceAllowed: BotSummaryAnalystSourceAllowed;
   private readonly whiteSheetReaderEnabled: boolean;
@@ -877,9 +893,10 @@ export class WebhookService {
       dependencies.botSummaryAnalystSourceAllowed ?? isBotSummaryAnalystSourceAllowed;
     this.whiteSheetReaderEnabled =
       dependencies.whiteSheetReaderEnabled ?? isWhiteSheetReaderEnabled();
-    this.botSummaryAnalystAnswerer =
-      dependencies.botSummaryAnalystAnswerer
-      ?? (async (question) => (await answerWithReadonlyTools(this.supabase, question)).answer);
+    this.botSummaryAssistantDispatcher =
+      dependencies.botSummaryAssistantDispatcher
+      ?? createAssistantDispatcher(new SupabaseAssistantJobStore(this.supabase));
+    this.botSummaryAssistantKick = dependencies.botSummaryAssistantKick ?? null;
     this.whiteSheetBaseReader = dependencies.whiteSheetBaseReader ?? readWhiteSheetBase;
     this.whiteSheetCorrectionApplier = dependencies.whiteSheetCorrectionApplier ?? applyWhiteSheetCorrection;
     this.whiteSheetSessionResolver = dependencies.whiteSheetSessionResolver ?? resolveWhiteSheetSession;
@@ -895,6 +912,7 @@ export class WebhookService {
     // Persist every event before any worker starts so a later close can see
     // every earlier event in the durable queue.
     this.requestStartedAtMs = Date.now();
+    this.assistantKickScheduled = false;
     const receipts: EventReceipt[] = [];
     const immediate = new Map<string, WebhookProcessResult>();
     const orderedByEventId = new Map<string, boolean>();
@@ -962,7 +980,10 @@ export class WebhookService {
           destination,
           orderedByEventId.get(event.webhookEventId) ?? false,
         );
-      if (saved === null) {
+      const unfinished = saved === null ? await this.unfinishedAssistantQuestion(event, destination) : null;
+      if (unfinished) {
+        receipts.push({ event, rawMessageId: unfinished, ordered: false, sourceId: getSourceId(event.source) });
+      } else if (saved === null) {
         immediate.set(event.webhookEventId, {
           eventId: event.webhookEventId,
           eventType: event.type,
@@ -1226,8 +1247,23 @@ export class WebhookService {
     }
 
     if (botSummaryQuestion !== null) {
-      await this.markRawMessageProcessed(rawMessageId, log);
       const sourceAllowed = this.botSummaryAnalystSourceAllowed(sourceId);
+      const whiteSheetCommand = whiteSheetReadCommand(message as LineTextMessage, destination);
+      const isQuestion = this.botSummaryAnalystEnabled && sourceAllowed && Boolean(botSummaryQuestion)
+        && !(whiteSheetCommand && (whiteSheetCommand !== "end" || this.whiteSheetReaderEnabled));
+      if (isQuestion) {
+        // The event is acknowledged (processed, HTTP 200) only once its job
+        // durably exists. A failed enqueue leaves the raw message unprocessed
+        // and asks LINE to redeliver; the redelivery is processed again
+        // (unfinishedAssistantQuestion) and the job is created exactly once.
+        const outcome = await this.dispatchAssistantQuestion(msgEvent, botSummaryQuestion, destination, rawMessageId, replyMessage, log);
+        if (outcome === "error") {
+          return { eventId, eventType: event.type, status: "error", error: "assistant enqueue failed", retryable: true };
+        }
+        await this.markRawMessageProcessed(rawMessageId, log);
+        return { eventId, eventType: event.type, status: "saved", parsed: true };
+      }
+      await this.markRawMessageProcessed(rawMessageId, log);
       if (replyToken) {
         if (!this.botSummaryAnalystEnabled || !sourceAllowed) {
           await replyMessage(replyToken, BOT_SUMMARY_NOT_AVAILABLE_REPLY);
@@ -1259,16 +1295,6 @@ export class WebhookService {
           }
         } else if (!botSummaryQuestion) {
           await replyMessage(replyToken, BOT_SUMMARY_USAGE_REPLY);
-        } else {
-          try {
-            const answer = await this.botSummaryAnalystAnswerer(botSummaryQuestion);
-            await replyMessage(replyToken, answer);
-          } catch (error) {
-            log.error("Bot Summary analyst failed", {
-              error: error instanceof Error ? error.message : String(error),
-            });
-            await replyMessage(replyToken, BOT_SUMMARY_TEMPORARY_ERROR_REPLY);
-          }
         }
       }
       return { eventId, eventType: event.type, status: "saved", parsed: true };
@@ -4962,6 +4988,66 @@ export class WebhookService {
       confirmPlaceholder: outcome.confirmPlaceholder ?? false,
     });
     return { eventId, eventType: event.type, status: "saved" };
+  }
+
+  /**
+   * @Botsummary questions are enqueued, never answered here: the model and
+   * its tools run in the assistant worker, so neither this request nor the
+   * ordered per-chat queue waits for them. The worker replies with the same
+   * reply token while it is fresh. One post-response worker run is kicked per
+   * webhook request as a fast path; the worker cron is the durable path.
+   */
+  private async dispatchAssistantQuestion(
+    event: LineMessageEvent,
+    question: string,
+    destination: string,
+    rawMessageId: string,
+    replyMessage: ReplyLineMessage,
+    log: ChildLogger,
+  ): Promise<Awaited<ReturnType<AssistantDispatcher>>["outcome"]> {
+    let outcome: Awaited<ReturnType<AssistantDispatcher>>["outcome"];
+    try {
+      outcome = (await this.botSummaryAssistantDispatcher({ event, question, destination, rawMessageId })).outcome;
+    } catch (error) {
+      log.error("Bot Summary assistant enqueue failed", {
+        code: typeof error === "object" && error !== null && "code" in error ? String((error as { code: unknown }).code) : null,
+      });
+      outcome = "error";
+    }
+    log.info("Bot Summary assistant question dispatched", { outcome });
+    // An enqueue error is retried through redelivery, so no "try again" reply.
+    const immediate = outcome === "error" ? null : dispatchReplyText(outcome, BOT_SUMMARY_TEMPORARY_ERROR_REPLY);
+    if (immediate && event.replyToken) await replyMessage(event.replyToken, immediate);
+    const kick = this.botSummaryAssistantKick;
+    if (outcome === "queued" && kick && !this.assistantKickScheduled) {
+      this.assistantKickScheduled = true;
+      // Stay inside the webhook route's maxDuration (60 s); the cron worker
+      // picks up anything this run cannot finish.
+      const budgetMs = this.requestStartedAtMs + 52_000 - Date.now();
+      if (budgetMs >= 15_000) {
+        this.scheduleBackgroundTask(() => kick(budgetMs));
+      }
+    }
+    return outcome;
+  }
+
+  /**
+   * A redelivered @Botsummary question whose earlier processing never
+   * enqueued its job (raw message still unprocessed): the raw message id to
+   * process it again, else null. Only assistant questions take this path;
+   * every other duplicate keeps its existing behaviour.
+   */
+  private async unfinishedAssistantQuestion(event: LineEvent, destination: string): Promise<string | null> {
+    if (!this.botSummaryAnalystEnabled || event.type !== "message" || event.message.type !== "text") return null;
+    const question = extractBotSummaryQuestion(event.message as LineTextMessage, destination);
+    if (!question || !this.botSummaryAnalystSourceAllowed(getSourceId(event.source))) return null;
+    const { data, error } = await this.supabase
+      .from("raw_messages")
+      .select("id, is_processed")
+      .eq("line_event_id", event.webhookEventId)
+      .maybeSingle();
+    if (error || !data || data.is_processed) return null;
+    return data.id;
   }
 
   // ── DB helpers ────────────────────────────────────────────────────────────

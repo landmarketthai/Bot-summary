@@ -77,7 +77,8 @@ function setup(options: { readerEnabled?: boolean; patchFor?: PatchFor; base?: W
   const dependencies = {
     botSummaryAnalystEnabled: true, botSummaryAnalystSourceAllowed: () => true,
     whiteSheetReaderEnabled: options.readerEnabled ?? true,
-    botSummaryAnalystAnswerer: async (question: string) => { asked.push(question); return "ยอดขายวันนี้"; },
+    botSummaryAssistantDispatcher: async ({ question }: { question: string }) => { asked.push(question); return { outcome: "queued" as const, jobId: "job-1" }; },
+    botSummaryAssistantKick: async () => {},
     // The first read returns VISION; any later read would return DRIFTED.
     whiteSheetBaseReader: async (id: string): Promise<WhiteSheetBaseRead> => {
       reads.push(id);
