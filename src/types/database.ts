@@ -2313,6 +2313,8 @@ export interface Database {
           /** 20261031150000: access scope the recorded answer was produced under. */
           answer_scope_key:       string | null;
           delivery_target:        "chat" | "private";
+          /** 20261031160000: first push attempt with delivery_retry_key. */
+          push_started_at:        string | null;
         };
         // RPC-only: no direct writes.
         Insert: { [_ in never]: never };

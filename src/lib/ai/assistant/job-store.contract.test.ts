@@ -226,6 +226,28 @@ for (const h of harnesses) {
       expect(await h.store.loadTurns(key, Number.MAX_SAFE_INTEGER, "00000000-0000-4000-8000-000000000000", SCOPE, 8)).toEqual([]);
     });
 
+    test("P2-1: a late, older LINE event never runs beside the conversation's active job", async () => {
+      const newer = await h.store.enqueue(request({ question: "newer", eventTimestampMs: 1_793_200_002_000 }));
+      const [running] = await h.store.claim("w", claimOne);
+      expect(running!.id).toBe(newer.jobId!);
+      // The older event arrives after the newer one is already running.
+      const older = await h.store.enqueue(request({ question: "older", eventTimestampMs: 1_793_200_001_000 }));
+      expect(await h.store.claim("w2", { limit: 5, leaseSeconds: 60, maxRunning: 10 })).toHaveLength(0);
+      await h.store.complete(newer.jobId!, running!.lease_token!, "completed");
+      const [next] = await h.store.claim("w2", claimOne);
+      expect(next!.id).toBe(older.jobId!);
+    });
+
+    test("P2-1: an expired active job is reclaimed before any other job of its conversation", async () => {
+      const first = await h.store.enqueue(request({ eventTimestampMs: 1_793_200_005_000 }));
+      const [running] = await h.store.claim("w", claimOne);
+      await h.store.enqueue(request({ eventTimestampMs: 1_793_200_004_000 }));
+      await h.expireLease(first.jobId!);
+      const reclaimed = await h.store.claim("recovery", { limit: 5, leaseSeconds: 60, maxRunning: 10 });
+      expect(reclaimed.map((job) => job.id)).toEqual([first.jobId!]);
+      expect(running!.id).toBe(first.jobId!);
+    });
+
     test("P1-C: memory is returned only for the access scope it was produced under", async () => {
       const { jobId } = await h.store.enqueue(request({ question: "ทำไมรายการของพี่ปลายังปิดไม่ได้?" }));
       const [job] = await h.store.claim("w", claimOne);
@@ -286,6 +308,23 @@ if (db) {
       const outcomes = await Promise.all(Array.from({ length: 8 }, () => store.enqueue(request())));
       expect(outcomes.filter((o) => o.outcome === "queued")).toHaveLength(3);
       expect(outcomes.filter((o) => o.outcome === "rate_limited")).toHaveLength(5);
+    });
+
+    test("P2-2: the global backlog cap holds exactly under concurrent enqueues from different users", async () => {
+      const outcomes = await Promise.all(Array.from({ length: 12 }, (_, i) =>
+        store.enqueue(request({ lineUserId: `Ubacklog${i}` }), { maxBacklog: 5 })));
+      expect(outcomes.filter((o) => o.outcome === "queued")).toHaveLength(5);
+      expect(outcomes.filter((o) => o.outcome === "queue_full")).toHaveLength(7);
+      expect(await db.scalar("SELECT count(*) FROM public.ai_assistant_jobs")).toBe("5");
+    });
+
+    test("P2-1: at most one running job per conversation is enforced by the database itself", async () => {
+      const a = await store.enqueue(request({ lineUserId: "Uone", eventTimestampMs: 1_793_300_000_001 }));
+      const b = await store.enqueue(request({ lineUserId: "Uone", eventTimestampMs: 1_793_300_000_002 }));
+      await store.claim("w", { limit: 1, leaseSeconds: 60, maxRunning: 10 });
+      await expect(db.query(`UPDATE public.ai_assistant_jobs SET status = 'running', lease_token = gen_random_uuid(), lease_expires_at = now() + interval '1 minute' WHERE id = '${b.jobId}'`))
+        .rejects.toThrow();
+      expect(a.outcome).toBe("queued");
     });
 
     test("parallel claimers never exceed maxRunning or double-claim a job", async () => {

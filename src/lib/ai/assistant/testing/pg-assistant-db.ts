@@ -14,6 +14,7 @@ import { createSlipTestDb, type SlipTestDb } from "@/lib/slips/testing/pg-slip-h
 export const ASSISTANT_MIGRATIONS = [
   "20261031090000_ai_assistant_jobs.sql",
   "20261031150000_ai_assistant_access_scope.sql",
+  "20261031160000_ai_assistant_queue_hardening.sql",
 ];
 
 export async function createAssistantTestDb(): Promise<SlipTestDb | null> {

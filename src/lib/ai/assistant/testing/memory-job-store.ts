@@ -98,6 +98,7 @@ export class MemoryAssistantJobStore implements AssistantJobStore {
       completed_at: null,
       answer_scope_key: null,
       delivery_target: "chat",
+      push_started_at: null,
     };
     this.jobs.set(job.id, job);
     this.enqueueOrder.set(job.id, this.enqueueOrder.size);
@@ -126,7 +127,11 @@ export class MemoryAssistantJobStore implements AssistantJobStore {
     const candidates = open
       .filter((job) => (job.status === "queued" && Date.parse(job.available_at) <= now)
         || (job.status === "running" && Date.parse(job.lease_expires_at!) <= now))
-      .filter((job) => !open.some((other) => other.id !== job.id && this.sameConversation(other, job) && order(other, job) < 0))
+      // The conversation's active job (any lease) blocks every other job of it.
+      .filter((job) => !open.some((other) => other.id !== job.id && this.sameConversation(other, job) && other.status === "running"))
+      // Queued jobs of one conversation go in LINE order.
+      .filter((job) => job.status === "running"
+        || !open.some((other) => other.id !== job.id && this.sameConversation(other, job) && other.status === "queued" && order(other, job) < 0))
       .sort((a, b) => a.available_at.localeCompare(b.available_at) || created(a) - created(b))
       .slice(0, slots);
     const leaseMs = Math.min(Math.max(options.leaseSeconds, 30), 900) * 1000;
@@ -206,6 +211,7 @@ export class MemoryAssistantJobStore implements AssistantJobStore {
       delivery_state: to,
       delivery_channel: channel ?? job.delivery_channel,
       reply_token: to === "reply_started" || to === "push_started" ? null : job.reply_token,
+      push_started_at: to === "push_started" ? job.push_started_at ?? this.iso(this.now()) : job.push_started_at,
       updated_at: this.iso(this.now()),
     });
     return true;

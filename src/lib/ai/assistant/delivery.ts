@@ -86,6 +86,13 @@ export type DeliveryResult =
   /** The lease was taken over; another worker owns the job now. */
   | { state: "fenced" };
 
+/**
+ * LINE de-duplicates a push by X-Line-Retry-Key for 24 hours. A push whose
+ * outcome is unknown is never retried automatically after this much of that
+ * window has passed: a later retry could show the answer twice.
+ */
+export const PUSH_RETRY_WINDOW_MS = 23 * 60 * 60 * 1000;
+
 export interface DeliverOptions {
   store: AssistantJobStore;
   adapter: LineDeliveryAdapter;
@@ -130,6 +137,13 @@ export async function deliverAnswer(
     // before recording the outcome.
     return (await set(["reply_started"], "uncertain"))
       ? { state: "uncertain", reason: "reply_outcome_unknown_after_crash" }
+      : { state: "fenced" };
+  }
+
+  if (job.delivery_state === "push_started" && job.push_started_at
+    && now - Date.parse(job.push_started_at) >= PUSH_RETRY_WINDOW_MS) {
+    return (await set(["push_started"], "uncertain"))
+      ? { state: "uncertain", reason: "push_retry_window_expired" }
       : { state: "fenced" };
   }
 

@@ -204,6 +204,7 @@ async function produceSettlementIdentitiesForStaff(
   supabase: Supabase,
   businessDate: string,
   staffQuery: string,
+  scope: ToolDataScope,
 ): Promise<{
   identities: ProduceSettlementIdentity[];
   matchedRows: number;
@@ -212,7 +213,10 @@ async function produceSettlementIdentitiesForStaff(
 }> {
   const rows = await fetchSalesProduceRows(supabase, businessDate);
   const target = normalizeStaffName(staffQuery);
-  const matches = rows.filter((row) => normalizeStaffName(row.staff_name) === target);
+  // Scope first: rows outside the permitted markets must not even be counted,
+  // or found / matchedRows would reveal activity in those markets.
+  const matches = rows.filter((row) => normalizeStaffName(row.staff_name) === target
+    && marketInScope(scope, row.market_name));
   const sourceMap = await sourceByRawMessageId(
     supabase,
     matches.map((row) => row.raw_message_id),
@@ -451,10 +455,11 @@ export async function getStaffSettlementTool(
     supabase,
     businessDate,
     staff,
+    scope,
   );
 
   const settlements = await Promise.all(
-    resolved.identities.filter((identity) => marketInScope(scope, identity.market)).map(async (identity) => ({
+    resolved.identities.map(async (identity) => ({
       staff: identity.staff,
       sourceId: identity.sourceId,
       accountabilityRoundId: identity.accountabilityRoundId,
@@ -606,6 +611,28 @@ export async function compareDailySalesTool(
 }
 
 const SLIP_CHECK_STATUSES = ["PROCESSING", "EXTRACTED", "PARTIAL_EXTRACTED", "NEED_REVIEW", "FAILED"] as const;
+const STATUS_SCAN_PAGE = 200;
+const STATUS_SCAN_CAP = 1_000;
+
+/**
+ * Read every row of a status query page by page, up to STATUS_SCAN_CAP.
+ * `partial` is true only when rows beyond the cap provably exist.
+ */
+async function scanStatusRows<T>(
+  label: string,
+  page: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: unknown }>,
+): Promise<{ rows: T[]; partial: boolean }> {
+  const rows: T[] = [];
+  for (let from = 0; from < STATUS_SCAN_CAP; from += STATUS_SCAN_PAGE) {
+    const { data, error } = await page(from, Math.min(from + STATUS_SCAN_PAGE, STATUS_SCAN_CAP) - 1);
+    if (error) throw new Error(`analyst ${label} lookup failed`);
+    rows.push(...(data ?? []));
+    if ((data ?? []).length < STATUS_SCAN_PAGE) return { rows, partial: false };
+  }
+  const { data, error } = await page(STATUS_SCAN_CAP, STATUS_SCAN_CAP);
+  if (error) throw new Error(`analyst ${label} lookup failed`);
+  return { rows, partial: (data ?? []).length > 0 };
+}
 const MAX_STAFF_DOCUMENTS = 20;
 const MAX_DOCUMENT_ITEMS = 40;
 const MAX_SLIP_BATCHES = 50;
@@ -675,28 +702,33 @@ export async function getSlipStatusTool(
 ) {
   const window = bangkokBusinessDateWindow(businessDate);
   const columns = "id, seller_name, market_name, slip_date, status, image_count, success_count, failed_count, first_image_at" as const;
+  // Every batch of the day is scanned (bounded) and filtered BEFORE the
+  // output limit: seller names are free text, so the staff/market match
+  // cannot be pushed into SQL, and a LIMIT first would drop the asked rows.
   const [dated, undated] = await Promise.all([
-    supabase.from("slip_batches").select(columns).eq("slip_date", businessDate).limit(MAX_SLIP_BATCHES),
-    supabase.from("slip_batches").select(columns).is("slip_date", null)
-      .gte("first_image_at", window.start).lt("first_image_at", window.end).limit(MAX_SLIP_BATCHES),
+    scanStatusRows("slip batch", (from, to) => supabase.from("slip_batches").select(columns)
+      .eq("slip_date", businessDate).order("id", { ascending: true }).range(from, to)),
+    scanStatusRows("slip batch", (from, to) => supabase.from("slip_batches").select(columns).is("slip_date", null)
+      .gte("first_image_at", window.start).lt("first_image_at", window.end).order("id", { ascending: true }).range(from, to)),
   ]);
-  if (dated.error || undated.error) throw new Error("analyst slip batch lookup failed");
 
   const staffTarget = filters.staff?.trim() ? normalizeStaffName(filters.staff) : null;
   const marketTarget = filters.market?.trim() ? canonicalMarketLabel(filters.market) : null;
-  const batches = [...(dated.data ?? []), ...(undated.data ?? [])]
+  const matched = [...dated.rows, ...undated.rows]
     .filter((batch) => marketInScope(scope, batch.market_name))
     .filter((batch) => staffTarget === null
       || (batch.seller_name !== null && normalizeStaffName(batch.seller_name) === staffTarget))
     .filter((batch) => marketTarget === null || canonicalMarketLabel(batch.market_name) === marketTarget);
+  const batches = matched.slice(0, MAX_SLIP_BATCHES);
+  let partial = dated.partial || undated.partial;
 
   const checkCounts = new Map<string, Record<string, number>>();
   const batchIds = batches.map((batch) => batch.id);
   if (batchIds.length > 0) {
-    const { data: evidences, error: evidenceError } = await supabase
-      .from("slip_evidences").select("id, batch_id").in("batch_id", batchIds).limit(1000);
-    if (evidenceError) throw new Error("analyst slip evidence lookup failed");
-    const batchByEvidence = new Map((evidences ?? []).map((row) => [row.id, row.batch_id ?? ""]));
+    const evidenceScan = await scanStatusRows("slip evidence", (from, to) => supabase.from("slip_evidences")
+      .select("id, batch_id").in("batch_id", batchIds).order("id", { ascending: true }).range(from, to));
+    partial ||= evidenceScan.partial;
+    const batchByEvidence = new Map(evidenceScan.rows.map((row) => [row.id, row.batch_id ?? ""]));
     const evidenceIds = [...batchByEvidence.keys()];
     const statusByEvidence = new Map<string, string>();
     for (let offset = 0; offset < evidenceIds.length; offset += 200) {
@@ -720,6 +752,9 @@ export async function getSlipStatusTool(
     requestedStaff: filters.staff,
     requestedMarket: filters.market,
     found: batches.length > 0,
+    /** The bounded scan did not reach every row: counts may be incomplete. */
+    partial,
+    truncated: matched.length > batches.length,
     statusMeaning: {
       PROCESSING: "กำลังอ่านสลิป",
       EXTRACTED: "อ่านข้อมูลจากรูปแล้ว ยังไม่ใช่การยืนยันจากธนาคาร",
@@ -748,14 +783,14 @@ export async function getWhiteSheetStatusTool(
   market: string | null,
   scope: ToolDataScope = UNRESTRICTED_SCOPE,
 ) {
-  const { data, error } = await supabase
+  const scan = await scanStatusRows("white sheet", (from, to) => supabase
     .from("digital_white_sheet_cash_entries")
-    .select("market_label_normalized, finalized_at, white_sheet_sales, labor_entered, location_fee_entered, bag_entered, snack_entered, other_entered, actual_cash_submitted_entered")
+    .select("id, market_label_normalized, finalized_at, white_sheet_sales, labor_entered, location_fee_entered, bag_entered, snack_entered, other_entered, actual_cash_submitted_entered")
     .eq("business_date", businessDate)
-    .limit(100);
-  if (error) throw new Error("analyst white sheet lookup failed");
+    .order("id", { ascending: true })
+    .range(from, to));
   const target = market?.trim() ? canonicalMarketLabel(market) : null;
-  const entries = (data ?? [])
+  const entries = scan.rows
     .filter((row) => marketInScope(scope, row.market_label_normalized))
     .filter((row) => target === null || canonicalMarketLabel(row.market_label_normalized) === target);
   return {
@@ -763,6 +798,7 @@ export async function getWhiteSheetStatusTool(
     businessDate,
     requestedMarket: market,
     found: entries.length > 0,
+    partial: scan.partial,
     sheets: entries.map((row) => ({
       market: canonicalMarketLabel(row.market_label_normalized),
       finalized: row.finalized_at !== null,

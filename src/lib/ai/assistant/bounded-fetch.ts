@@ -4,8 +4,9 @@
  *   deadline     every PostgREST call is aborted at the job deadline, so no
  *                query the job started outlives it (cancellation where the
  *                transport supports it);
- *   per call     no single call may take longer than `callTimeoutMs`;
- *   outstanding  at most `maxOutstanding` calls in flight — some read-only
+ *   per call     no single call, body included, may take longer than `callTimeoutMs`;
+ *   outstanding  at most `maxOutstanding` calls in flight, until their body is
+ *                fully read — some read-only
  *                tools fan out one query per market/round, and this bounds the
  *                outstanding I/O one question can create. Waiting for a slot
  *                also ends at the deadline.
@@ -66,9 +67,15 @@ export function boundedJobFetch(options: {
     try {
       const remaining = Math.min(options.callTimeoutMs, options.deadlineMs - Date.now());
       if (remaining <= 0) throw abortError("assistant job deadline reached");
-      return await withTimeout("assistant http", remaining, (signal) =>
-        inner(input, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, signal]) : signal }),
-      ).catch((error: unknown) => {
+      // The slot and the timeout cover the WHOLE response: headers and body
+      // are read inside the bound, then handed back as a buffered Response.
+      // Releasing at headers would let unread bodies pile up past the cap and
+      // stream on after the deadline.
+      return await withTimeout("assistant http", remaining, async (signal) => {
+        const response = await inner(input, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, signal]) : signal });
+        const body = await response.arrayBuffer();
+        return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+      }).catch((error: unknown) => {
         if (isIoTimeout(error)) throw abortError(error.message);
         throw error;
       });
