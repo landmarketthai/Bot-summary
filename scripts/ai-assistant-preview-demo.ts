@@ -89,6 +89,7 @@ const deps = (): AssistantCoreDeps => ({
     policy: sourceId === "Cmanagement" ? { sourceId, allowFinancial: true, allowPersonSpecific: true, markets: null } : null,
   }),
   privateDeliveryEnabled,
+  sourceAllowed: () => true,
   readData: createFixtureDataReader([], { today }),
 });
 

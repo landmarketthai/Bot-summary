@@ -44,14 +44,15 @@ function pipeline(store: AssistantJobStore) {
   const today = bangkokBusinessDateFromTimestamp(Date.now())!;
   const service = new WebhookService(new FakeDatabase() as unknown as SupabaseClient<Database>, {
     botSummaryAnalystEnabled: true,
-    botSummaryAnalystSourceAllowed: (sourceId) => sourceId === "Cmanagement",
+    // Cmanagement and the 1:1 chats used below are allowlisted; Cexternal is not.
+    botSummaryAnalystSourceAllowed: (sourceId) => ["Cmanagement", "Cworkers", "Udam", "Ustranger"].includes(sourceId),
     botSummaryAssistantDispatcher: createAssistantDispatcher(store),
     botSummaryAssistantKick: async () => {},
     scheduleBackgroundTask: (task) => { kicks.push(task); },
     replyMessage: async (_token, text) => { webhookReplies.push(text); },
   });
   let seq = 0;
-  const say = async (userId: string, text: string, options: { eventId?: string } = {}) => {
+  const say = async (userId: string, text: string, options: { eventId?: string; chat?: "Cmanagement" | "Cworkers" | "Cexternal" | "dm" } = {}) => {
     seq += 1;
     const id = options.eventId ?? `evt-${userId}-${seq}-${Math.random().toString(36).slice(2, 8)}`;
     const event: LineMessageEvent = {
@@ -59,7 +60,7 @@ function pipeline(store: AssistantJobStore) {
       webhookEventId: id,
       deliveryContext: { isRedelivery: Boolean(options.eventId) },
       timestamp: Date.now(),
-      source: { type: "group", groupId: "Cmanagement", userId },
+      source: options.chat === "dm" ? { type: "user", userId } : { type: "group", groupId: options.chat ?? "Cmanagement", userId },
       mode: "active",
       replyToken: `reply-${id}`,
       message: { id: `m-${id}`, type: "text", quoteToken: "q", text: `@Botsummary ${text}` },
@@ -73,6 +74,7 @@ function pipeline(store: AssistantJobStore) {
     store,
     provider: model,
     resolveScope,
+    sourceAllowed: (sourceId) => ["Cmanagement", "Cworkers", "Udam", "Ustranger"].includes(sourceId),
     // Cmanagement is a supervisors' group with an explicit full group policy.
     resolveGroupPolicy: async (sourceId) => ({
       ok: true,
@@ -176,15 +178,32 @@ for (const { name, make } of stores) {
       expect(p.line.sent[0]).toMatchObject({ channel: "reply", target: first.event.replyToken });
       expect(p.line.sent[0]!.text).toContain("40,550.75");
 
-      // A staff member asking about someone else's documents.
+      // Approved group (owner decision): every member shares the group scope,
+      // staff and members without any personal grant included.
       await p.say("Udam", "พี่ขวัญเบิกอะไรไป");
       await p.work();
-      expect(p.line.sent.at(-1)!.text).toContain("ไม่มีสิทธิ์");
-      // Someone with no grant at all.
+      expect(p.line.sent.at(-1)!.text).toContain("ผักกาดขาว 15");
       await p.say("Ustranger", "วันนี้ทุกตลาดขายได้เท่าไหร่?");
       await p.work();
+      expect(p.line.sent.at(-1)!.text).toContain("40,550.75");
+      // The same staff member 1:1 keeps their own-records grant.
+      await p.say("Udam", "พี่ขวัญเบิกอะไรไป", { chat: "dm" });
+      await p.work();
+      expect(p.line.sent.at(-1)!.text).toContain("ไม่มีสิทธิ์");
+      // Someone with no grant, 1:1.
+      await p.say("Ustranger", "วันนี้ทุกตลาดขายได้เท่าไหร่?", { chat: "dm" });
+      await p.work();
       expect(p.line.sent.at(-1)!.text).toBe(ASSISTANT_NO_PERMISSION_REPLY);
-      expect(p.line.sent).toHaveLength(3);
+      // An allowlisted group without a group policy: refused, nothing disclosed.
+      await p.say("Uboss", "วันนี้ทุกตลาดขายได้เท่าไหร่?", { chat: "Cworkers" });
+      await p.work();
+      expect(p.line.sent.at(-1)!.text).toContain("ตอบในกลุ่มนี้ไม่ได้");
+      // A group that is not allowlisted never even reaches the queue.
+      const before = p.line.sent.length;
+      await p.say("Uboss", "วันนี้ทุกตลาดขายได้เท่าไหร่?", { chat: "Cexternal" });
+      expect((await p.work()).claimed).toBe(0);
+      expect(p.line.sent).toHaveLength(before);
+      expect(p.webhookReplies.at(-1)).toContain("ยังไม่เปิดใช้งานในแชทนี้");
     });
   });
 }

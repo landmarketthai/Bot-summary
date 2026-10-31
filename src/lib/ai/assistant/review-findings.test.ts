@@ -65,6 +65,7 @@ function harness(options: HarnessOptions = {}) {
       return { ok: true as const, policy: policy ? { sourceId, ...policy } : null };
     },
     privateDeliveryEnabled: options.privateDeliveryEnabled ?? false,
+    sourceAllowed: () => true,
     readData: createFixtureDataReader(reads),
   } as unknown as AssistantCoreDeps;
   const enqueue = async (question: string, overrides: Partial<AssistantJobRequest> = {}) => {
@@ -90,7 +91,10 @@ function harness(options: HarnessOptions = {}) {
   return { store, reads, deps, scopes, ask, enqueue };
 }
 
-describe("P1-A: staff never reach another employee's data through market-level or indirect tools", () => {
+/** 1:1 chat with the asker's own grant. In an approved group every member shares the group scope instead. */
+const dm = (lineUserId: string) => ({ lineUserId, sourceType: "user" as const, sourceId: lineUserId });
+
+describe("P1-A (1:1 chats): staff never reach another employee's data through market-level or indirect tools", () => {
   for (const [tool, args] of [
     ["get_market_summary", { market: "ราชพฤกษ์" }],
     ["get_daily_summary", {}],
@@ -102,7 +106,7 @@ describe("P1-A: staff never reach another employee's data through market-level o
   ] as const) {
     test(`${tool} is refused for staff, even inside their own market`, async () => {
       const h = harness({ provider: oneToolModel(tool, args) });
-      const answer = await h.ask("ราชพฤกษ์วันนี้เป็นยังไง", { lineUserId: "Udam" });
+      const answer = await h.ask("ราชพฤกษ์วันนี้เป็นยังไง", dm("Udam"));
       expect(h.reads).toHaveLength(0);
       expect(answer.text).not.toContain("confirmedSales");
     });
@@ -111,7 +115,7 @@ describe("P1-A: staff never reach another employee's data through market-level o
   test("an owner-capable tool with someone else's name or no name reads only the asker's rows", async () => {
     for (const args of [{ staff: "ขวัญ", market: null }, { staff: null, market: null }]) {
       const h = harness({ provider: oneToolModel("get_pending_items", args) });
-      await h.ask("มีอะไรค้างไหม", { lineUserId: "Udam" });
+      await h.ask("มีอะไรค้างไหม", dm("Udam"));
       for (const read of h.reads) {
         expect((read.request as { staff?: string }).staff).toBe("ดำ");
         expect((read.scope as { ownerStaff?: string }).ownerStaff).toBe("ดำ");
@@ -179,7 +183,7 @@ describe("P1-C: a downgraded or revoked user never sees memory or answers made u
   test("a stored answer is not delivered after the grant is revoked; the user gets a notice", async () => {
     const h = harness();
     const line = new RecordingLineDelivery();
-    const { jobId } = await h.enqueue("วันนี้ทุกตลาดขายได้เท่าไหร่?");
+    const { jobId } = await h.enqueue("วันนี้ทุกตลาดขายได้เท่าไหร่?", dm("Uboss"));
     h.store.failNext.setDelivery = new Error("crash after recording the answer");
     const worker = () => runAssistantWorker({
       store: h.store,

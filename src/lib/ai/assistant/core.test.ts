@@ -28,6 +28,9 @@ const SCOPES: Record<string, AssistantScope> = {
 const resolveScope = async (lineUserId: string): Promise<ScopeResolution> =>
   SCOPES[lineUserId] ? { ok: true, scope: SCOPES[lineUserId] } : { ok: false, reason: "no_grant" };
 
+/** A 1:1 chat: the asker's own grant applies (approved groups use the group scope instead). */
+const dm = (lineUserId: string) => ({ lineUserId, sourceType: "user" as const, sourceId: lineUserId });
+
 let seq = 0;
 function harness(provider: AssistantModelProvider = new ScriptedThaiModel()) {
   const store = new MemoryAssistantJobStore();
@@ -37,6 +40,7 @@ function harness(provider: AssistantModelProvider = new ScriptedThaiModel()) {
     store,
     provider,
     resolveScope,
+    sourceAllowed: () => true,
     // Every group in this suite is a management group with a full group policy;
     // group default-deny and mixed policies are covered in review-findings.test.ts.
     resolveGroupPolicy: async (sourceId: string) => ({
@@ -150,10 +154,10 @@ describe("conversation memory isolation", () => {
   });
 });
 
-describe("per-user and per-market authorization (server-side)", () => {
+describe("per-user and per-market authorization in 1:1 chats (server-side)", () => {
   test("a staff member cannot read another staff member's documents; nothing is queried for them", async () => {
     const h = harness();
-    const answer = await h.ask("พี่ขวัญเบิกอะไรไป", { lineUserId: "Udam" });
+    const answer = await h.ask("พี่ขวัญเบิกอะไรไป", dm("Udam"));
     expect(answer.text).toContain("ไม่มีสิทธิ์");
     expect(h.reads.some((read) => "staff" in read.request && read.request.staff === "ขวัญ")).toBe(false);
     expect((answer.usage as { deniedToolCalls: string[] }).deniedToolCalls).toEqual(["get_staff_produce:other_staff"]);
@@ -161,7 +165,7 @@ describe("per-user and per-market authorization (server-side)", () => {
 
   test("a staff member's own question is pinned to their trusted label and markets", async () => {
     const h = harness();
-    const answer = await h.ask("พี่ดำเบิกอะไรไป", { lineUserId: "Udam" });
+    const answer = await h.ask("พี่ดำเบิกอะไรไป", dm("Udam"));
     expect(answer.toolNames).toEqual(["get_staff_produce"]);
     expect(h.reads.at(-1)!.scope.markets).toEqual(new Set([FIXTURE_MARKETS.RATCHAPHRUEK]));
     expect(answer.text).toContain("มะม่วงน้ำดอกไม้ 30");
@@ -169,15 +173,15 @@ describe("per-user and per-market authorization (server-side)", () => {
 
   test("a staff member's unfiltered pending/slip question only ever reads their own rows", async () => {
     const h = harness();
-    await h.ask("วันนี้มีอะไรค้างบ้าง", { lineUserId: "Udam" });
+    await h.ask("วันนี้มีอะไรค้างบ้าง", dm("Udam"));
     expect(h.reads.at(-1)!.request).toMatchObject({ tool: "get_pending_items", staff: "ดำ" });
-    await h.ask("มีสลิปรอตรวจไหม", { lineUserId: "Ulek" });
+    await h.ask("มีสลิปรอตรวจไหม", dm("Ulek"));
     expect(h.reads.at(-1)!.request).toMatchObject({ tool: "get_slip_status", staff: "เล็ก" });
   });
 
   test("settlement tools are not offered to staff, and a model that calls one anyway is refused", async () => {
     const offered = harness();
-    await offered.ask("ดำวันนี้เงินขาดหรือเกิน", { lineUserId: "Udam" });
+    await offered.ask("ดำวันนี้เงินขาดหรือเกิน", dm("Udam"));
     const tools = (offered.provider as ScriptedThaiModel).requests[0]!.tools.map((tool) => tool.name);
     expect(tools).not.toContain("get_staff_settlement");
     expect(tools).not.toContain("get_settlement_overview");
@@ -193,7 +197,7 @@ describe("per-user and per-market authorization (server-side)", () => {
       },
     };
     const h = harness(rogue);
-    await h.ask("ดำวันนี้เงินขาดหรือเกิน", { lineUserId: "Udam" });
+    await h.ask("ดำวันนี้เงินขาดหรือเกิน", dm("Udam"));
     expect(h.reads).toHaveLength(0);
   });
 
@@ -208,7 +212,7 @@ describe("per-user and per-market authorization (server-side)", () => {
       },
     };
     const h = harness(rogue);
-    const supervisorAnswer = await h.ask("พาซิโอ้ผักเหลือของเท่าไหร่", { lineUserId: "Upaseo" });
+    const supervisorAnswer = await h.ask("พาซิโอ้ผักเหลือของเท่าไหร่", dm("Upaseo"));
     expect(h.reads).toHaveLength(1); // its own market is fine
     const rogueRatcha: AssistantModelProvider = {
       ...rogue,
@@ -220,20 +224,20 @@ describe("per-user and per-market authorization (server-side)", () => {
       },
     };
     const other = harness(rogueRatcha);
-    const answer = await other.ask("ราชพฤกษ์เหลือของเท่าไหร่", { lineUserId: "Upaseo" });
+    const answer = await other.ask("ราชพฤกษ์เหลือของเท่าไหร่", dm("Upaseo"));
     expect(other.reads).toHaveLength(0);
     expect(answer.text).toContain("market_not_permitted");
     expect(supervisorAnswer.kind).toBe("answer");
     // Staff cannot use a market-level tool at all, even for their own market.
     const staff = harness(rogue);
-    const staffAnswer = await staff.ask("พาซิโอ้ผักเหลือของเท่าไหร่", { lineUserId: "Ulek" });
+    const staffAnswer = await staff.ask("พาซิโอ้ผักเหลือของเท่าไหร่", dm("Ulek"));
     expect(staff.reads).toHaveLength(0);
     expect(staffAnswer.text).toMatch(/tool_not_permitted|Unsupported analyst tool/u);
   });
 
   test("market-scoped requesters see only their markets, totals come from the scoped source", async () => {
     const h = harness();
-    const answer = await h.ask("วันนี้ทุกตลาดขายได้เท่าไหร่?", { lineUserId: "Upaseo" });
+    const answer = await h.ask("วันนี้ทุกตลาดขายได้เท่าไหร่?", dm("Upaseo"));
     expect(h.reads.at(-1)!.scope.markets).toEqual(new Set([FIXTURE_MARKETS.PASEO]));
     expect(answer.text).toContain(FIXTURE_MARKETS.PASEO);
     expect(answer.text).not.toContain(FIXTURE_MARKETS.WAT);
@@ -243,7 +247,7 @@ describe("per-user and per-market authorization (server-side)", () => {
   test("no grant: a notice, and the model is never called", async () => {
     const model = new ScriptedThaiModel();
     const h = harness(model);
-    const answer = await h.ask("วันนี้ทุกตลาดขายได้เท่าไหร่?", { lineUserId: "Ustranger" });
+    const answer = await h.ask("วันนี้ทุกตลาดขายได้เท่าไหร่?", dm("Ustranger"));
     expect(answer).toEqual({ text: ASSISTANT_NO_PERMISSION_REPLY, kind: "notice" });
     expect(model.requests).toHaveLength(0);
   });
@@ -251,7 +255,7 @@ describe("per-user and per-market authorization (server-side)", () => {
   test("a failed grant lookup is a retryable error, never 'no access'", async () => {
     const h = harness();
     h.deps.resolveScope = async () => ({ ok: false, reason: "grant_lookup_failed" });
-    await expect(h.ask("วันนี้ขายได้เท่าไหร่")).rejects.toThrow("grant_lookup");
+    await expect(h.ask("วันนี้ขายได้เท่าไหร่", dm("Uboss"))).rejects.toThrow("grant_lookup");
   });
 
   test("authorizeToolRequest decisions", () => {

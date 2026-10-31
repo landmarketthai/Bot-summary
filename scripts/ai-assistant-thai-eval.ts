@@ -69,6 +69,7 @@ async function pipeline(provider: AssistantModelProvider) {
       store,
       provider,
       resolveScope: async () => ({ ok: true as const, scope: SUPERVISOR }),
+      sourceAllowed: () => true,
       // The eval chat is a management group with a full group policy.
       resolveGroupPolicy: async (sourceId: string) => ({
         ok: true as const,

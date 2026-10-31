@@ -21,6 +21,7 @@ import {
 } from "@/lib/ai/readonly-analyst";
 import type { AssistantModelProvider } from "@/lib/ai/model-provider";
 import type { ReadonlyAnalystToolName } from "@/lib/ai/readonly-tools";
+import { isBotSummaryAnalystSourceAllowed } from "@/lib/ai/line-command";
 import {
   createScopedToolExecutor,
   decideJobAccess,
@@ -110,8 +111,10 @@ export interface AssistantCoreDeps {
   provider: AssistantModelProvider;
   resolveScope?: (lineUserId: string) => Promise<ScopeResolution>;
   resolveGroupPolicy?: (sourceId: string) => Promise<GroupPolicyResolution>;
-  /** May an answer to a group question be pushed 1:1 to the asker instead? */
+  /** May an answer to a question from an unapproved group be pushed 1:1 to the asker? */
   privateDeliveryEnabled?: boolean;
+  /** Signed-webhook source allowlist, re-checked at answer and delivery time. */
+  sourceAllowed?: (sourceId: string) => boolean;
   /** Data behind the authorization check; defaults to the read-only tools. Test/demo seam. */
   readData?: ScopedDataReader;
 }
@@ -121,27 +124,52 @@ export type JobAccessResolution =
   | { ok: false; kind: "denied"; reason: string; notice: string }
   | { ok: false; kind: "transient" };
 
-/** The CURRENT access for a job: re-read on every answer and before every delivery. */
+/**
+ * The CURRENT access for a job: re-read on every answer and before every
+ * delivery. An approved group's scope comes from its group policy alone; the
+ * asker's grant is read only for a 1:1 chat or the opt-in private delivery.
+ */
 export async function resolveJobAccess(job: AssistantJob, deps: AssistantCoreDeps): Promise<JobAccessResolution> {
-  const resolution = await (deps.resolveScope ?? ((id) => resolveAssistantScope(deps.supabase, id)))(job.line_user_id);
-  if (!resolution.ok) {
-    if (resolution.reason === "grant_lookup_failed") return { ok: false, kind: "transient" };
-    return { ok: false, kind: "denied", reason: resolution.reason, notice: ASSISTANT_NO_PERMISSION_REPLY };
+  if (!(deps.sourceAllowed ?? ((id) => isBotSummaryAnalystSourceAllowed(id)))(job.source_id)) {
+    return { ok: false, kind: "denied", reason: "source_not_allowed", notice: ASSISTANT_GROUP_REFUSAL_REPLY };
   }
+  const privateDeliveryEnabled = deps.privateDeliveryEnabled ?? false;
   let groupPolicy = null;
   if (job.source_type !== "user") {
     const policy = await (deps.resolveGroupPolicy ?? ((id) => resolveGroupPolicy(deps.supabase, id)))(job.source_id);
     if (!policy.ok) return { ok: false, kind: "transient" };
     groupPolicy = policy.policy;
+    if (!groupPolicy && !privateDeliveryEnabled) {
+      return { ok: false, kind: "denied", reason: "group_not_permitted", notice: ASSISTANT_GROUP_REFUSAL_REPLY };
+    }
   }
+
+  let ownScope = null;
+  if (!groupPolicy) {
+    const resolution = await (deps.resolveScope ?? ((id) => resolveAssistantScope(deps.supabase, id)))(job.line_user_id);
+    if (!resolution.ok) {
+      if (resolution.reason === "grant_lookup_failed") return { ok: false, kind: "transient" };
+      return { ok: false, kind: "denied", reason: resolution.reason, notice: ASSISTANT_NO_PERMISSION_REPLY };
+    }
+    ownScope = resolution.scope;
+  }
+
   const decision = decideJobAccess({
-    scope: resolution.scope,
+    lineUserId: job.line_user_id,
+    scope: ownScope,
     sourceType: job.source_type,
     sourceId: job.source_id,
     groupPolicy,
-    privateDeliveryEnabled: deps.privateDeliveryEnabled ?? false,
+    privateDeliveryEnabled,
   });
-  if (!decision.ok) return { ok: false, kind: "denied", reason: decision.reason, notice: ASSISTANT_GROUP_REFUSAL_REPLY };
+  if (!decision.ok) {
+    return {
+      ok: false,
+      kind: "denied",
+      reason: decision.reason,
+      notice: decision.reason === "no_grant" ? ASSISTANT_NO_PERMISSION_REPLY : ASSISTANT_GROUP_REFUSAL_REPLY,
+    };
+  }
   return { ok: true, access: decision.access };
 }
 

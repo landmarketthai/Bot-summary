@@ -1,27 +1,28 @@
 /**
- * Per-user, per-market and per-audience authorization for @Botsummary,
- * enforced on the server before any business query runs.
+ * Authorization for @Botsummary, enforced on the server before any business
+ * query runs. Identity and audience come from the signed LINE webhook (stored
+ * on the job); the question text and the model's tool arguments only NARROW
+ * what the scope already allows.
  *
- * Identity is the LINE user id from the signed webhook (stored on the job).
- * The question text and the model's tool arguments are never proof of who is
- * asking: "ของผม", a staff name or a market name only NARROW what the scope
- * already allows.
+ * Approved LINE group (owner decision, 2026-10-31): a group on the
+ * signed-webhook source allowlist WITH an active ai_assistant_group_policies
+ * row. Every member of it, whoever they are, shares the GROUP's scope — its
+ * markets and categories — for every supported business tool, staff records
+ * included. No per-user grant is read for a group question, so one member's
+ * personal grant can neither authorize nor widen what a group sees.
  *
+ * Any other group: refused (or, when private delivery is enabled, answered
+ * 1:1 to the asker under the asker's own grant — never into the group).
+ *
+ * 1:1 chat: the asker's own grant.
  *   supervisor  env allowlist BOT_SUMMARY_ASSISTANT_SUPERVISOR_LINE_USER_IDS
  *               (all markets) or an active grant with role supervisor (its
  *               markets): every tool inside those markets.
- *   staff       active grant with role staff: ONLY owner-scoped tools
- *               (OWNER_SCOPED_TOOLS), always pinned to their own staff_label
- *               and markets. Market-level tools (sales, stock, white sheet,
- *               settlement) aggregate other employees' rows and are refused.
+ *   staff       active grant with role staff: only owner-scoped tools
+ *               (OWNER_SCOPED_TOOLS), pinned to their own staff_label.
  *   no grant    nothing.
  *
- * Audience (P1-B): an answer in a LINE group is seen by every member, so the
- * asker's grant alone never authorizes it. A group needs an active
- * ai_assistant_group_policies row; the policy caps the categories (financial,
- * person-specific) and markets for everyone asking there. Without one the
- * answer goes 1:1 to the asker when private delivery is enabled, otherwise it
- * is refused. Tool lists are allowlists: a new tool is denied until listed.
+ * Tool lists are allowlists: a new tool is denied until listed.
  */
 import { createHash } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -41,12 +42,13 @@ type Supabase = SupabaseClient<Database>;
 
 export interface AssistantScope {
   lineUserId: string;
-  role: "supervisor" | "staff";
+  /** group_member: a member of an approved group, scoped by the group policy. */
+  role: "supervisor" | "staff" | "group_member";
   /** Trusted label for own-data questions; required for staff. */
   staffLabel: string | null;
   /** Canonical market labels; null = every market. */
   markets: ReadonlySet<string> | null;
-  grantSource: "env_supervisor" | "grant";
+  grantSource: "env_supervisor" | "grant" | "group_policy";
 }
 
 export type ScopeResolution =
@@ -159,7 +161,7 @@ export async function resolveGroupPolicy(supabase: Supabase, sourceId: string): 
 }
 
 export function roleTools(scope: AssistantScope): ReadonlySet<ReadonlyAnalystToolName> {
-  return scope.role === "supervisor" ? SUPERVISOR_TOOLS : STAFF_TOOLS;
+  return scope.role === "staff" ? STAFF_TOOLS : SUPERVISOR_TOOLS;
 }
 
 /** Everything one job may do and where its answer may go. */
@@ -176,7 +178,7 @@ export interface JobAccess {
 
 export type JobAccessDecision =
   | { ok: true; access: JobAccess }
-  | { ok: false; reason: "group_not_permitted" };
+  | { ok: false; reason: "group_not_permitted" | "no_grant" };
 
 function intersectMarkets(a: ReadonlySet<string> | null, b: ReadonlySet<string> | null): ReadonlySet<string> | null {
   if (a === null) return b;
@@ -188,45 +190,54 @@ function scopeKeyOf(parts: Record<string, unknown>): string {
   return createHash("sha256").update(JSON.stringify(parts)).digest("hex");
 }
 
+/** The shared scope every member of an approved group asks under. */
+export function groupMemberScope(lineUserId: string, policy: GroupPolicy): AssistantScope {
+  return { lineUserId, role: "group_member", staffLabel: null, markets: policy.markets, grantSource: "group_policy" };
+}
+
 export function decideJobAccess(input: {
-  scope: AssistantScope;
+  lineUserId: string;
+  /** The asker's own grant; never consulted for an approved group. */
+  scope: AssistantScope | null;
   sourceType: "user" | "group" | "room";
   sourceId: string;
   groupPolicy: GroupPolicy | null;
   privateDeliveryEnabled: boolean;
 }): JobAccessDecision {
-  const { scope } = input;
-  let effective = scope;
-  let allowedTools = roleTools(scope);
+  let effective: AssistantScope;
+  let allowedTools: ReadonlySet<ReadonlyAnalystToolName>;
   let deliverTo: JobAccess["deliverTo"] = "chat";
   let audience: JobAccess["audience"] = "private_chat";
   let policy: GroupPolicy | null = null;
 
-  if (input.sourceType !== "user") {
-    if (input.groupPolicy) {
-      policy = input.groupPolicy;
-      const markets = intersectMarkets(scope.markets, policy.markets);
-      allowedTools = new Set([...allowedTools].filter((tool) => {
-        const sensitivity = TOOL_SENSITIVITY[tool];
-        if (!sensitivity) return false;
-        return (!sensitivity.financial || policy!.allowFinancial) && (!sensitivity.person || policy!.allowPersonSpecific);
-      }));
-      if ((markets !== null && markets.size === 0) || allowedTools.size === 0) {
-        return { ok: false, reason: "group_not_permitted" };
-      }
-      effective = { ...scope, markets };
-      audience = "group_policy";
-    } else if (input.privateDeliveryEnabled) {
-      deliverTo = "private";
-      audience = "private_from_group";
-    } else {
+  if (input.sourceType !== "user" && input.groupPolicy) {
+    policy = input.groupPolicy;
+    effective = groupMemberScope(input.lineUserId, policy);
+    allowedTools = new Set([...SUPERVISOR_TOOLS].filter((tool) => {
+      const sensitivity = TOOL_SENSITIVITY[tool];
+      if (!sensitivity) return false;
+      return (!sensitivity.financial || policy!.allowFinancial) && (!sensitivity.person || policy!.allowPersonSpecific);
+    }));
+    if ((effective.markets !== null && effective.markets.size === 0) || allowedTools.size === 0) {
       return { ok: false, reason: "group_not_permitted" };
     }
+    audience = "group_policy";
+  } else if (input.sourceType !== "user") {
+    if (!input.privateDeliveryEnabled) return { ok: false, reason: "group_not_permitted" };
+    if (!input.scope) return { ok: false, reason: "no_grant" };
+    effective = input.scope;
+    allowedTools = roleTools(input.scope);
+    deliverTo = "private";
+    audience = "private_from_group";
+  } else {
+    if (!input.scope) return { ok: false, reason: "no_grant" };
+    effective = input.scope;
+    allowedTools = roleTools(input.scope);
   }
 
   const scopeKey = scopeKeyOf({
-    v: 1,
-    user: scope.lineUserId,
+    v: 2,
+    user: input.lineUserId,
     role: effective.role,
     staff: effective.staffLabel,
     markets: effective.markets === null ? null : [...effective.markets].sort(),
@@ -273,7 +284,7 @@ export function authorizeToolRequest(
 
   if (!("staff" in request)) return { ok: true, request };
   const staff = typeof request.staff === "string" ? request.staff.trim() : "";
-  if (scope.role === "supervisor") {
+  if (scope.role !== "staff") {
     if (staff && isSelf(scope, staff) && scope.staffLabel) {
       return { ok: true, request: { ...request, staff: scope.staffLabel } as ReadonlyAnalystToolRequest };
     }
@@ -284,10 +295,16 @@ export function authorizeToolRequest(
   return { ok: true, request: { ...request, staff: scope.staffLabel! } as ReadonlyAnalystToolRequest };
 }
 
+const ROLE_THAI: Record<AssistantScope["role"], string> = {
+  supervisor: "หัวหน้างาน",
+  staff: "พนักงานขาย",
+  group_member: "สมาชิกกลุ่ม LINE ที่ได้รับอนุมัติ (ทุกคนในกลุ่มใช้สิทธิ์ของกลุ่มเดียวกัน)",
+};
+
 export function scopeInstructions(access: JobAccess): string[] {
   const { scope } = access;
   const lines = [
-    `สิทธิ์ของผู้ถาม: ${scope.role === "supervisor" ? "หัวหน้างาน" : "พนักงานขาย"}`,
+    `สิทธิ์ของผู้ถาม: ${ROLE_THAI[scope.role]}`,
     scope.markets === null ? "ดูได้ทุกตลาด" : `ดูได้เฉพาะตลาด: ${[...scope.markets].join(", ")}`,
   ];
   if (scope.role === "staff") {
