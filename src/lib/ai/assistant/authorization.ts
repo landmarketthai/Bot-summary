@@ -25,6 +25,7 @@ import {
   normalizeStaffName,
   type ReadonlyAnalystToolName,
   type ReadonlyAnalystToolRequest,
+  type ToolDataScope,
 } from "@/lib/ai/readonly-tools";
 
 type Supabase = SupabaseClient<Database>;
@@ -155,9 +156,19 @@ export function scopeInstructions(scope: AssistantScope): string[] {
   return lines;
 }
 
-/** Executor the model's tool calls go through. Refusals never touch the database. */
+/** Reads authorized data; the default is the real read-only tools. */
+export type ScopedDataReader = (
+  request: ReadonlyAnalystToolRequest,
+  scope: ToolDataScope,
+) => Promise<Record<string, unknown>>;
+
+export function readonlyDataReader(supabase: Supabase): ScopedDataReader {
+  return async (request, scope) => compactToolOutput(await executeReadonlyAnalystTool(supabase, request, scope));
+}
+
+/** Executor the model's tool calls go through. Refusals never reach the data reader. */
 export function createScopedToolExecutor(
-  supabase: Supabase,
+  readData: ScopedDataReader,
   scope: AssistantScope,
   onDecision?: (tool: ReadonlyAnalystToolName, decision: "allowed" | ToolDenialReason) => void,
 ): AnalystToolExecutor {
@@ -168,6 +179,6 @@ export function createScopedToolExecutor(
       return { tool: request.tool, status: "forbidden", reason: decision.reason };
     }
     onDecision?.(request.tool, "allowed");
-    return compactToolOutput(await executeReadonlyAnalystTool(supabase, decision.request, { markets: scope.markets }));
+    return readData(decision.request, { markets: scope.markets });
   };
 }

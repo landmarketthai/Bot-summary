@@ -11,7 +11,7 @@ import { createAssistantModelProvider } from "@/lib/ai/model-provider";
 import { boundedJobFetch } from "./bounded-fetch";
 import { answerAssistantJob } from "./core";
 import { lineMessagingDelivery, type LineDeliveryAdapter } from "./delivery";
-import { SupabaseAssistantJobStore } from "./job-store";
+import { SupabaseAssistantJobStore, type AssistantJobStore } from "./job-store";
 import {
   ASSISTANT_WORKER_DEFAULTS,
   runAssistantWorker,
@@ -38,7 +38,7 @@ export function assistantRuntimeConfig() {
 }
 
 /** Default answerer: every job gets its own client, aborted at the job deadline. */
-export function createProductionAnswerer(store: SupabaseAssistantJobStore): AssistantAnswerer {
+export function createProductionAnswerer(store: AssistantJobStore): AssistantAnswerer {
   const config = assistantRuntimeConfig();
   const provider = createAssistantModelProvider();
   return (job, context) => answerAssistantJob(job, context, {

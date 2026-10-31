@@ -74,6 +74,14 @@ jobs:
           src/lib/line/webhook-produce-validation.test.ts
           src/lib/line/webhook-physical-inventory.test.ts
           src/lib/line/webhook-session-identity.test.ts
+      - name: AI assistant job queue, memory and end-to-end (real PostgreSQL)
+        run: >-
+          AI_ASSISTANT_PG_REQUIRE=1 bun test
+          src/lib/ai/assistant
+          src/lib/ai/readonly-analyst.test.ts
+          src/lib/ai/readonly-tools-assistant.test.ts
+          src/lib/line/webhook-bot-summary-analyst.test.ts
+          src/app/api/cron/ai-assistant-jobs/route.test.ts
       - name: Typecheck
         run: npm run type-check
       - name: git diff --check against PR base

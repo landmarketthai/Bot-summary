@@ -20,8 +20,10 @@ import type { AssistantModelProvider } from "@/lib/ai/model-provider";
 import {
   allowedToolsFor,
   createScopedToolExecutor,
+  readonlyDataReader,
   resolveAssistantScope,
   scopeInstructions,
+  type ScopedDataReader,
   type ScopeResolution,
 } from "./authorization";
 import { AssistantStoreError, type AssistantJob, type AssistantJobStore, type ConversationTurn } from "./job-store";
@@ -95,8 +97,8 @@ export interface AssistantCoreDeps {
   store: AssistantJobStore;
   provider: AssistantModelProvider;
   resolveScope?: (lineUserId: string) => Promise<ScopeResolution>;
-  /** Test seam: wraps the scoped executor (e.g. fixture data). */
-  wrapExecutor?: (executor: AnalystToolExecutor) => AnalystToolExecutor;
+  /** Data behind the authorization check; defaults to the read-only tools. Test/demo seam. */
+  readData?: ScopedDataReader;
 }
 
 export async function answerAssistantJob(
@@ -130,12 +132,11 @@ export async function answerAssistantJob(
   const businessDate = resolveJobBusinessDate(job.question, job.asked_business_date, turns);
   const outputs: string[] = [];
   const denied: string[] = [];
-  const scoped = createScopedToolExecutor(deps.supabase, scope, (tool, decision) => {
+  const scoped = createScopedToolExecutor(deps.readData ?? readonlyDataReader(deps.supabase), scope, (tool, decision) => {
     if (decision !== "allowed") denied.push(`${tool}:${decision}`);
   });
-  const base = deps.wrapExecutor ? deps.wrapExecutor(scoped) : scoped;
   const executeTool: AnalystToolExecutor = async (request) => {
-    const output = await base(request);
+    const output = await scoped(request);
     outputs.push(JSON.stringify(output));
     return output;
   };
