@@ -269,8 +269,10 @@ describe("finalizeSlipBatch: success_count and failed_count use validation-guard
     capturedUpdates: Array<Record<string, unknown>>,
     rpc: () => Promise<{ data: unknown; error: { code?: string; message: string } | null }> = LEGACY_SCHEMA_RPC,
     migratedSchema = false,
+    ledger: Array<{ line_message_id: string; event_ts_ms: number; state: string }> = [],
   ): SupabaseClient<Database> {
-    const evidenceRows = items.map((_, i) => ({ id: `ev-${i + 1}`, batch_index: i + 1 }));
+    const evidenceRows = items.map((_, i) => ({ id: `ev-${i + 1}`, batch_index: i + 1, line_message_id: `m-${i + 1}` }));
+    const ledgerRows = ledger.map((row) => ({ ...row, raw_message_id: `raw-${row.line_message_id}` }));
     const checkRows = items.map((item, i) => ({
       evidence_id:      `ev-${i + 1}`,
       status:           "EXTRACTED" as const,
@@ -332,6 +334,13 @@ describe("finalizeSlipBatch: success_count and failed_count use validation-guard
               };
             },
           };
+        }
+        if (table === "slip_image_events") {
+          return { select: () => ({ eq: () => Promise.resolve({ data: ledgerRows, error: null }) }) };
+        }
+        if (table === "raw_messages") {
+          const raws = ledgerRows.map((row) => ({ id: row.raw_message_id, payload: { timestamp: row.event_ts_ms } }));
+          return { select: () => ({ in: () => Promise.resolve({ data: raws, error: null }) }) };
         }
         throw new Error(`Unexpected table: ${table}`);
       },
@@ -475,11 +484,20 @@ describe("finalizeSlipBatch: success_count and failed_count use validation-guard
         failed_permanent: 1, late_after_finalize: 0, incomplete: 1,
       },
       error: null,
-    }));
+    }), false, [
+      // The failed image was sent FIRST in LINE; the attached one second.
+      { line_message_id: "m-0", event_ts_ms: 1_000, state: "failed_permanent" },
+      { line_message_id: "m-1", event_ts_ms: 2_000, state: "attached" },
+    ]);
 
     await finalizeSlipBatch(supabase, "batch-1", async (t) => { sent.push(t); });
 
     expect(sent[0]).toContain("ยังไม่ครบ: 1 รูป");
+    // batch_index of the attached evidence is 1, but it is the 2nd image in LINE.
+    expect(sent[0]).toContain("#1 รูปเข้าระบบไม่สำเร็จ");
+    expect(sent[0]).toContain("#2 เช็คได้ 100 บาท");
+    expect(sent[0]).toContain("รับทั้งหมด: 2 รูป");
+    expect(sent[0]).not.toContain("ยืนยันลำดับจาก LINE ไม่ได้");
     const update = updates.find((u) => "success_count" in u);
     expect(update?.status).toBe("review_needed");
     expect(update?.failed_count).toBe(1);
