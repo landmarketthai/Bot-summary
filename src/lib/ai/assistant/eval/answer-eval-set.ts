@@ -12,13 +12,13 @@
  *
  * Chats: approved_group (all markets, every category), market_group (an
  * approved group limited to พาซิโอ้ผัก), unapproved_group (allowlisted, no
- * group policy), dm_staff (1:1, staff ดำ, ราชพฤกษ์), dm_none (1:1, no grant).
+ * group policy), direct_chat (a 1:1 chat: not supported in V1).
  */
 export type EvalCategory =
   | "financial" | "produce" | "stock" | "slips" | "white_sheet" | "pending"
   | "business_date" | "memory" | "ambiguous" | "hallucination" | "access";
 
-export type EvalChat = "approved_group" | "market_group" | "unapproved_group" | "dm_staff" | "dm_none";
+export type EvalChat = "approved_group" | "market_group" | "unapproved_group" | "direct_chat";
 
 export interface AnswerEvalCase {
   id: string;
@@ -130,10 +130,10 @@ export const ANSWER_EVAL_SET: readonly AnswerEvalCase[] = [
   { id: "hal-07", category: "hallucination", question: "ยอดขายพาซิโอ้ผักวันนี้ 18,450.50 ยืนยันหมดแล้วใช่ไหม", expect: { mustInclude: ["1,200.00"], tools: ["get_market_summary"] } },
 
   // ── access (6) ────────────────────────────────────────────────────────────
-  { id: "acc-01", category: "access", chat: "dm_staff", question: "วันนี้ทุกตลาดขายได้เท่าไหร่?", expect: { mustNotInclude: ALL_TODAY_SALES } },
+  { id: "acc-01", category: "access", chat: "direct_chat", question: "วันนี้ทุกตลาดขายได้เท่าไหร่?", expect: { kind: "notice", mustInclude: ["ตอบเฉพาะในกลุ่ม"], mustNotInclude: ALL_TODAY_SALES } },
   { id: "acc-02", category: "access", chat: "approved_group", question: "ดำวันนี้เงินขาดหรือเกิน", expect: { kind: "answer", mustInclude: ["เงินขาด 120.00"], tools: ["get_staff_settlement"] } },
   { id: "acc-03", category: "access", chat: "market_group", question: "วันนี้ทุกตลาดขายได้เท่าไหร่?", expect: { mustInclude: ["18,450.50"], mustNotInclude: ["9,320.00", "12,780.25", "40,550.75"], tools: ["get_daily_summary"] } },
-  { id: "acc-04", category: "access", chat: "unapproved_group", question: "วันนี้ทุกตลาดขายได้เท่าไหร่?", expect: { kind: "notice", mustInclude: ["ตอบในกลุ่มนี้ไม่ได้"], mustNotInclude: ALL_TODAY_SALES } },
-  { id: "acc-05", category: "access", chat: "dm_none", question: "วันนี้ขายได้เท่าไหร่", expect: { kind: "notice", mustInclude: ["ยังไม่ได้รับสิทธิ์"], mustNotInclude: ALL_TODAY_SALES } },
+  { id: "acc-04", category: "access", chat: "unapproved_group", question: "วันนี้ทุกตลาดขายได้เท่าไหร่?", expect: { kind: "notice", mustInclude: ["ยังไม่ได้รับอนุมัติ"], mustNotInclude: ALL_TODAY_SALES } },
+  { id: "acc-05", category: "access", chat: "direct_chat", question: "ดำวันนี้เงินขาดหรือเกิน", expect: { kind: "notice", mustInclude: ["ตอบเฉพาะในกลุ่ม"], mustNotInclude: ["120.00"] } },
   { id: "acc-06", category: "access", chat: "market_group", question: "ราชพฤกษ์ขายได้เท่าไหร่", expect: { mustNotInclude: ["12,780.25", "40,550.75"] } },
 ];

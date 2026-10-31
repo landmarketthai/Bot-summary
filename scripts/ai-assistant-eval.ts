@@ -13,7 +13,7 @@
  *   --max-usd <budget>                new cases stop once the estimated spend reaches it
  * Otherwise it writes a NOT RUN report and exits 2.
  *
- * A  deterministic backend rules (business date, follow-up, 1:1 staff authorization)
+ * A  deterministic backend rules (business date, follow-up, approved-group tool access)
  * B  answer-level grading of the final answer against authoritative fixture values;
  *    tool choice is reported as a diagnostic only. The scripted stand-in measures the
  *    harness, NOT GPT-6 Luna.
@@ -25,7 +25,6 @@ import { authorizeToolRequest, type AssistantScope } from "../src/lib/ai/assista
 import { isFollowUpQuestion, resolveJobBusinessDate } from "../src/lib/ai/assistant/core";
 import { ANSWER_EVAL_SET } from "../src/lib/ai/assistant/eval/answer-eval-set";
 import { runAnswerEval, type CaseResult, type EvalSummary } from "../src/lib/ai/assistant/eval/runner";
-import { FIXTURE_MARKETS } from "../src/lib/ai/assistant/testing/fixture-data";
 import { ScriptedThaiModel } from "../src/lib/ai/assistant/testing/scripted-provider";
 import { THAI_EVAL_ASKED_DATE, THAI_EVAL_SET } from "../src/lib/ai/assistant/testing/thai-eval-set";
 
@@ -48,9 +47,7 @@ function write(markdown: string, json: unknown) {
 const pct = (n: number, d: number) => `${n}/${d} (${d ? Math.round((n / d) * 1000) / 10 : 0}%)`;
 
 // ── A. deterministic rules ──────────────────────────────────────────────────
-const STAFF_DAM: AssistantScope = {
-  lineUserId: "Udam", role: "staff", staffLabel: "ดำ", markets: new Set([FIXTURE_MARKETS.RATCHAPHRUEK]), grantSource: "grant",
-};
+const GROUP_MEMBER: AssistantScope = { lineUserId: "Umember", markets: null };
 const sectionA = THAI_EVAL_SET.map((item) => {
   const turns = item.previous
     ? [{ question: item.previous, answer: "-", businessDate: resolveJobBusinessDate(item.previous, THAI_EVAL_ASKED_DATE, []), context: {}, eventTimestampMs: 1 }]
@@ -58,14 +55,10 @@ const sectionA = THAI_EVAL_SET.map((item) => {
   const request = item.expectedTool
     ? ({ tool: item.expectedTool, businessDate: item.expectedBusinessDate, staff: null, market: null, days: 2, ...item.expectedArgs } as unknown as ReadonlyAnalystToolRequest)
     : null;
-  const decision = request === null ? "no_tool" : (() => {
-    const result = authorizeToolRequest(STAFF_DAM, request);
-    return result.ok ? "allowed" : result.reason;
-  })();
   return {
     date: resolveJobBusinessDate(item.question, THAI_EVAL_ASKED_DATE, turns) === item.expectedBusinessDate,
     followUp: isFollowUpQuestion(item.question) === item.expectedFollowUp,
-    auth: decision === item.staffDecision,
+    auth: request === null || authorizeToolRequest(GROUP_MEMBER, request).ok,
   };
 });
 
@@ -78,7 +71,7 @@ const header = [
   "",
   `- Business date: ${pct(sectionA.filter((row) => row.date).length, sectionA.length)}`,
   `- Follow-up detection: ${pct(sectionA.filter((row) => row.followUp).length, sectionA.length)}`,
-  `- 1:1 staff authorization decision: ${pct(sectionA.filter((row) => row.auth).length, sectionA.length)}`,
+  `- Expected tool allowed for an approved group: ${pct(sectionA.filter((row) => row.auth).length, sectionA.length)}`,
   "",
 ];
 

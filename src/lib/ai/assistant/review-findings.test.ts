@@ -1,31 +1,25 @@
 /**
- * Regressions for the independent review of PR #191 (head 3c9a856):
- * P1-A staff leakage, P1-B group disclosure, P1-C stale scope/memory,
- * P1-D financial grounding. Each test reproduces the confirmed failure.
+ * Regressions for the independent review of PR #191 (head 3c9a856).
+ * P1-D financial grounding is unchanged. P1-A (staff leakage), P1-B (group
+ * disclosure) and P1-C (stale scope) are now covered by the V1 access model
+ * (approved groups only; no 1:1, no per-user grants, no private delivery):
+ * the tests below reproduce each original exposure path and show it closed.
  */
 import { describe, expect, test } from "bun:test";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
-import { BOT_SUMMARY_TEMPORARY_ERROR_REPLY } from "@/lib/ai/line-command";
 import type { AssistantModelProvider, ModelRoundRequest } from "@/lib/ai/model-provider";
-import type { AssistantScope, ScopeResolution } from "./authorization";
-import * as core from "./core";
-import type { AssistantCoreDeps } from "./core";
-
-const { answerAssistantJob } = core;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const revalidateAssistantJob = (core as any).revalidateAssistantJob as (
-  job: AssistantJob, deps: AssistantCoreDeps, scopeKey: string | null, deliverTo: "chat" | "private",
-) => Promise<"current" | "changed" | "transient">;
+import type { GroupPolicy } from "./authorization";
+import {
+  answerAssistantJob,
+  ASSISTANT_DIRECT_CHAT_REPLY,
+  ASSISTANT_GROUP_REFUSAL_REPLY,
+  type AssistantCoreDeps,
+} from "./core";
 import type { AssistantJob, AssistantJobRequest } from "./job-store";
 import { createFixtureDataReader, FIXTURE_MARKETS, FIXTURE_TODAY, type FixtureRead } from "./testing/fixture-data";
 import { MemoryAssistantJobStore } from "./testing/memory-job-store";
-import { RecordingLineDelivery } from "./testing/recording-line";
 import { ScriptedThaiModel } from "./testing/scripted-provider";
-import { runAssistantWorker } from "./worker";
-
-const supervisor: AssistantScope = { lineUserId: "Uboss", role: "supervisor", staffLabel: null, markets: null, grantSource: "env_supervisor" };
-const staffDam: AssistantScope = { lineUserId: "Udam", role: "staff", staffLabel: "ดำ", markets: new Set([FIXTURE_MARKETS.RATCHAPHRUEK]), grantSource: "grant" };
 
 /** A model that calls exactly one tool with the given args, then echoes `answer` (or the tool output). */
 function oneToolModel(tool: string, args: Record<string, unknown>, answer?: string): AssistantModelProvider & { requests: ModelRoundRequest[] } {
@@ -43,31 +37,22 @@ function oneToolModel(tool: string, args: Record<string, unknown>, answer?: stri
 
 interface HarnessOptions {
   provider?: AssistantModelProvider;
-  scopes?: Record<string, AssistantScope | null>;
-  policies?: Record<string, { allowFinancial: boolean; allowPersonSpecific: boolean; markets: Set<string> | null }>;
-  privateDeliveryEnabled?: boolean;
+  policies?: Record<string, GroupPolicy | undefined>;
 }
 
 let seq = 0;
 function harness(options: HarnessOptions = {}) {
   const store = new MemoryAssistantJobStore();
   const reads: FixtureRead[] = [];
-  const scopes: Record<string, AssistantScope | null> = options.scopes ?? { Uboss: supervisor, Udam: staffDam };
-  const policies = options.policies ?? { Cmanagement: { allowFinancial: true, allowPersonSpecific: true, markets: null } };
-  const deps = {
+  const policies: Record<string, GroupPolicy | undefined> = options.policies ?? { Cmanagement: { sourceId: "Cmanagement", markets: null } };
+  const deps: AssistantCoreDeps = {
     supabase: {} as SupabaseClient<Database>,
     store,
     provider: options.provider ?? new ScriptedThaiModel(),
-    resolveScope: async (id: string): Promise<ScopeResolution> =>
-      scopes[id] ? { ok: true, scope: scopes[id]! } : { ok: false, reason: "no_grant" },
-    resolveGroupPolicy: async (sourceId: string) => {
-      const policy = policies[sourceId];
-      return { ok: true as const, policy: policy ? { sourceId, ...policy } : null };
-    },
-    privateDeliveryEnabled: options.privateDeliveryEnabled ?? false,
+    resolveGroupPolicy: async (sourceId) => ({ ok: true, policy: policies[sourceId] ?? null }),
     sourceAllowed: () => true,
     readData: createFixtureDataReader(reads),
-  } as unknown as AssistantCoreDeps;
+  };
   const enqueue = async (question: string, overrides: Partial<AssistantJobRequest> = {}) => {
     seq += 1;
     return store.enqueue({
@@ -82,131 +67,58 @@ function harness(options: HarnessOptions = {}) {
     const [job] = await store.claim("w", { limit: 1, leaseSeconds: 60, maxRunning: 5 });
     const answer = await answerAssistantJob(job as AssistantJob, { deadlineAt: Date.now() + 10_000, signal: new AbortController().signal }, deps);
     await store.recordAnswer(job!.id, job!.lease_token!, {
-      answer: answer.text, kind: answer.kind ?? "answer", turn: answer.turn ?? null,
-      scopeKey: answer.scopeKey ?? null, deliveryTarget: answer.deliverTo ?? "chat",
-    } as never);
+      answer: answer.text, kind: answer.kind ?? "answer", turn: answer.turn ?? null, scopeKey: answer.scopeKey ?? null,
+    });
     await store.complete(job!.id, job!.lease_token!, "completed");
     return answer;
   };
-  return { store, reads, deps, scopes, ask, enqueue };
+  return { store, reads, deps, policies, ask, enqueue };
 }
 
-/** 1:1 chat with the asker's own grant. In an approved group every member shares the group scope instead. */
 const dm = (lineUserId: string) => ({ lineUserId, sourceType: "user" as const, sourceId: lineUserId });
 
-describe("P1-A (1:1 chats): staff never reach another employee's data through market-level or indirect tools", () => {
+describe("P1-A path (1:1 chats): no tool runs at all in V1", () => {
   for (const [tool, args] of [
     ["get_market_summary", { market: "ราชพฤกษ์" }],
     ["get_daily_summary", {}],
-    ["get_stock_summary", {}],
-    ["get_market_stock", { market: "ราชพฤกษ์" }],
-    ["compare_daily_sales", { days: 2 }],
-    ["get_white_sheet_status", { market: null }],
     ["get_settlement_overview", {}],
+    ["get_staff_produce", { staff: "ขวัญ" }],
+    ["get_pending_items", { staff: null, market: null }],
+    ["get_slip_status", { staff: null, market: null }],
   ] as const) {
-    test(`${tool} is refused for staff, even inside their own market`, async () => {
-      const h = harness({ provider: oneToolModel(tool, args) });
+    test(`${tool} in a 1:1 chat: refused before the model or any read`, async () => {
+      const model = oneToolModel(tool, args);
+      const h = harness({ provider: model });
       const answer = await h.ask("ราชพฤกษ์วันนี้เป็นยังไง", dm("Udam"));
+      expect(answer).toEqual({ text: ASSISTANT_DIRECT_CHAT_REPLY, kind: "notice" });
+      expect(model.requests).toHaveLength(0);
       expect(h.reads).toHaveLength(0);
-      expect(answer.text).not.toContain("confirmedSales");
     });
   }
-
-  test("an owner-capable tool with someone else's name or no name reads only the asker's rows", async () => {
-    for (const args of [{ staff: "ขวัญ", market: null }, { staff: null, market: null }]) {
-      const h = harness({ provider: oneToolModel("get_pending_items", args) });
-      await h.ask("มีอะไรค้างไหม", dm("Udam"));
-      for (const read of h.reads) {
-        expect((read.request as { staff?: string }).staff).toBe("ดำ");
-        expect((read.scope as { ownerStaff?: string }).ownerStaff).toBe("ดำ");
-      }
-    }
-  });
 });
 
-describe("P1-B: personal authorization never discloses to a whole LINE group", () => {
+describe("P1-B path: nothing is disclosed to a group that is not approved", () => {
   test("a group without a group policy gets a safe refusal and the model is not called", async () => {
     const model = new ScriptedThaiModel();
     const h = harness({ provider: model });
     const answer = await h.ask("วันนี้ทุกตลาดขายได้เท่าไหร่?", { sourceId: "Cworkers" });
-    expect(answer.kind).toBe("notice");
-    expect(answer.text).toContain("แชทส่วนตัว");
-    expect(answer.text).not.toContain("40,550.75");
+    expect(answer).toEqual({ text: ASSISTANT_GROUP_REFUSAL_REPLY, kind: "notice" });
     expect(model.requests).toHaveLength(0);
     expect(h.reads).toHaveLength(0);
   });
 
-  test("with private delivery enabled, the answer goes to the asker 1:1, not to the group", async () => {
-    const h = harness({ privateDeliveryEnabled: true });
-    const answer = await h.ask("วันนี้ทุกตลาดขายได้เท่าไหร่?", { sourceId: "Cworkers" });
-    expect(answer.deliverTo).toBe("private");
-    expect(answer.text).toContain("40,550.75");
-  });
-
-  test("mixed-permission group: the group policy caps markets and categories for everyone in it", async () => {
-    const policies = { Cmixed: { allowFinancial: true, allowPersonSpecific: false, markets: new Set([FIXTURE_MARKETS.PASEO]) } };
-    const sales = harness({ policies });
-    const total = await sales.ask("วันนี้ทุกตลาดขายได้เท่าไหร่?", { sourceId: "Cmixed" });
-    expect(sales.reads.at(-1)!.scope.markets).toEqual(new Set([FIXTURE_MARKETS.PASEO]));
-    expect(total.text).not.toContain(FIXTURE_MARKETS.WAT);
-    expect(total.deliverTo ?? "chat").toBe("chat");
-
-    const person = harness({ policies, provider: oneToolModel("get_staff_produce", { staff: "ขวัญ" }) });
-    await person.ask("พี่ขวัญเบิกอะไรไป", { sourceId: "Cmixed" });
-    expect(person.reads).toHaveLength(0);
-
-    const own = harness({ policies, provider: oneToolModel("get_staff_produce", { staff: "ดำ" }) });
-    await own.ask("ของผมเบิกอะไรไป", { sourceId: "Cmixed", lineUserId: "Udam" });
-    expect(own.reads).toHaveLength(0);
-  });
-
-  test("a 1:1 chat uses the asker's own scope", async () => {
-    const h = harness();
-    const answer = await h.ask("พี่ดำเบิกอะไรไป", { sourceType: "user", sourceId: "Udam", lineUserId: "Udam" });
-    expect(answer.text).toContain("มะม่วงน้ำดอกไม้ 30");
-    expect(answer.deliverTo ?? "chat").toBe("chat");
+  test("a market-limited approved group: its markets bind everyone who asks there", async () => {
+    const h = harness({ policies: { Cpaseo: { sourceId: "Cpaseo", markets: new Set([FIXTURE_MARKETS.PASEO]) } } });
+    for (const user of ["Uboss", "Udam", "Ustranger"]) {
+      const total = await h.ask("วันนี้ทุกตลาดขายได้เท่าไหร่?", { sourceId: "Cpaseo", lineUserId: user });
+      expect(h.reads.at(-1)!.scope.markets).toEqual(new Set([FIXTURE_MARKETS.PASEO]));
+      expect(total.text).not.toContain(FIXTURE_MARKETS.WAT);
+      expect(total.text).not.toContain("40,550.75");
+    }
   });
 });
 
-describe("P1-C: a downgraded or revoked user never sees memory or answers made under a broader scope", () => {
-  test("supervisor-to-staff downgrade: earlier supervisor turns are not given to the model", async () => {
-    const model = new ScriptedThaiModel();
-    const h = harness({ provider: model, scopes: { Ux: { ...supervisor, lineUserId: "Ux" } } });
-    await h.ask("ทำไมรายการของพี่ปลายังปิดไม่ได้?", { lineUserId: "Ux", sourceType: "user", sourceId: "Ux" });
-    h.scopes.Ux = { ...staffDam, lineUserId: "Ux" };
-    await h.ask("แล้วของพี่ขวัญล่ะ?", { lineUserId: "Ux", sourceType: "user", sourceId: "Ux" });
-    const last = model.requests.at(-1)!;
-    expect(JSON.stringify(last.transcript)).not.toContain("ปลา");
-    expect(last.transcript.filter((item) => item.kind === "message")).toHaveLength(1);
-  });
-
-  test("a stored answer is not delivered after the grant is revoked; the user gets a notice", async () => {
-    const h = harness();
-    const line = new RecordingLineDelivery();
-    const { jobId } = await h.enqueue("วันนี้ทุกตลาดขายได้เท่าไหร่?", dm("Uboss"));
-    h.store.failNext.setDelivery = new Error("crash after recording the answer");
-    const worker = () => runAssistantWorker({
-      store: h.store,
-      answer: (job: AssistantJob, context: { deadlineAt: number; signal: AbortSignal }) => answerAssistantJob(job, context, h.deps),
-      revalidate: (job: AssistantJob, scopeKey: string | null, deliverTo: "chat" | "private") =>
-        revalidateAssistantJob(job, h.deps, scopeKey, deliverTo),
-      delivery: line, pushFallbackEnabled: true, workerId: "w", budgetMs: 10_000, deliveryReserveMs: 2_000,
-      temporaryErrorText: BOT_SUMMARY_TEMPORARY_ERROR_REPLY,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      scopeChangedText: (core as any).ASSISTANT_SCOPE_CHANGED_REPLY,
-    } as never);
-    await worker();
-    expect(h.store.jobs.get(jobId!)!.answer_text).toContain("40,550.75");
-    delete h.scopes.Uboss;
-    h.store.expireLease(jobId!);
-    await worker();
-    expect(line.sent).toHaveLength(1);
-    expect(line.sent[0]!.text).not.toContain("40,550.75");
-    expect(line.sent[0]!.text).toContain("สิทธิ์");
-    expect(h.store.jobs.get(jobId!)!.answer_text).not.toContain("40,550.75");
-    expect(h.store.turns.filter((turn) => turn.jobId === jobId)).toHaveLength(0);
-  });
-});
+// P1-C path (revoked/narrowed approval, also after a crash): group-shared-scope.test.ts.
 
 describe("P1-D: financial figures are rendered from backend fields, never certified from model text", () => {
   test("a false amount from the user's question is not evidence", async () => {

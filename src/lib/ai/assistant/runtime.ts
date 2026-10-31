@@ -28,11 +28,6 @@ export function assistantRuntimeConfig() {
   return {
     /** Push costs LINE message quota; off unless explicitly enabled. */
     pushFallbackEnabled: process.env.BOT_SUMMARY_ASSISTANT_PUSH_FALLBACK_ENABLED === "true",
-    /**
-     * A group question without a group policy is answered 1:1 by push to the
-     * asker (they must have added the bot as a friend). Off = refused in the group.
-     */
-    privateDeliveryEnabled: process.env.BOT_SUMMARY_ASSISTANT_PRIVATE_DELIVERY_ENABLED === "true",
     concurrency: intFromEnv("BOT_SUMMARY_ASSISTANT_WORKER_CONCURRENCY", ASSISTANT_WORKER_DEFAULTS.concurrency, 1, 8),
     maxRunning: intFromEnv("BOT_SUMMARY_ASSISTANT_MAX_RUNNING", ASSISTANT_WORKER_DEFAULTS.maxRunning, 1, 20),
     leaseSeconds: intFromEnv("BOT_SUMMARY_ASSISTANT_LEASE_SECONDS", ASSISTANT_WORKER_DEFAULTS.leaseSeconds, 60, 900),
@@ -54,7 +49,6 @@ function productionDeps(store: AssistantJobStore, deadlineMs: number): Assistant
     }),
     store,
     provider: createAssistantModelProvider(),
-    privateDeliveryEnabled: config.privateDeliveryEnabled,
   };
 }
 
@@ -79,8 +73,8 @@ export async function runAssistantWorkerOnce(options: {
   return runAssistantWorker({
     store,
     answer: createProductionAnswerer(store),
-    revalidate: (job, scopeKey, deliverTo) =>
-      revalidateAssistantJob(job, productionDeps(store, Math.min(deadlineMs, Date.now() + 10_000)), scopeKey, deliverTo),
+    revalidate: (job, scopeKey) =>
+      revalidateAssistantJob(job, productionDeps(store, Math.min(deadlineMs, Date.now() + 10_000)), scopeKey),
     scopeChangedText: ASSISTANT_SCOPE_CHANGED_REPLY,
     delivery: options.delivery ?? lineMessagingDelivery,
     pushFallbackEnabled: config.pushFallbackEnabled,

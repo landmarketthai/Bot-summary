@@ -4,10 +4,11 @@ import type { Database } from "@/types/database";
 import { OpenAIAnalystError } from "@/lib/ai/openai-analyst";
 import type { AssistantModelProvider, ModelRoundRequest } from "@/lib/ai/model-provider";
 import { resolveAnalystBusinessDate } from "@/lib/ai/readonly-analyst";
-import { authorizeToolRequest, type AssistantScope, type ScopeResolution } from "./authorization";
+import { authorizeToolRequest, resolveGroupPolicy, type AssistantScope } from "./authorization";
 import {
   answerAssistantJob,
-  ASSISTANT_NO_PERMISSION_REPLY,
+  ASSISTANT_DIRECT_CHAT_REPLY,
+  ASSISTANT_GROUP_REFUSAL_REPLY,
   ASSISTANT_UNGROUNDED_REPLY,
   isFollowUpQuestion,
   resolveJobBusinessDate,
@@ -18,18 +19,10 @@ import { createFixtureDataReader, FIXTURE_MARKETS, FIXTURE_TODAY, FIXTURE_YESTER
 import { MemoryAssistantJobStore } from "./testing/memory-job-store";
 import { ScriptedThaiModel } from "./testing/scripted-provider";
 
-const SCOPES: Record<string, AssistantScope> = {
-  Uboss: { lineUserId: "Uboss", role: "supervisor", staffLabel: null, markets: null, grantSource: "env_supervisor" },
-  Udam: { lineUserId: "Udam", role: "staff", staffLabel: "ดำ", markets: new Set([FIXTURE_MARKETS.RATCHAPHRUEK]), grantSource: "grant" },
-  Ulek: { lineUserId: "Ulek", role: "staff", staffLabel: "เล็ก", markets: new Set([FIXTURE_MARKETS.PASEO]), grantSource: "grant" },
-  Upaseo: { lineUserId: "Upaseo", role: "supervisor", staffLabel: null, markets: new Set([FIXTURE_MARKETS.PASEO]), grantSource: "grant" },
-};
-
-const resolveScope = async (lineUserId: string): Promise<ScopeResolution> =>
-  SCOPES[lineUserId] ? { ok: true, scope: SCOPES[lineUserId] } : { ok: false, reason: "no_grant" };
-
-/** A 1:1 chat: the asker's own grant applies (approved groups use the group scope instead). */
+/** A 1:1 chat (not supported in V1). */
 const dm = (lineUserId: string) => ({ lineUserId, sourceType: "user" as const, sourceId: lineUserId });
+/** The approved group limited to พาซิโอ้ผัก. */
+const paseoGroup = { sourceId: "Cpaseo" };
 
 let seq = 0;
 function harness(provider: AssistantModelProvider = new ScriptedThaiModel()) {
@@ -39,14 +32,14 @@ function harness(provider: AssistantModelProvider = new ScriptedThaiModel()) {
     supabase: {} as SupabaseClient<Database>,
     store,
     provider,
-    resolveScope,
     sourceAllowed: () => true,
-    // Every group in this suite is a management group with a full group policy;
-    // group default-deny and mixed policies are covered in review-findings.test.ts.
+    // Cpaseo: approved for พาซิโอ้ผัก only. Cunapproved: no policy. Any other group: approved, all markets.
     resolveGroupPolicy: async (sourceId: string) => ({
       ok: true as const,
-      policy: { sourceId, allowFinancial: true, allowPersonSpecific: true, markets: null },
-    }),
+      policy: sourceId === "Cunapproved"
+        ? null
+        : { sourceId, markets: sourceId === "Cpaseo" ? new Set([FIXTURE_MARKETS.PASEO]) : null },
+    }) as Awaited<ReturnType<typeof resolveGroupPolicy>>,
     readData: createFixtureDataReader(reads),
   };
   /** Enqueue + claim + answer + record, like the worker, and return the answer. */
@@ -62,7 +55,7 @@ function harness(provider: AssistantModelProvider = new ScriptedThaiModel()) {
     const answer = await answerAssistantJob(job as AssistantJob, { deadlineAt: Date.now() + 10_000, signal: new AbortController().signal }, deps);
     await store.recordAnswer(job!.id, job!.lease_token!, {
       answer: answer.text, kind: answer.kind ?? "answer", turn: answer.turn ?? null, usage: answer.usage ?? null,
-      scopeKey: answer.scopeKey ?? null, deliveryTarget: answer.deliverTo ?? "chat",
+      scopeKey: answer.scopeKey ?? null,
     });
     await store.complete(job!.id, job!.lease_token!, "completed");
     return answer;
@@ -154,126 +147,89 @@ describe("conversation memory isolation", () => {
   });
 });
 
-describe("per-user and per-market authorization in 1:1 chats (server-side)", () => {
-  test("a staff member cannot read another staff member's documents; nothing is queried for them", async () => {
-    const h = harness();
-    const answer = await h.ask("พี่ขวัญเบิกอะไรไป", dm("Udam"));
-    expect(answer.text).toContain("ไม่มีสิทธิ์");
-    expect(h.reads.some((read) => "staff" in read.request && read.request.staff === "ขวัญ")).toBe(false);
-    expect((answer.usage as { deniedToolCalls: string[] }).deniedToolCalls).toEqual(["get_staff_produce:other_staff"]);
-  });
-
-  test("a staff member's own question is pinned to their trusted label and markets", async () => {
-    const h = harness();
-    const answer = await h.ask("พี่ดำเบิกอะไรไป", dm("Udam"));
-    expect(answer.toolNames).toEqual(["get_staff_produce"]);
-    expect(h.reads.at(-1)!.scope.markets).toEqual(new Set([FIXTURE_MARKETS.RATCHAPHRUEK]));
-    expect(answer.text).toContain("มะม่วงน้ำดอกไม้ 30");
-  });
-
-  test("a staff member's unfiltered pending/slip question only ever reads their own rows", async () => {
-    const h = harness();
-    await h.ask("วันนี้มีอะไรค้างบ้าง", dm("Udam"));
-    expect(h.reads.at(-1)!.request).toMatchObject({ tool: "get_pending_items", staff: "ดำ" });
-    await h.ask("มีสลิปรอตรวจไหม", dm("Ulek"));
-    expect(h.reads.at(-1)!.request).toMatchObject({ tool: "get_slip_status", staff: "เล็ก" });
-  });
-
-  test("settlement tools are not offered to staff, and a model that calls one anyway is refused", async () => {
-    const offered = harness();
-    await offered.ask("ดำวันนี้เงินขาดหรือเกิน", dm("Udam"));
-    const tools = (offered.provider as ScriptedThaiModel).requests[0]!.tools.map((tool) => tool.name);
-    expect(tools).not.toContain("get_staff_settlement");
-    expect(tools).not.toContain("get_settlement_overview");
-    expect(offered.reads).toHaveLength(0);
-
-    const rogue: AssistantModelProvider = {
-      name: "rogue", model: "rogue",
-      async respond(request) {
-        const done = request.transcript.some((item) => item.kind === "tool_result");
-        return done
-          ? { text: "ok", toolCalls: [], model: "rogue" }
-          : { text: "", toolCalls: [{ callId: "c1", name: "get_staff_settlement", arguments: JSON.stringify({ staff: "ดำ" }) }], model: "rogue" };
-      },
-    };
-    const h = harness(rogue);
-    await h.ask("ดำวันนี้เงินขาดหรือเกิน", dm("Udam"));
+describe("V1 access: approved groups only (server-side)", () => {
+  test("a 1:1 chat gets a notice; the model is never called and nothing is read", async () => {
+    const model = new ScriptedThaiModel();
+    const h = harness(model);
+    for (const user of ["Udam", "Uboss", "Ustranger"]) {
+      expect(await h.ask("วันนี้ทุกตลาดขายได้เท่าไหร่?", dm(user))).toEqual({ text: ASSISTANT_DIRECT_CHAT_REPLY, kind: "notice" });
+    }
+    expect(model.requests).toHaveLength(0);
     expect(h.reads).toHaveLength(0);
   });
 
-  test("a market outside a market supervisor's grant is refused before any read", async () => {
-    const rogue: AssistantModelProvider = {
+  test("a group without an approving policy gets a notice; the model is never called", async () => {
+    const model = new ScriptedThaiModel();
+    const h = harness(model);
+    expect(await h.ask("วันนี้ทุกตลาดขายได้เท่าไหร่?", { sourceId: "Cunapproved" }))
+      .toEqual({ text: ASSISTANT_GROUP_REFUSAL_REPLY, kind: "notice" });
+    expect(model.requests).toHaveLength(0);
+  });
+
+  test("any member of an approved group may read any staff member's documents", async () => {
+    const h = harness();
+    const answer = await h.ask("พี่ขวัญเบิกอะไรไป", { lineUserId: "Udam" });
+    expect(h.reads.at(-1)!.request).toMatchObject({ tool: "get_staff_produce", staff: "ขวัญ" });
+    expect(answer.text).toContain("ผักกาดขาว 15");
+  });
+
+  test("a market outside a market-limited group is refused before any read", async () => {
+    const rogue = (market: string): AssistantModelProvider => ({
       name: "rogue", model: "rogue",
       async respond(request) {
         const result = request.transcript.find((item) => item.kind === "tool_result") as { output: string } | undefined;
         return result
           ? { text: result.output, toolCalls: [], model: "rogue" }
-          : { text: "", toolCalls: [{ callId: "c1", name: "get_market_stock", arguments: JSON.stringify({ market: "พาซิโอ้ผัก" }) }], model: "rogue" };
+          : { text: "", toolCalls: [{ callId: "c1", name: "get_market_stock", arguments: JSON.stringify({ market }) }], model: "rogue" };
       },
-    };
-    const h = harness(rogue);
-    const supervisorAnswer = await h.ask("พาซิโอ้ผักเหลือของเท่าไหร่", dm("Upaseo"));
-    expect(h.reads).toHaveLength(1); // its own market is fine
-    const rogueRatcha: AssistantModelProvider = {
-      ...rogue,
-      async respond(request) {
-        const result = request.transcript.find((item) => item.kind === "tool_result") as { output: string } | undefined;
-        return result
-          ? { text: result.output, toolCalls: [], model: "rogue" }
-          : { text: "", toolCalls: [{ callId: "c1", name: "get_market_stock", arguments: JSON.stringify({ market: "ราชพฤกษ์" }) }], model: "rogue" };
-      },
-    };
-    const other = harness(rogueRatcha);
-    const answer = await other.ask("ราชพฤกษ์เหลือของเท่าไหร่", dm("Upaseo"));
+    });
+    const own = harness(rogue("พาซิโอ้ผัก"));
+    expect((await own.ask("พาซิโอ้ผักเหลือของเท่าไหร่", paseoGroup)).kind).toBe("answer");
+    expect(own.reads).toHaveLength(1);
+    const other = harness(rogue("ราชพฤกษ์"));
+    const answer = await other.ask("ราชพฤกษ์เหลือของเท่าไหร่", paseoGroup);
     expect(other.reads).toHaveLength(0);
     expect(answer.text).toContain("market_not_permitted");
-    expect(supervisorAnswer.kind).toBe("answer");
-    // Staff cannot use a market-level tool at all, even for their own market.
-    const staff = harness(rogue);
-    const staffAnswer = await staff.ask("พาซิโอ้ผักเหลือของเท่าไหร่", dm("Ulek"));
-    expect(staff.reads).toHaveLength(0);
-    expect(staffAnswer.text).toMatch(/tool_not_permitted|Unsupported analyst tool/u);
   });
 
-  test("market-scoped requesters see only their markets, totals come from the scoped source", async () => {
+  test("a market-limited group sees only its markets; totals come from the scoped source", async () => {
     const h = harness();
-    const answer = await h.ask("วันนี้ทุกตลาดขายได้เท่าไหร่?", dm("Upaseo"));
+    const answer = await h.ask("วันนี้ทุกตลาดขายได้เท่าไหร่?", paseoGroup);
     expect(h.reads.at(-1)!.scope.markets).toEqual(new Set([FIXTURE_MARKETS.PASEO]));
     expect(answer.text).toContain(FIXTURE_MARKETS.PASEO);
     expect(answer.text).not.toContain(FIXTURE_MARKETS.WAT);
     expect(answer.text).not.toContain("40,550.75");
   });
 
-  test("no grant: a notice, and the model is never called", async () => {
-    const model = new ScriptedThaiModel();
-    const h = harness(model);
-    const answer = await h.ask("วันนี้ทุกตลาดขายได้เท่าไหร่?", dm("Ustranger"));
-    expect(answer).toEqual({ text: ASSISTANT_NO_PERMISSION_REPLY, kind: "notice" });
-    expect(model.requests).toHaveLength(0);
+  test("a failed policy lookup is a retryable error, never 'not approved'", async () => {
+    const h = harness();
+    h.deps.resolveGroupPolicy = async () => ({ ok: false });
+    await expect(h.ask("วันนี้ขายได้เท่าไหร่")).rejects.toThrow("policy_lookup");
   });
 
-  test("a failed grant lookup is a retryable error, never 'no access'", async () => {
-    const h = harness();
-    h.deps.resolveScope = async () => ({ ok: false, reason: "grant_lookup_failed" });
-    await expect(h.ask("วันนี้ขายได้เท่าไหร่", dm("Uboss"))).rejects.toThrow("grant_lookup");
+  test("a policy row that withholds a category is not an approval in V1 (fail closed)", async () => {
+    const row = { source_id: "C1", allow_financial: true, allow_person_specific: true, all_markets: true, market_labels: [] as string[] };
+    const client = (data: unknown) => ({ rpc: async () => ({ data, error: null }) }) as unknown as SupabaseClient<Database>;
+    expect(await resolveGroupPolicy(client([row]), "C1")).toEqual({ ok: true, policy: { sourceId: "C1", markets: null } });
+    expect(await resolveGroupPolicy(client([{ ...row, allow_financial: false }]), "C1")).toEqual({ ok: true, policy: null });
+    expect(await resolveGroupPolicy(client([{ ...row, allow_person_specific: false }]), "C1")).toEqual({ ok: true, policy: null });
+    expect(await resolveGroupPolicy(client([{ ...row, all_markets: false, market_labels: [] }]), "C1")).toEqual({ ok: true, policy: null });
+    expect(await resolveGroupPolicy(client([]), "C1")).toEqual({ ok: true, policy: null });
+    const failing = { rpc: async () => ({ data: null, error: { code: "57014" } }) } as unknown as SupabaseClient<Database>;
+    expect(await resolveGroupPolicy(failing, "C1")).toEqual({ ok: false });
   });
 
   test("authorizeToolRequest decisions", () => {
-    const dam = SCOPES.Udam!;
-    expect(authorizeToolRequest(dam, { tool: "get_staff_produce", businessDate: FIXTURE_TODAY, staff: "พี่ดำ" }))
-      .toEqual({ ok: true, request: { tool: "get_staff_produce", businessDate: FIXTURE_TODAY, staff: "ดำ" } });
-    expect(authorizeToolRequest(dam, { tool: "get_staff_produce", businessDate: FIXTURE_TODAY, staff: "ผม" }).ok).toBe(true);
-    expect(authorizeToolRequest(dam, { tool: "get_staff_produce", businessDate: FIXTURE_TODAY, staff: "ขวัญ" }))
-      .toEqual({ ok: false, reason: "other_staff" });
-    expect(authorizeToolRequest(dam, { tool: "get_settlement_overview", businessDate: FIXTURE_TODAY }))
-      .toEqual({ ok: false, reason: "tool_not_permitted" });
-    for (const tool of ["get_market_summary", "get_daily_summary", "get_stock_summary", "get_market_stock", "compare_daily_sales", "get_white_sheet_status"] as const) {
-      expect(authorizeToolRequest(dam, { tool, businessDate: FIXTURE_TODAY, market: "ราชพฤกษ์", days: 2 } as never))
-        .toEqual({ ok: false, reason: "tool_not_permitted" });
-    }
-    expect(authorizeToolRequest(SCOPES.Upaseo!, { tool: "get_market_summary", businessDate: FIXTURE_TODAY, market: "วัดตะกล่ำ" }))
+    const all: AssistantScope = { lineUserId: "Umember", markets: null };
+    const paseo: AssistantScope = { lineUserId: "Umember", markets: new Set([FIXTURE_MARKETS.PASEO]) };
+    const staffRequest = { tool: "get_staff_produce", businessDate: FIXTURE_TODAY, staff: "ขวัญ" } as const;
+    expect(authorizeToolRequest(all, staffRequest)).toEqual({ ok: true, request: staffRequest });
+    expect(authorizeToolRequest(all, { tool: "get_settlement_overview", businessDate: FIXTURE_TODAY }).ok).toBe(true);
+    expect(authorizeToolRequest(paseo, { tool: "get_market_summary", businessDate: FIXTURE_TODAY, market: "วัดตะกล่ำ" }))
       .toEqual({ ok: false, reason: "market_not_permitted" });
-    expect(authorizeToolRequest(SCOPES.Upaseo!, { tool: "get_staff_settlement", businessDate: FIXTURE_TODAY, staff: "ขวัญ" }).ok).toBe(true);
+    expect(authorizeToolRequest(paseo, { tool: "get_staff_settlement", businessDate: FIXTURE_TODAY, staff: "ขวัญ" }).ok).toBe(true);
+    expect(authorizeToolRequest(all, { tool: "drop_table", businessDate: FIXTURE_TODAY } as never))
+      .toEqual({ ok: false, reason: "tool_not_permitted" });
   });
 });
 

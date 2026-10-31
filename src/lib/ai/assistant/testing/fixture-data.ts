@@ -1,8 +1,8 @@
 /**
  * Test/eval-only business data shaped like the compact read-only tool
  * outputs (readonly-tools.ts + compactToolOutput). It honours the data scope
- * exactly like the real tools — market filter at the source, the owner pin
- * via enforceOwnerScope, staff matched by normalized name — and records every
+ * exactly like the real tools — market filter at the source, staff matched
+ * by normalized name — and records every
  * read, so tests can prove what a question never reached.
  *
  * These are the AUTHORITATIVE values the answer-level evaluation grades
@@ -10,7 +10,6 @@
  */
 import { canonicalMarketLabel } from "@/lib/market";
 import {
-  enforceOwnerScope,
   marketInScope,
   normalizeStaffName,
   type ReadonlyAnalystToolRequest,
@@ -169,9 +168,7 @@ function salesRowsFor(day: Day | null, scope: ToolDataScope) {
 export function createFixtureDataReader(reads: FixtureRead[] = [], options: { today?: string } = {}): ScopedDataReader {
   const today = options.today ?? FIXTURE_TODAY;
   const shift = (date: string) => date === today ? FIXTURE_TODAY : date === previousDay(today) ? FIXTURE_YESTERDAY : date;
-  return async (requested, scope) => {
-    // The same owner pin the real tools apply (readonly-tools enforceOwnerScope).
-    const request = enforceOwnerScope(requested, scope);
+  return async (request, scope) => {
     reads.push({ request, scope });
     const shifted = shift(request.businessDate);
     const day = isDay(shifted) ? shifted : null;

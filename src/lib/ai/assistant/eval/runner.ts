@@ -11,7 +11,7 @@ import type { Database } from "@/types/database";
 import { estimateAnalystCostUsd } from "@/lib/ai/openai-analyst";
 import type { AssistantModelProvider } from "@/lib/ai/model-provider";
 import { withTimeout } from "@/lib/slips/io-timeout";
-import type { AssistantScope, GroupPolicy, ScopeResolution } from "../authorization";
+import type { GroupPolicy } from "../authorization";
 import { answerAssistantJob, type AssistantCoreDeps } from "../core";
 import { classifyAssistantError } from "../errors";
 import { createFixtureDataReader, FIXTURE_MARKETS, FIXTURE_MONEY_SATANG, FIXTURE_TODAY, type FixtureRead } from "../testing/fixture-data";
@@ -63,15 +63,12 @@ export interface EvalSummary {
 
 const EVAL_DESTINATION = "Ueval-bot";
 const GROUPS: Record<"approved_group" | "market_group" | "unapproved_group", { sourceId: string; policy: GroupPolicy | null }> = {
-  approved_group: { sourceId: "Ceval-approved", policy: { sourceId: "Ceval-approved", allowFinancial: true, allowPersonSpecific: true, markets: null } },
-  market_group: { sourceId: "Ceval-paseo", policy: { sourceId: "Ceval-paseo", allowFinancial: true, allowPersonSpecific: true, markets: new Set([FIXTURE_MARKETS.PASEO]) } },
+  approved_group: { sourceId: "Ceval-approved", policy: { sourceId: "Ceval-approved", markets: null } },
+  market_group: { sourceId: "Ceval-paseo", policy: { sourceId: "Ceval-paseo", markets: new Set([FIXTURE_MARKETS.PASEO]) } },
   unapproved_group: { sourceId: "Ceval-unapproved", policy: null },
 };
-const STAFF_DAM: AssistantScope = { lineUserId: "Ueval-dam", role: "staff", staffLabel: "ดำ", markets: new Set([FIXTURE_MARKETS.RATCHAPHRUEK]), grantSource: "grant" };
-
 function chatSource(chat: EvalChat): { sourceType: "user" | "group"; sourceId: string; lineUserId: string } {
-  if (chat === "dm_staff") return { sourceType: "user", sourceId: STAFF_DAM.lineUserId, lineUserId: STAFF_DAM.lineUserId };
-  if (chat === "dm_none") return { sourceType: "user", sourceId: "Ueval-none", lineUserId: "Ueval-none" };
+  if (chat === "direct_chat") return { sourceType: "user", sourceId: "Ueval-member", lineUserId: "Ueval-member" };
   return { sourceType: "group", sourceId: GROUPS[chat].sourceId, lineUserId: "Ueval-member" };
 }
 
@@ -116,8 +113,6 @@ export async function runAnswerEval(options: {
       store,
       provider: options.provider,
       sourceAllowed: () => true,
-      resolveScope: async (id): Promise<ScopeResolution> =>
-        id === STAFF_DAM.lineUserId ? { ok: true, scope: STAFF_DAM } : { ok: false, reason: "no_grant" },
       resolveGroupPolicy: async (sourceId) => ({
         ok: true,
         policy: Object.values(GROUPS).find((group) => group.sourceId === sourceId)?.policy ?? null,
@@ -149,7 +144,7 @@ export async function runAnswerEval(options: {
       addUsage(answer.usage);
       await store.recordAnswer(job!.id, job!.lease_token!, {
         answer: answer.text, kind: answer.kind ?? "answer", turn: answer.turn ?? null,
-        scopeKey: answer.scopeKey ?? null, deliveryTarget: answer.deliverTo ?? "chat",
+        scopeKey: answer.scopeKey ?? null,
       });
       await store.complete(job!.id, job!.lease_token!, "completed");
       return answer;

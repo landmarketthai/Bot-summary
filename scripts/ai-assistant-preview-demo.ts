@@ -22,20 +22,19 @@ import { OpenAIAnalystError } from "../src/lib/ai/openai-analyst";
 import type { LineMessageEvent } from "../src/lib/line/types";
 import { WebhookService } from "../src/lib/line/webhook-service";
 import { FakeDatabase } from "../src/lib/summary/test-fake-supabase";
-import type { AssistantScope, ScopeResolution } from "../src/lib/ai/assistant/authorization";
 import { answerAssistantJob, revalidateAssistantJob, type AssistantCoreDeps } from "../src/lib/ai/assistant/core";
 import { createAssistantDispatcher } from "../src/lib/ai/assistant/dispatch";
 import { SupabaseAssistantJobStore, type AssistantJob, type AssistantJobStore } from "../src/lib/ai/assistant/job-store";
-import { createFixtureDataReader, FIXTURE_MARKETS } from "../src/lib/ai/assistant/testing/fixture-data";
+import { createFixtureDataReader } from "../src/lib/ai/assistant/testing/fixture-data";
 import { MemoryAssistantJobStore } from "../src/lib/ai/assistant/testing/memory-job-store";
 import { assistantRpcClient, createAssistantTestDb } from "../src/lib/ai/assistant/testing/pg-assistant-db";
 import { RecordingLineDelivery } from "../src/lib/ai/assistant/testing/recording-line";
 import { ScriptedThaiModel } from "../src/lib/ai/assistant/testing/scripted-provider";
 import { runAssistantWorker } from "../src/lib/ai/assistant/worker";
 
-const USERS: Record<string, { name: string; scope: AssistantScope }> = {
-  Uboss: { name: "หัวหน้า (supervisor, ทุกตลาด)", scope: { lineUserId: "Uboss", role: "supervisor", staffLabel: null, markets: null, grantSource: "env_supervisor" } },
-  Udam: { name: "ดำ (staff, ราชพฤกษ์)", scope: { lineUserId: "Udam", role: "staff", staffLabel: "ดำ", markets: new Set([FIXTURE_MARKETS.RATCHAPHRUEK]), grantSource: "grant" } },
+const USERS: Record<string, { name: string }> = {
+  Uboss: { name: "หัวหน้า" },
+  Udam: { name: "ดำ (พนักงานขาย)" },
 };
 
 const db = await createAssistantTestDb();
@@ -77,18 +76,15 @@ async function say(
   log(`  ↳ webhook ${result?.status} in ${Date.now() - started} ms${options.redelivery ? " (LINE redelivery of the same webhookEventId)" : ""}`);
 }
 
-let privateDeliveryEnabled = false;
 const deps = (): AssistantCoreDeps => ({
   supabase: {} as SupabaseClient<Database>,
   store,
   provider: model,
-  resolveScope: async (id): Promise<ScopeResolution> => USERS[id] ? { ok: true, scope: USERS[id]!.scope } : { ok: false, reason: "no_grant" },
-  // Cmanagement: supervisors' group with an explicit full group policy. Cworkers: no policy.
+  // Cmanagement: the approved group (approving policy). Cworkers: allowlisted, no policy.
   resolveGroupPolicy: async (sourceId) => ({
     ok: true,
-    policy: sourceId === "Cmanagement" ? { sourceId, allowFinancial: true, allowPersonSpecific: true, markets: null } : null,
+    policy: sourceId === "Cmanagement" ? { sourceId, markets: null } : null,
   }),
-  privateDeliveryEnabled,
   sourceAllowed: () => true,
   readData: createFixtureDataReader([], { today }),
 });
@@ -98,7 +94,7 @@ async function work(label = "worker") {
   const summary = await runAssistantWorker({
     store,
     answer: (job: AssistantJob, context) => answerAssistantJob(job, context, deps()),
-    revalidate: (job, scopeKey, deliverTo) => revalidateAssistantJob(job, deps(), scopeKey, deliverTo),
+    revalidate: (job, scopeKey) => revalidateAssistantJob(job, deps(), scopeKey),
     delivery: line,
     pushFallbackEnabled: true,
     workerId: `demo-${label}`,
@@ -161,7 +157,7 @@ await say("Uboss", "ใบขาววันนี้ปิดครบทุก
 await work();
 log();
 
-log("## 5. Approved group: every member shares the group scope (no per-user grant)");
+log("## 5. Approved group: every member shares the group scope");
 log();
 await say("Udam", "พี่ขวัญเบิกอะไรไป");
 await work();
@@ -169,27 +165,18 @@ await say("Ustranger", "ใครเงินขาดบ้างวันน�
 await work();
 log();
 
-log("## 6. Permission boundaries in 1:1 chats (staff ดำ, no grant)");
+log("## 6. 1:1 chats are not supported in V1");
 log();
 await say("Udam", "พี่ดำเบิกอะไรไป", { chat: "dm" });
-await work();
-await say("Udam", "พี่ขวัญเบิกอะไรไป", { chat: "dm" });
-await work();
-await say("Udam", "ดำวันนี้เงินขาดหรือเกิน", { chat: "dm" });
 await work();
 await say("Ustranger", "วันนี้ทุกตลาดขายได้เท่าไหร่?", { chat: "dm" });
 await work();
 log();
 
-log("## 7. Group disclosure: an allowlisted group without a group policy");
+log("## 7. An allowlisted group without an approving policy");
 log();
 await say("Uboss", "วันนี้ทุกตลาดขายได้เท่าไหร่?", { chat: "Cworkers" });
 await work();
-log("  ↳ (private delivery enabled: BOT_SUMMARY_ASSISTANT_PRIVATE_DELIVERY_ENABLED=true)");
-privateDeliveryEnabled = true;
-await say("Uboss", "วันนี้ทุกตลาดขายได้เท่าไหร่?", { chat: "Cworkers" });
-await work();
-privateDeliveryEnabled = false;
 log();
 
 log(`Total messages a LINE user would see: ${line.sent.length} (attempts incl. de-duplicated: ${line.attempts.length}).`);

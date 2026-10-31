@@ -1,17 +1,18 @@
 /**
  * Owner decision (2026-10-31): every member of an explicitly approved LINE
  * group can ask any supported business question and see the answer there.
- * All members share the GROUP's scope; a member's personal grant is never
- * the authorization for a group. 1:1 memory and conversation stay per user.
+ * All members share the GROUP's scope (V1 has no per-user grants and no 1:1
+ * Q&A). Conversation memory stays per member.
  */
 import { describe, expect, test } from "bun:test";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 import { BOT_SUMMARY_TEMPORARY_ERROR_REPLY } from "@/lib/ai/line-command";
 import type { AssistantModelProvider, ModelRoundRequest } from "@/lib/ai/model-provider";
-import type { AssistantScope, GroupPolicy, ScopeResolution } from "./authorization";
+import type { GroupPolicy } from "./authorization";
 import {
   answerAssistantJob,
+  ASSISTANT_DIRECT_CHAT_REPLY,
   ASSISTANT_GROUP_REFUSAL_REPLY,
   ASSISTANT_SCOPE_CHANGED_REPLY,
   revalidateAssistantJob,
@@ -24,9 +25,7 @@ import { RecordingLineDelivery } from "./testing/recording-line";
 import { ScriptedThaiModel } from "./testing/scripted-provider";
 import { runAssistantWorker } from "./worker";
 
-const supervisor: AssistantScope = { lineUserId: "Uboss", role: "supervisor", staffLabel: null, markets: null, grantSource: "env_supervisor" };
-const staffDam: AssistantScope = { lineUserId: "Udam", role: "staff", staffLabel: "ดำ", markets: new Set([FIXTURE_MARKETS.RATCHAPHRUEK]), grantSource: "grant" };
-const full = (sourceId: string): GroupPolicy => ({ sourceId, allowFinancial: true, allowPersonSpecific: true, markets: null });
+const full = (sourceId: string): GroupPolicy => ({ sourceId, markets: null });
 
 function oneTool(tool: string, args: Record<string, unknown>): AssistantModelProvider & { requests: ModelRoundRequest[] } {
   const requests: ModelRoundRequest[] = [];
@@ -50,18 +49,12 @@ function harness(options: {
 } = {}) {
   const store = new MemoryAssistantJobStore();
   const reads: FixtureRead[] = [];
-  const grants: Record<string, AssistantScope | undefined> = { Uboss: supervisor, Udam: staffDam };
   const policies: Record<string, GroupPolicy | undefined> = options.policies ?? { Capproved: full("Capproved") };
-  let grantLookups = 0;
   const allowlist = options.allowlist ?? ["Capproved", "Cmarket", "Cunapproved", "Uboss", "Udam"];
   const deps: AssistantCoreDeps = {
     supabase: {} as SupabaseClient<Database>,
     store,
     provider: options.provider ?? new ScriptedThaiModel(),
-    resolveScope: async (id): Promise<ScopeResolution> => {
-      grantLookups += 1;
-      return grants[id] ? { ok: true, scope: grants[id]! } : { ok: false, reason: "no_grant" };
-    },
     resolveGroupPolicy: async (sourceId) => ({ ok: true, policy: policies[sourceId] ?? null }),
     sourceAllowed: (sourceId) => allowlist.includes(sourceId),
     readData: createFixtureDataReader(reads),
@@ -81,17 +74,17 @@ function harness(options: {
     const answer = await answerAssistantJob(job as AssistantJob, { deadlineAt: Date.now() + 10_000, signal: new AbortController().signal }, deps);
     await store.recordAnswer(job!.id, job!.lease_token!, {
       answer: answer.text, kind: answer.kind ?? "answer", turn: answer.turn ?? null,
-      scopeKey: answer.scopeKey ?? null, deliveryTarget: answer.deliverTo ?? "chat",
+      scopeKey: answer.scopeKey ?? null,
     });
     await store.complete(job!.id, job!.lease_token!, "completed");
     return answer;
   };
-  return { store, reads, deps, grants, policies, ask, enqueue, grantLookups: () => grantLookups };
+  return { store, reads, deps, policies, ask, enqueue };
 }
 
 describe("approved group: every member shares the group scope", () => {
   for (const member of ["Ustranger", "Udam", "Uboss"]) {
-    test(`${member} can ask any supported question; no personal grant is read`, async () => {
+    test(`${member} can ask any supported question under the group's scope`, async () => {
       for (const [tool, args, fragment] of [
         ["get_daily_summary", {}, "40,550.75"],
         ["get_staff_produce", { staff: "ขวัญ" }, "ผักกาดขาว"],
@@ -104,14 +97,13 @@ describe("approved group: every member shares the group scope", () => {
         const answer = await h.ask("คำถาม", { lineUserId: member });
         expect(answer.kind).toBe("answer");
         expect(answer.text).toContain(fragment);
-        expect(h.grantLookups()).toBe(0);
-        expect(h.reads.at(-1)!.scope).toEqual({ markets: null, ownerStaff: null });
+        expect(h.reads.at(-1)!.scope).toEqual({ markets: null });
       }
     });
   }
 
-  test("the group's markets bind every member; a broader or different personal grant changes nothing", async () => {
-    const policies = { Cmarket: { sourceId: "Cmarket", allowFinancial: true, allowPersonSpecific: true, markets: new Set([FIXTURE_MARKETS.PASEO]) } };
+  test("the group's markets bind every member", async () => {
+    const policies = { Cmarket: { sourceId: "Cmarket", markets: new Set([FIXTURE_MARKETS.PASEO]) } };
     for (const member of ["Uboss", "Udam", "Ustranger"]) {
       const h = harness({ policies });
       const answer = await h.ask("วันนี้ทุกตลาดขายได้เท่าไหร่?", { sourceId: "Cmarket", lineUserId: member });
@@ -122,14 +114,13 @@ describe("approved group: every member shares the group scope", () => {
     }
   });
 
-  test("an allowlisted group without a group policy is refused, even for a supervisor", async () => {
+  test("an allowlisted group without a group policy is refused", async () => {
     const model = new ScriptedThaiModel();
     const h = harness({ provider: model });
     const answer = await h.ask("วันนี้ทุกตลาดขายได้เท่าไหร่?", { sourceId: "Cunapproved", lineUserId: "Uboss" });
     expect(answer).toEqual({ text: ASSISTANT_GROUP_REFUSAL_REPLY, kind: "notice" });
     expect(model.requests).toHaveLength(0);
     expect(h.reads).toHaveLength(0);
-    expect(h.grantLookups()).toBe(0);
   });
 
   test("a group policy without the source allowlist is refused (signed-source allowlist re-checked by the worker)", async () => {
@@ -160,7 +151,7 @@ describe("approved group: every member shares the group scope", () => {
     const worker = () => runAssistantWorker({
       store: h.store,
       answer: (job, context) => answerAssistantJob(job, context, h.deps),
-      revalidate: (job, scopeKey, deliverTo) => revalidateAssistantJob(job, h.deps, scopeKey, deliverTo),
+      revalidate: (job, scopeKey) => revalidateAssistantJob(job, h.deps, scopeKey),
       scopeChangedText: ASSISTANT_SCOPE_CHANGED_REPLY,
       delivery: line, pushFallbackEnabled: true, workerId: "w", budgetMs: 10_000, deliveryReserveMs: 2_000,
       temporaryErrorText: BOT_SUMMARY_TEMPORARY_ERROR_REPLY,
@@ -172,6 +163,8 @@ describe("approved group: every member shares the group scope", () => {
     await worker();
     expect(line.sent).toHaveLength(1);
     expect(line.sent[0]!.text).toBe(ASSISTANT_SCOPE_CHANGED_REPLY);
+    expect(h.store.jobs.get(jobId!)!.answer_text).not.toContain("40,550.75");
+    expect(h.store.turns.filter((turn) => turn.jobId === jobId)).toHaveLength(0);
   });
 
   test("narrowing a group policy's markets starts every member's memory afresh", async () => {
@@ -183,11 +176,10 @@ describe("approved group: every member shares the group scope", () => {
     expect(model.requests.at(-1)!.transcript.filter((item) => item.kind === "message")).toHaveLength(1);
   });
 
-  test("1:1 chats still use the asker's own grant", async () => {
+  test("a 1:1 chat is not supported in V1, even for an allowlisted user", async () => {
     const h = harness({ provider: oneTool("get_staff_produce", { staff: "ขวัญ" }) });
     const answer = await h.ask("พี่ขวัญเบิกอะไรไป", { sourceType: "user", sourceId: "Udam", lineUserId: "Udam" });
+    expect(answer).toEqual({ text: ASSISTANT_DIRECT_CHAT_REPLY, kind: "notice" });
     expect(h.reads).toHaveLength(0);
-    expect(answer.text).toContain("other_staff");
-    expect(h.grantLookups()).toBe(1);
   });
 });

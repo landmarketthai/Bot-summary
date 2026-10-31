@@ -26,13 +26,11 @@ import {
   createScopedToolExecutor,
   decideJobAccess,
   readonlyDataReader,
-  resolveAssistantScope,
   resolveGroupPolicy,
   scopeInstructions,
   type GroupPolicyResolution,
   type JobAccess,
   type ScopedDataReader,
-  type ScopeResolution,
 } from "./authorization";
 import { containsFinancialClaim, FINANCIAL_TOOLS, renderFinancialOutput } from "./financial-render";
 import { AssistantStoreError, type AssistantJob, type AssistantJobStore, type ConversationTurn } from "./job-store";
@@ -41,14 +39,14 @@ import type { AssistantAnswer } from "./worker";
 
 type Supabase = SupabaseClient<Database>;
 
-export const ASSISTANT_NO_PERMISSION_REPLY =
-  "ขออภัยครับ บัญชี LINE นี้ยังไม่ได้รับสิทธิ์ดูข้อมูลผ่าน @Botsummary กรุณาติดต่อหัวหน้างานหรือแอดมิน";
+export const ASSISTANT_DIRECT_CHAT_REPLY =
+  "ขออภัยครับ ตอนนี้ @Botsummary ตอบเฉพาะในกลุ่ม LINE ที่ได้รับอนุมัติ กรุณาถามในกลุ่มครับ";
 export const ASSISTANT_UNGROUNDED_REPLY =
   "ขออภัยครับ ตัวเลขในคำตอบตรวจสอบกับข้อมูลระบบไม่ผ่าน จึงไม่ส่งคำตอบนี้ กรุณาถามใหม่ให้เจาะจงขึ้น เช่น ระบุตลาดหรือชื่อคนขาย";
 export const ASSISTANT_GROUP_REFUSAL_REPLY =
-  "ขออภัยครับ คำถามนี้ตอบในกลุ่มนี้ไม่ได้ เพราะทุกคนในกลุ่มจะเห็นข้อมูล กรุณาถาม @Botsummary ในแชทส่วนตัวครับ";
+  "ขออภัยครับ กลุ่มนี้ยังไม่ได้รับอนุมัติให้ใช้ @Botsummary กรุณาติดต่อหัวหน้างานหรือแอดมิน";
 export const ASSISTANT_SCOPE_CHANGED_REPLY =
-  "ขออภัยครับ สิทธิ์การเข้าถึงข้อมูลของคุณเปลี่ยนไปก่อนส่งคำตอบ จึงไม่ส่งคำตอบเดิม กรุณาถามใหม่อีกครั้ง";
+  "ขออภัยครับ สิทธิ์ของกลุ่มนี้เปลี่ยนไปก่อนส่งคำตอบ จึงไม่ส่งคำตอบเดิม กรุณาถามใหม่อีกครั้ง";
 
 const HISTORY_TURNS = 4;
 const FOLLOW_UP = /^(?:แล้ว|และ|ส่วน)|(?:ล่ะ|หละ|ละ|ด้วย)\s*(?:ครับ|คะ|ค่ะ|จ้า|จ้ะ)?\s*[?？]*\s*$/u;
@@ -109,10 +107,7 @@ export interface AssistantCoreDeps {
   supabase: Supabase;
   store: AssistantJobStore;
   provider: AssistantModelProvider;
-  resolveScope?: (lineUserId: string) => Promise<ScopeResolution>;
   resolveGroupPolicy?: (sourceId: string) => Promise<GroupPolicyResolution>;
-  /** May an answer to a question from an unapproved group be pushed 1:1 to the asker? */
-  privateDeliveryEnabled?: boolean;
   /** Signed-webhook source allowlist, re-checked at answer and delivery time. */
   sourceAllowed?: (sourceId: string) => boolean;
   /** Data behind the authorization check; defaults to the read-only tools. Test/demo seam. */
@@ -126,48 +121,30 @@ export type JobAccessResolution =
 
 /**
  * The CURRENT access for a job: re-read on every answer and before every
- * delivery. An approved group's scope comes from its group policy alone; the
- * asker's grant is read only for a 1:1 chat or the opt-in private delivery.
+ * delivery. Only an approved group (allowlisted chat + approving policy) gets
+ * data; its scope comes from the group policy alone.
  */
 export async function resolveJobAccess(job: AssistantJob, deps: AssistantCoreDeps): Promise<JobAccessResolution> {
+  if (job.source_type === "user") {
+    return { ok: false, kind: "denied", reason: "direct_chat", notice: ASSISTANT_DIRECT_CHAT_REPLY };
+  }
   if (!(deps.sourceAllowed ?? ((id) => isBotSummaryAnalystSourceAllowed(id)))(job.source_id)) {
     return { ok: false, kind: "denied", reason: "source_not_allowed", notice: ASSISTANT_GROUP_REFUSAL_REPLY };
   }
-  const privateDeliveryEnabled = deps.privateDeliveryEnabled ?? false;
-  let groupPolicy = null;
-  if (job.source_type !== "user") {
-    const policy = await (deps.resolveGroupPolicy ?? ((id) => resolveGroupPolicy(deps.supabase, id)))(job.source_id);
-    if (!policy.ok) return { ok: false, kind: "transient" };
-    groupPolicy = policy.policy;
-    if (!groupPolicy && !privateDeliveryEnabled) {
-      return { ok: false, kind: "denied", reason: "group_not_permitted", notice: ASSISTANT_GROUP_REFUSAL_REPLY };
-    }
-  }
-
-  let ownScope = null;
-  if (!groupPolicy) {
-    const resolution = await (deps.resolveScope ?? ((id) => resolveAssistantScope(deps.supabase, id)))(job.line_user_id);
-    if (!resolution.ok) {
-      if (resolution.reason === "grant_lookup_failed") return { ok: false, kind: "transient" };
-      return { ok: false, kind: "denied", reason: resolution.reason, notice: ASSISTANT_NO_PERMISSION_REPLY };
-    }
-    ownScope = resolution.scope;
-  }
-
+  const policy = await (deps.resolveGroupPolicy ?? ((id) => resolveGroupPolicy(deps.supabase, id)))(job.source_id);
+  if (!policy.ok) return { ok: false, kind: "transient" };
   const decision = decideJobAccess({
     lineUserId: job.line_user_id,
-    scope: ownScope,
     sourceType: job.source_type,
     sourceId: job.source_id,
-    groupPolicy,
-    privateDeliveryEnabled,
+    groupPolicy: policy.policy,
   });
   if (!decision.ok) {
     return {
       ok: false,
       kind: "denied",
       reason: decision.reason,
-      notice: decision.reason === "no_grant" ? ASSISTANT_NO_PERMISSION_REPLY : ASSISTANT_GROUP_REFUSAL_REPLY,
+      notice: decision.reason === "direct_chat" ? ASSISTANT_DIRECT_CHAT_REPLY : ASSISTANT_GROUP_REFUSAL_REPLY,
     };
   }
   return { ok: true, access: decision.access };
@@ -181,13 +158,10 @@ export async function revalidateAssistantJob(
   job: AssistantJob,
   deps: AssistantCoreDeps,
   scopeKey: string | null = job.answer_scope_key,
-  deliverTo: "chat" | "private" = job.delivery_target,
 ): Promise<"current" | "changed" | "transient"> {
   const resolution = await resolveJobAccess(job, deps);
   if (!resolution.ok) return resolution.kind === "transient" ? "transient" : "changed";
-  return scopeKey !== null && resolution.access.scopeKey === scopeKey && resolution.access.deliverTo === deliverTo
-    ? "current"
-    : "changed";
+  return scopeKey !== null && resolution.access.scopeKey === scopeKey ? "current" : "changed";
 }
 
 export async function answerAssistantJob(
@@ -198,7 +172,7 @@ export async function answerAssistantJob(
   const accessResult = await resolveJobAccess(job, deps);
   if (!accessResult.ok) {
     // Transient: retried by the worker instead of telling the user "no access".
-    if (accessResult.kind === "transient") throw new AssistantStoreError("grant_lookup", null);
+    if (accessResult.kind === "transient") throw new AssistantStoreError("policy_lookup", null);
     logger.info("ai assistant request refused", { jobId: job.id, reason: accessResult.reason });
     return { text: accessResult.notice, kind: "notice" };
   }
@@ -276,15 +250,13 @@ export async function answerAssistantJob(
     kind: "answer",
     usage,
     toolNames,
-    turn: { businessDate: result.businessDate, context: turnContext(access.scope.role, result.toolExecutions) },
+    turn: { businessDate: result.businessDate, context: turnContext(result.toolExecutions) },
     scopeKey: access.scopeKey,
-    deliverTo: access.deliverTo,
   };
 }
 
 /** What the next turn may need ("แล้วของพี่ขวัญล่ะ" = same tool, new staff). Bounded well under the 4 KB column CHECK. */
 function turnContext(
-  role: string,
   executions: ReadonlyArray<{ tool: string; arguments: Record<string, unknown> }>,
 ): Record<string, unknown> {
   const tools = executions.slice(0, 6).map((execution) => ({
@@ -294,6 +266,6 @@ function turnContext(
         || (typeof value === "string" && value.length <= 60))
       .slice(0, 4)),
   }));
-  const context = { role, tools };
-  return JSON.stringify(context).length <= 2_000 ? context : { role, tools: tools.map(({ tool }) => ({ tool })) };
+  const context = { tools };
+  return JSON.stringify(context).length <= 2_000 ? context : { tools: tools.map(({ tool }) => ({ tool })) };
 }

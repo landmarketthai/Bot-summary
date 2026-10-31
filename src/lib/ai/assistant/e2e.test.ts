@@ -18,8 +18,7 @@ import type { LineMessageEvent } from "@/lib/line/types";
 import { WebhookService } from "@/lib/line/webhook-service";
 import { FakeDatabase } from "@/lib/summary/test-fake-supabase";
 import type { SlipTestDb } from "@/lib/slips/testing/pg-slip-harness";
-import type { AssistantScope, ScopeResolution } from "./authorization";
-import { answerAssistantJob, ASSISTANT_NO_PERMISSION_REPLY, revalidateAssistantJob, type AssistantCoreDeps } from "./core";
+import { answerAssistantJob, ASSISTANT_DIRECT_CHAT_REPLY, revalidateAssistantJob, type AssistantCoreDeps } from "./core";
 import { createAssistantDispatcher } from "./dispatch";
 import { SupabaseAssistantJobStore, type AssistantJobStore } from "./job-store";
 import { createFixtureDataReader, FIXTURE_MARKETS } from "./testing/fixture-data";
@@ -28,13 +27,6 @@ import { assistantRpcClient, createAssistantTestDb } from "./testing/pg-assistan
 import { RecordingLineDelivery } from "./testing/recording-line";
 import { ScriptedThaiModel } from "./testing/scripted-provider";
 import { runAssistantWorker } from "./worker";
-
-const SCOPES: Record<string, AssistantScope> = {
-  Uboss: { lineUserId: "Uboss", role: "supervisor", staffLabel: null, markets: null, grantSource: "env_supervisor" },
-  Udam: { lineUserId: "Udam", role: "staff", staffLabel: "ดำ", markets: new Set([FIXTURE_MARKETS.RATCHAPHRUEK]), grantSource: "grant" },
-};
-const resolveScope = async (id: string): Promise<ScopeResolution> =>
-  SCOPES[id] ? { ok: true, scope: SCOPES[id] } : { ok: false, reason: "no_grant" };
 
 function pipeline(store: AssistantJobStore) {
   const line = new RecordingLineDelivery();
@@ -73,21 +65,18 @@ function pipeline(store: AssistantJobStore) {
     supabase: {} as SupabaseClient<Database>,
     store,
     provider: model,
-    resolveScope,
     sourceAllowed: (sourceId) => ["Cmanagement", "Cworkers", "Udam", "Ustranger"].includes(sourceId),
-    // Cmanagement is a supervisors' group with an explicit full group policy.
+    // Cmanagement is the approved group (allowlisted + approving policy).
     resolveGroupPolicy: async (sourceId) => ({
       ok: true,
-      policy: sourceId === "Cmanagement"
-        ? { sourceId, allowFinancial: true, allowPersonSpecific: true, markets: null }
-        : null,
+      policy: sourceId === "Cmanagement" ? { sourceId, markets: null } : null,
     }),
     readData: createFixtureDataReader([], { today }),
   };
   const work = () => runAssistantWorker({
     store,
     answer: (job, context) => answerAssistantJob(job, context, deps),
-    revalidate: (job, scopeKey, deliverTo) => revalidateAssistantJob(job, deps, scopeKey, deliverTo),
+    revalidate: (job, scopeKey) => revalidateAssistantJob(job, deps, scopeKey),
     delivery: line,
     pushFallbackEnabled: true,
     workerId: "e2e-worker",
@@ -161,7 +150,7 @@ for (const { name, make } of stores) {
       expect(p.kicks).toHaveLength(6);
     });
 
-    test("duplicate delivery makes no second job; an outage is retried and answered once; staff are bounded", async () => {
+    test("duplicate delivery makes no second job; an outage is retried and answered once; 1:1 and unapproved chats get no data", async () => {
       const queue = await make();
       const p = pipeline(queue.store);
 
@@ -186,18 +175,16 @@ for (const { name, make } of stores) {
       await p.say("Ustranger", "วันนี้ทุกตลาดขายได้เท่าไหร่?");
       await p.work();
       expect(p.line.sent.at(-1)!.text).toContain("40,550.75");
-      // The same staff member 1:1 keeps their own-records grant.
-      await p.say("Udam", "พี่ขวัญเบิกอะไรไป", { chat: "dm" });
-      await p.work();
-      expect(p.line.sent.at(-1)!.text).toContain("ไม่มีสิทธิ์");
-      // Someone with no grant, 1:1.
-      await p.say("Ustranger", "วันนี้ทุกตลาดขายได้เท่าไหร่?", { chat: "dm" });
-      await p.work();
-      expect(p.line.sent.at(-1)!.text).toBe(ASSISTANT_NO_PERMISSION_REPLY);
+      // 1:1 chats are not supported in V1: a notice, no data.
+      for (const user of ["Udam", "Ustranger"]) {
+        await p.say(user, "วันนี้ทุกตลาดขายได้เท่าไหร่?", { chat: "dm" });
+        await p.work();
+        expect(p.line.sent.at(-1)!.text).toBe(ASSISTANT_DIRECT_CHAT_REPLY);
+      }
       // An allowlisted group without a group policy: refused, nothing disclosed.
       await p.say("Uboss", "วันนี้ทุกตลาดขายได้เท่าไหร่?", { chat: "Cworkers" });
       await p.work();
-      expect(p.line.sent.at(-1)!.text).toContain("ตอบในกลุ่มนี้ไม่ได้");
+      expect(p.line.sent.at(-1)!.text).toContain("ยังไม่ได้รับอนุมัติ");
       // A group that is not allowlisted never even reaches the queue.
       const before = p.line.sent.length;
       await p.say("Uboss", "วันนี้ทุกตลาดขายได้เท่าไหร่?", { chat: "Cexternal" });

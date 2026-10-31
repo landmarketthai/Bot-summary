@@ -54,40 +54,9 @@ export type ReadonlyAnalystToolRequest =
  */
 export interface ToolDataScope {
   markets: ReadonlySet<string> | null;
-  /**
-   * Set for a staff requester: only owner-scoped tools run, and always for
-   * this staff label, whatever the request says. Market-level tools would
-   * expose other employees' rows and are refused here, not just upstream.
-   */
-  ownerStaff?: string | null;
 }
 
-export const UNRESTRICTED_SCOPE: ToolDataScope = { markets: null, ownerStaff: null };
-
-/** Tools whose rows belong to one staff member and can be filtered to them. */
-export const OWNER_SCOPED_TOOLS: ReadonlySet<ReadonlyAnalystToolName> = new Set([
-  "get_staff_produce",
-  "get_pending_items",
-  "get_slip_status",
-]);
-
-export class ToolScopeError extends Error {
-  constructor(readonly tool: ReadonlyAnalystToolName) {
-    super(`tool ${tool} is not permitted for an owner-scoped requester`);
-    this.name = "ToolScopeError";
-  }
-}
-
-/** Pin an owner-scoped request to the scope's owner; refuse every other tool. */
-export function enforceOwnerScope(
-  request: ReadonlyAnalystToolRequest,
-  scope: ToolDataScope,
-): ReadonlyAnalystToolRequest {
-  const owner = scope.ownerStaff?.trim();
-  if (!owner) return request;
-  if (!OWNER_SCOPED_TOOLS.has(request.tool)) throw new ToolScopeError(request.tool);
-  return { ...request, staff: owner } as ReadonlyAnalystToolRequest;
-}
+export const UNRESTRICTED_SCOPE: ToolDataScope = { markets: null };
 
 export function marketInScope(scope: ToolDataScope, marketName: string | null | undefined): boolean {
   if (scope.markets === null) return true;
@@ -817,10 +786,9 @@ export async function getWhiteSheetStatusTool(
 
 export async function executeReadonlyAnalystTool(
   supabase: Supabase,
-  requested: ReadonlyAnalystToolRequest,
+  request: ReadonlyAnalystToolRequest,
   scope: ToolDataScope = UNRESTRICTED_SCOPE,
 ) {
-  const request = enforceOwnerScope(requested, scope);
   switch (request.tool) {
     case "get_daily_summary":
       return getDailySummaryTool(supabase, request.businessDate, scope);

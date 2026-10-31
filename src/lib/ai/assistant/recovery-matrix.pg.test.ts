@@ -68,7 +68,7 @@ function pipeline(database: SlipTestDb, overrides: { model?: AssistantModelProvi
   const deps: AssistantCoreDeps = {
     supabase, store, provider: model,
     sourceAllowed: () => true,
-    resolveGroupPolicy: async (sourceId) => ({ ok: true, policy: { sourceId, allowFinancial: true, allowPersonSpecific: true, markets: null } }),
+    resolveGroupPolicy: async (sourceId) => ({ ok: true, policy: { sourceId, markets: null } }),
     readData: createFixtureDataReader(),
   };
   const service = new WebhookService(supabase, {
@@ -80,7 +80,7 @@ function pipeline(database: SlipTestDb, overrides: { model?: AssistantModelProvi
   const work = (options: Partial<AssistantWorkerOptions> = {}) => runAssistantWorker({
     store,
     answer: (job, context) => answerAssistantJob(job, context, deps),
-    revalidate: (job, scopeKey, deliverTo) => revalidateAssistantJob(job, deps, scopeKey, deliverTo),
+    revalidate: (job, scopeKey) => revalidateAssistantJob(job, deps, scopeKey),
     delivery: line, pushFallbackEnabled: true, workerId: "matrix", budgetMs: 15_000, deliveryReserveMs: 2_000,
     temporaryErrorText: BOT_SUMMARY_TEMPORARY_ERROR_REPLY,
     ...options,
