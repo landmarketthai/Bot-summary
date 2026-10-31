@@ -11,6 +11,8 @@ export type OpenAIAnalystOptions = {
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
   maxOutputTokens?: number;
+  /** Receive API usage even when the response status is incomplete or failed. */
+  onResponsePayload?: (payload: OpenAIResponsePayload) => void;
 };
 
 export type OpenAIResponseFunctionCall = {
@@ -190,6 +192,7 @@ export async function createOpenAIResponse(
     }
 
     const payload = await response.json() as OpenAIResponsePayload;
+    options.onResponsePayload?.(payload);
     if (payload.error?.message) {
       throw new Error(`OpenAI analyst error: ${payload.error.message}`);
     }

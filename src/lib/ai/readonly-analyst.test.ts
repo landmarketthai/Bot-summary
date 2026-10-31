@@ -2,6 +2,7 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 import { logger } from "@/lib/logger";
+import * as readonlyTools from "./readonly-tools";
 import { FakeDatabase } from "@/lib/summary/test-fake-supabase";
 import {
   answerWithReadonlyTools,
@@ -400,6 +401,106 @@ describe("tool loop usage and cost log", () => {
       });
     } finally {
       spy.mockRestore();
+    }
+  });
+});
+
+describe("independent PR-0 deadline and usage regressions", () => {
+  test("hung database tool releases the caller at budget and does not start the next tool", async () => {
+    let unblock!: (value: Awaited<ReturnType<typeof readonlyTools.executeReadonlyAnalystTool>>) => void;
+    const blocked = new Promise<Awaited<ReturnType<typeof readonlyTools.executeReadonlyAnalystTool>>>(
+      (resolve) => { unblock = resolve; },
+    );
+    const executeSpy = spyOn(readonlyTools, "executeReadonlyAnalystTool")
+      .mockImplementation(() => blocked);
+    const fetchImpl = (async () => jsonResponse({
+      status: "completed",
+      output: [
+        { type: "function_call", call_id: "one", name: "get_daily_summary", arguments: "{}" },
+        { type: "function_call", call_id: "two", name: "get_daily_summary", arguments: "{}" },
+      ],
+    })) as unknown as typeof fetch;
+    const started = Date.now();
+    try {
+      await expect(answerWithReadonlyTools(
+        client(new FakeDatabase()),
+        "ทุกตลาดสรุปยอดขาย",
+        { apiKey: "test-key", fetchImpl, budgetMs: 1_200 },
+        "2026-10-07",
+      )).rejects.toThrow("timed out");
+      expect(Date.now() - started).toBeLessThan(2_000);
+      expect(executeSpy).toHaveBeenCalledTimes(1);
+      // A late database result may be returned by a non-abortable provider.
+      // It must not start the second tool after the caller has timed out.
+      unblock({ tool: "get_daily_summary" } as Awaited<ReturnType<typeof readonlyTools.executeReadonlyAnalystTool>>);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(executeSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      executeSpy.mockRestore();
+    }
+  });
+
+  for (const status of ["incomplete", "failed"] as const) {
+    test("preserves usage from an API response with status " + status, async () => {
+      const infoSpy = spyOn(logger, "info");
+      const fetchImpl = (async () => jsonResponse(withUsage({
+        status,
+        output: [],
+      }, 700, 200, 30))) as unknown as typeof fetch;
+      try {
+        await expect(answerWithReadonlyTools(
+          client(new FakeDatabase()),
+          "วันนี้ยอดขายเท่าไหร่",
+          { apiKey: "test-key", fetchImpl },
+          "2026-10-07",
+        )).rejects.toThrow(status);
+        const entry = infoSpy.mock.calls
+          .find(([message]) => message === "bot summary analyst usage")?.[1] as Record<string, unknown>;
+        expect(entry).toMatchObject({
+          model: "gpt-6-luna",
+          outcome: "error",
+          modelCalls: 1,
+          usageComplete: true,
+          inputTokens: 700,
+          cachedInputTokens: 200,
+          outputTokens: 30,
+          estimatedCostUsd: null,
+        });
+      } finally {
+        infoSpy.mockRestore();
+      }
+    });
+  }
+
+  test("does not count a model round rejected before HTTP dispatch", async () => {
+    const infoSpy = spyOn(logger, "info");
+    let modelCalls = 0;
+    const fetchImpl = (async () => {
+      modelCalls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 650));
+      return jsonResponse(withUsage(responseWithToolCall("get_daily_summary", {}), 100, 25, 10));
+    }) as unknown as typeof fetch;
+    try {
+      await expect(answerWithReadonlyTools(
+        client(new FakeDatabase()),
+        "ยอดขายรวม",
+        { apiKey: "test-key", fetchImpl, budgetMs: 2_100 },
+        "2026-10-07",
+      )).rejects.toThrow("timed out");
+      const entry = infoSpy.mock.calls
+        .find(([message]) => message === "bot summary analyst usage")?.[1] as Record<string, unknown>;
+      expect(modelCalls).toBe(2);
+      expect(entry).toMatchObject({
+        outcome: "error",
+        modelCalls: 2,
+        usageComplete: true,
+        inputTokens: 200,
+        cachedInputTokens: 50,
+        outputTokens: 20,
+        estimatedCostUsd: null,
+      });
+    } finally {
+      infoSpy.mockRestore();
     }
   });
 });
