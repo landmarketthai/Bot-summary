@@ -24,6 +24,23 @@ export interface StoredCheck {
   extraction: SlipExtraction | null;
 }
 
+/**
+ * A supporting table that may be absent (migration not applied) or unreadable.
+ * Its failure must not stop the diagnosis, and "unavailable" is never "none".
+ */
+export type OptionalRows<T> = { available: true; rows: T[] } | { available: false; reason: string };
+
+export function optionalRows<T>(
+  result: { data: T[] | null; error: { message: string; code?: string } | null },
+): OptionalRows<T> {
+  if (result.error) return { available: false, reason: `${result.error.code ?? "error"}: ${result.error.message.slice(0, 120)}` };
+  return { available: true, rows: result.data ?? [] };
+}
+
+/** Count for one key, or UNKNOWN when the source could not be read. */
+export const countOrUnknown = <T>(source: OptionalRows<T>, match: (row: T) => boolean): number | "UNKNOWN" =>
+  source.available ? source.rows.filter(match).length : "UNKNOWN";
+
 /** Which fields determineSlipCheckStatus wanted and did not get. */
 export function missingForConfirmation(e: SlipExtraction): string[] {
   const missing: string[] = [];

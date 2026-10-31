@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { SlipExtraction } from "@/lib/slips/extraction-schema";
-import { diagnoseSlipImage, missingForConfirmation } from "@/lib/slips/forensics";
+import { countOrUnknown, diagnoseSlipImage, missingForConfirmation, optionalRows } from "@/lib/slips/forensics";
 
 const base: SlipExtraction = {
   slipType: "BANK_SLIP_QR", grossAmount: null, discountAmount: null, paidAmount: null, transferAmount: 40,
@@ -44,6 +44,18 @@ describe("diagnoseSlipImage explains which existing rule applied", () => {
     expect(diagnoseSlipImage(true, check({}), { effectiveAmount: 40, flagged: true, flagReasons: ["สลิปซ้ำ"] }).diagnosis)
       .toBe("AMOUNT_READ_DUPLICATE");
   });
+  test("missing optional table: UNKNOWN, never zero; a readable table still counts", () => {
+    const missing = optionalRows<{ check_id: string }>({
+      data: null,
+      error: { code: "PGRST205", message: "Could not find the table 'public.slip_check_amount_corrections' in the schema cache" },
+    });
+    expect(missing.available).toBe(false);
+    expect(countOrUnknown(missing, () => true)).toBe("UNKNOWN");
+    const present = optionalRows({ data: [{ check_id: "a" }, { check_id: "b" }], error: null });
+    expect(countOrUnknown(present, (r) => r.check_id === "a")).toBe(1);
+    expect(countOrUnknown(optionalRows<{ check_id: string }>({ data: [], error: null }), () => true)).toBe(0);
+  });
+
   test("missingForConfirmation for a wallet slip", () => {
     expect(missingForConfirmation({ ...base, slipType: "GWALLET", transferAmount: null, paidAmount: 40 }))
       .toEqual(["gross_amount", "discount_amount"]);
