@@ -6,7 +6,7 @@ import {
   buildGeminiRequestBody,
   readProviderUsage,
 } from "@/lib/slips/gemini-extractor";
-import { groupsFor, scoreModel, type EvalItem, type RunRecord } from "@/lib/slips/ocr-eval";
+import { groupsFor, scoreAgreement, scoreModel, type EvalItem, type RunRecord } from "@/lib/slips/ocr-eval";
 
 const bank = (amount: number | null, extra: Partial<SlipExtraction> = {}): SlipExtraction => ({
   slipType: "BANK_SLIP_QR", grossAmount: null, discountAmount: null, paidAmount: null,
@@ -77,6 +77,30 @@ describe("scoreModel uses Production's acceptance rule", () => {
     expect(s.items).toBe(1);
     expect(s.itemRuns).toBe(2);
     expect(s.latencyP95Ms).toBe(200);
+  });
+});
+
+describe("scoreAgreement (label-free)", () => {
+  test("agreement vs the stored Production result; accepted-but-disagree is counted and listed", () => {
+    const items = [item("a", null), item("b", null), item("c", null)].map((i) => ({ ...i, label: null }));
+    const stored = (id: string, e: SlipExtraction | null) => ({ ...rec(id, e), model: "production:stored", usage: null });
+    const records = [
+      stored("a", bank(100)), stored("b", bank(200)), stored("c", bank(300, { transactionTime: null })),
+      rec("a", bank(100), 1, "g"), rec("a", bank(100), 2, "g"),
+      rec("b", bank(210, { referenceId: "REF-200" }), 1, "g"), rec("b", bank(200), 2, "g"),
+      rec("c", bank(300), 1, "g"), rec("c", bank(300), 2, "g"), // g accepts what Production sent to review
+    ];
+    const s = scoreAgreement("g", "production:stored", items, records, { input: 1, output: 10 });
+    expect(s.items).toBe(3);
+    expect(s.itemRuns).toBe(6);
+    expect(s.agree).toBe(3);
+    expect(s.acceptedDisagree).toBe(3);
+    expect(s.consistentItems).toBe(2);
+    expect(s.disagreements.map((d) => `${d.itemId}#${d.run}:${d.reference}->${d.model}`)).toEqual([
+      "b#1:accept 200.00->accept 210.00",
+      "c#1:review->accept 300.00",
+      "c#2:review->accept 300.00",
+    ]);
   });
 });
 

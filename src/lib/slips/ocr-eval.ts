@@ -173,6 +173,91 @@ export function scoreModel(
   return score;
 }
 
+export interface AgreementScore {
+  model: string;
+  reference: string;
+  items: number;
+  itemRuns: number;
+  /** Not accepted by the Production rule + guard (includes provider errors). */
+  review: number;
+  providerError: number;
+  noAmount: number;
+  noDate: number;
+  noReference: number;
+  consistentItems: number;
+  /** Same decision and same amount (satang) as the reference model's run 1. */
+  agree: number;
+  /** Accepted by this model with an amount the reference did not accept or read differently. */
+  acceptedDisagree: number;
+  latencyP50Ms: number | null;
+  latencyP95Ms: number | null;
+  avgCostUsd: number | null;
+  disagreements: Array<{ itemId: string; run: number; reference: string; model: string }>;
+}
+
+/**
+ * Label-free comparison against a reference model (normally production:stored).
+ * Agreement is NOT accuracy: it tells a reviewer which images to label first.
+ */
+export function scoreAgreement(
+  model: string,
+  reference: string,
+  items: EvalItem[],
+  allRecords: RunRecord[],
+  price: PricePerMillion | null,
+): AgreementScore {
+  const decision = (o: Outcome | undefined) =>
+    !o ? "missing" : o.trusted ? `accept ${o.amount === null ? "-" : (satang(o.amount) / 100).toFixed(2)}` : "review";
+  const ref = new Map(
+    outcomesFor(items, allRecords.filter((r) => r.model === reference && r.run === 1)).map((o) => [o.itemId, o]),
+  );
+  const mine = outcomesFor(items, allRecords.filter((r) => r.model === model));
+  const s: AgreementScore = {
+    model, reference, items: new Set(mine.map((o) => o.itemId)).size, itemRuns: mine.length,
+    review: 0, providerError: 0, noAmount: 0, noDate: 0, noReference: 0, consistentItems: 0,
+    agree: 0, acceptedDisagree: 0, latencyP50Ms: null, latencyP95Ms: null, avgCostUsd: null, disagreements: [],
+  };
+  for (const o of mine) {
+    const e = o.record.extraction;
+    if (!o.trusted) s.review += 1;
+    if (!e) s.providerError += 1;
+    if (o.amount === null) s.noAmount += 1;
+    if (!e?.transactionTime) s.noDate += 1;
+    if (!e?.referenceId) s.noReference += 1;
+    const r = ref.get(o.itemId);
+    if (decision(o) === decision(r)) s.agree += 1;
+    else {
+      if (o.trusted) s.acceptedDisagree += 1;
+      s.disagreements.push({ itemId: o.itemId, run: o.run, reference: decision(r), model: decision(o) });
+    }
+  }
+  const byItem = new Map<string, string[]>();
+  for (const o of mine) byItem.set(o.itemId, [...(byItem.get(o.itemId) ?? []), decision(o)]);
+  for (const ds of byItem.values()) if (ds.every((d) => d === ds[0])) s.consistentItems += 1;
+  const latencies = mine.filter((o) => o.record.extraction).map((o) => o.record.latencyMs).sort((a, b) => a - b);
+  s.latencyP50Ms = percentile(latencies, 50);
+  s.latencyP95Ms = percentile(latencies, 95);
+  const usages = mine.map((o) => o.record.usage).filter((u): u is ProviderUsage => u !== null);
+  if (price && usages.length > 0) {
+    s.avgCostUsd = usages.reduce((sum, u) => sum + u.inputTokens * price.input + u.outputTokens * price.output, 0)
+      / 1_000_000 / usages.length;
+  }
+  return s;
+}
+
+export function renderAgreement(scores: AgreementScore[]): string {
+  return [
+    "| model | vs | items | runs | agree | accepted-but-disagree | review | no amount | no date | no ref | consistent | provider error | p50 ms | p95 ms | cost/image |",
+    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+    ...scores.map((s) => `| ${[
+      s.model, s.reference, s.items, s.itemRuns, pct(s.agree, s.itemRuns), pct(s.acceptedDisagree, s.itemRuns),
+      pct(s.review, s.itemRuns), pct(s.noAmount, s.itemRuns), pct(s.noDate, s.itemRuns), pct(s.noReference, s.itemRuns),
+      pct(s.consistentItems, s.items), pct(s.providerError, s.itemRuns), s.latencyP50Ms ?? "-", s.latencyP95Ms ?? "-",
+      s.avgCostUsd === null ? "-" : `$${s.avgCostUsd.toFixed(5)}`,
+    ].join(" | ")} |`),
+  ].join("\n");
+}
+
 const pct = (n: number, d: number) => (d === 0 ? "-" : `${((100 * n) / d).toFixed(1)}%`);
 
 /** Markdown table: one row per model per group (all, each tag, each labelled slip type). */

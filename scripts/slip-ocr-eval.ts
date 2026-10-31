@@ -29,7 +29,9 @@ import { GeminiSlipExtractor, readProviderUsage } from "../src/lib/slips/gemini-
 import type { SlipExtraction } from "../src/lib/slips/extraction-schema";
 import {
   groupsFor,
+  renderAgreement,
   renderScores,
+  scoreAgreement,
   scoreModel,
   type EvalItem,
   type PricePerMillion,
@@ -63,15 +65,35 @@ else if (command === "run") await runModels(rest);
 else if (command === "score") await score();
 else throw new Error(`unknown command ${command}`);
 
-async function exportBatches(batchIds: string[]) {
+async function exportBatches(args: string[]) {
+  let batchIds = args;
   if (process.env.SLIP_EVAL_PRODUCTION_READ_APPROVED !== "1") {
     throw new Error("export reads Production slip images: set SLIP_EVAL_PRODUCTION_READ_APPROVED=1 only with written approval");
   }
-  if (batchIds.length === 0) throw new Error("export needs at least one batch id");
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) throw new Error("Missing Supabase environment variables.");
   const supabase = createClient<Database>(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+
+  // --recent-images N: newest batches whose summary was already sent, until >= N images.
+  const recentIdx = batchIds.indexOf("--recent-images");
+  if (recentIdx >= 0) {
+    const want = Number(batchIds[recentIdx + 1]);
+    if (!Number.isInteger(want) || want < 1 || want > 500) throw new Error("--recent-images must be 1..500");
+    const { data: recent, error } = await supabase
+      .from("slip_batches").select("id, image_count")
+      .not("summary_sent_at", "is", null).gt("image_count", 0)
+      .order("created_at", { ascending: false }).limit(200);
+    if (error) throw new Error(`recent batches: ${error.message}`);
+    batchIds = [];
+    let total = 0;
+    for (const b of recent ?? []) {
+      if (total >= want) break;
+      batchIds.push(b.id);
+      total += b.image_count;
+    }
+  }
+  if (batchIds.length === 0) throw new Error("export needs batch ids or --recent-images N");
   await mkdir(join(outDir, "images"), { recursive: true });
 
   const items: EvalItem[] = [];
@@ -134,8 +156,9 @@ async function runModels(args: string[]) {
       throw new Error(`${provider} is not in SLIP_EVAL_PROVIDER_UPLOAD_APPROVED: private slip images may not be sent to it`);
     }
   }
-  const items = (JSON.parse(await readFile(manifestPath, "utf8")) as EvalItem[]).filter((i) => i.label !== null);
-  if (items.length === 0) throw new Error("no labelled items in manifest.json");
+  // Every exported image runs, labelled or not: agreement metrics need no label.
+  const items = JSON.parse(await readFile(manifestPath, "utf8")) as EvalItem[];
+  if (items.length === 0) throw new Error("manifest.json has no items");
 
   for (const spec of models) {
     const [provider, model] = spec.split(":") as ["openai" | "gemini", string];
@@ -180,17 +203,32 @@ async function score() {
     ? (await readFile(runsPath, "utf8")).split("\n").filter(Boolean).map((l) => JSON.parse(l) as RunRecord)
     : [];
   const models = [...new Set(records.map((r) => r.model))];
-  const scores = groupsFor(items).flatMap(([group, inGroup]) =>
-    models.map((m) => scoreModel(m, items, records, PRICES[m] ?? null, group, inGroup)));
   const unlabelled = items.filter((i) => i.label === null).length;
+  const reference = "production:stored";
+  const agreement = models.filter((m) => m !== reference)
+    .map((m) => scoreAgreement(m, reference, items, records, PRICES[m] ?? null));
+  const typeCounts = new Map<string, number>();
+  for (const r of records.filter((x) => x.model === reference)) {
+    const t = r.extraction?.slipType ?? "NO_STORED_RESULT";
+    typeCounts.set(t, (typeCounts.get(t) ?? 0) + 1);
+  }
   const report = [
     `# Slip OCR evaluation (${new Date().toISOString()})`,
-    `Labelled images: ${items.length - unlabelled}; unlabelled (excluded): ${unlabelled}.`,
+    `Images: ${items.length} (labelled ${items.length - unlabelled}). Stored slip types: ${[...typeCounts].map(([t, n]) => `${t} ${n}`).join(", ")}.`,
     "Accepted = Production status rule + batch validation guard. QR codes are NOT decoded anywhere in the pipeline;",
     "every acceptance below is AI image extraction only.",
     "",
-    renderScores(scores),
+    "## Label-free: agreement with the result Production stored (agreement is NOT accuracy)",
+    renderAgreement(agreement),
+    "",
+    "## Accuracy against human labels",
+    unlabelled === items.length
+      ? "No labels yet: label the images in disagreements.json first, then re-run `score`."
+      : renderScores(groupsFor(items).flatMap(([group, inGroup]) =>
+          models.map((m) => scoreModel(m, items, records, PRICES[m] ?? null, group, inGroup)))),
   ].join("\n");
   await writeFile(join(outDir, "report.md"), report);
+  await writeFile(join(outDir, "disagreements.json"), JSON.stringify(
+    agreement.flatMap((a) => a.disagreements.map((d) => ({ ...d, modelName: a.model }))), null, 2));
   console.log(report);
 }
