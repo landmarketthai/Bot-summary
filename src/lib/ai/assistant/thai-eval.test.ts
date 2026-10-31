@@ -5,7 +5,7 @@ import { isFollowUpQuestion, resolveJobBusinessDate } from "./core";
 import { FIXTURE_MARKETS } from "./testing/fixture-data";
 import { THAI_EVAL_ASKED_DATE, THAI_EVAL_SET } from "./testing/thai-eval-set";
 
-// Regression guard for section A of scripts/ai-assistant-thai-eval.ts.
+// Regression guard for section A of scripts/ai-assistant-eval.ts.
 const STAFF_DAM: AssistantScope = {
   lineUserId: "Udam", role: "staff", staffLabel: "ดำ", markets: new Set([FIXTURE_MARKETS.RATCHAPHRUEK]), grantSource: "grant",
 };
