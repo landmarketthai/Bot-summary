@@ -164,7 +164,7 @@ export class MemoryAssistantJobStore implements AssistantJobStore {
       answer_text: input.answer,
       answer_kind: input.kind,
       answer_scope_key: input.scopeKey ?? null,
-      delivery_target: input.deliveryTarget ?? "chat",
+      delivery_target: "chat",
       usage: input.usage ?? null,
       tool_names: [...(input.toolNames ?? [])],
       lease_expires_at: this.iso(Math.max(Date.parse(job.lease_expires_at!), now + 60_000)),

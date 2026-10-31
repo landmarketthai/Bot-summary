@@ -31,18 +31,15 @@ export interface AssistantAnswer {
   turn?: { businessDate: string; context: Record<string, unknown> } | null;
   /** Access scope the answer was produced under (required for kind "answer"). */
   scopeKey?: string | null;
-  /** "private" = push 1:1 to the asker instead of the chat (group without a group policy). */
-  deliverTo?: "chat" | "private";
 }
 
 /**
  * Is the access a recorded data answer was produced under still current?
- * "changed" covers revoked grants, downgrades and changed group policies.
+ * "changed" covers a revoked or changed group policy and a removed allowlist entry.
  */
 export type AssistantRevalidator = (
   job: AssistantJob,
   scopeKey: string | null,
-  deliverTo: "chat" | "private",
 ) => Promise<"current" | "changed" | "transient">;
 
 export type AssistantAnswerer = (
@@ -117,7 +114,6 @@ async function processJob(
   let text = job.answer_text;
   let kind = job.answer_kind;
   let scopeKey = job.answer_scope_key;
-  let deliverTo = job.delivery_target;
   let errorCode: string | null = null;
 
   if (text === null) {
@@ -149,7 +145,6 @@ async function processJob(
     text = answer?.text.trim() ? answer.text.trim().slice(0, 5000) : options.temporaryErrorText;
     kind = answer?.text.trim() ? (answer.kind ?? "answer") : "notice";
     scopeKey = kind === "answer" ? answer?.scopeKey ?? null : null;
-    deliverTo = answer?.deliverTo ?? "chat";
     if (kind === "answer" && !scopeKey) {
       // Fail closed: an answer that cannot be tied to an access scope is never shown.
       text = options.temporaryErrorText;
@@ -163,16 +158,14 @@ async function processJob(
       toolNames: answer?.toolNames ?? [],
       turn: kind === "answer" ? answer?.turn ?? null : null,
       scopeKey,
-      deliveryTarget: deliverTo,
     });
     if (!recorded) return "fenced";
   }
 
   if (kind === "answer") {
-    // P1-C: the asker may have been downgraded or revoked (or the group policy
-    // changed) since the answer was produced — including by a crashed worker
-    // long before this delivery.
-    const verdict = options.revalidate ? await options.revalidate(job, scopeKey, deliverTo) : "changed";
+    // P1-C: the group's approval may have been revoked or changed since the
+    // answer was produced — including by a crashed worker long before this delivery.
+    const verdict = options.revalidate ? await options.revalidate(job, scopeKey) : "changed";
     if (verdict === "transient") {
       const retried = await store.retry(job.id, lease, retryDelaySeconds(job.attempts), "access_revalidation_failed");
       return retried ? "retried" : "fenced";
@@ -193,7 +186,6 @@ async function processJob(
       store,
       adapter: options.delivery,
       pushFallbackEnabled: options.pushFallbackEnabled,
-      target: deliverTo,
       signal,
     }),
   ).catch((error: unknown): DeliveryResult => {

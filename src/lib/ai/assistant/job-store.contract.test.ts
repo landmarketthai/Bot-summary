@@ -263,8 +263,8 @@ for (const h of harnesses) {
       const { jobId } = await h.store.enqueue(request());
       const [job] = await h.store.claim("w", claimOne);
       await expect(h.store.recordAnswer(jobId!, job!.lease_token!, { answer: "x", kind: "answer" })).rejects.toThrow();
-      expect(await h.store.recordAnswer(jobId!, job!.lease_token!, { answer: "ยอด 40,550.75", kind: "answer", turn: { businessDate: "2026-10-31", context: {} }, scopeKey: SCOPE, deliveryTarget: "private" })).toBe(true);
-      expect((await h.job(jobId!))).toMatchObject({ answer_scope_key: SCOPE, delivery_target: "private" });
+      expect(await h.store.recordAnswer(jobId!, job!.lease_token!, { answer: "ยอด 40,550.75", kind: "answer", turn: { businessDate: "2026-10-31", context: {} }, scopeKey: SCOPE })).toBe(true);
+      expect((await h.job(jobId!))).toMatchObject({ answer_scope_key: SCOPE, delivery_target: "chat" });
       expect(await h.store.withholdAnswer(jobId!, job!.lease_token!, "สิทธิ์เปลี่ยน")).toBe(true);
       expect(await h.job(jobId!)).toMatchObject({ answer_text: "สิทธิ์เปลี่ยน", answer_kind: "notice", answer_scope_key: null });
       const key = { destination: "Ubot", sourceId: "Cgroup", lineUserId: "Uasker" };

@@ -67,8 +67,6 @@ export interface RecordAnswerInput {
   maxTurns?: number;
   /** Access scope the answer was produced under; required for kind "answer". */
   scopeKey?: string | null;
-  /** "private" = 1:1 to the asker instead of the chat the question came from. */
-  deliveryTarget?: "chat" | "private";
 }
 
 export interface AssistantJobStore {
@@ -163,7 +161,8 @@ export class SupabaseAssistantJobStore implements AssistantJobStore {
       p_turn_ttl_seconds: input.turnTtlSeconds ?? 1800,
       p_max_turns: input.maxTurns ?? 6,
       p_scope_key: input.scopeKey ?? null,
-      p_delivery_target: input.deliveryTarget ?? "chat",
+      // V1 always answers in the chat the question came from (column kept for the schema).
+      p_delivery_target: "chat",
     });
     if (error) fail("record_answer", error);
     return data === true;
