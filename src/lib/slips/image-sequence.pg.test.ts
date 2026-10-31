@@ -216,6 +216,65 @@ describe.skipIf(!pgAvailable)("slip summary #N = LINE send order on PostgreSQL 1
     expect(pushes).toHaveLength(1);
   }, 240_000);
 
+  test("every image fails ingestion: auditable failure summary with counts and each #N, never empty", async () => {
+    const G = "G-allfail";
+    for (const n of [1, 2, 3]) failures.set(msgId(G, n), { failFirst: 99, calls: 0 });
+    const webhook = makeWebhook();
+    await deliver(webhook, [
+      textEvent(G, "open", HEADER, T0),
+      ...[1, 2, 3].map((n) => imageEvent(G, n, T0 + 1000 * n)),
+      textEvent(G, "close", "จบสลิป", T0 + 4_000),
+    ]);
+    await runTasksNewestFirst();
+    const ids = [1, 2, 3].map((n) => msgId(G, n));
+    for (let i = 0; i < 5; i++) await retryDue(webhook, ids);
+
+    const batchId = await batchIdOf(G);
+    expect(await db.scalar(`SELECT count(*) FROM slip_evidences WHERE batch_id='${batchId}'`)).toBe("0");
+    expect(await db.scalar(
+      `SELECT count(*) FROM slip_image_events WHERE batch_id='${batchId}' AND state='failed_permanent'`,
+    )).toBe("3");
+
+    const pushes: string[] = [];
+    expect(await finalizeNow(pushes)).toBe(1);
+    expect(pushes).toHaveLength(1);
+    const text = pushes[0];
+    expect(text).toContain("บันทึกเข้าชุดไม่สำเร็จ");
+    expect(text).toContain("รับรูปจาก LINE: 3 รูป");
+    expect(text).toContain("เข้าชุดแล้ว: 0 รูป");
+    expect(text).toContain("ยังไม่ครบ: 3 รูป");
+    for (const n of [1, 2, 3]) expect(text).toContain(`#${n} รูปเข้าระบบไม่สำเร็จ`);
+    expect(text).not.toContain("บาท");
+
+    const batch = (await db.query<Record<string, unknown>>(`SELECT * FROM slip_batches WHERE id='${batchId}'`))[0];
+    expect(batch.status).toBe("failed");
+    expect(batch.summary_sent_at).not.toBeNull();
+    expect(await finalizeNow(pushes)).toBe(0);
+    expect(pushes).toHaveLength(1);
+  }, 120_000);
+
+  test("receipt-time fallback (no LINE timestamp): every #N printed as unverified, money unchanged", async () => {
+    const G = "G-nots";
+    const webhook = makeWebhook();
+    const events = [
+      textEvent(G, "open", HEADER, T0),
+      ...[1, 2, 3].map((n) => imageEvent(G, n, T0 + 1000 * n)),
+      textEvent(G, "close", "จบสลิป", T0 + 4_000),
+    ];
+    await deliver(webhook, events);
+    await runTasksNewestFirst();
+    // Simulate a receipt whose LINE payload carried no timestamp.
+    await db.query(`UPDATE raw_messages SET payload = payload - 'timestamp' WHERE message_id='${msgId(G, 2)}'`);
+
+    const pushes: string[] = [];
+    expect(await finalizeNow(pushes)).toBe(1);
+    const text = pushes[0];
+    for (const n of [1, 2, 3]) expect(text).toContain(`#${n}? เช็คได้ ${amountOf(n).toLocaleString("th-TH")} บาท`);
+    expect(text).not.toMatch(/^#\d+ /m);
+    expect(text).toContain("ยืนยันลำดับจาก LINE ไม่ได้");
+    expect(text).toContain(`ยอดรวมที่อ่านได้: ${(amountOf(1) + amountOf(2) + amountOf(3)).toLocaleString("th-TH")} บาท`);
+  }, 120_000);
+
   test("two markets uploading at the same time are numbered independently", async () => {
     const A = "G-mkt-a";
     const B = "G-mkt-b";

@@ -30,11 +30,15 @@ export interface LedgerImage {
 export interface MissingImage {
   sequence: number;
   state: string;
+  /** False when LINE's own data does not confirm this position. */
+  verified: boolean;
 }
 
 export interface ImageSequence {
   /** line_message_id -> 1-based position in LINE send order. */
   positions: Map<string, number>;
+  /** line_message_ids whose position LINE's own data does not confirm. */
+  unverified: Set<string>;
   /** Received images with no evidence in the batch, by position. */
   missing: MissingImage[];
   /** Some position could not be verified from LINE's own ordering data. */
@@ -59,29 +63,43 @@ export function sequenceBatchImages(
       || (sameSet(a, b) ? a.imageSet!.index - b.imageSet!.index : 0)
       || compareIds(a.lineMessageId, b.lineMessageId));
 
-  let uncertain = ordered.some((image) => !image.lineTimestamp);
+  const positions = new Map(ordered.map((image, i) => [image.lineMessageId, i + 1]));
+  const unverified = new Set<string>();
+  const markAll = () => ordered.forEach((image) => unverified.add(image.lineMessageId));
+
+  // An image whose true place is unknown (receipt-time fallback, or evidence
+  // with no ledger row at all) can shift every other number: none is confirmed.
+  if (ordered.some((image) => !image.lineTimestamp)) markAll();
+  if ([...attachedLineMessageIds].some((id) => !positions.has(id))) markAll();
+
   const lastIndexBySet = new Map<string, number>();
+  const contradictedSets = new Set<string>();
   for (const [i, image] of ordered.entries()) {
     const previous = ordered[i - 1];
     // Same millisecond and no shared image set: only the message id orders them.
-    if (previous && previous.eventTsMs === image.eventTsMs && !sameSet(previous, image)) uncertain = true;
+    if (previous && previous.eventTsMs === image.eventTsMs && !sameSet(previous, image)) {
+      unverified.add(previous.lineMessageId);
+      unverified.add(image.lineMessageId);
+    }
     if (image.imageSet) {
       // LINE's own index inside a multi-image send must agree with the time order.
       const last = lastIndexBySet.get(image.imageSet.id);
-      if (last !== undefined && image.imageSet.index <= last) uncertain = true;
+      if (last !== undefined && image.imageSet.index <= last) contradictedSets.add(image.imageSet.id);
       lastIndexBySet.set(image.imageSet.id, image.imageSet.index);
     }
   }
+  for (const image of ordered) {
+    if (image.imageSet && contradictedSets.has(image.imageSet.id)) unverified.add(image.lineMessageId);
+  }
 
-  const positions = new Map(ordered.map((image, i) => [image.lineMessageId, i + 1]));
   const missing = ordered.flatMap((image, i) =>
     image.state === "attached" && attachedLineMessageIds.has(image.lineMessageId)
       ? []
-      : [{ sequence: i + 1, state: image.state }]);
-  // Evidence attached without a ledger row (legacy path) has no verified place.
-  for (const id of attachedLineMessageIds) if (!positions.has(id)) uncertain = true;
+      : [{ sequence: i + 1, state: image.state, verified: !unverified.has(image.lineMessageId) }]);
+  const uncertain = unverified.size > 0
+    || [...attachedLineMessageIds].some((id) => !positions.has(id));
 
-  return { positions, missing, uncertain };
+  return { positions, unverified, missing, uncertain };
 }
 
 /**

@@ -3,6 +3,7 @@ import { sequenceBatchImages, type LedgerImage } from "@/lib/slips/image-sequenc
 import {
   buildBatchSummaryMessage,
   orderByLineSequence,
+  SEQUENCE_UNVERIFIED_NOTE,
   type EvidenceWithCheck,
 } from "@/lib/slips/batch-finalizer";
 
@@ -55,8 +56,8 @@ describe("sequenceBatchImages: #N is the LINE send position", () => {
     const seq = sequenceBatchImages(images, attached);
     expect(seq.positions.get(img(4).lineMessageId)).toBe(4);
     expect(seq.missing).toEqual([
-      { sequence: 3, state: "failed_permanent" },
-      { sequence: 5, state: "retry_pending" },
+      { sequence: 3, state: "failed_permanent", verified: true },
+      { sequence: 5, state: "retry_pending", verified: true },
     ]);
   });
 
@@ -85,25 +86,48 @@ describe("sequenceBatchImages: #N is the LINE send position", () => {
     expect(seq.uncertain).toBe(false);
   });
 
-  describe("marks uncertain instead of inventing an order", () => {
-    test("ledger time is a receipt-time fallback", () => {
-      const seq = sequenceBatchImages([img(1), img(2, "attached", { lineTimestamp: false })], new Set());
+  describe("marks unverified positions instead of inventing an order", () => {
+    const ids = (...ns: number[]) => new Set(ns.map((n) => img(n).lineMessageId));
+
+    test("a receipt-time fallback makes EVERY position unverified (it can shift all of them)", () => {
+      const seq = sequenceBatchImages([img(1), img(2, "attached", { lineTimestamp: false }), img(3)], new Set());
       expect(seq.uncertain).toBe(true);
+      expect(seq.unverified).toEqual(ids(1, 2, 3));
     });
-    test("LINE image-set index contradicts the timestamps", () => {
+    test("an image-set index that contradicts the timestamps marks that set only", () => {
       const seq = sequenceBatchImages([
-        img(1, "attached", { imageSet: { id: "S", index: 2 } }),
-        img(2, "attached", { imageSet: { id: "S", index: 1 } }),
+        img(1),
+        img(2, "attached", { imageSet: { id: "S", index: 2 } }),
+        img(3, "attached", { imageSet: { id: "S", index: 1 } }),
+        img(4, "attached", { imageSet: { id: "T", index: 1 } }),
+        img(5, "attached", { imageSet: { id: "T", index: 2 } }),
       ], new Set());
-      expect(seq.uncertain).toBe(true);
+      expect(seq.unverified).toEqual(ids(2, 3));
     });
-    test("two separate sends in the same millisecond", () => {
-      const seq = sequenceBatchImages([img(1, "attached", { eventTsMs: T0 }), img(2, "attached", { eventTsMs: T0 })], new Set());
-      expect(seq.uncertain).toBe(true);
+    test("an image set sent in one millisecond, in index order, is fully verified", () => {
+      const set = [1, 2, 3].map((n) => img(n, "attached", { eventTsMs: T0, imageSet: { id: "S", index: n } }));
+      const seq = sequenceBatchImages(set, new Set());
+      expect(seq.uncertain).toBe(false);
+      expect(seq.unverified.size).toBe(0);
     });
-    test("an evidence attached without a ledger row", () => {
-      const seq = sequenceBatchImages([img(1)], new Set([img(1).lineMessageId, "legacy-id"]));
+    test("two separate sends in the same millisecond mark exactly those two", () => {
+      const seq = sequenceBatchImages(
+        [img(1), img(2, "attached", { eventTsMs: T0 + 2500 }), img(3, "attached", { eventTsMs: T0 + 2500 }), img(4)],
+        new Set(),
+      );
+      expect(seq.unverified).toEqual(ids(2, 3));
+    });
+    test("an evidence attached without a ledger row makes every position unverified", () => {
+      const seq = sequenceBatchImages([img(1), img(2)], new Set([img(1).lineMessageId, "legacy-id"]));
       expect(seq.uncertain).toBe(true);
+      expect(seq.unverified).toEqual(ids(1, 2));
+    });
+    test("a missing image carries its own verified flag", () => {
+      const seq = sequenceBatchImages(
+        [img(1), img(2, "failed_permanent", { eventTsMs: T0 + 3000 }), img(3)],
+        ids(1, 3),
+      );
+      expect(seq.missing).toEqual([{ sequence: 2, state: "failed_permanent", verified: false }]);
     });
   });
 });
@@ -173,8 +197,68 @@ describe("summary #N, amount and reason come from the same evidence", () => {
       orderByLineSequence([ev(1, 1), { ...ev(9, 2), lineMessageId: "legacy-id" }], seq),
       { slipDate, missingImages: seq.missing, sequenceUncertain: seq.uncertain },
     );
-    expect(text).toContain("#1 เช็คได้ 101 บาท");
+    // The unplaced evidence can belong anywhere, so #1 is not confirmed either.
+    expect(text).toContain("#1? เช็คได้ 101 บาท");
+    expect(text).not.toMatch(/^#1 /m);
     expect(text).toContain("#? เช็คได้ 109 บาท");
-    expect(text).toContain("ยืนยันลำดับจาก LINE ไม่ได้");
+    expect(text.indexOf(SEQUENCE_UNVERIFIED_NOTE)).toBeLessThan(text.indexOf("รูปที่ตรวจผ่าน:"));
+  });
+
+  test("ambiguous positions print #N? (amount unchanged); confirmed ones print plain #N", () => {
+    const ambiguous = [
+      img(1),
+      img(2, "attached", { eventTsMs: T0 + 2500 }),
+      img(3, "attached", { eventTsMs: T0 + 2500 }),
+      img(4, "failed_permanent", { imageSet: { id: "S", index: 2 } }),
+      img(5, "attached", { imageSet: { id: "S", index: 1 } }),
+    ];
+    const evs = [ev(1, 1), ev(2, 2), ev(3, 3), ev(5, 4)];
+    const seq = sequenceBatchImages(ambiguous, new Set(evs.map((e) => e.lineMessageId!)));
+    const text = buildBatchSummaryMessage(orderByLineSequence(evs, seq), {
+      slipDate, missingImages: seq.missing, sequenceUncertain: seq.uncertain,
+    });
+    expect(text).toContain("#1 เช็คได้ 101 บาท");
+    expect(text).toContain("#2? เช็คได้ 102 บาท");
+    expect(text).toContain("#3? เช็คได้ 103 บาท");
+    expect(text).toContain("#4? รูปเข้าระบบไม่สำเร็จ");
+    expect(text).toContain("#5? เช็คได้ 105 บาท");
+    expect(text).toContain(SEQUENCE_UNVERIFIED_NOTE);
+    // Same money as with a fully verified order: only the labels differ.
+    expect(text).toContain("ยอดรวมที่อ่านได้: 411 บาท");
+  });
+
+  test("money is unchanged by the reorder: same trusted count, total and duplicate exclusions as batch_index order", () => {
+    const totalOf = (text: string) => text.match(/ยอดรวมที่อ่านได้: ([\d,.]+) บาท/)?.[1] ?? "none";
+    const countOf = (text: string, label: string) => text.match(new RegExp(`${label}: (\\d+) รูป`))?.[1];
+    for (let seed = 1; seed <= 200; seed++) {
+      const n = 3 + (seed % 25);
+      const order = shuffle(Array.from({ length: n }, (_, i) => i + 1), seed);
+      const batch = order.map((lineNo, attachIdx) => ev(lineNo, attachIdx + 1, {
+        // Duplicate pairs share a reference AND the same amount (same bank slip).
+        referenceId: lineNo % 7 === 0 ? "REF-DUP" : `REF-${lineNo}`,
+        transferAmount: lineNo % 7 === 0 ? 700 : lineNo % 11 === 0 ? 90_000 : 100 + lineNo,
+        checkStatus: lineNo % 13 === 0 ? "NEED_REVIEW" : "EXTRACTED",
+        transactionTime: lineNo % 5 === 0 ? null : "2026-10-16T12:00:00+07:00",
+      }));
+      const legacy = buildBatchSummaryMessage([...batch].sort((a, b) => a.batchIndex! - b.batchIndex!), { slipDate });
+      const seq = sequenceBatchImages(
+        Array.from({ length: n }, (_, i) => img(i + 1)),
+        new Set(batch.map((e) => e.lineMessageId!)),
+      );
+      const fixed = buildBatchSummaryMessage(orderByLineSequence(batch, seq), { slipDate });
+      expect(totalOf(fixed)).toBe(totalOf(legacy));
+      expect(countOf(fixed, "อ่านครบ")).toBe(countOf(legacy, "อ่านครบ"));
+      expect(countOf(fixed, "รอตรวจมือ")).toBe(countOf(legacy, "รอตรวจมือ"));
+      expect(fixed.match(/สลิปซ้ำ/g)?.length ?? 0).toBe(legacy.match(/สลิปซ้ำ/g)?.length ?? 0);
+    }
+  });
+
+  test("a verified batch carries no '?' label and no warning", () => {
+    const seq = sequenceBatchImages(images, attached);
+    const text = buildBatchSummaryMessage(orderByLineSequence(evidences, seq), {
+      slipDate, missingImages: seq.missing, sequenceUncertain: seq.uncertain,
+    });
+    expect(text).not.toMatch(/#\d+\?|#\?/);
+    expect(text).not.toContain(SEQUENCE_UNVERIFIED_NOTE);
   });
 });

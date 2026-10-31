@@ -126,6 +126,8 @@ export interface EvidenceWithCheck {
    * no verified place for it. Undefined = no ledger, #N falls back to batchIndex.
    */
   sequence?:       number | null;
+  /** False when LINE's own data does not confirm `sequence` (printed "#N?"). */
+  sequenceVerified?: boolean;
   checkStatus:     SlipCheckStatus | null;
   slipType:        SlipType | null;
   transferAmount:  number | null;
@@ -679,9 +681,14 @@ export async function finalizeSlipBatch(
     if (evidences.length === 0) {
       log.warn("finalizeSlipBatch: no evidences — marking failed");
       const lostNotice = buildImageAccountingNotice(imageAccounting);
+      // Every received image failed: still list each one at its #N, so the
+      // failure is auditable image by image, not just as a count.
+      const lostLines: string[] = [];
+      if (sequence?.uncertain) appendSequenceNote(lostLines, true);
+      appendIncompleteLines(lostLines, "รูปที่ยังไม่เข้าระบบ:", [], sequence?.missing ?? []);
       await sendMessage(
         lostNotice
-          ? `สรุปชุดสลิป: รับรูปจาก LINE แต่บันทึกเข้าชุดไม่สำเร็จ\n\n${lostNotice}`
+          ? `สรุปชุดสลิป: รับรูปจาก LINE แต่บันทึกเข้าชุดไม่สำเร็จ\n\n${lostNotice}${lostLines.length ? `\n${lostLines.join("\n")}` : ""}`
           : "ยังไม่มีรูปในชุดสลิปนี้",
       );
       messageSent = true;
@@ -975,15 +982,31 @@ export function orderByLineSequence(
   sequence: ImageSequence,
 ): EvidenceWithCheck[] {
   return evidences
-    .map((e) => ({ ...e, sequence: (e.lineMessageId && sequence.positions.get(e.lineMessageId)) || null }))
+    .map((e) => ({
+      ...e,
+      sequence: (e.lineMessageId && sequence.positions.get(e.lineMessageId)) || null,
+      sequenceVerified: !!e.lineMessageId && sequence.positions.has(e.lineMessageId)
+        && !sequence.unverified.has(e.lineMessageId),
+    }))
     .sort((a, b) =>
       (a.sequence ?? Infinity) - (b.sequence ?? Infinity)
       || (a.batchIndex ?? Infinity) - (b.batchIndex ?? Infinity));
 }
 
-/** #N label: LINE position when the ledger ordered the batch, else the legacy counter. */
+/** "#N" confirmed by LINE data, "#N?" not confirmed, "#?" no position at all. */
+const numberLabel = (no: number | null, verified: boolean): string =>
+  no === null ? "#?" : verified ? `#${no}` : `#${no}?`;
+
+/** #N for an evidence: LINE position when the ledger ordered the batch, else the legacy counter. */
 const displayNumber = (e: EvidenceWithCheck): number | null =>
   e.sequence === undefined ? e.batchIndex : e.sequence;
+
+/**
+ * `legacyUnverified`: the caller had no ledger order at all, so the legacy
+ * attach counter is not a confirmed LINE position either.
+ */
+const evidenceLabel = (e: EvidenceWithCheck, legacyUnverified: boolean): string =>
+  numberLabel(displayNumber(e), e.sequence === undefined ? !legacyUnverified : e.sequenceVerified !== false);
 
 const MISSING_IMAGE_REASON: Record<string, string> = {
   failed_permanent:    "รูปเข้าระบบไม่สำเร็จ",
@@ -1086,9 +1109,9 @@ export function buildBatchSummaryMessage(
     if (amountFlaggedCountTimeout > 0) {
       lines.push(`ยอดที่ถูกระงับ: ${amountFlaggedCountTimeout} รายการ`);
     }
-    appendTrustedEvidenceLines(lines, trusted);
-    appendIncompleteLines(lines, "รูปที่ยังไม่ครบ:", incomplete, missing);
     appendSequenceNote(lines, options?.sequenceUncertain);
+    appendTrustedEvidenceLines(lines, trusted, options?.sequenceUncertain);
+    appendIncompleteLines(lines, "รูปที่ยังไม่ครบ:", incomplete, missing, options?.sequenceUncertain);
     return lines.join("\n");
   }
 
@@ -1119,9 +1142,9 @@ export function buildBatchSummaryMessage(
     lines.push(`ยอดที่ถูกระงับ: ${amountFlaggedCount} รายการ`);
   }
 
-  appendTrustedEvidenceLines(lines, trusted);
-  appendIncompleteLines(lines, "รูปที่ต้องตรวจมือ:", incomplete, missing);
   appendSequenceNote(lines, options?.sequenceUncertain);
+  appendTrustedEvidenceLines(lines, trusted, options?.sequenceUncertain);
+  appendIncompleteLines(lines, "รูปที่ต้องตรวจมือ:", incomplete, missing, options?.sequenceUncertain);
 
   return lines.join("\n");
 }
@@ -1134,35 +1157,49 @@ function appendIncompleteLines(
   header: string,
   incomplete: EnrichedEvidence[],
   missing: readonly MissingImage[],
+  legacyUnverified = false,
 ): void {
   const items = [
-    ...incomplete.map((e) => ({ no: displayNumber(e), text: describeIncompleteReason(e) })),
-    ...missing.map((m) => ({ no: m.sequence, text: MISSING_IMAGE_REASON[m.state] ?? "รูปยังไม่เข้าระบบ" })),
+    ...incomplete.map((e) => ({
+      no: displayNumber(e), label: evidenceLabel(e, legacyUnverified), text: describeIncompleteReason(e),
+    })),
+    ...missing.map((m) => ({
+      no: m.sequence, label: numberLabel(m.sequence, m.verified),
+      text: MISSING_IMAGE_REASON[m.state] ?? "รูปยังไม่เข้าระบบ",
+    })),
   ].sort((a, b) => (a.no ?? Infinity) - (b.no ?? Infinity));
   if (items.length === 0) return;
   lines.push("");
   lines.push(header);
-  for (const item of items) lines.push(`#${item.no ?? "?"} ${item.text}`);
+  for (const item of items) lines.push(`${item.label} ${item.text}`);
 }
+
+/** Shown ABOVE the per-image lists so no "#N?" is read as a confirmed position. */
+export const SEQUENCE_UNVERIFIED_NOTE =
+  "⚠️ เลขที่มี ? ยืนยันลำดับจาก LINE ไม่ได้ ห้ามใช้อ้างอิงรูปจนกว่าจะเทียบเวลาในแชท";
 
 function appendSequenceNote(lines: string[], uncertain: boolean | undefined): void {
   if (!uncertain) return;
   lines.push("");
-  lines.push("⚠️ เลข # บางรูปยืนยันลำดับจาก LINE ไม่ได้ ให้เทียบเวลาในแชทก่อนใช้");
+  lines.push(SEQUENCE_UNVERIFIED_NOTE);
 }
 
-function appendTrustedEvidenceLines(lines: string[], trusted: EnrichedEvidence[]): void {
+function appendTrustedEvidenceLines(
+  lines: string[],
+  trusted: EnrichedEvidence[],
+  legacyUnverified = false,
+): void {
   if (trusted.length === 0) return;
   lines.push("");
   lines.push("รูปที่ตรวจผ่าน:");
   for (const e of trusted) {
-    const idx    = displayNumber(e) ?? "?";
+    const label  = evidenceLabel(e, legacyUnverified);
     const amount = e.flags.effectiveAmount;
     if (amount !== null && amount > 0) {
       const formatted = amount.toLocaleString("th-TH", { maximumFractionDigits: 2 });
-      lines.push(`#${idx} เช็คได้ ${formatted} บาท`);
+      lines.push(`${label} เช็คได้ ${formatted} บาท`);
     } else {
-      lines.push(`#${idx} เช็คได้`);
+      lines.push(`${label} เช็คได้`);
     }
   }
 }
