@@ -13,7 +13,7 @@ import type { Database } from "../src/types/database";
 import type { SlipExtraction, SlipType } from "../src/lib/slips/extraction-schema";
 import { applyGlobalDuplicateExclusions, type EvidenceWithCheck } from "../src/lib/slips/batch-finalizer";
 import { computeValidationFlags, parseBatchDate } from "../src/lib/slips/validation-guard";
-import { anyReadAmount, diagnoseSlipImage, type StoredCheck } from "../src/lib/slips/forensics";
+import { anyReadAmount, countOrUnknown, diagnoseSlipImage, optionalRows, type StoredCheck } from "../src/lib/slips/forensics";
 
 if (process.env.SLIP_FORENSICS_PRODUCTION_READ_APPROVED !== "1") {
   throw new Error("reads Production slip data: set SLIP_FORENSICS_PRODUCTION_READ_APPROVED=1 only with approval");
@@ -57,8 +57,13 @@ for (const batch of batches) {
   const checks = evidences.length === 0 ? [] : must(await supabase.from("slip_checks")
     .select("id, evidence_id, status, failure_reason, slip_type, gross_amount, discount_amount, paid_amount, transfer_amount, reference_id, transaction_time, confidence, extracted_json, created_at, updated_at")
     .in("evidence_id", evidences.map((e) => e.id)), "checks") ?? [];
-  const corrections = checks.length === 0 ? [] : must(await supabase.from("slip_check_amount_corrections")
-    .select("check_id").in("check_id", checks.map((c) => c.id)), "corrections") ?? [];
+  // Optional: the corrections table is absent in Production (migration 20260922103000
+  // not applied). Unreadable means UNKNOWN, never "no corrections".
+  const corrections = checks.length === 0
+    ? optionalRows<{ check_id: string }>({ data: [], error: null })
+    : optionalRows<{ check_id: string }>(await supabase.from("slip_check_amount_corrections" as never)
+      .select("check_id").in("check_id", checks.map((c) => c.id)) as never);
+  if (!corrections.available) console.log(`amount corrections: UNKNOWN (unavailable: ${corrections.reason})`);
 
   const evByMsg = new Map(evidences.map((e) => [e.line_message_id, e]));
   const checkByEv = new Map(checks.map((c) => [c.evidence_id, c]));
@@ -91,9 +96,19 @@ for (const batch of batches) {
   });
 
   const attachedEvidences = rows.filter((r) => r.evidence).map((r) => r.evidence!);
-  const deduped = await applyGlobalDuplicateExclusions(supabase as never, attachedEvidences);
+  // A failed global duplicate lookup leaves duplicates UNKNOWN; the in-batch guard still runs.
+  let deduped: EvidenceWithCheck[] = attachedEvidences;
+  let globalUnknown: string | null = null;
+  try {
+    deduped = await applyGlobalDuplicateExclusions(supabase as never, attachedEvidences);
+  } catch (error) {
+    globalUnknown = error instanceof Error ? error.message.slice(0, 120) : "error";
+    console.log(`global duplicate check: UNKNOWN (${globalUnknown})`);
+  }
   const flags = computeValidationFlags(deduped, parseBatchDate(batch.slip_date));
-  const flagsById = new Map(deduped.map((e, i) => [e.id, { flags: flags[i], global: e.globallyDuplicate === true }]));
+  const flagsById = new Map(deduped.map((e, i) => [
+    e.id, { flags: flags[i], global: globalUnknown ? "UNKNOWN" as const : e.globallyDuplicate === true },
+  ]));
 
   let confirmedTotal = 0;
   for (const r of rows) {
@@ -127,7 +142,7 @@ for (const batch of batches) {
       confidence: r.c?.confidence ?? null,
       guardReasons: f?.flags.flagReasons ?? [],
       globalDuplicate: f?.global ?? false,
-      amountCorrections: corrections.filter((x) => x.check_id === r.c?.id).length,
+      amountCorrections: countOrUnknown(corrections, (x) => x.check_id === r.c?.id),
       checkCreated: r.c?.created_at ?? null,
       diagnosis: d.diagnosis,
       detail: d.detail,
