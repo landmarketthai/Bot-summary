@@ -39,7 +39,7 @@ killed kick leaves a leased job that the cron worker reclaims.
 | One job per LINE event (redelivery-safe) | `UNIQUE (line_event_id)` + `enqueue_ai_assistant_job` |
 | ≤ 3 outstanding questions per user/chat, ≤ 500 backlog | `enqueue_ai_assistant_job` under one global advisory lock (exact under concurrency) |
 | A question is acknowledged only once its job exists | webhook marks the raw message processed after enqueue; an enqueue error is a retryable 503 |
-| A failed enqueue is recovered without LINE redelivery | the cron's recovery sweep enqueues unprocessed `@Botsummary` raw messages of the last 30 min (older than 30 s); duplicates are absorbed by `line_event_id` |
+| A failed enqueue is recovered without LINE redelivery | the cron's recovery sweep enqueues unprocessed `@Botsummary` raw messages of the last 30 min (older than 30 s), paging past other unprocessed messages (≤ 250 rows per run); duplicates are absorbed by `line_event_id` |
 | ≤ `MAX_RUNNING` answers in flight across all invocations | `claim_ai_assistant_jobs` (serialized claim, live-lease count) |
 | One active job per conversation, even for late older events | claim skips a job while another job of its conversation is running; partial unique index on running jobs |
 | Follow-up waits for the previous question | queued jobs of a conversation are claimed in LINE order |

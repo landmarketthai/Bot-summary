@@ -136,6 +136,40 @@ describePg("recovery matrix (real PostgreSQL)", () => {
     expect(await database.scalar("SELECT count(*) FROM public.ai_assistant_jobs")).toBe("1");
   });
 
+  test("sweep pages past unprocessed non-question messages so a question is not hidden behind them", async () => {
+    const database = db!;
+    const p = pipeline(database);
+    await database.query("TRUNCATE public.raw_messages CASCADE");
+    // 60 older unprocessed produce texts left by another workflow.
+    await database.query(`
+      INSERT INTO public.raw_messages (line_event_id, destination, event_type, source_type, source_id, user_id, message_id, message_type, raw_text, payload, is_processed, created_at)
+      SELECT 'noise-' || g, 'Ubot', 'message', 'group', 'Capproved', 'Uworker', 'mn-' || g, 'text', 'เบิก มะม่วง ' || g,
+             jsonb_build_object('type', 'message', 'webhookEventId', 'noise-' || g, 'timestamp', 0,
+               'source', jsonb_build_object('type', 'group', 'groupId', 'Capproved', 'userId', 'Uworker'),
+               'message', jsonb_build_object('id', 'mn-' || g, 'type', 'text', 'text', 'เบิก มะม่วง ' || g)),
+             false, now() - interval '10 minutes' + (g || ' milliseconds')::interval
+      FROM generate_series(1, 60) AS g`);
+    const event = question("วันนี้ทุกตลาดขายได้เท่าไหร่?");
+    await database.query("ALTER FUNCTION public.enqueue_ai_assistant_job(jsonb, integer, integer) RENAME TO enqueue_ai_assistant_job_offline");
+    try {
+      expect(webhookResponseStatus(await p.service.processEvents([event], "Ubot"))).toBe(503);
+    } finally {
+      await database.query("ALTER FUNCTION public.enqueue_ai_assistant_job_offline(jsonb, integer, integer) RENAME TO enqueue_ai_assistant_job");
+    }
+    const sweep = (maxRows: number) => recoverUnenqueuedQuestions({
+      supabase: p.supabase, dispatcher: createAssistantDispatcher(p.store), analystEnabled: true,
+      sourceAllowed: () => true, whiteSheetReaderEnabled: false, minAgeMs: 0, limit: 25, maxRows,
+    });
+    // Bounded: a sweep that may examine only 50 rows stops before the question.
+    expect(await sweep(50)).toMatchObject({ scanned: 50, enqueued: 0 });
+    // The default bound pages through all 61 rows and finds it.
+    expect(await sweep(250)).toMatchObject({ scanned: 61, skipped: 60, enqueued: 1 });
+    expect(await database.scalar("SELECT count(*) FROM public.raw_messages WHERE is_processed = false")).toBe("60");
+    await p.work();
+    expect(p.line.sent).toHaveLength(1);
+    expect(p.line.sent[0]!.text).toContain("40,550.75");
+  });
+
   test("duplicate webhook delivery: one job, one message", async () => {
     const database = db!;
     const p = pipeline(database);

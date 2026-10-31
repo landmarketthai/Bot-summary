@@ -14,6 +14,10 @@
  * texts that could be white-sheet review input while the reader is enabled,
  * chats not on the source allowlist, and anything younger than `minAgeMs`
  * (its webhook may still be in flight).
+ *
+ * The scan pages through the window (keyset on created_at, `limit` rows per
+ * page, at most `maxRows` rows) so unprocessed non-question messages left by
+ * other workflows cannot hide a question behind the first page.
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
@@ -42,7 +46,10 @@ export async function recoverUnenqueuedQuestions(options: {
   whiteSheetReaderEnabled: boolean;
   windowMinutes?: number;
   minAgeMs?: number;
+  /** Rows per page. */
   limit?: number;
+  /** Rows examined per sweep, across pages. */
+  maxRows?: number;
   now?: number;
 }): Promise<RecoverySummary> {
   const summary: RecoverySummary = { scanned: 0, enqueued: 0, duplicate: 0, deferred: 0, skipped: 0 };
@@ -51,30 +58,52 @@ export async function recoverUnenqueuedQuestions(options: {
   const since = new Date(now - (options.windowMinutes ?? 30) * 60_000).toISOString();
   const until = new Date(now - (options.minAgeMs ?? 30_000)).toISOString();
 
-  const { data, error } = await options.supabase
-    .from("raw_messages")
-    .select("id, destination, source_id, payload, is_processed, created_at")
-    .eq("is_processed", false)
-    .eq("event_type", "message")
-    .eq("message_type", "text")
-    .gte("created_at", since)
-    .lte("created_at", until)
-    .order("created_at", { ascending: true })
-    .limit(options.limit ?? 50);
-  if (error) throw new Error("ai assistant recovery scan failed");
+  const pageSize = Math.max(1, options.limit ?? 50);
+  const maxRows = Math.max(pageSize, options.maxRows ?? 250);
+  const seen = new Set<string>();
+  let cursor = since;
 
-  for (const row of data ?? []) {
+  while (summary.scanned < maxRows) {
+    const { data, error } = await options.supabase
+      .from("raw_messages")
+      .select("id, destination, source_id, payload, is_processed, created_at")
+      .eq("is_processed", false)
+      .eq("event_type", "message")
+      .eq("message_type", "text")
+      .gte("created_at", cursor)
+      .lte("created_at", until)
+      .order("created_at", { ascending: true })
+      .limit(pageSize);
+    if (error) throw new Error("ai assistant recovery scan failed");
+    const rows = data ?? [];
+    // Rows at the cursor timestamp come back again (gte); skip those already seen.
+    const fresh = rows.filter((row) => !seen.has(row.id));
+    if (fresh.length === 0) break;
+
+    for (const row of fresh) {
+      if (summary.scanned >= maxRows) break;
+      seen.add(row.id);
+      await recoverRow(row);
+    }
+    if (rows.length < pageSize) break;
+    const last = String(rows[rows.length - 1]!.created_at);
+    // A full page sharing one timestamp: the next page would repeat it.
+    if (last === cursor) break;
+    cursor = last;
+  }
+
+  async function recoverRow(row: { id: string; destination: string; source_id: string; payload: unknown }) {
     summary.scanned += 1;
     const event = row.payload as unknown as LineMessageEvent | null;
     const message = event?.message as LineTextMessage | undefined;
-    if (!event || message?.type !== "text" || typeof message.text !== "string") { summary.skipped += 1; continue; }
+    if (!event || message?.type !== "text" || typeof message.text !== "string") { summary.skipped += 1; return; }
     const question = extractBotSummaryQuestion(message, row.destination);
     if (!question
       || !options.sourceAllowed(row.source_id)
       || whiteSheetReadCommand(message, row.destination) !== null
       || (options.whiteSheetReaderEnabled && whiteSheetReviewInput(message, row.destination) !== null)) {
       summary.skipped += 1;
-      continue;
+      return;
     }
 
     let outcome: Awaited<ReturnType<AssistantDispatcher>>["outcome"];
@@ -85,7 +114,7 @@ export async function recoverUnenqueuedQuestions(options: {
     }
     if (outcome === "rate_limited" || outcome === "queue_full" || outcome === "error") {
       summary.deferred += 1;
-      continue;
+      return;
     }
     if (outcome === "queued") summary.enqueued += 1;
     else summary.duplicate += 1;
