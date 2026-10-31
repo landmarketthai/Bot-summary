@@ -2,9 +2,49 @@ import { describe, expect, test } from "bun:test";
 import {
   answerBotSummaryQuestion,
   createOpenAIResponse,
+  estimateAnalystCostUsd,
   extractOpenAIFunctionCalls,
   extractOpenAIOutputText,
 } from "./openai-analyst";
+
+describe("estimateAnalystCostUsd", () => {
+  const usage = { inputTokens: 1_000_000, cachedInputTokens: 400_000, outputTokens: 100_000 };
+
+  test("prices uncached input, cached input and output per million tokens", () => {
+    expect(estimateAnalystCostUsd(usage, {
+      BOT_SUMMARY_ANALYST_INPUT_USD_PER_MTOK: "2",
+      BOT_SUMMARY_ANALYST_CACHED_INPUT_USD_PER_MTOK: "0.5",
+      BOT_SUMMARY_ANALYST_OUTPUT_USD_PER_MTOK: "8",
+    })).toBeCloseTo(0.6 * 2 + 0.4 * 0.5 + 0.1 * 8, 10);
+  });
+
+  test("bills cached tokens at the input price when no cached price is set", () => {
+    expect(estimateAnalystCostUsd(usage, {
+      BOT_SUMMARY_ANALYST_INPUT_USD_PER_MTOK: "2",
+      BOT_SUMMARY_ANALYST_OUTPUT_USD_PER_MTOK: "8",
+    })).toBeCloseTo(1 * 2 + 0.1 * 8, 10);
+  });
+
+  test("is unknown (null), never zero, when a required price is missing or invalid", () => {
+    expect(estimateAnalystCostUsd(usage, {})).toBeNull();
+    expect(estimateAnalystCostUsd(usage, { BOT_SUMMARY_ANALYST_INPUT_USD_PER_MTOK: "2" })).toBeNull();
+    expect(estimateAnalystCostUsd(usage, {
+      BOT_SUMMARY_ANALYST_INPUT_USD_PER_MTOK: "abc",
+      BOT_SUMMARY_ANALYST_OUTPUT_USD_PER_MTOK: "8",
+    })).toBeNull();
+    expect(estimateAnalystCostUsd(usage, {
+      BOT_SUMMARY_ANALYST_INPUT_USD_PER_MTOK: "-1",
+      BOT_SUMMARY_ANALYST_OUTPUT_USD_PER_MTOK: "8",
+    })).toBeNull();
+  });
+
+  test("a free model priced at 0 is a real zero, not unknown", () => {
+    expect(estimateAnalystCostUsd(usage, {
+      BOT_SUMMARY_ANALYST_INPUT_USD_PER_MTOK: "0",
+      BOT_SUMMARY_ANALYST_OUTPUT_USD_PER_MTOK: "0",
+    })).toBe(0);
+  });
+});
 
 function completedText(text: string) {
   return {
