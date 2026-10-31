@@ -180,12 +180,6 @@ export type JobAccessDecision =
   | { ok: true; access: JobAccess }
   | { ok: false; reason: "group_not_permitted" | "no_grant" };
 
-function intersectMarkets(a: ReadonlySet<string> | null, b: ReadonlySet<string> | null): ReadonlySet<string> | null {
-  if (a === null) return b;
-  if (b === null) return a;
-  return new Set([...a].filter((market) => b.has(market)));
-}
-
 function scopeKeyOf(parts: Record<string, unknown>): string {
   return createHash("sha256").update(JSON.stringify(parts)).digest("hex");
 }

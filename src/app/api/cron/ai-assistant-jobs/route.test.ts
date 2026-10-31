@@ -17,6 +17,8 @@ const workerMock = mock(async (options: { budgetMs: number; maxJobs?: number }) 
   claimed: 1, completed: 1, failed: 0, retried: 0, fenced: 0, delivered: 1, undelivered: 0,
 }));
 mock.module("@/lib/ai/assistant/runtime", () => ({ runAssistantWorkerOnce: workerMock }));
+const recoveryMock = mock(async () => ({ scanned: 2, enqueued: 1, duplicate: 0, deferred: 0, skipped: 1 }));
+mock.module("@/lib/ai/assistant/recovery", () => ({ recoverUnenqueuedQuestions: recoveryMock }));
 
 const { GET } = await import("./route");
 
@@ -31,6 +33,7 @@ afterEach(() => {
   else process.env.BOT_SUMMARY_ANALYST_ENABLED = originalEnabled;
   workerMock.mockClear();
   rpcMock.mockClear();
+  recoveryMock.mockClear();
 });
 
 function request(secret?: string): NextRequest {
@@ -68,6 +71,8 @@ describe("AI assistant worker cron", () => {
     expect(response.status).toBe(200);
     expect(body.worker.delivered).toBe(1);
     expect(body.queue).toEqual({ queued: 0, running: 0 });
+    expect(body.recovered).toMatchObject({ enqueued: 1 });
+    expect(recoveryMock).toHaveBeenCalledTimes(1);
     expect(workerMock).toHaveBeenCalledTimes(1);
     expect(workerMock.mock.calls[0]![0].budgetMs).toBeLessThanOrEqual(50_000);
     expect(rpcMock.mock.calls.map((call) => call[0]).sort()).toEqual(["ai_assistant_queue_health", "prune_ai_assistant_history"]);
