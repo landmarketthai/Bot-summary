@@ -3203,6 +3203,7 @@ export interface Database {
           p_source_id: string;
           p_line_user_id: string;
           p_before_event_ms: number;
+          p_exclude_job_id: string;
           p_limit?: number;
         };
         Returns: {

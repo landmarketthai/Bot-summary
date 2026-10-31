@@ -443,11 +443,16 @@ AS $fn$
   SELECT EXISTS (SELECT 1 FROM updated);
 $fn$;
 
+-- Turns of the asking job's conversation, excluding the job itself. Every
+-- stored turn belongs to an EARLIER job (a later job of the same conversation
+-- cannot be claimed while an earlier one is open), so equal LINE timestamps
+-- are kept; the timestamp bound is defence in depth.
 CREATE OR REPLACE FUNCTION public.load_ai_assistant_turns(
   p_destination text,
   p_source_id text,
   p_line_user_id text,
   p_before_event_ms bigint,
+  p_exclude_job_id uuid,
   p_limit integer DEFAULT 4
 ) RETURNS TABLE (
   question text,
@@ -467,7 +472,8 @@ AS $fn$
      AND t.source_id = p_source_id
      AND t.line_user_id = p_line_user_id
      AND t.expires_at > now()
-     AND t.event_timestamp_ms < p_before_event_ms
+     AND t.event_timestamp_ms <= p_before_event_ms
+     AND t.job_id <> p_exclude_job_id
    ORDER BY t.event_timestamp_ms DESC, t.id DESC
    LIMIT least(greatest(coalesce(p_limit, 4), 0), 8);
 $fn$;
@@ -556,7 +562,7 @@ BEGIN
     'public.set_ai_assistant_delivery(uuid, uuid, text[], text, text)',
     'public.complete_ai_assistant_job(uuid, uuid, text, text)',
     'public.retry_ai_assistant_job(uuid, uuid, integer, text)',
-    'public.load_ai_assistant_turns(text, text, text, bigint, integer)',
+    'public.load_ai_assistant_turns(text, text, text, bigint, uuid, integer)',
     'public.get_ai_assistant_user_grant(text)',
     'public.prune_ai_assistant_history(integer, integer)',
     'public.ai_assistant_queue_health()'

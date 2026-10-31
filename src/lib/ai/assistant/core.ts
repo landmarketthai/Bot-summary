@@ -122,6 +122,7 @@ export async function answerAssistantJob(
     turns = await deps.store.loadTurns(
       { destination: job.destination, sourceId: job.source_id, lineUserId: job.line_user_id },
       job.event_timestamp_ms,
+      job.id,
       HISTORY_TURNS,
     );
   } catch (error) {

@@ -23,6 +23,8 @@ export class MemoryAssistantJobStore implements AssistantJobStore {
   readonly jobs = new Map<string, AssistantJob>();
   readonly turns: StoredTurn[] = [];
   private turnId = 0;
+  /** Enqueue order: stands in for PostgreSQL's microsecond created_at, which never ties in practice. */
+  private readonly enqueueOrder = new Map<string, number>();
   /** Test clock offset (ms) for lease / backoff / TTL scenarios. */
   clockOffsetMs = 0;
   /** Inject a failure for the next call of an operation. */
@@ -96,6 +98,7 @@ export class MemoryAssistantJobStore implements AssistantJobStore {
       completed_at: null,
     };
     this.jobs.set(job.id, job);
+    this.enqueueOrder.set(job.id, this.enqueueOrder.size);
     return { outcome: "queued", jobId: job.id };
   }
 
@@ -115,13 +118,14 @@ export class MemoryAssistantJobStore implements AssistantJobStore {
     const slots = Math.min(Math.max(options.limit, 0), Math.max(options.maxRunning - running, 0), 20);
     if (slots <= 0) return [];
     const open = [...this.jobs.values()].filter((job) => job.status === "queued" || job.status === "running");
+    const created = (job: AssistantJob) => this.enqueueOrder.get(job.id) ?? 0;
     const order = (a: AssistantJob, b: AssistantJob) =>
-      a.event_timestamp_ms - b.event_timestamp_ms || a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id);
+      a.event_timestamp_ms - b.event_timestamp_ms || created(a) - created(b);
     const candidates = open
       .filter((job) => (job.status === "queued" && Date.parse(job.available_at) <= now)
         || (job.status === "running" && Date.parse(job.lease_expires_at!) <= now))
       .filter((job) => !open.some((other) => other.id !== job.id && this.sameConversation(other, job) && order(other, job) < 0))
-      .sort((a, b) => a.available_at.localeCompare(b.available_at) || a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id))
+      .sort((a, b) => a.available_at.localeCompare(b.available_at) || created(a) - created(b))
       .slice(0, slots);
     const leaseMs = Math.min(Math.max(options.leaseSeconds, 30), 900) * 1000;
     for (const job of candidates) {
@@ -226,12 +230,13 @@ export class MemoryAssistantJobStore implements AssistantJobStore {
     return true;
   }
 
-  async loadTurns(key: ConversationKey, beforeEventMs: number, limit: number): Promise<ConversationTurn[]> {
+  async loadTurns(key: ConversationKey, beforeEventMs: number, excludeJobId: string, limit: number): Promise<ConversationTurn[]> {
     this.take("loadTurns");
     const now = this.now();
     return this.turns
       .filter((turn) => turn.destination === key.destination && turn.sourceId === key.sourceId
-        && turn.lineUserId === key.lineUserId && turn.expiresAt > now && turn.eventTimestampMs < beforeEventMs)
+        && turn.lineUserId === key.lineUserId && turn.expiresAt > now
+        && turn.eventTimestampMs <= beforeEventMs && turn.jobId !== excludeJobId)
       .sort((a, b) => b.eventTimestampMs - a.eventTimestampMs || b.id - a.id)
       .slice(0, Math.min(Math.max(limit, 0), 8))
       .map(({ question, answer, businessDate, context, eventTimestampMs }) => ({

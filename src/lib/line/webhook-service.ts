@@ -198,7 +198,6 @@ import {
   type AssistantDispatcher,
 } from "@/lib/ai/assistant/dispatch";
 import { SupabaseAssistantJobStore } from "@/lib/ai/assistant/job-store";
-import { runAssistantWorkerOnce } from "@/lib/ai/assistant/runtime";
 import {
   isReadableWhiteSheetImage, isUncertainApprovalConfirmation, isWhiteSheetApproval, isWhiteSheetReaderEnabled,
   otherUserWhiteSheetSessionActive, resolveWhiteSheetSession, whiteSheetReadCommand, whiteSheetReviewInput,
@@ -591,6 +590,12 @@ interface WebhookServiceDependencies {
   recordDataQualityIssue?: RecordDataQualityIssue;
   /** Enqueues a @Botsummary question as a durable job (the only AI work in the webhook). */
   botSummaryAssistantDispatcher?: AssistantDispatcher;
+  /**
+   * Only the LINE webhook route passes this. Other callers (slip/produce
+   * recovery crons) drain the same ordered queue inside their own bounded
+   * phases and must never run the assistant there; their questions wait
+   * for the assistant worker cron.
+   */
   botSummaryAssistantKick?: BotSummaryAssistantKick;
   botSummaryAnalystEnabled?: boolean;
   botSummaryAnalystSourceAllowed?: BotSummaryAnalystSourceAllowed;
@@ -812,7 +817,7 @@ export class WebhookService {
   private readonly dataEntrySessionOwnershipResolver: DataEntrySessionOwnershipResolver;
   private readonly recordDataQualityIssue: RecordDataQualityIssue;
   private readonly botSummaryAssistantDispatcher: AssistantDispatcher;
-  private readonly botSummaryAssistantKick: BotSummaryAssistantKick;
+  private readonly botSummaryAssistantKick: BotSummaryAssistantKick | null;
   private assistantKickScheduled = false;
   private readonly botSummaryAnalystEnabled: boolean;
   private readonly botSummaryAnalystSourceAllowed: BotSummaryAnalystSourceAllowed;
@@ -891,9 +896,7 @@ export class WebhookService {
     this.botSummaryAssistantDispatcher =
       dependencies.botSummaryAssistantDispatcher
       ?? createAssistantDispatcher(new SupabaseAssistantJobStore(this.supabase));
-    this.botSummaryAssistantKick =
-      dependencies.botSummaryAssistantKick
-      ?? (async (budgetMs) => { await runAssistantWorkerOnce({ budgetMs, maxJobs: 3 }); });
+    this.botSummaryAssistantKick = dependencies.botSummaryAssistantKick ?? null;
     this.whiteSheetBaseReader = dependencies.whiteSheetBaseReader ?? readWhiteSheetBase;
     this.whiteSheetCorrectionApplier = dependencies.whiteSheetCorrectionApplier ?? applyWhiteSheetCorrection;
     this.whiteSheetSessionResolver = dependencies.whiteSheetSessionResolver ?? resolveWhiteSheetSession;
@@ -5002,13 +5005,14 @@ export class WebhookService {
     log.info("Bot Summary assistant question dispatched", { outcome });
     const immediate = dispatchReplyText(outcome, BOT_SUMMARY_TEMPORARY_ERROR_REPLY);
     if (immediate && event.replyToken) await replyMessage(event.replyToken, immediate);
-    if (outcome === "queued" && !this.assistantKickScheduled) {
+    const kick = this.botSummaryAssistantKick;
+    if (outcome === "queued" && kick && !this.assistantKickScheduled) {
       this.assistantKickScheduled = true;
       // Stay inside the webhook route's maxDuration (60 s); the cron worker
       // picks up anything this run cannot finish.
       const budgetMs = this.requestStartedAtMs + 52_000 - Date.now();
       if (budgetMs >= 15_000) {
-        this.scheduleBackgroundTask(() => this.botSummaryAssistantKick(budgetMs));
+        this.scheduleBackgroundTask(() => kick(budgetMs));
       }
     }
   }

@@ -211,16 +211,32 @@ for (const h of harnesses) {
       await h.store.complete(noticeId!, notice!.lease_token!, "failed", "provider_timeout");
 
       const key = { destination: "Ubot", sourceId: "Cgroup", lineUserId: "Uasker" };
-      const turns = await h.store.loadTurns(key, Number.MAX_SAFE_INTEGER, 8);
+      const turns = await h.store.loadTurns(key, Number.MAX_SAFE_INTEGER, "00000000-0000-4000-8000-000000000000", 8);
       expect(turns.map((turn) => turn.question)).toEqual(["q2", "q3", "q4"]);
       expect(turns[0]!.context).toEqual({ tools: [{ tool: "get_pending_items", arguments: { staff: "ปลา" } }] });
-      expect((await h.store.loadTurns({ ...key, lineUserId: "Uother" }, Number.MAX_SAFE_INTEGER, 8)).map((t) => t.answer))
+      expect((await h.store.loadTurns({ ...key, lineUserId: "Uother" }, Number.MAX_SAFE_INTEGER, "00000000-0000-4000-8000-000000000000", 8)).map((t) => t.answer))
         .toEqual(["secret of Uother"]);
-      expect(await h.store.loadTurns({ ...key, destination: "Uother-bot" }, Number.MAX_SAFE_INTEGER, 8)).toEqual([]);
-      // Only turns from BEFORE the question being answered.
-      expect((await h.store.loadTurns(key, turns[1]!.eventTimestampMs, 8)).map((t) => t.question)).toEqual(["q2"]);
+      expect(await h.store.loadTurns({ ...key, destination: "Uother-bot" }, Number.MAX_SAFE_INTEGER, "00000000-0000-4000-8000-000000000000", 8)).toEqual([]);
+      // Only turns up to the question being answered.
+      expect((await h.store.loadTurns(key, turns[1]!.eventTimestampMs - 1, "00000000-0000-4000-8000-000000000000", 8)).map((t) => t.question)).toEqual(["q2"]);
       await h.expireTurns();
-      expect(await h.store.loadTurns(key, Number.MAX_SAFE_INTEGER, 8)).toEqual([]);
+      expect(await h.store.loadTurns(key, Number.MAX_SAFE_INTEGER, "00000000-0000-4000-8000-000000000000", 8)).toEqual([]);
+    });
+
+    test("a follow-up sent in the same LINE millisecond still sees the previous turn, never its own", async () => {
+      const sameMs = 1_793_100_000_000;
+      const first = await h.store.enqueue(request({ question: "ทำไมรายการของพี่ปลายังปิดไม่ได้?", eventTimestampMs: sameMs }));
+      const second = await h.store.enqueue(request({ question: "แล้วของพี่ขวัญล่ะ?", eventTimestampMs: sameMs }));
+      const [job1] = await h.store.claim("w", claimOne);
+      expect(job1!.id).toBe(first.jobId!);
+      await h.store.recordAnswer(job1!.id, job1!.lease_token!, { answer: "ปลา: คืนค้าง", kind: "answer", turn: { businessDate: "2026-10-31", context: {} } });
+      await h.store.complete(job1!.id, job1!.lease_token!, "completed");
+      const [job2] = await h.store.claim("w", claimOne);
+      expect(job2!.id).toBe(second.jobId!);
+      const key = { destination: "Ubot", sourceId: "Cgroup", lineUserId: "Uasker" };
+      expect((await h.store.loadTurns(key, sameMs, job2!.id, 4)).map((t) => t.question)).toEqual(["ทำไมรายการของพี่ปลายังปิดไม่ได้?"]);
+      // A reclaimed job never sees its own earlier (recorded) turn.
+      expect(await h.store.loadTurns(key, sameMs, job1!.id, 4)).toEqual([]);
     });
   });
 }

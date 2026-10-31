@@ -152,6 +152,14 @@ describe("@Botsummary webhook routing", () => {
     expect(s.replies).toEqual([{ token: "reply-evt-4", text: ASSISTANT_BUSY_REPLY }]);
   });
 
+  test("without a kick (recovery crons) a question is only queued: no assistant work in their background phase", async () => {
+    const s = setup({ botSummaryAssistantKick: undefined });
+    await s.service.processEvents([textEvent("@Botsummary วันนี้ทุกตลาดขายได้เท่าไหร่?")], "Ubot");
+    expect(s.dispatched).toHaveLength(1);
+    expect(s.background).toHaveLength(0);
+    expect(s.kicks).toHaveLength(0);
+  });
+
   test("several questions in one webhook request share one worker kick", async () => {
     const s = setup();
     await s.service.processEvents([

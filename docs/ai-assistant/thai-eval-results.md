@@ -1,6 +1,6 @@
 # @Botsummary Thai evaluation — measured results
 
-Run at 2026-10-31T03:59:32.352Z · 24 questions · asked business date 2026-10-31 · fixture data only (no Production data).
+Run at 2026-10-31T04:52:26.295Z · 24 questions · asked business date 2026-10-31 · fixture data only (no Production data).
 
 ## A. Deterministic backend rules
 
