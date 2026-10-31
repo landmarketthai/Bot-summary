@@ -189,6 +189,24 @@ describe("@Botsummary async isolation", () => {
     release();
   });
 
+  test("a later message in the same payload is handled while the model is still hung", async () => {
+    const store = new MemoryAssistantJobStore();
+    const s = setup({
+      botSummaryAssistantDispatcher: createAssistantDispatcher(store),
+      botSummaryAssistantKick: () => new Promise(() => {}),
+      scheduleBackgroundTask: (task) => { void task(); },
+    });
+    const started = Date.now();
+    const results = await s.service.processEvents([
+      textEvent("@Botsummary ทำไมรายการของพี่ปลายังปิดไม่ได้?", "evt-q"),
+      textEvent("สวัสดีครับ", "evt-next"),
+    ], "Ubot");
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(results.map((result) => result.status)).toEqual(["saved", "saved"]);
+    expect(s.db.rows("raw_messages")).toHaveLength(2);
+    expect(store.jobs.size).toBe(1);
+  });
+
   test("a redelivered LINE event never creates a second job", async () => {
     const store = new MemoryAssistantJobStore();
     const dispatcher = createAssistantDispatcher(store);

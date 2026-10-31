@@ -138,4 +138,6 @@ category totals are withheld.
   counted in `ai_assistant_queue_health().undelivered_24h`.
 - Grounding checks figures ≥ 100 or with decimals; small counts are trusted
   to the tool-only instructions.
-- The 13 pre-existing non-PG test failures on `main` are unrelated (see PR).
+- Full non-PG `bun test ./src` has 16 failures that fail identically on the PR #189 head
+  (manifest/migration-history, purchase-capture e2e, slip cron deadline, preflight
+  message, white_sheet_review_turns); none touch this change.
