@@ -2275,6 +2275,47 @@ export interface Database {
         };
         Relationships: [];
       };
+      ai_assistant_jobs: {
+        Row: {
+          id:                     string;
+          line_event_id:          string;
+          raw_message_id:         string | null;
+          destination:            string;
+          source_type:            LineSourceType;
+          source_id:              string;
+          line_user_id:           string;
+          question:               string;
+          asked_business_date:    string;
+          event_timestamp_ms:     number;
+          reply_token:            string | null;
+          reply_token_expires_at: string | null;
+          status:                 "queued" | "running" | "completed" | "failed";
+          attempts:               number;
+          max_attempts:           number;
+          available_at:           string;
+          lease_token:            string | null;
+          lease_expires_at:       string | null;
+          worker_id:              string | null;
+          answer_text:            string | null;
+          answer_kind:            "answer" | "notice" | null;
+          delivery_state:
+            | "pending" | "reply_started" | "push_started"
+            | "delivered" | "uncertain" | "undeliverable";
+          delivery_channel:       "reply" | "push" | null;
+          delivery_retry_key:     string;
+          last_error_code:        string | null;
+          usage:                  Json | null;
+          tool_names:             string[];
+          created_at:             string;
+          updated_at:             string;
+          started_at:             string | null;
+          completed_at:           string | null;
+        };
+        // RPC-only: no direct writes.
+        Insert: { [_ in never]: never };
+        Update: { [_ in never]: never };
+        Relationships: [];
+      };
     };
     Views: {
       produce_transactions: {
@@ -3095,6 +3136,99 @@ export interface Database {
       };
       get_profitability_snapshot: {
         Args: { p_accountability_round_id: string; p_revision?: number | null };
+        Returns: Json;
+      };
+      enqueue_ai_assistant_job: {
+        Args: {
+          p_job: Json;
+          p_max_outstanding_per_conversation?: number;
+          p_max_backlog?: number;
+        };
+        Returns: Json;
+      };
+      claim_ai_assistant_jobs: {
+        Args: {
+          p_worker_id: string;
+          p_limit?: number;
+          p_lease_seconds?: number;
+          p_max_running?: number;
+        };
+        Returns: Database["public"]["Tables"]["ai_assistant_jobs"]["Row"][];
+      };
+      record_ai_assistant_answer: {
+        Args: {
+          p_job_id: string;
+          p_lease_token: string;
+          p_answer: string;
+          p_kind: "answer" | "notice";
+          p_usage?: Json | null;
+          p_tool_names?: string[];
+          p_turn_context?: Json | null;
+          p_turn_ttl_seconds?: number;
+          p_max_turns?: number;
+        };
+        Returns: boolean;
+      };
+      set_ai_assistant_delivery: {
+        Args: {
+          p_job_id: string;
+          p_lease_token: string;
+          p_from: string[];
+          p_to: string;
+          p_channel?: "reply" | "push" | null;
+        };
+        Returns: boolean;
+      };
+      complete_ai_assistant_job: {
+        Args: {
+          p_job_id: string;
+          p_lease_token: string;
+          p_status: "completed" | "failed";
+          p_error_code?: string | null;
+        };
+        Returns: boolean;
+      };
+      retry_ai_assistant_job: {
+        Args: {
+          p_job_id: string;
+          p_lease_token: string;
+          p_delay_seconds: number;
+          p_error_code: string;
+        };
+        Returns: boolean;
+      };
+      load_ai_assistant_turns: {
+        Args: {
+          p_destination: string;
+          p_source_id: string;
+          p_line_user_id: string;
+          p_before_event_ms: number;
+          p_limit?: number;
+        };
+        Returns: {
+          question: string;
+          answer: string;
+          business_date: string;
+          context: Json;
+          event_timestamp_ms: number;
+        }[];
+      };
+      get_ai_assistant_user_grant: {
+        Args: { p_line_user_id: string };
+        Returns: {
+          line_user_id: string;
+          role: "supervisor" | "staff";
+          staff_label: string | null;
+          all_markets: boolean;
+          market_labels: string[];
+        }[];
+      };
+      prune_ai_assistant_history: {
+        Args: { p_job_retention_days?: number; p_limit?: number };
+        Returns: Json;
+      };
+      ai_assistant_queue_health: {
+        Args: Record<string, never>;
         Returns: Json;
       };
     };
