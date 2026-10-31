@@ -18,7 +18,7 @@ LINE ──signed webhook──► /api/webhook/line ──► WebhookService.pr
             ▼                                         2. worker                                    ▼
    runAssistantWorker: claim_ai_assistant_jobs (lease, live-lease cap, per-conversation order)
             │
-            ├─ access: chat on source allowlist (re-checked) ─► approved group policy │ 1:1 grant
+            ├─ access: approved group only (allowlist re-checked + approving policy); 1:1 ─► notice
             ├─ memory: load_ai_assistant_turns(destination, chat, LINE user) — bounded, expiring
             ├─ business date: fixed at enqueue from the LINE event (Bangkok, 04:00 cutoff)
             ├─ tool loop (GPT-6 Luna via provider seam) ─► scoped executor ─► read-only tools
@@ -52,40 +52,39 @@ killed kick leaves a leased job that the cron worker reclaims.
 | No provider text stored | `last_error_code` CHECK `^[a-z0-9_.:-]{1,80}$` |
 | Tables unreachable except via RPC; RPCs service_role only | REVOKE ALL + grants (asserted in the PG suite) |
 | Only approved chats get data | chat on `BOT_SUMMARY_ANALYST_LINE_SOURCE_IDS` (checked in the webhook **and** again in the worker) |
-| Every member of an approved group shares one scope | active `ai_assistant_group_policies` row → role `group_member` with the policy's categories and markets; no per-user grant is read, and one member's grant never authorizes a group |
-| Unapproved groups get nothing | no policy → fixed refusal (or opt-in 1:1 push to an asker who has their own grant) |
-| 1:1 chats keep per-user scope | supervisor env list / `ai_assistant_user_grants`; staff see only their own rows |
+| Every member of an approved group shares one scope | active `ai_assistant_group_policies` row with both categories → the group's markets and every supported tool; no per-user grant exists in V1 |
+| Unapproved groups and 1:1 chats get nothing | no approving policy → fixed refusal; a 1:1 chat → fixed notice; the model is not called |
 | Memory isolation and stale scope | turns keyed by destination + chat + LINE user and the SHA-256 access-scope key; TTL 30 min, newest 6 kept |
-| A revoked policy/grant never delivers an old answer | every data answer is revalidated against the current scope right before delivery, also after a crash; else withheld |
+| A revoked or changed approval never delivers an old answer | every data answer is revalidated against the current group approval right before delivery, also after a crash; else withheld |
 | Money and cash statuses are exact | `financial-render.ts` renders them from backend fields (satang, sign, null, confirmed vs pending); model text about money is discarded |
 | DB I/O bounded per answer | `boundedJobFetch`: job deadline, per-call cap, ≤ 4 requests in flight, response bodies read inside the bound |
 | Status tools never miss the asked rows | slip / white-sheet rows scanned in pages and filtered before the output limit; `partial` when the scan cap is hit |
 
-## Authorization model (owner decision, 2026-10-31)
+## Authorization model (V1, owner decision)
 
 Identity is the LINE user id and chat id from the signed webhook — never the
 question text or the model's tool arguments. Signature verification, the
 source allowlist and read-only tools are unchanged.
 
 - **Approved group** = on `BOT_SUMMARY_ANALYST_LINE_SOURCE_IDS` **and** an
-  active `ai_assistant_group_policies` row. Every member, with or without a
-  grant, asks any supported question and sees the answer in the group. The
-  scope is the group's: all markets (`all_markets`) or `market_labels`, and the
-  categories `allow_financial` (sales, settlement) and `allow_person_specific`
-  (per-employee produce, slips, settlement, pending). Staff are not limited to
-  their own rows there. No member's grant is consulted.
-- **Unapproved group** (allowlisted, no policy): refusal
-  "…ตอบในกลุ่มนี้ไม่ได้…"; with `BOT_SUMMARY_ASSISTANT_PRIVATE_DELIVERY_ENABLED=true`
-  an asker who has their own grant gets the answer by 1:1 push instead.
+  active `ai_assistant_group_policies` row with `allow_financial` and
+  `allow_person_specific` true. Every member asks any supported question and
+  sees the answer in the group: all markets (`all_markets`) or the policy's
+  `market_labels`. A row that withholds a category is not an approval in V1.
+- **Unapproved group** (allowlisted, no approving policy): refusal
+  "…ยังไม่ได้รับอนุมัติ…"; the model is not called.
 - **Not allowlisted** (any chat): not enqueued; the webhook answers
   "ยังไม่เปิดใช้งานในแชทนี้", and the worker refuses again if the allowlist changed.
-- **1:1 chat**: the asker's own scope — supervisor (env list or grant) or
-  staff (own เบิก/คืน, pending items, slips only); no grant → notice, no model call.
+- **1:1 chat**: not supported in V1 — a fixed notice, no model call, no read.
+
+Not used in V1 (kept in the schema, no migration change): the
+`ai_assistant_user_grants` table and `get_ai_assistant_user_grant`, and the
+`delivery_target` column (always `chat`).
 
 Memory stays per member: turns are keyed by destination + chat + LINE user +
 access-scope key, so two members of the same group never share follow-ups. A
-policy change (revoked, narrowed markets/categories) starts memory afresh,
-and a recorded answer is re-checked right before delivery and withheld.
+policy change (revoked, narrowed markets) starts memory afresh, and a recorded
+answer is re-checked right before delivery and withheld.
 
 Managing access (service role / SQL editor, on the target environment only):
 
@@ -98,11 +97,6 @@ INSERT INTO public.ai_assistant_group_policies (source_id, allow_financial, allo
 VALUES ('C…', true, true, ARRAY['พาซิโอ้ผัก']);
 -- revoke a group
 UPDATE public.ai_assistant_group_policies SET active = false, updated_at = now() WHERE source_id = 'C…';
--- 1:1 only: staff member ดำ, market ราชพฤกษ์ / market supervisor
-INSERT INTO public.ai_assistant_user_grants (line_user_id, role, staff_label, market_labels)
-VALUES ('U…', 'staff', 'ดำ', ARRAY['ราชพฤกษ์']);
-INSERT INTO public.ai_assistant_user_grants (line_user_id, role, market_labels)
-VALUES ('U…', 'supervisor', ARRAY['พาซิโอ้ผัก', 'วัดตะกล่ำ']);
 ```
 
 The group id must also be in `BOT_SUMMARY_ANALYST_LINE_SOURCE_IDS`; a policy
@@ -173,9 +167,8 @@ category totals are withheld.
 4. Run the live eval on fixture data with an explicit test key and budget:
    `BOT_SUMMARY_EVAL_OPENAI_API_KEY=… BOT_SUMMARY_ANALYST_INPUT_USD_PER_MTOK=… BOT_SUMMARY_ANALYST_OUTPUT_USD_PER_MTOK=… bun scripts/ai-assistant-eval.ts --model live --max-usd 2 --out-md docs/ai-assistant/eval-results.md`.
 5. Decide `BOT_SUMMARY_ASSISTANT_PUSH_FALLBACK_ENABLED` (strongly recommended:
-   swept and slow answers need push) and
-   `BOT_SUMMARY_ASSISTANT_PRIVATE_DELIVERY_ENABLED` (LINE push quota). Create a
-   group policy only for groups whose members may all see the data.
+   swept and slow answers need push; costs LINE push quota). Create a group
+   policy only for groups whose members may all see the data.
 6. Set the GitHub variable `AI_ASSISTANT_CRON_ENABLED=true` (worker sweep).
 7. UAT in a management chat, then Production flags.
 
