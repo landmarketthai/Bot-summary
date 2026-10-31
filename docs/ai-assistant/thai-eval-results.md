@@ -1,6 +1,6 @@
 # @Botsummary Thai evaluation — measured results
 
-Run at 2026-10-31T04:52:26.295Z · 24 questions · asked business date 2026-10-31 · fixture data only (no Production data).
+Run at 2026-10-31T07:01:01.158Z · 24 questions · asked business date 2026-10-31 · fixture data only (no Production data).
 
 ## A. Deterministic backend rules
 
@@ -10,28 +10,28 @@ Run at 2026-10-31T04:52:26.295Z · 24 questions · asked business date 2026-10-3
 
 | id | date | follow-up | auth | observed |
 |---|---|---|---|---|
-| mvp-1 | ✓ | ✓ | ✓ | 2026-10-31 / followUp=false / allowed |
+| mvp-1 | ✓ | ✓ | ✓ | 2026-10-31 / followUp=false / tool_not_permitted |
 | mvp-2 | ✓ | ✓ | ✓ | 2026-10-31 / followUp=false / allowed |
 | mvp-3 | ✓ | ✓ | ✓ | 2026-10-31 / followUp=false / other_staff |
-| mvp-4 | ✓ | ✓ | ✓ | 2026-10-31 / followUp=false / allowed |
+| mvp-4 | ✓ | ✓ | ✓ | 2026-10-31 / followUp=false / tool_not_permitted |
 | mvp-5 | ✓ | ✓ | ✓ | 2026-10-31 / followUp=false / other_staff |
 | mvp-6 | ✓ | ✓ | ✓ | 2026-10-31 / followUp=true / other_staff |
-| use-1 | ✓ | ✓ | ✓ | 2026-10-31 / followUp=false / allowed |
-| use-2 | ✓ | ✓ | ✓ | 2026-10-31 / followUp=false / market_not_permitted |
-| use-3 | ✓ | ✓ | ✓ | 2026-10-31 / followUp=false / market_not_permitted |
+| use-1 | ✓ | ✓ | ✓ | 2026-10-31 / followUp=false / tool_not_permitted |
+| use-2 | ✓ | ✓ | ✓ | 2026-10-31 / followUp=false / tool_not_permitted |
+| use-3 | ✓ | ✓ | ✓ | 2026-10-31 / followUp=false / tool_not_permitted |
 | use-4 | ✓ | ✓ | ✓ | 2026-10-31 / followUp=false / allowed |
 | use-5 | ✓ | ✓ | ✓ | 2026-10-31 / followUp=false / tool_not_permitted |
 | use-6 | ✓ | ✓ | ✓ | 2026-10-31 / followUp=false / tool_not_permitted |
-| use-7 | ✓ | ✓ | ✓ | 2026-10-31 / followUp=false / allowed |
+| use-7 | ✓ | ✓ | ✓ | 2026-10-31 / followUp=false / tool_not_permitted |
 | uat-10 | ✓ | ✓ | ✓ | 2026-10-31 / followUp=false / other_staff |
 | uat-16 | ✓ | ✓ | ✓ | 2026-10-31 / followUp=true / allowed |
 | uat-17 | ✓ | ✓ | ✓ | 2026-10-31 / followUp=false / no_tool |
 | uat-18 | ✓ | ✓ | ✓ | 2026-10-31 / followUp=false / tool_not_permitted |
 | add-1 | ✓ | ✓ | ✓ | 2026-10-30 / followUp=false / allowed |
 | add-2 | ✓ | ✓ | ✓ | 2026-10-30 / followUp=true / other_staff |
-| add-3 | ✓ | ✓ | ✓ | 2026-10-29 / followUp=false / allowed |
-| add-4 | ✓ | ✓ | ✓ | 2026-10-05 / followUp=false / allowed |
-| add-5 | ✓ | ✓ | ✓ | 2026-10-31 / followUp=false / allowed |
+| add-3 | ✓ | ✓ | ✓ | 2026-10-29 / followUp=false / tool_not_permitted |
+| add-4 | ✓ | ✓ | ✓ | 2026-10-05 / followUp=false / tool_not_permitted |
+| add-5 | ✓ | ✓ | ✓ | 2026-10-31 / followUp=false / tool_not_permitted |
 | add-6 | ✓ | ✓ | ✓ | 2026-10-31 / followUp=false / allowed |
 | add-7 | ✓ | ✓ | ✓ | 2026-10-31 / followUp=false / allowed |
 

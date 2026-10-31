@@ -65,6 +65,10 @@ export interface RecordAnswerInput {
   turn?: { businessDate: string; context: Record<string, unknown> } | null;
   turnTtlSeconds?: number;
   maxTurns?: number;
+  /** Access scope the answer was produced under; required for kind "answer". */
+  scopeKey?: string | null;
+  /** "private" = 1:1 to the asker instead of the chat the question came from. */
+  deliveryTarget?: "chat" | "private";
 }
 
 export interface AssistantJobStore {
@@ -80,8 +84,13 @@ export interface AssistantJobStore {
   ): Promise<boolean>;
   complete(jobId: string, leaseToken: string, status: "completed" | "failed", errorCode?: string | null): Promise<boolean>;
   retry(jobId: string, leaseToken: string, delaySeconds: number, errorCode: string): Promise<boolean>;
-  /** Earlier turns of the conversation, oldest first, excluding `excludeJobId` itself. */
-  loadTurns(key: ConversationKey, beforeEventMs: number, excludeJobId: string, limit: number): Promise<ConversationTurn[]>;
+  /**
+   * Earlier turns of the conversation produced under `scopeKey`, oldest
+   * first, excluding `excludeJobId` itself.
+   */
+  loadTurns(key: ConversationKey, beforeEventMs: number, excludeJobId: string, scopeKey: string, limit: number): Promise<ConversationTurn[]>;
+  /** Replace a recorded answer with a notice and forget its turn (scope changed). */
+  withholdAnswer(jobId: string, leaseToken: string, notice: string): Promise<boolean>;
 }
 
 export class AssistantStoreError extends Error {
@@ -153,8 +162,20 @@ export class SupabaseAssistantJobStore implements AssistantJobStore {
         : null,
       p_turn_ttl_seconds: input.turnTtlSeconds ?? 1800,
       p_max_turns: input.maxTurns ?? 6,
+      p_scope_key: input.scopeKey ?? null,
+      p_delivery_target: input.deliveryTarget ?? "chat",
     });
     if (error) fail("record_answer", error);
+    return data === true;
+  }
+
+  async withholdAnswer(jobId: string, leaseToken: string, notice: string): Promise<boolean> {
+    const { data, error } = await this.supabase.rpc("withhold_ai_assistant_answer", {
+      p_job_id: jobId,
+      p_lease_token: leaseToken,
+      p_notice: notice,
+    });
+    if (error) fail("withhold_answer", error);
     return data === true;
   }
 
@@ -203,13 +224,20 @@ export class SupabaseAssistantJobStore implements AssistantJobStore {
     return data === true;
   }
 
-  async loadTurns(key: ConversationKey, beforeEventMs: number, excludeJobId: string, limit: number): Promise<ConversationTurn[]> {
+  async loadTurns(
+    key: ConversationKey,
+    beforeEventMs: number,
+    excludeJobId: string,
+    scopeKey: string,
+    limit: number,
+  ): Promise<ConversationTurn[]> {
     const { data, error } = await this.supabase.rpc("load_ai_assistant_turns", {
       p_destination: key.destination,
       p_source_id: key.sourceId,
       p_line_user_id: key.lineUserId,
       p_before_event_ms: beforeEventMs,
       p_exclude_job_id: excludeJobId,
+      p_scope_key: scopeKey,
       p_limit: limit,
     });
     if (error) fail("load_turns", error);

@@ -23,7 +23,7 @@ import type { LineMessageEvent } from "../src/lib/line/types";
 import { WebhookService } from "../src/lib/line/webhook-service";
 import { FakeDatabase } from "../src/lib/summary/test-fake-supabase";
 import type { AssistantScope, ScopeResolution } from "../src/lib/ai/assistant/authorization";
-import { answerAssistantJob } from "../src/lib/ai/assistant/core";
+import { answerAssistantJob, revalidateAssistantJob, type AssistantCoreDeps } from "../src/lib/ai/assistant/core";
 import { createAssistantDispatcher } from "../src/lib/ai/assistant/dispatch";
 import { SupabaseAssistantJobStore, type AssistantJob, type AssistantJobStore } from "../src/lib/ai/assistant/job-store";
 import { createFixtureDataReader, FIXTURE_MARKETS } from "../src/lib/ai/assistant/testing/fixture-data";
@@ -49,7 +49,7 @@ const log = (text = "") => { out.push(text); console.log(text); };
 
 const service = new WebhookService(new FakeDatabase() as unknown as SupabaseClient<Database>, {
   botSummaryAnalystEnabled: true,
-  botSummaryAnalystSourceAllowed: (sourceId) => sourceId === "Cmanagement",
+  botSummaryAnalystSourceAllowed: (sourceId) => ["Cmanagement", "Cworkers", "Udam", "Uboss", "Ustranger"].includes(sourceId),
   botSummaryAssistantDispatcher: createAssistantDispatcher(store),
   botSummaryAssistantKick: async () => {},
   scheduleBackgroundTask: () => {},
@@ -57,32 +57,47 @@ const service = new WebhookService(new FakeDatabase() as unknown as SupabaseClie
 });
 
 let seq = 0;
-async function say(userId: string, text: string, options: { eventId?: string; redelivery?: boolean; ageMs?: number } = {}) {
+async function say(
+  userId: string,
+  text: string,
+  options: { eventId?: string; redelivery?: boolean; ageMs?: number; chat?: "Cmanagement" | "Cworkers" | "dm" } = {},
+) {
   seq += 1;
   const id = options.eventId ?? `demo-${seq}`;
   const event: LineMessageEvent = {
     type: "message", webhookEventId: id, deliveryContext: { isRedelivery: options.redelivery ?? false },
-    timestamp: Date.now() - (options.ageMs ?? 0), source: { type: "group", groupId: "Cmanagement", userId },
+    timestamp: Date.now() - (options.ageMs ?? 0),
+    source: options.chat === "dm" ? { type: "user", userId } : { type: "group", groupId: options.chat ?? "Cmanagement", userId },
     mode: "active", replyToken: `reply-token-${id}`,
     message: { id: `m-${id}`, type: "text", quoteToken: "q", text: `@Botsummary ${text}` },
   };
   const started = Date.now();
   const [result] = await service.processEvents([event], "Ubot");
-  log(`**${USERS[userId]?.name ?? userId}:** @Botsummary ${text}`);
+  log(`**${USERS[userId]?.name ?? userId}** [${options.chat === "dm" ? "1:1 chat" : options.chat ?? "Cmanagement"}]: @Botsummary ${text}`);
   log(`  ↳ webhook ${result?.status} in ${Date.now() - started} ms${options.redelivery ? " (LINE redelivery of the same webhookEventId)" : ""}`);
 }
+
+let privateDeliveryEnabled = false;
+const deps = (): AssistantCoreDeps => ({
+  supabase: {} as SupabaseClient<Database>,
+  store,
+  provider: model,
+  resolveScope: async (id): Promise<ScopeResolution> => USERS[id] ? { ok: true, scope: USERS[id]!.scope } : { ok: false, reason: "no_grant" },
+  // Cmanagement: supervisors' group with an explicit full group policy. Cworkers: no policy.
+  resolveGroupPolicy: async (sourceId) => ({
+    ok: true,
+    policy: sourceId === "Cmanagement" ? { sourceId, allowFinancial: true, allowPersonSpecific: true, markets: null } : null,
+  }),
+  privateDeliveryEnabled,
+  readData: createFixtureDataReader([], { today }),
+});
 
 async function work(label = "worker") {
   const before = line.sent.length;
   const summary = await runAssistantWorker({
     store,
-    answer: (job: AssistantJob, context) => answerAssistantJob(job, context, {
-      supabase: {} as SupabaseClient<Database>,
-      store,
-      provider: model,
-      resolveScope: async (id): Promise<ScopeResolution> => USERS[id] ? { ok: true, scope: USERS[id]!.scope } : { ok: false, reason: "no_grant" },
-      readData: createFixtureDataReader([], { today }),
-    }),
+    answer: (job: AssistantJob, context) => answerAssistantJob(job, context, deps()),
+    revalidate: (job, scopeKey, deliverTo) => revalidateAssistantJob(job, deps(), scopeKey, deliverTo),
     delivery: line,
     pushFallbackEnabled: true,
     workerId: `demo-${label}`,
@@ -93,7 +108,7 @@ async function work(label = "worker") {
   const counts = Object.entries(summary).filter(([, value]) => value).map(([key, value]) => `${key}=${value}`).join(" ");
   log(`  ↳ ${label}: ${counts || "nothing to do"}`);
   for (const message of line.sent.slice(before)) {
-    log(`  ↳ **Bot (${message.channel}${message.channel === "push" ? `, retry key ${message.retryKey?.slice(0, 8)}…` : ""}):** ${message.text}`);
+    log(`  ↳ **Bot (${message.channel}${message.channel === "push" ? ` to ${message.target}, retry key ${message.retryKey?.slice(0, 8)}…` : ""}):** ${message.text.replaceAll("\n", " / ")}`);
   }
 }
 
@@ -145,16 +160,27 @@ await say("Uboss", "ใบขาววันนี้ปิดครบทุก
 await work();
 log();
 
-log("## 5. Permission boundaries (staff ดำ)");
+log("## 5. Permission boundaries (staff ดำ, 1:1 chat)");
 log();
-await say("Udam", "พี่ดำเบิกอะไรไป");
+await say("Udam", "พี่ดำเบิกอะไรไป", { chat: "dm" });
 await work();
-await say("Udam", "พี่ขวัญเบิกอะไรไป");
+await say("Udam", "พี่ขวัญเบิกอะไรไป", { chat: "dm" });
 await work();
-await say("Udam", "ดำวันนี้เงินขาดหรือเกิน");
+await say("Udam", "ดำวันนี้เงินขาดหรือเกิน", { chat: "dm" });
 await work();
-await say("Ustranger", "วันนี้ทุกตลาดขายได้เท่าไหร่?");
+await say("Ustranger", "วันนี้ทุกตลาดขายได้เท่าไหร่?", { chat: "dm" });
 await work();
+log();
+
+log("## 6. Group disclosure: a group without a group policy");
+log();
+await say("Uboss", "วันนี้ทุกตลาดขายได้เท่าไหร่?", { chat: "Cworkers" });
+await work();
+log("  ↳ (private delivery enabled: BOT_SUMMARY_ASSISTANT_PRIVATE_DELIVERY_ENABLED=true)");
+privateDeliveryEnabled = true;
+await say("Uboss", "วันนี้ทุกตลาดขายได้เท่าไหร่?", { chat: "Cworkers" });
+await work();
+privateDeliveryEnabled = false;
 log();
 
 log(`Total messages a LINE user would see: ${line.sent.length} (attempts incl. de-duplicated: ${line.attempts.length}).`);

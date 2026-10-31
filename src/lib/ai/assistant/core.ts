@@ -1,11 +1,14 @@
 /**
- * Answers one @Botsummary job: authorization -> conversation memory ->
- * business date -> read-only tool loop -> grounding check.
+ * Answers one @Botsummary job: access (asker + audience) -> conversation
+ * memory for that exact access -> business date -> read-only tool loop ->
+ * deterministic financial rendering / grounding.
  *
- * Grounding: money-like numbers in the model's answer must appear in the
- * tool outputs of THIS answer (or in the question). An answer that states a
- * figure no tool returned — a recalculated total, a remembered number, a
- * guess — is replaced by a refusal instead of reaching LINE.
+ * Financial answers (P1-D): if any financial tool ran, the delivered money
+ * figures and cash statuses are rendered from the tool fields
+ * (financial-render.ts); the model's wording of them is discarded. A
+ * non-financial answer may not state money at all, and every money-like
+ * number in it must appear in THIS answer's tool outputs. Numbers in the
+ * user's question are never evidence.
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
@@ -17,15 +20,20 @@ import {
   type AnalystToolExecutor,
 } from "@/lib/ai/readonly-analyst";
 import type { AssistantModelProvider } from "@/lib/ai/model-provider";
+import type { ReadonlyAnalystToolName } from "@/lib/ai/readonly-tools";
 import {
-  allowedToolsFor,
   createScopedToolExecutor,
+  decideJobAccess,
   readonlyDataReader,
   resolveAssistantScope,
+  resolveGroupPolicy,
   scopeInstructions,
+  type GroupPolicyResolution,
+  type JobAccess,
   type ScopedDataReader,
   type ScopeResolution,
 } from "./authorization";
+import { containsFinancialClaim, FINANCIAL_TOOLS, renderFinancialOutput } from "./financial-render";
 import { AssistantStoreError, type AssistantJob, type AssistantJobStore, type ConversationTurn } from "./job-store";
 import { classifyAssistantError } from "./errors";
 import type { AssistantAnswer } from "./worker";
@@ -36,6 +44,10 @@ export const ASSISTANT_NO_PERMISSION_REPLY =
   "ขออภัยครับ บัญชี LINE นี้ยังไม่ได้รับสิทธิ์ดูข้อมูลผ่าน @Botsummary กรุณาติดต่อหัวหน้างานหรือแอดมิน";
 export const ASSISTANT_UNGROUNDED_REPLY =
   "ขออภัยครับ ตัวเลขในคำตอบตรวจสอบกับข้อมูลระบบไม่ผ่าน จึงไม่ส่งคำตอบนี้ กรุณาถามใหม่ให้เจาะจงขึ้น เช่น ระบุตลาดหรือชื่อคนขาย";
+export const ASSISTANT_GROUP_REFUSAL_REPLY =
+  "ขออภัยครับ คำถามนี้ตอบในกลุ่มนี้ไม่ได้ เพราะทุกคนในกลุ่มจะเห็นข้อมูล กรุณาถาม @Botsummary ในแชทส่วนตัวครับ";
+export const ASSISTANT_SCOPE_CHANGED_REPLY =
+  "ขออภัยครับ สิทธิ์การเข้าถึงข้อมูลของคุณเปลี่ยนไปก่อนส่งคำตอบ จึงไม่ส่งคำตอบเดิม กรุณาถามใหม่อีกครั้ง";
 
 const HISTORY_TURNS = 4;
 const FOLLOW_UP = /^(?:แล้ว|และ|ส่วน)|(?:ล่ะ|หละ|ละ|ด้วย)\s*(?:ครับ|คะ|ค่ะ|จ้า|จ้ะ)?\s*[?？]*\s*$/u;
@@ -79,7 +91,7 @@ function moneyLike(raw: string, value: number): boolean {
   return !isYear;
 }
 
-/** Money-like numbers in `answer` that appear in no tool output and not in the question. */
+/** Money-like numbers in `answer` that appear in none of `groundingTexts` (tool outputs only). */
 export function ungroundedNumbers(answer: string, groundingTexts: readonly string[]): number[] {
   const grounded = groundingTexts.flatMap(numbersIn).map(Math.abs);
   const result: number[] = [];
@@ -97,8 +109,57 @@ export interface AssistantCoreDeps {
   store: AssistantJobStore;
   provider: AssistantModelProvider;
   resolveScope?: (lineUserId: string) => Promise<ScopeResolution>;
+  resolveGroupPolicy?: (sourceId: string) => Promise<GroupPolicyResolution>;
+  /** May an answer to a group question be pushed 1:1 to the asker instead? */
+  privateDeliveryEnabled?: boolean;
   /** Data behind the authorization check; defaults to the read-only tools. Test/demo seam. */
   readData?: ScopedDataReader;
+}
+
+export type JobAccessResolution =
+  | { ok: true; access: JobAccess }
+  | { ok: false; kind: "denied"; reason: string; notice: string }
+  | { ok: false; kind: "transient" };
+
+/** The CURRENT access for a job: re-read on every answer and before every delivery. */
+export async function resolveJobAccess(job: AssistantJob, deps: AssistantCoreDeps): Promise<JobAccessResolution> {
+  const resolution = await (deps.resolveScope ?? ((id) => resolveAssistantScope(deps.supabase, id)))(job.line_user_id);
+  if (!resolution.ok) {
+    if (resolution.reason === "grant_lookup_failed") return { ok: false, kind: "transient" };
+    return { ok: false, kind: "denied", reason: resolution.reason, notice: ASSISTANT_NO_PERMISSION_REPLY };
+  }
+  let groupPolicy = null;
+  if (job.source_type !== "user") {
+    const policy = await (deps.resolveGroupPolicy ?? ((id) => resolveGroupPolicy(deps.supabase, id)))(job.source_id);
+    if (!policy.ok) return { ok: false, kind: "transient" };
+    groupPolicy = policy.policy;
+  }
+  const decision = decideJobAccess({
+    scope: resolution.scope,
+    sourceType: job.source_type,
+    sourceId: job.source_id,
+    groupPolicy,
+    privateDeliveryEnabled: deps.privateDeliveryEnabled ?? false,
+  });
+  if (!decision.ok) return { ok: false, kind: "denied", reason: decision.reason, notice: ASSISTANT_GROUP_REFUSAL_REPLY };
+  return { ok: true, access: decision.access };
+}
+
+/**
+ * Before a recorded data answer is delivered (fresh or after a crash): is the
+ * access it was produced under still exactly the current one?
+ */
+export async function revalidateAssistantJob(
+  job: AssistantJob,
+  deps: AssistantCoreDeps,
+  scopeKey: string | null = job.answer_scope_key,
+  deliverTo: "chat" | "private" = job.delivery_target,
+): Promise<"current" | "changed" | "transient"> {
+  const resolution = await resolveJobAccess(job, deps);
+  if (!resolution.ok) return resolution.kind === "transient" ? "transient" : "changed";
+  return scopeKey !== null && resolution.access.scopeKey === scopeKey && resolution.access.deliverTo === deliverTo
+    ? "current"
+    : "changed";
 }
 
 export async function answerAssistantJob(
@@ -106,16 +167,14 @@ export async function answerAssistantJob(
   context: { deadlineAt: number; signal: AbortSignal },
   deps: AssistantCoreDeps,
 ): Promise<AssistantAnswer> {
-  const resolution = await (deps.resolveScope ?? ((id) => resolveAssistantScope(deps.supabase, id)))(job.line_user_id);
-  if (!resolution.ok) {
-    if (resolution.reason === "grant_lookup_failed") {
-      // Transient: retried by the worker instead of telling the user "no access".
-      throw new AssistantStoreError("grant_lookup", null);
-    }
-    logger.info("ai assistant request without permission", { jobId: job.id, reason: resolution.reason });
-    return { text: ASSISTANT_NO_PERMISSION_REPLY, kind: "notice" };
+  const accessResult = await resolveJobAccess(job, deps);
+  if (!accessResult.ok) {
+    // Transient: retried by the worker instead of telling the user "no access".
+    if (accessResult.kind === "transient") throw new AssistantStoreError("grant_lookup", null);
+    logger.info("ai assistant request refused", { jobId: job.id, reason: accessResult.reason });
+    return { text: accessResult.notice, kind: "notice" };
   }
-  const { scope } = resolution;
+  const { access } = accessResult;
 
   let turns: ConversationTurn[] = [];
   try {
@@ -123,6 +182,7 @@ export async function answerAssistantJob(
       { destination: job.destination, sourceId: job.source_id, lineUserId: job.line_user_id },
       job.event_timestamp_ms,
       job.id,
+      access.scopeKey,
       HISTORY_TURNS,
     );
   } catch (error) {
@@ -131,14 +191,14 @@ export async function answerAssistantJob(
   }
 
   const businessDate = resolveJobBusinessDate(job.question, job.asked_business_date, turns);
-  const outputs: string[] = [];
+  const outputs: Array<{ tool: ReadonlyAnalystToolName; output: Record<string, unknown> }> = [];
   const denied: string[] = [];
-  const scoped = createScopedToolExecutor(deps.readData ?? readonlyDataReader(deps.supabase), scope, (tool, decision) => {
+  const scoped = createScopedToolExecutor(deps.readData ?? readonlyDataReader(deps.supabase), access, (tool, decision) => {
     if (decision !== "allowed") denied.push(`${tool}:${decision}`);
   });
   const executeTool: AnalystToolExecutor = async (request) => {
     const output = await scoped(request);
-    outputs.push(JSON.stringify(output));
+    outputs.push({ tool: request.tool, output });
     return output;
   };
 
@@ -148,37 +208,49 @@ export async function answerAssistantJob(
     {
       provider: deps.provider,
       history: turns.map((turn) => ({ question: turn.question, answer: turn.answer, businessDate: turn.businessDate })),
-      allowedTools: allowedToolsFor(scope),
+      allowedTools: access.allowedTools,
       executeTool,
-      extraInstructions: scopeInstructions(scope),
+      extraInstructions: scopeInstructions(access),
       budgetMs: Math.max(0, context.deadlineAt - Date.now()),
       signal: context.signal,
     },
     businessDate,
   );
 
-  const ungrounded = ungroundedNumbers(result.answer, [...outputs, job.question]);
+  const toolNames = result.toolExecutions.map((execution) => execution.tool);
+  const financial = outputs.filter((entry) => FINANCIAL_TOOLS.has(entry.tool));
+  const other = outputs.filter((entry) => !FINANCIAL_TOOLS.has(entry.tool));
+  const modelTextIsSafe = (grounding: typeof outputs) => !containsFinancialClaim(result.answer)
+    && ungroundedNumbers(result.answer, grounding.map((entry) => JSON.stringify(entry.output))).length === 0;
   const usage = {
     ...result.usage,
     provider: deps.provider.name,
     deniedToolCalls: denied,
-    ungroundedNumberCount: ungrounded.length,
+    financialRendered: financial.length > 0,
   };
-  if (ungrounded.length > 0) {
-    logger.warn("ai assistant answer withheld: ungrounded figures", {
-      jobId: job.id,
-      count: ungrounded.length,
-      tools: result.toolExecutions.map((execution) => execution.tool),
-    });
-    return { text: ASSISTANT_UNGROUNDED_REPLY, kind: "notice", usage, toolNames: result.toolExecutions.map((e) => e.tool) };
+
+  let text: string;
+  if (financial.length > 0) {
+    const rendered = [...new Set(financial.map((entry) => renderFinancialOutput(entry.output)).filter(Boolean))];
+    // Non-financial context from the model only when it states no money and
+    // every figure in it comes from a non-financial tool of this answer.
+    if (other.length > 0 && modelTextIsSafe(other)) rendered.push(result.answer);
+    text = rendered.join("\n\n");
+  } else if (!modelTextIsSafe(outputs)) {
+    logger.warn("ai assistant answer withheld: unsupported figures", { jobId: job.id, tools: toolNames });
+    return { text: ASSISTANT_UNGROUNDED_REPLY, kind: "notice", usage, toolNames };
+  } else {
+    text = result.answer;
   }
 
   return {
-    text: result.answer,
+    text,
     kind: "answer",
     usage,
-    toolNames: result.toolExecutions.map((execution) => execution.tool),
-    turn: { businessDate: result.businessDate, context: turnContext(scope.role, result.toolExecutions) },
+    toolNames,
+    turn: { businessDate: result.businessDate, context: turnContext(access.scope.role, result.toolExecutions) },
+    scopeKey: access.scopeKey,
+    deliverTo: access.deliverTo,
   };
 }
 

@@ -45,6 +45,8 @@ function options(
     budgetMs: 30_000,
     deliveryReserveMs: 2_000,
     temporaryErrorText: NOTICE,
+    // Access unchanged; revocation and downgrades are covered in review-findings.test.ts.
+    revalidate: async () => "current",
     ...overrides,
   };
 }
@@ -55,6 +57,7 @@ const answered: AssistantAnswerer = async () => ({
   usage: { inputTokens: 10, outputTokens: 5 },
   toolNames: ["get_slip_status"],
   turn: { businessDate: "2026-10-31", context: { tools: [{ tool: "get_slip_status" }] } },
+  scopeKey: "c".repeat(64),
 });
 
 function onlyJob(store: MemoryAssistantJobStore): AssistantJob {

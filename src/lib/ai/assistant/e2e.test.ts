@@ -19,7 +19,7 @@ import { WebhookService } from "@/lib/line/webhook-service";
 import { FakeDatabase } from "@/lib/summary/test-fake-supabase";
 import type { SlipTestDb } from "@/lib/slips/testing/pg-slip-harness";
 import type { AssistantScope, ScopeResolution } from "./authorization";
-import { answerAssistantJob, ASSISTANT_NO_PERMISSION_REPLY } from "./core";
+import { answerAssistantJob, ASSISTANT_NO_PERMISSION_REPLY, revalidateAssistantJob, type AssistantCoreDeps } from "./core";
 import { createAssistantDispatcher } from "./dispatch";
 import { SupabaseAssistantJobStore, type AssistantJobStore } from "./job-store";
 import { createFixtureDataReader, FIXTURE_MARKETS } from "./testing/fixture-data";
@@ -68,15 +68,24 @@ function pipeline(store: AssistantJobStore) {
     const [result] = await service.processEvents([event], "Ubot");
     return { result, event, webhookMs: Date.now() - started };
   };
+  const deps: AssistantCoreDeps = {
+    supabase: {} as SupabaseClient<Database>,
+    store,
+    provider: model,
+    resolveScope,
+    // Cmanagement is a supervisors' group with an explicit full group policy.
+    resolveGroupPolicy: async (sourceId) => ({
+      ok: true,
+      policy: sourceId === "Cmanagement"
+        ? { sourceId, allowFinancial: true, allowPersonSpecific: true, markets: null }
+        : null,
+    }),
+    readData: createFixtureDataReader([], { today }),
+  };
   const work = () => runAssistantWorker({
     store,
-    answer: (job, context) => answerAssistantJob(job, context, {
-      supabase: {} as SupabaseClient<Database>,
-      store,
-      provider: model,
-      resolveScope,
-      readData: createFixtureDataReader([], { today }),
-    }),
+    answer: (job, context) => answerAssistantJob(job, context, deps),
+    revalidate: (job, scopeKey, deliverTo) => revalidateAssistantJob(job, deps, scopeKey, deliverTo),
     delivery: line,
     pushFallbackEnabled: true,
     workerId: "e2e-worker",

@@ -17,7 +17,7 @@ import type {
   RecordAnswerInput,
 } from "../job-store";
 
-type StoredTurn = ConversationTurn & ConversationKey & { jobId: string; expiresAt: number; id: number };
+type StoredTurn = ConversationTurn & ConversationKey & { jobId: string; expiresAt: number; id: number; scopeKey: string | null };
 
 export class MemoryAssistantJobStore implements AssistantJobStore {
   readonly jobs = new Map<string, AssistantJob>();
@@ -96,6 +96,8 @@ export class MemoryAssistantJobStore implements AssistantJobStore {
       updated_at: now,
       started_at: null,
       completed_at: null,
+      answer_scope_key: null,
+      delivery_target: "chat",
     };
     this.jobs.set(job.id, job);
     this.enqueueOrder.set(job.id, this.enqueueOrder.size);
@@ -151,10 +153,13 @@ export class MemoryAssistantJobStore implements AssistantJobStore {
     this.take("recordAnswer");
     const job = this.owned(jobId, leaseToken);
     if (!job || job.answer_text !== null) return false;
+    if (input.kind === "answer" && !input.scopeKey) throw new Error("an answer needs its access scope key");
     const now = this.now();
     Object.assign(job, {
       answer_text: input.answer,
       answer_kind: input.kind,
+      answer_scope_key: input.scopeKey ?? null,
+      delivery_target: input.deliveryTarget ?? "chat",
       usage: input.usage ?? null,
       tool_names: [...(input.toolNames ?? [])],
       lease_expires_at: this.iso(Math.max(Date.parse(job.lease_expires_at!), now + 60_000)),
@@ -173,6 +178,7 @@ export class MemoryAssistantJobStore implements AssistantJobStore {
         context: input.turn.context,
         eventTimestampMs: job.event_timestamp_ms,
         expiresAt: now + Math.min(Math.max(input.turnTtlSeconds ?? 1800, 60), 86400) * 1000,
+        scopeKey: input.scopeKey ?? null,
       });
       const mine = this.turns
         .filter((turn) => turn.destination === job.destination && turn.sourceId === job.source_id && turn.lineUserId === job.line_user_id)
@@ -230,13 +236,25 @@ export class MemoryAssistantJobStore implements AssistantJobStore {
     return true;
   }
 
-  async loadTurns(key: ConversationKey, beforeEventMs: number, excludeJobId: string, limit: number): Promise<ConversationTurn[]> {
+  async withholdAnswer(jobId: string, leaseToken: string, notice: string): Promise<boolean> {
+    this.take("withholdAnswer");
+    const job = this.owned(jobId, leaseToken);
+    if (!job || job.answer_text === null) return false;
+    Object.assign(job, { answer_text: notice, answer_kind: "notice", answer_scope_key: null, tool_names: [], updated_at: this.iso(this.now()) });
+    for (let index = this.turns.length - 1; index >= 0; index -= 1) {
+      if (this.turns[index]!.jobId === jobId) this.turns.splice(index, 1);
+    }
+    return true;
+  }
+
+  async loadTurns(key: ConversationKey, beforeEventMs: number, excludeJobId: string, scopeKey: string, limit: number): Promise<ConversationTurn[]> {
     this.take("loadTurns");
     const now = this.now();
     return this.turns
       .filter((turn) => turn.destination === key.destination && turn.sourceId === key.sourceId
         && turn.lineUserId === key.lineUserId && turn.expiresAt > now
-        && turn.eventTimestampMs <= beforeEventMs && turn.jobId !== excludeJobId)
+        && turn.eventTimestampMs <= beforeEventMs && turn.jobId !== excludeJobId
+        && turn.scopeKey === scopeKey)
       .sort((a, b) => b.eventTimestampMs - a.eventTimestampMs || b.id - a.id)
       .slice(0, Math.min(Math.max(limit, 0), 8))
       .map(({ question, answer, businessDate, context, eventTimestampMs }) => ({

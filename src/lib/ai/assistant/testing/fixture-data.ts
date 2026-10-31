@@ -47,17 +47,29 @@ const SLIPS = [
   { seller: "ดำ", market: RATCHAPHRUEK, counts: { PROCESSING: 0, EXTRACTED: 7, PARTIAL_EXTRACTED: 0, NEED_REVIEW: 0, FAILED: 1, NOT_CHECKED: 0 } },
 ] as const;
 
+// Shapes and enums of compactSettlement / DailyFinancialSettlementResult.
 const SETTLEMENTS = [
-  { staff: "ดำ", market: RATCHAPHRUEK, status: "COMPLETE", cashDifferenceBaht: -120, missingInputs: [] as string[] },
-  { staff: "ขวัญ", market: PASEO, status: "INCOMPLETE", cashDifferenceBaht: null, missingInputs: ["actual_cash_submitted"] },
+  { staff: "ดำ", market: RATCHAPHRUEK, status: "CLOSED_DIFFERENCE", expectedCashBaht: 8000, actualCashBaht: 7880, cashDifferenceBaht: -120, missingInputs: [] as string[], uncertainty: [] as string[] },
+  { staff: "ขวัญ", market: PASEO, status: "INCOMPLETE", expectedCashBaht: null, actualCashBaht: null, cashDifferenceBaht: null, missingInputs: ["actual_cash"], uncertainty: [] as string[] },
 ] as const;
+
+/** compactTotal shape: integer satang plus the baht the model reads. */
+function money(confirmed: number, pending: number) {
+  const confirmedSalesSatang = Math.round(confirmed * 100);
+  const pendingReviewSalesSatang = Math.round(pending * 100);
+  return {
+    confirmedSalesSatang,
+    pendingReviewSalesSatang,
+    confirmedSalesBaht: confirmedSalesSatang / 100,
+    pendingReviewSalesBaht: pendingReviewSalesSatang / 100,
+    valueAuthoritative: true,
+    valueBlockedRowCount: 0,
+  };
+}
 
 function total(rows: Array<{ confirmed: number; pending: number }>) {
   // Fixture "authoritative" totals are fixed inputs, like the calculator's output.
-  return {
-    confirmedSalesBaht: Math.round(rows.reduce((sum, row) => sum + row.confirmed, 0) * 100) / 100,
-    pendingReviewSalesBaht: Math.round(rows.reduce((sum, row) => sum + row.pending, 0) * 100) / 100,
-  };
+  return money(rows.reduce((sum, row) => sum + row.confirmed, 0), rows.reduce((sum, row) => sum + row.pending, 0));
 }
 
 function sameStaff(a: string | null | undefined, b: string): boolean {
@@ -88,7 +100,7 @@ export function createFixtureDataReader(reads: FixtureRead[] = [], options: { to
           tool: request.tool, businessDate: request.businessDate,
           totalScope: scope.markets === null ? "all_markets" : "permitted_markets_only",
           total: total(sales),
-          markets: sales.map((row) => ({ market: row.market, confirmedSalesBaht: row.confirmed, pendingReviewSalesBaht: row.pending })),
+          markets: sales.map((row) => ({ market: row.market, ...money(row.confirmed, row.pending) })),
         };
       case "compare_daily_sales": {
         const dates = [request.businessDate, previousDay(request.businessDate)];
@@ -98,7 +110,7 @@ export function createFixtureDataReader(reads: FixtureRead[] = [], options: { to
             const rows = (SALES[shift(day)] ?? []).filter((row) => marketInScope(scope, row.market));
             return {
               businessDate: day, total: total(rows),
-              markets: rows.map((row) => ({ market: row.market, confirmedSalesBaht: row.confirmed, pendingReviewSalesBaht: row.pending })),
+              markets: rows.map((row) => ({ market: row.market, ...money(row.confirmed, row.pending) })),
             };
           }),
         };

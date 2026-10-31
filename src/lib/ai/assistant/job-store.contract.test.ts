@@ -85,6 +85,8 @@ function request(overrides: Partial<AssistantJobRequest> = {}): AssistantJobRequ
 }
 
 const claimOne = { limit: 1, leaseSeconds: 60, maxRunning: 10 };
+const SCOPE = "a".repeat(64);
+const OTHER_SCOPE = "b".repeat(64);
 
 for (const h of harnesses) {
   describe(`assistant job store contract (${h.name})`, () => {
@@ -135,11 +137,11 @@ for (const h of harnesses) {
       expect(second!.attempts).toBe(2);
       expect(second!.lease_token).not.toBe(first!.lease_token);
       const stale = first!.lease_token!;
-      expect(await h.store.recordAnswer(jobId!, stale, { answer: "x", kind: "answer" })).toBe(false);
+      expect(await h.store.recordAnswer(jobId!, stale, { answer: "x", kind: "answer", scopeKey: SCOPE })).toBe(false);
       expect(await h.store.setDelivery(jobId!, stale, ["pending"], "reply_started", "reply")).toBe(false);
       expect(await h.store.complete(jobId!, stale, "completed")).toBe(false);
       expect(await h.store.retry(jobId!, stale, 0, "provider_timeout")).toBe(false);
-      expect(await h.store.recordAnswer(jobId!, second!.lease_token!, { answer: "ok", kind: "answer" })).toBe(true);
+      expect(await h.store.recordAnswer(jobId!, second!.lease_token!, { answer: "ok", kind: "answer", scopeKey: SCOPE })).toBe(true);
     });
 
     test("retry waits out its backoff and keeps counting attempts", async () => {
@@ -195,6 +197,7 @@ for (const h of harnesses) {
           kind: "answer",
           turn: { businessDate: "2026-10-31", context: { tools: [{ tool: "get_pending_items", arguments: { staff: "ปลา" } }] } },
           maxTurns: 3,
+          scopeKey: SCOPE,
         });
         await h.store.complete(jobId!, job!.lease_token!, "completed");
       };
@@ -211,16 +214,39 @@ for (const h of harnesses) {
       await h.store.complete(noticeId!, notice!.lease_token!, "failed", "provider_timeout");
 
       const key = { destination: "Ubot", sourceId: "Cgroup", lineUserId: "Uasker" };
-      const turns = await h.store.loadTurns(key, Number.MAX_SAFE_INTEGER, "00000000-0000-4000-8000-000000000000", 8);
+      const turns = await h.store.loadTurns(key, Number.MAX_SAFE_INTEGER, "00000000-0000-4000-8000-000000000000", SCOPE, 8);
       expect(turns.map((turn) => turn.question)).toEqual(["q2", "q3", "q4"]);
       expect(turns[0]!.context).toEqual({ tools: [{ tool: "get_pending_items", arguments: { staff: "ปลา" } }] });
-      expect((await h.store.loadTurns({ ...key, lineUserId: "Uother" }, Number.MAX_SAFE_INTEGER, "00000000-0000-4000-8000-000000000000", 8)).map((t) => t.answer))
+      expect((await h.store.loadTurns({ ...key, lineUserId: "Uother" }, Number.MAX_SAFE_INTEGER, "00000000-0000-4000-8000-000000000000", SCOPE, 8)).map((t) => t.answer))
         .toEqual(["secret of Uother"]);
-      expect(await h.store.loadTurns({ ...key, destination: "Uother-bot" }, Number.MAX_SAFE_INTEGER, "00000000-0000-4000-8000-000000000000", 8)).toEqual([]);
+      expect(await h.store.loadTurns({ ...key, destination: "Uother-bot" }, Number.MAX_SAFE_INTEGER, "00000000-0000-4000-8000-000000000000", SCOPE, 8)).toEqual([]);
       // Only turns up to the question being answered.
-      expect((await h.store.loadTurns(key, turns[1]!.eventTimestampMs - 1, "00000000-0000-4000-8000-000000000000", 8)).map((t) => t.question)).toEqual(["q2"]);
+      expect((await h.store.loadTurns(key, turns[1]!.eventTimestampMs - 1, "00000000-0000-4000-8000-000000000000", SCOPE, 8)).map((t) => t.question)).toEqual(["q2"]);
       await h.expireTurns();
-      expect(await h.store.loadTurns(key, Number.MAX_SAFE_INTEGER, "00000000-0000-4000-8000-000000000000", 8)).toEqual([]);
+      expect(await h.store.loadTurns(key, Number.MAX_SAFE_INTEGER, "00000000-0000-4000-8000-000000000000", SCOPE, 8)).toEqual([]);
+    });
+
+    test("P1-C: memory is returned only for the access scope it was produced under", async () => {
+      const { jobId } = await h.store.enqueue(request({ question: "ทำไมรายการของพี่ปลายังปิดไม่ได้?" }));
+      const [job] = await h.store.claim("w", claimOne);
+      await h.store.recordAnswer(jobId!, job!.lease_token!, { answer: "ปลา: คืนค้าง", kind: "answer", turn: { businessDate: "2026-10-31", context: {} }, scopeKey: SCOPE });
+      await h.store.complete(jobId!, job!.lease_token!, "completed");
+      const key = { destination: "Ubot", sourceId: "Cgroup", lineUserId: "Uasker" };
+      const none = "00000000-0000-4000-8000-000000000000";
+      expect(await h.store.loadTurns(key, Number.MAX_SAFE_INTEGER, none, SCOPE, 4)).toHaveLength(1);
+      expect(await h.store.loadTurns(key, Number.MAX_SAFE_INTEGER, none, OTHER_SCOPE, 4)).toEqual([]);
+    });
+
+    test("P1-C: a data answer cannot be recorded without a scope key; a withheld answer forgets its turn", async () => {
+      const { jobId } = await h.store.enqueue(request());
+      const [job] = await h.store.claim("w", claimOne);
+      await expect(h.store.recordAnswer(jobId!, job!.lease_token!, { answer: "x", kind: "answer" })).rejects.toThrow();
+      expect(await h.store.recordAnswer(jobId!, job!.lease_token!, { answer: "ยอด 40,550.75", kind: "answer", turn: { businessDate: "2026-10-31", context: {} }, scopeKey: SCOPE, deliveryTarget: "private" })).toBe(true);
+      expect((await h.job(jobId!))).toMatchObject({ answer_scope_key: SCOPE, delivery_target: "private" });
+      expect(await h.store.withholdAnswer(jobId!, job!.lease_token!, "สิทธิ์เปลี่ยน")).toBe(true);
+      expect(await h.job(jobId!)).toMatchObject({ answer_text: "สิทธิ์เปลี่ยน", answer_kind: "notice", answer_scope_key: null });
+      const key = { destination: "Ubot", sourceId: "Cgroup", lineUserId: "Uasker" };
+      expect(await h.store.loadTurns(key, Number.MAX_SAFE_INTEGER, "00000000-0000-4000-8000-000000000000", SCOPE, 4)).toEqual([]);
     });
 
     test("a follow-up sent in the same LINE millisecond still sees the previous turn, never its own", async () => {
@@ -229,14 +255,14 @@ for (const h of harnesses) {
       const second = await h.store.enqueue(request({ question: "แล้วของพี่ขวัญล่ะ?", eventTimestampMs: sameMs }));
       const [job1] = await h.store.claim("w", claimOne);
       expect(job1!.id).toBe(first.jobId!);
-      await h.store.recordAnswer(job1!.id, job1!.lease_token!, { answer: "ปลา: คืนค้าง", kind: "answer", turn: { businessDate: "2026-10-31", context: {} } });
+      await h.store.recordAnswer(job1!.id, job1!.lease_token!, { answer: "ปลา: คืนค้าง", kind: "answer", turn: { businessDate: "2026-10-31", context: {} }, scopeKey: SCOPE });
       await h.store.complete(job1!.id, job1!.lease_token!, "completed");
       const [job2] = await h.store.claim("w", claimOne);
       expect(job2!.id).toBe(second.jobId!);
       const key = { destination: "Ubot", sourceId: "Cgroup", lineUserId: "Uasker" };
-      expect((await h.store.loadTurns(key, sameMs, job2!.id, 4)).map((t) => t.question)).toEqual(["ทำไมรายการของพี่ปลายังปิดไม่ได้?"]);
+      expect((await h.store.loadTurns(key, sameMs, job2!.id, SCOPE, 4)).map((t) => t.question)).toEqual(["ทำไมรายการของพี่ปลายังปิดไม่ได้?"]);
       // A reclaimed job never sees its own earlier (recorded) turn.
-      expect(await h.store.loadTurns(key, sameMs, job1!.id, 4)).toEqual([]);
+      expect(await h.store.loadTurns(key, sameMs, job1!.id, SCOPE, 4)).toEqual([]);
     });
   });
 }
@@ -278,12 +304,14 @@ if (db) {
          WHERE p.pronamespace = 'public'::regnamespace
            AND (p.proname LIKE '%ai_assistant%')
            AND r.rolname IN ('anon', 'authenticated', 'service_role')`);
-      expect(rows.length).toBe(30);
+      const functions = new Set(rows.map((row) => row.fn));
+      expect(functions.size).toBeGreaterThanOrEqual(12);
+      expect(rows.length).toBe(functions.size * 3);
       for (const row of rows) expect(row.ok).toBe(row.role === "service_role");
       const tables = await db.query<{ ok: boolean }>(`
         SELECT has_table_privilege(r.rolname, c.oid, 'SELECT') AS ok
           FROM pg_class c CROSS JOIN pg_roles r
-         WHERE c.relname IN ('ai_assistant_jobs', 'ai_assistant_conversation_turns', 'ai_assistant_user_grants')
+         WHERE c.relname IN ('ai_assistant_jobs', 'ai_assistant_conversation_turns', 'ai_assistant_user_grants', 'ai_assistant_group_policies')
            AND r.rolname IN ('anon', 'authenticated', 'service_role')`);
       expect(tables.every((row) => row.ok === false)).toBe(true);
     });

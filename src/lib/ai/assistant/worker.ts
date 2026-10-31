@@ -29,7 +29,21 @@ export interface AssistantAnswer {
   toolNames?: readonly string[];
   /** Saved as a conversation turn (kind "answer" only). */
   turn?: { businessDate: string; context: Record<string, unknown> } | null;
+  /** Access scope the answer was produced under (required for kind "answer"). */
+  scopeKey?: string | null;
+  /** "private" = push 1:1 to the asker instead of the chat (group without a group policy). */
+  deliverTo?: "chat" | "private";
 }
+
+/**
+ * Is the access a recorded data answer was produced under still current?
+ * "changed" covers revoked grants, downgrades and changed group policies.
+ */
+export type AssistantRevalidator = (
+  job: AssistantJob,
+  scopeKey: string | null,
+  deliverTo: "chat" | "private",
+) => Promise<"current" | "changed" | "transient">;
 
 export type AssistantAnswerer = (
   job: AssistantJob,
@@ -53,6 +67,13 @@ export interface AssistantWorkerOptions {
   /** Time reserved for recording + delivery after the answer. */
   deliveryReserveMs?: number;
   temporaryErrorText: string;
+  /**
+   * Checked right before every data answer is delivered, including answers
+   * recorded by a crashed worker. Without it, data answers are not delivered.
+   */
+  revalidate?: AssistantRevalidator;
+  /** Delivered instead of an answer whose access changed. */
+  scopeChangedText?: string;
 }
 
 export interface AssistantWorkerSummary {
@@ -95,6 +116,8 @@ async function processJob(
 
   let text = job.answer_text;
   let kind = job.answer_kind;
+  let scopeKey = job.answer_scope_key;
+  let deliverTo = job.delivery_target;
   let errorCode: string | null = null;
 
   if (text === null) {
@@ -125,14 +148,42 @@ async function processJob(
 
     text = answer?.text.trim() ? answer.text.trim().slice(0, 5000) : options.temporaryErrorText;
     kind = answer?.text.trim() ? (answer.kind ?? "answer") : "notice";
+    scopeKey = kind === "answer" ? answer?.scopeKey ?? null : null;
+    deliverTo = answer?.deliverTo ?? "chat";
+    if (kind === "answer" && !scopeKey) {
+      // Fail closed: an answer that cannot be tied to an access scope is never shown.
+      text = options.temporaryErrorText;
+      kind = "notice";
+      errorCode = "answer_without_scope";
+    }
     const recorded = await store.recordAnswer(job.id, lease, {
       answer: text,
       kind,
       usage: answer?.usage ?? null,
       toolNames: answer?.toolNames ?? [],
       turn: kind === "answer" ? answer?.turn ?? null : null,
+      scopeKey,
+      deliveryTarget: deliverTo,
     });
     if (!recorded) return "fenced";
+  }
+
+  if (kind === "answer") {
+    // P1-C: the asker may have been downgraded or revoked (or the group policy
+    // changed) since the answer was produced — including by a crashed worker
+    // long before this delivery.
+    const verdict = options.revalidate ? await options.revalidate(job, scopeKey, deliverTo) : "changed";
+    if (verdict === "transient") {
+      const retried = await store.retry(job.id, lease, retryDelaySeconds(job.attempts), "access_revalidation_failed");
+      return retried ? "retried" : "fenced";
+    }
+    if (verdict === "changed") {
+      const notice = options.scopeChangedText ?? options.temporaryErrorText;
+      if (!await store.withholdAnswer(job.id, lease, notice)) return "fenced";
+      logger.info("ai assistant answer withheld: access changed", log);
+      text = notice;
+      kind = "notice";
+    }
   }
 
   const delivery: DeliveryResult = await withTimeout(
@@ -142,6 +193,7 @@ async function processJob(
       store,
       adapter: options.delivery,
       pushFallbackEnabled: options.pushFallbackEnabled,
+      target: deliverTo,
       signal,
     }),
   ).catch((error: unknown): DeliveryResult => {

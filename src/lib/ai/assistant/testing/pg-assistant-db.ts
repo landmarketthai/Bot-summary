@@ -11,7 +11,10 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 import { createSlipTestDb, type SlipTestDb } from "@/lib/slips/testing/pg-slip-harness";
 
-export const ASSISTANT_MIGRATION = "20261031090000_ai_assistant_jobs.sql";
+export const ASSISTANT_MIGRATIONS = [
+  "20261031090000_ai_assistant_jobs.sql",
+  "20261031150000_ai_assistant_access_scope.sql",
+];
 
 export async function createAssistantTestDb(): Promise<SlipTestDb | null> {
   if (process.env.ALLOW_DISPOSABLE_POSTGRES_TESTS !== "1") {
@@ -19,7 +22,7 @@ export async function createAssistantTestDb(): Promise<SlipTestDb | null> {
     return null;
   }
   try {
-    return await createSlipTestDb("ai_assistant", [ASSISTANT_MIGRATION]);
+    return await createSlipTestDb("ai_assistant", ASSISTANT_MIGRATIONS);
   } catch (error) {
     if (process.env.AI_ASSISTANT_PG_REQUIRE === "1") throw error;
     return null;

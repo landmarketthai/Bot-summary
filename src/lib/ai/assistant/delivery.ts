@@ -90,6 +90,12 @@ export interface DeliverOptions {
   store: AssistantJobStore;
   adapter: LineDeliveryAdapter;
   pushFallbackEnabled: boolean;
+  /**
+   * "private": the answer is for the asker only (a group question without a
+   * group policy). The group's reply token is never used; it is pushed to the
+   * asker's LINE user id.
+   */
+  target?: "chat" | "private";
   signal: AbortSignal;
   now?: number;
   /** Do not start a reply with less than this left on the token. */
@@ -127,8 +133,10 @@ export async function deliverAnswer(
       : { state: "fenced" };
   }
 
+  const privateTarget = (options.target ?? "chat") === "private";
+  const pushTo = privateTarget ? job.line_user_id : job.source_id;
   let pushFrom: AssistantDeliveryState[] = ["pending", "push_started"];
-  if (job.delivery_state === "pending" && replyTokenUsable(job, now, options.replySafetyMs ?? 3_000)) {
+  if (!privateTarget && job.delivery_state === "pending" && replyTokenUsable(job, now, options.replySafetyMs ?? 3_000)) {
     if (!await set(["pending"], "reply_started", "reply")) return { state: "fenced" };
     try {
       await adapter.reply(job.reply_token!, text, options.signal);
@@ -148,7 +156,7 @@ export async function deliverAnswer(
     }
   }
 
-  if (!options.pushFallbackEnabled) {
+  if (!privateTarget && !options.pushFallbackEnabled) {
     return (await set([...pushFrom, "pending"], "undeliverable"))
       ? { state: "undeliverable", reason: "reply_token_expired_push_disabled" }
       : { state: "fenced" };
@@ -156,7 +164,7 @@ export async function deliverAnswer(
 
   if (!await set(pushFrom, "push_started", "push")) return { state: "fenced" };
   try {
-    await adapter.push(job.source_id, text, job.delivery_retry_key, options.signal);
+    await adapter.push(pushTo, text, job.delivery_retry_key, options.signal);
     return (await set(["push_started"], "delivered", "push"))
       ? { state: "delivered", channel: "push" }
       : { state: "fenced" };

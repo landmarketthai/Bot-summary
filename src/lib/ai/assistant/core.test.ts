@@ -37,6 +37,12 @@ function harness(provider: AssistantModelProvider = new ScriptedThaiModel()) {
     store,
     provider,
     resolveScope,
+    // Every group in this suite is a management group with a full group policy;
+    // group default-deny and mixed policies are covered in review-findings.test.ts.
+    resolveGroupPolicy: async (sourceId: string) => ({
+      ok: true as const,
+      policy: { sourceId, allowFinancial: true, allowPersonSpecific: true, markets: null },
+    }),
     readData: createFixtureDataReader(reads),
   };
   /** Enqueue + claim + answer + record, like the worker, and return the answer. */
@@ -52,6 +58,7 @@ function harness(provider: AssistantModelProvider = new ScriptedThaiModel()) {
     const answer = await answerAssistantJob(job as AssistantJob, { deadlineAt: Date.now() + 10_000, signal: new AbortController().signal }, deps);
     await store.recordAnswer(job!.id, job!.lease_token!, {
       answer: answer.text, kind: answer.kind ?? "answer", turn: answer.turn ?? null, usage: answer.usage ?? null,
+      scopeKey: answer.scopeKey ?? null, deliveryTarget: answer.deliverTo ?? "chat",
     });
     await store.complete(job!.id, job!.lease_token!, "completed");
     return answer;
@@ -190,7 +197,7 @@ describe("per-user and per-market authorization (server-side)", () => {
     expect(h.reads).toHaveLength(0);
   });
 
-  test("a market outside the requester's grant is refused before any read", async () => {
+  test("a market outside a market supervisor's grant is refused before any read", async () => {
     const rogue: AssistantModelProvider = {
       name: "rogue", model: "rogue",
       async respond(request) {
@@ -201,14 +208,32 @@ describe("per-user and per-market authorization (server-side)", () => {
       },
     };
     const h = harness(rogue);
-    const answer = await h.ask("พาซิโอ้ผักเหลือของเท่าไหร่", { lineUserId: "Udam" });
-    expect(h.reads).toHaveLength(0);
+    const supervisorAnswer = await h.ask("พาซิโอ้ผักเหลือของเท่าไหร่", { lineUserId: "Upaseo" });
+    expect(h.reads).toHaveLength(1); // its own market is fine
+    const rogueRatcha: AssistantModelProvider = {
+      ...rogue,
+      async respond(request) {
+        const result = request.transcript.find((item) => item.kind === "tool_result") as { output: string } | undefined;
+        return result
+          ? { text: result.output, toolCalls: [], model: "rogue" }
+          : { text: "", toolCalls: [{ callId: "c1", name: "get_market_stock", arguments: JSON.stringify({ market: "ราชพฤกษ์" }) }], model: "rogue" };
+      },
+    };
+    const other = harness(rogueRatcha);
+    const answer = await other.ask("ราชพฤกษ์เหลือของเท่าไหร่", { lineUserId: "Upaseo" });
+    expect(other.reads).toHaveLength(0);
     expect(answer.text).toContain("market_not_permitted");
+    expect(supervisorAnswer.kind).toBe("answer");
+    // Staff cannot use a market-level tool at all, even for their own market.
+    const staff = harness(rogue);
+    const staffAnswer = await staff.ask("พาซิโอ้ผักเหลือของเท่าไหร่", { lineUserId: "Ulek" });
+    expect(staff.reads).toHaveLength(0);
+    expect(staffAnswer.text).toMatch(/tool_not_permitted|Unsupported analyst tool/u);
   });
 
   test("market-scoped requesters see only their markets, totals come from the scoped source", async () => {
     const h = harness();
-    const answer = await h.ask("วันนี้ทุกตลาดขายได้เท่าไหร่?", { lineUserId: "Ulek" });
+    const answer = await h.ask("วันนี้ทุกตลาดขายได้เท่าไหร่?", { lineUserId: "Upaseo" });
     expect(h.reads.at(-1)!.scope.markets).toEqual(new Set([FIXTURE_MARKETS.PASEO]));
     expect(answer.text).toContain(FIXTURE_MARKETS.PASEO);
     expect(answer.text).not.toContain(FIXTURE_MARKETS.WAT);
@@ -238,22 +263,34 @@ describe("per-user and per-market authorization (server-side)", () => {
       .toEqual({ ok: false, reason: "other_staff" });
     expect(authorizeToolRequest(dam, { tool: "get_settlement_overview", businessDate: FIXTURE_TODAY }))
       .toEqual({ ok: false, reason: "tool_not_permitted" });
-    expect(authorizeToolRequest(dam, { tool: "get_market_summary", businessDate: FIXTURE_TODAY, market: "วัดตะกล่ำ" }))
+    for (const tool of ["get_market_summary", "get_daily_summary", "get_stock_summary", "get_market_stock", "compare_daily_sales", "get_white_sheet_status"] as const) {
+      expect(authorizeToolRequest(dam, { tool, businessDate: FIXTURE_TODAY, market: "ราชพฤกษ์", days: 2 } as never))
+        .toEqual({ ok: false, reason: "tool_not_permitted" });
+    }
+    expect(authorizeToolRequest(SCOPES.Upaseo!, { tool: "get_market_summary", businessDate: FIXTURE_TODAY, market: "วัดตะกล่ำ" }))
       .toEqual({ ok: false, reason: "market_not_permitted" });
     expect(authorizeToolRequest(SCOPES.Upaseo!, { tool: "get_staff_settlement", businessDate: FIXTURE_TODAY, staff: "ขวัญ" }).ok).toBe(true);
   });
 });
 
 describe("financial answer grounding", () => {
-  test("an answer with a figure no tool returned is withheld", async () => {
+  test("a model figure is never delivered for a financial tool; the backend fields are rendered", async () => {
     const model = new ScriptedThaiModel();
     model.answerOverride = "วันนี้ยอดขายรวม 41,000.00 บาทครับ";
     const h = harness(model);
     const answer = await h.ask("วันนี้ทุกตลาดขายได้เท่าไหร่?");
+    expect(answer.text).not.toContain("41,000");
+    expect(answer.text).toContain("ยืนยันแล้ว 40,550.75 บาท · รอตรวจ 1,650.00 บาท");
+  });
+
+  test("a non-financial answer with a figure no tool returned is withheld and not remembered", async () => {
+    const model = new ScriptedThaiModel();
+    model.answerOverride = "เล็กมีสลิปรอตรวจ 250 รายการ";
+    const h = harness(model);
+    const answer = await h.ask("หนูเล็กมีสลิปที่ยังรอตรวจกี่รายการ?");
     expect(answer.text).toBe(ASSISTANT_UNGROUNDED_REPLY);
     expect(answer.kind).toBe("notice");
     expect(answer.turn).toBeUndefined();
-    // A withheld answer is not remembered either (kind notice).
   });
 
   test("grounding rules", () => {

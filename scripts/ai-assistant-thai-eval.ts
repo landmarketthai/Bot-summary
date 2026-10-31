@@ -69,6 +69,11 @@ async function pipeline(provider: AssistantModelProvider) {
       store,
       provider,
       resolveScope: async () => ({ ok: true as const, scope: SUPERVISOR }),
+      // The eval chat is a management group with a full group policy.
+      resolveGroupPolicy: async (sourceId: string) => ({
+        ok: true as const,
+        policy: { sourceId, allowFinancial: true, allowPersonSpecific: true, markets: null },
+      }),
       readData: createFixtureDataReader(reads),
     };
     const ask = async (question: string, n: number) => {
@@ -79,7 +84,10 @@ async function pipeline(provider: AssistantModelProvider) {
       });
       const [job] = await store.claim("eval", { limit: 1, leaseSeconds: 120, maxRunning: 5 });
       const answer = await answerAssistantJob(job!, { deadlineAt: Date.now() + 30_000, signal: new AbortController().signal }, deps);
-      await store.recordAnswer(job!.id, job!.lease_token!, { answer: answer.text, kind: answer.kind ?? "answer", turn: answer.turn ?? null });
+      await store.recordAnswer(job!.id, job!.lease_token!, {
+        answer: answer.text, kind: answer.kind ?? "answer", turn: answer.turn ?? null,
+        scopeKey: answer.scopeKey ?? null, deliveryTarget: answer.deliverTo ?? "chat",
+      });
       await store.complete(job!.id, job!.lease_token!, "completed");
       return answer;
     };

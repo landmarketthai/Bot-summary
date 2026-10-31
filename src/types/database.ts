@@ -2310,6 +2310,9 @@ export interface Database {
           updated_at:             string;
           started_at:             string | null;
           completed_at:           string | null;
+          /** 20261031150000: access scope the recorded answer was produced under. */
+          answer_scope_key:       string | null;
+          delivery_target:        "chat" | "private";
         };
         // RPC-only: no direct writes.
         Insert: { [_ in never]: never };
@@ -3163,11 +3166,27 @@ export interface Database {
           p_kind: "answer" | "notice";
           p_usage?: Json | null;
           p_tool_names?: string[];
-          p_turn_context?: Json | null;
-          p_turn_ttl_seconds?: number;
-          p_max_turns?: number;
+          p_turn_context: Json | null;
+          p_turn_ttl_seconds: number;
+          p_max_turns: number;
+          p_scope_key: string | null;
+          p_delivery_target: "chat" | "private";
         };
         Returns: boolean;
+      };
+      withhold_ai_assistant_answer: {
+        Args: { p_job_id: string; p_lease_token: string; p_notice: string };
+        Returns: boolean;
+      };
+      get_ai_assistant_group_policy: {
+        Args: { p_source_id: string };
+        Returns: {
+          source_id: string;
+          allow_financial: boolean;
+          allow_person_specific: boolean;
+          all_markets: boolean;
+          market_labels: string[];
+        }[];
       };
       set_ai_assistant_delivery: {
         Args: {
@@ -3204,6 +3223,7 @@ export interface Database {
           p_line_user_id: string;
           p_before_event_ms: number;
           p_exclude_job_id: string;
+          p_scope_key: string;
           p_limit?: number;
         };
         Returns: {
