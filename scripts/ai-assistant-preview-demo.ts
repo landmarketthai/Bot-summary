@@ -122,7 +122,7 @@ log("- LINE: simulated events in, recording adapter out (nothing sent to LINE)")
 log("- Model: scripted Thai stand-in (not GPT-6 Luna); data: invented fixtures behind the real authorization layer");
 log();
 
-log("## 1. Six-question conversation (supervisor)");
+log("## 1. Six-question conversation (approved group Cmanagement)");
 log();
 for (const question of [
   "วันนี้ทุกตลาดขายได้เท่าไหร่?",
@@ -161,7 +161,15 @@ await say("Uboss", "ใบขาววันนี้ปิดครบทุก
 await work();
 log();
 
-log("## 5. Permission boundaries (staff ดำ, 1:1 chat)");
+log("## 5. Approved group: every member shares the group scope (no per-user grant)");
+log();
+await say("Udam", "พี่ขวัญเบิกอะไรไป");
+await work();
+await say("Ustranger", "ใครเงินขาดบ้างวันนี้");
+await work();
+log();
+
+log("## 6. Permission boundaries in 1:1 chats (staff ดำ, no grant)");
 log();
 await say("Udam", "พี่ดำเบิกอะไรไป", { chat: "dm" });
 await work();
@@ -173,7 +181,7 @@ await say("Ustranger", "วันนี้ทุกตลาดขายได�
 await work();
 log();
 
-log("## 6. Group disclosure: a group without a group policy");
+log("## 7. Group disclosure: an allowlisted group without a group policy");
 log();
 await say("Uboss", "วันนี้ทุกตลาดขายได้เท่าไหร่?", { chat: "Cworkers" });
 await work();
