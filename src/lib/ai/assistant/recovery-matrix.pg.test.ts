@@ -101,7 +101,7 @@ const describePg = db ? describe : describe.skip;
 
 describePg("recovery matrix (real PostgreSQL)", () => {
   beforeEach(async () => {
-    await db!.query("TRUNCATE public.ai_assistant_conversation_turns, public.ai_assistant_jobs");
+    await db!.query("TRUNCATE public.ai_assistant_conversation_turns, public.ai_assistant_jobs, public.ai_assistant_recovery_cursor");
   });
 
   test("failed enqueue + LINE never redelivers: the worker-cron sweep recovers and answers it", async () => {
@@ -136,7 +136,7 @@ describePg("recovery matrix (real PostgreSQL)", () => {
     expect(await database.scalar("SELECT count(*) FROM public.ai_assistant_jobs")).toBe("1");
   });
 
-  test("sweep pages past unprocessed non-question messages so a question is not hidden behind them", async () => {
+  test("unprocessed non-question messages are never read by the sweep, so they cannot hide a question", async () => {
     const database = db!;
     const p = pipeline(database);
     await database.query("TRUNCATE public.raw_messages CASCADE");
@@ -160,10 +160,8 @@ describePg("recovery matrix (real PostgreSQL)", () => {
       supabase: p.supabase, dispatcher: createAssistantDispatcher(p.store), analystEnabled: true,
       sourceAllowed: () => true, whiteSheetReaderEnabled: false, minAgeMs: 0, limit: 25, maxRows,
     });
-    // Bounded: a sweep that may examine only 50 rows stops before the question.
-    expect(await sweep(50)).toMatchObject({ scanned: 50, enqueued: 0 });
-    // The default bound pages through all 61 rows and finds it.
-    expect(await sweep(250)).toMatchObject({ scanned: 61, skipped: 60, enqueued: 1 });
+    // Only the question is a candidate: even a 1-row budget reaches it.
+    expect(await sweep(1)).toMatchObject({ scanned: 1, skipped: 0, enqueued: 1 });
     expect(await database.scalar("SELECT count(*) FROM public.raw_messages WHERE is_processed = false")).toBe("60");
     await p.work();
     expect(p.line.sent).toHaveLength(1);
@@ -313,5 +311,166 @@ describePg("recovery matrix (real PostgreSQL)", () => {
     expect(p.line.attempts).toHaveLength(1);
     expect(p.line.sent).toHaveLength(0);
     expect(await job(database, event.webhookEventId)).toMatchObject({ status: "completed", delivery_state: "uncertain", last_error_code: "push_retry_window_expired" });
+  });
+});
+
+/**
+ * Sweep pagination on REAL PostgreSQL. Rows are inserted directly so their
+ * created_at (and ties) are exact. "Blocked" questions come from a chat that
+ * is not on the source allowlist: the sweep must skip them and leave them
+ * unprocessed, which is what made pages repeat in the past.
+ */
+describePg("recovery sweep pagination (real PostgreSQL)", () => {
+  beforeEach(async () => {
+    await db!.query("TRUNCATE public.ai_assistant_conversation_turns, public.ai_assistant_jobs");
+    await db!.query("TRUNCATE public.raw_messages CASCADE");
+    await db!.query(`DO $$ BEGIN
+      IF to_regclass('public.ai_assistant_recovery_cursor') IS NOT NULL THEN DELETE FROM public.ai_assistant_recovery_cursor; END IF;
+    END $$`);
+  });
+
+  /** Inserts `count` unprocessed text rows; `createdAt` is a SQL expression of g (1..count). */
+  async function seed(database: SlipTestDb, options: { prefix: string; count: number; sourceId: string; text: string; createdAt: string }) {
+    const { prefix, count, sourceId, text, createdAt } = options;
+    await database.query(`
+      INSERT INTO public.raw_messages (line_event_id, destination, event_type, source_type, source_id, user_id, message_id, message_type, raw_text, payload, is_processed, created_at)
+      SELECT '${prefix}-' || g, 'Ubot', 'message', 'group', '${sourceId}', 'U${prefix}' || g, 'm-${prefix}-' || g, 'text', '${text}',
+             jsonb_build_object('type', 'message', 'webhookEventId', '${prefix}-' || g, 'timestamp', (extract(epoch FROM now()) * 1000)::bigint,
+               'replyToken', 'reply-${prefix}-' || g,
+               'source', jsonb_build_object('type', 'group', 'groupId', '${sourceId}', 'userId', 'U${prefix}' || g),
+               'message', jsonb_build_object('id', 'm-${prefix}-' || g, 'type', 'text', 'text', '${text}')),
+             false, ${createdAt}
+      FROM generate_series(1, ${count}) AS g`);
+  }
+
+  const QUESTION = "@Botsummary วันนี้ทุกตลาดขายได้เท่าไหร่?";
+  const NOISE = "เบิก มะม่วงน้ำดอกไม้ 30";
+
+  test("more than one page of rows with the SAME created_at: every row visited exactly once, no loop", async () => {
+    const database = db!;
+    const p = pipeline(database);
+    const tie = "timestamptz '2026-10-31 08:00:00+00'";
+    // 80 skipped questions (blocked chat) and 30 recoverable ones, all at one instant.
+    await seed(database, { prefix: "tb", count: 80, sourceId: "Cblocked", text: QUESTION, createdAt: tie });
+    await seed(database, { prefix: "tq", count: 30, sourceId: "Capproved", text: QUESTION, createdAt: tie });
+    const visits = new Map<string, number>();
+    let allowChecks = 0;
+    const dispatcher = createAssistantDispatcher(p.store);
+    const summary = await recoverUnenqueuedQuestions({
+      supabase: p.supabase,
+      dispatcher: async (input) => {
+        visits.set(input.event.webhookEventId, (visits.get(input.event.webhookEventId) ?? 0) + 1);
+        return dispatcher(input);
+      },
+      analystEnabled: true,
+      sourceAllowed: (sourceId) => { allowChecks += 1; return sourceId === "Capproved"; },
+      whiteSheetReaderEnabled: false,
+      now: Date.parse("2026-10-31T08:10:00Z"),
+      limit: 25,
+      maxRows: 500,
+    });
+    expect(summary).toMatchObject({ scanned: 110, skipped: 80, enqueued: 30, deferred: 0 });
+    expect(allowChecks).toBe(110);
+    expect(visits.size).toBe(30);
+    expect([...visits.values()].every((count) => count === 1)).toBe(true);
+    expect(await database.scalar("SELECT count(*) FROM public.ai_assistant_jobs")).toBe("30");
+    expect(await database.scalar("SELECT count(*) FROM public.raw_messages WHERE is_processed = false")).toBe("80");
+  });
+
+  test("more than 250 older NON-AI rows ahead of a failed-enqueue question: recovered by the cron sweeps inside its window", async () => {
+    const database = db!;
+    const p = pipeline(database);
+    const t0 = Date.parse("2026-10-31T08:00:00Z");
+    // 300 produce texts left unprocessed by another workflow, all older than the question.
+    await seed(database, { prefix: "np", count: 300, sourceId: "Capproved", text: NOISE, createdAt: "timestamptz '2026-10-31 07:58:00+00' + (g || ' milliseconds')::interval" });
+    await seed(database, { prefix: "aq", count: 1, sourceId: "Capproved", text: QUESTION, createdAt: "timestamptz '2026-10-31 08:00:00+00'" });
+    // Cron every 5 minutes while the question is eligible (30-minute window).
+    let recoveredAt: number | null = null;
+    for (let minute = 5; minute <= 25 && recoveredAt === null; minute += 5) {
+      const summary = await recoverUnenqueuedQuestions({
+        supabase: p.supabase, dispatcher: createAssistantDispatcher(p.store), analystEnabled: true,
+        sourceAllowed: () => true, whiteSheetReaderEnabled: false, now: t0 + minute * 60_000,
+      });
+      if (summary.enqueued > 0) recoveredAt = minute;
+    }
+    expect(recoveredAt).not.toBeNull();
+    expect(await database.scalar("SELECT is_processed::text FROM public.raw_messages WHERE line_event_id = 'aq-1'")).toBe("true");
+    // Produce rows are left exactly as they were.
+    expect(await database.scalar("SELECT count(*) FROM public.raw_messages WHERE line_event_id LIKE 'np-%' AND is_processed = false")).toBe("300");
+  });
+
+  test("more than one sweep's worth of skipped QUESTIONS ahead: progress across sweeps, recovered inside its window", async () => {
+    const database = db!;
+    const p = pipeline(database);
+    const t0 = Date.parse("2026-10-31T08:00:00Z");
+    await seed(database, { prefix: "sb", count: 300, sourceId: "Cblocked", text: QUESTION, createdAt: "timestamptz '2026-10-31 07:58:00+00' + (g || ' milliseconds')::interval" });
+    await seed(database, { prefix: "sq", count: 1, sourceId: "Capproved", text: QUESTION, createdAt: "timestamptz '2026-10-31 08:00:00+00'" });
+    let recoveredAt: number | null = null;
+    for (let minute = 5; minute <= 25 && recoveredAt === null; minute += 5) {
+      const summary = await recoverUnenqueuedQuestions({
+        supabase: p.supabase, dispatcher: createAssistantDispatcher(p.store), analystEnabled: true,
+        sourceAllowed: (sourceId) => sourceId === "Capproved", whiteSheetReaderEnabled: false, now: t0 + minute * 60_000,
+      });
+      expect(summary.scanned).toBeLessThanOrEqual(250);
+      if (summary.enqueued > 0) recoveredAt = minute;
+    }
+    expect(recoveredAt).not.toBeNull();
+    expect(await database.scalar("SELECT count(*) FROM public.raw_messages WHERE line_event_id LIKE 'sb-%' AND is_processed = false")).toBe("300");
+  });
+
+  test("cursor: a sweep resumes where the last stopped, clears it at the end of the window, and ignores a stale key", async () => {
+    const database = db!;
+    const p = pipeline(database);
+    const t0 = Date.parse("2026-10-31T08:00:00Z");
+    await seed(database, { prefix: "cb", count: 30, sourceId: "Cblocked", text: QUESTION, createdAt: "timestamptz '2026-10-31 07:58:00+00' + (g || ' milliseconds')::interval" });
+    const sweep = (minute: number) => recoverUnenqueuedQuestions({
+      supabase: p.supabase, dispatcher: createAssistantDispatcher(p.store), analystEnabled: true,
+      sourceAllowed: (sourceId) => sourceId === "Capproved", whiteSheetReaderEnabled: false,
+      now: t0 + minute * 60_000, limit: 7, maxRows: 20,
+    });
+    const cursor = () => database.scalar("SELECT coalesce(max(after_id::text), 'none') FROM public.ai_assistant_recovery_cursor");
+    expect(await sweep(5)).toMatchObject({ scanned: 20 });
+    expect(await cursor()).toBe(await database.scalar("SELECT id::text FROM public.raw_messages WHERE line_event_id = 'cb-20'"));
+    expect(await sweep(6)).toMatchObject({ scanned: 10 });
+    expect(await cursor()).toBe("none");
+    // Wrapped: the next sweep starts at the window start again.
+    expect(await sweep(7)).toMatchObject({ scanned: 20 });
+    // A key older than the window start is ignored (the window is used instead).
+    await database.query("UPDATE public.ai_assistant_recovery_cursor SET after_created_at = timestamptz '2026-10-31 06:00:00+00'");
+    expect(await sweep(8)).toMatchObject({ scanned: 20 });
+  });
+
+  test("keys keep microsecond precision: page size 1 over microsecond-apart rows visits each once", async () => {
+    const database = db!;
+    const p = pipeline(database);
+    await seed(database, { prefix: "us", count: 9, sourceId: "Capproved", text: QUESTION, createdAt: "timestamptz '2026-10-31 08:00:00.000001+00' + (g || ' microseconds')::interval" });
+    const visits: string[] = [];
+    const dispatcher = createAssistantDispatcher(p.store);
+    const summary = await recoverUnenqueuedQuestions({
+      supabase: p.supabase,
+      dispatcher: async (input) => { visits.push(input.event.webhookEventId); return dispatcher(input); },
+      analystEnabled: true, sourceAllowed: () => true, whiteSheetReaderEnabled: false,
+      now: Date.parse("2026-10-31T08:10:00Z"), limit: 1, maxRows: 50,
+    });
+    expect(summary).toMatchObject({ scanned: 9, enqueued: 9 });
+    expect(visits).toEqual(Array.from({ length: 9 }, (_, index) => `us-${index + 1}`));
+  });
+
+  test("a question that only mentions the bot (no '@' text) is still a candidate", async () => {
+    const database = db!;
+    const p = pipeline(database);
+    await database.query(`
+      INSERT INTO public.raw_messages (line_event_id, destination, event_type, source_type, source_id, user_id, message_id, message_type, raw_text, payload, is_processed, created_at)
+      VALUES ('mention-1', 'Ubot', 'message', 'group', 'Capproved', 'Umention', 'm-mention-1', 'text', 'บอท วันนี้ขายได้เท่าไหร่',
+        jsonb_build_object('type', 'message', 'webhookEventId', 'mention-1', 'timestamp', (extract(epoch FROM now()) * 1000)::bigint,
+          'source', jsonb_build_object('type', 'group', 'groupId', 'Capproved', 'userId', 'Umention'),
+          'message', jsonb_build_object('id', 'm-mention-1', 'type', 'text', 'text', 'บอท วันนี้ขายได้เท่าไหร่',
+            'mention', jsonb_build_object('mentionees', jsonb_build_array(jsonb_build_object('index', 0, 'length', 3, 'type', 'user', 'userId', 'Ubot'))))),
+        false, timestamptz '2026-10-31 08:00:00+00')`);
+    const summary = await recoverUnenqueuedQuestions({
+      supabase: p.supabase, dispatcher: createAssistantDispatcher(p.store), analystEnabled: true,
+      sourceAllowed: () => true, whiteSheetReaderEnabled: false, now: Date.parse("2026-10-31T08:10:00Z"),
+    });
+    expect(summary).toMatchObject({ scanned: 1, enqueued: 1 });
   });
 });

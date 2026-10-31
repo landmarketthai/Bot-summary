@@ -15,6 +15,7 @@ export const ASSISTANT_MIGRATIONS = [
   "20261031090000_ai_assistant_jobs.sql",
   "20261031150000_ai_assistant_access_scope.sql",
   "20261031160000_ai_assistant_queue_hardening.sql",
+  "20261031170000_ai_assistant_recovery_scan.sql",
 ];
 
 export async function createAssistantTestDb(): Promise<SlipTestDb | null> {
@@ -23,7 +24,9 @@ export async function createAssistantTestDb(): Promise<SlipTestDb | null> {
     return null;
   }
   try {
-    return await createSlipTestDb("ai_assistant", ASSISTANT_MIGRATIONS);
+    // 0001 defines raw_messages (present in every real environment), which the
+    // recovery-scan function of 20261031170000 reads.
+    return await createSlipTestDb("ai_assistant", ["0001_initial_schema.sql", ...ASSISTANT_MIGRATIONS]);
   } catch (error) {
     if (process.env.AI_ASSISTANT_PG_REQUIRE === "1") throw error;
     return null;

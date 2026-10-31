@@ -350,8 +350,9 @@ if (db) {
       const tables = await db.query<{ ok: boolean }>(`
         SELECT has_table_privilege(r.rolname, c.oid, 'SELECT') AS ok
           FROM pg_class c CROSS JOIN pg_roles r
-         WHERE c.relname IN ('ai_assistant_jobs', 'ai_assistant_conversation_turns', 'ai_assistant_user_grants', 'ai_assistant_group_policies')
+         WHERE c.relname IN ('ai_assistant_jobs', 'ai_assistant_conversation_turns', 'ai_assistant_user_grants', 'ai_assistant_group_policies', 'ai_assistant_recovery_cursor')
            AND r.rolname IN ('anon', 'authenticated', 'service_role')`);
+      expect(tables).toHaveLength(5 * 3);
       expect(tables.every((row) => row.ok === false)).toBe(true);
     });
 

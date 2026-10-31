@@ -39,7 +39,8 @@ killed kick leaves a leased job that the cron worker reclaims.
 | One job per LINE event (redelivery-safe) | `UNIQUE (line_event_id)` + `enqueue_ai_assistant_job` |
 | ≤ 3 outstanding questions per user/chat, ≤ 500 backlog | `enqueue_ai_assistant_job` under one global advisory lock (exact under concurrency) |
 | A question is acknowledged only once its job exists | webhook marks the raw message processed after enqueue; an enqueue error is a retryable 503 |
-| A failed enqueue is recovered without LINE redelivery | the cron's recovery sweep enqueues unprocessed `@Botsummary` raw messages of the last 30 min (older than 30 s), paging past other unprocessed messages (≤ 250 rows per run); duplicates are absorbed by `line_event_id` |
+| A failed enqueue is recovered without LINE redelivery | the cron's recovery sweep enqueues unprocessed `@Botsummary` raw messages of the last 30 min (older than 30 s); duplicates are absorbed by `line_event_id` |
+| The sweep cannot skip, repeat or starve a question | `list_ai_assistant_recovery_candidates`: only rows containing `@` or mentioning the bot are read (other workflows' rows never are); composite keyset `(created_at, id)`; ≤ 250 rows per run; a persisted cursor resumes where the last run stopped and is cleared at the window end, so every candidate is visited within ⌈candidates / 250⌉ runs |
 | ≤ `MAX_RUNNING` answers in flight across all invocations | `claim_ai_assistant_jobs` (serialized claim, live-lease count) |
 | One active job per conversation, even for late older events | claim skips a job while another job of its conversation is running; partial unique index on running jobs |
 | Follow-up waits for the previous question | queued jobs of a conversation are claimed in LINE order |
@@ -129,7 +130,7 @@ run. What still depends on it or remains open:
 | Failure | Outcome |
 |---|---|
 | Raw message INSERT fails (DB down at webhook time) | 503; only LINE redelivery recovers it — lost if redelivery is off |
-| Enqueue fails, redelivery off | recovered by the sweep within one cron interval (≤ 30 min window) |
+| Enqueue fails, redelivery off | recovered by the next sweep; with more than 250 unprocessed `@` candidates ahead, by a later sweep (cursor), as long as fewer than ~6 × 250 are ahead within its 30 min window |
 | Sweep or worker not running (`AI_ASSISTANT_CRON_ENABLED` unset) | nothing recovers until it runs; questions older than 30 min are not swept |
 | Reply token expired by the time the answer is ready | push with `X-Line-Retry-Key` if `BOT_SUMMARY_ASSISTANT_PUSH_FALLBACK_ENABLED=true`, else `undeliverable` |
 | Reply request sent, response lost | `uncertain`; not resent (could duplicate) |
@@ -159,8 +160,9 @@ category totals are withheld.
 
 1. Review and merge PR #189, then this PR.
 2. Apply, in order, `supabase/migrations/20261031090000_ai_assistant_jobs.sql`,
-   `20261031150000_ai_assistant_access_scope.sql` and
-   `20261031160000_ai_assistant_queue_hardening.sql` (rollbacks in
+   `20261031150000_ai_assistant_access_scope.sql`,
+   `20261031160000_ai_assistant_queue_hardening.sql` and
+   `20261031170000_ai_assistant_recovery_scan.sql` (rollbacks in
    `supabase/rollback/`, applied in reverse order).
    Turn on webhook redelivery in the test channel (see above) — recommended,
    not required.

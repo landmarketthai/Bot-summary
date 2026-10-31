@@ -3254,6 +3254,30 @@ export interface Database {
         Args: Record<string, never>;
         Returns: Json;
       };
+      list_ai_assistant_recovery_candidates: {
+        Args: {
+          p_since: string;
+          p_until: string;
+          p_after_created_at?: string | null;
+          p_after_id?: string | null;
+          p_limit?: number;
+        };
+        Returns: {
+          id: string;
+          destination: string;
+          source_id: string;
+          payload: Json;
+          created_at: string;
+        }[];
+      };
+      get_ai_assistant_recovery_cursor: {
+        Args: Record<string, never>;
+        Returns: Json;
+      };
+      set_ai_assistant_recovery_cursor: {
+        Args: { p_after_created_at: string | null; p_after_id: string | null };
+        Returns: boolean;
+      };
     };
     CompositeTypes: { [_ in never]: never };
     Enums: {
