@@ -2,7 +2,7 @@
 
 Status: local branch `feat/manual-slip-ai-approval-20261102`, stacked on #193.
 - **No PR. Not part of the #193 release.**
-- Migrations `20261102120000_slip_check_approval_link.sql` and `20261102130000_manual_slip_entry_review.sql` have been applied only to local PG. **A Production apply needs an approved deploy plan.**
+- Migrations `20261102120000_slip_check_approval_link.sql`, `20261102130000_manual_slip_entry_review.sql` and `20261102140000_slip_review_hardening.sql` have been applied only to local PG. **A Production apply needs an approved deploy plan** (`docs/release/slip-money-release-runbook.md`).
 
 ## Problem (pre-existing)
 `manual_slip_entries` stored only an amount, with no reference and no link to `slip_checks`. `checked_slip_total = ai_verified_total + manual_slip_total`, so a slip keyed manually after the AI counted it was counted twice: on the #193 code, the same 70-baht slip came to **140**.
@@ -22,17 +22,30 @@ Status: local branch `feat/manual-slip-ai-approval-20261102`, stacked on #193.
 - **Manual entry:** session not closed; reference belongs to a live (not rejected) AI check (approve the AI check instead); round finalized; another live decision.
 - An identical retry returns the existing decision.
 
-## Money rule, one row per transfer
-**AI check (global winner):** rejected → 0; approved → `approved_amount` once; otherwise the #193 automatic rules (reference, date, outlier, duplicate).
+## Money rule: one row per full reference (`src/lib/slips/reference-ownership.ts`, enforced again by the M3 RPCs)
+1. **Candidates:**
+   - The AI global winner, only if it has a `transfer_amount` (wallet reads are never bank money) and is not rejected.
+   - Manual entries in a closed session that are not rejected and are approved, or that need no review while the AI read is not rejected.
+2. **The earliest candidate owns the money** (AI wins a tie). A later arrival never takes money from an earlier owner, so a finalized round's total cannot be changed by an image or entry that comes afterwards. The AI read is then reported as `supersededByManual`, and approving it is refused.
+3. **Every other claim:**
+   - same amount as the owner → superseded (not counted);
+   - different amount → **pending** (never silently reconciled);
+   - no owner (needs review, or its AI read was rejected) → pending.
+4. **Unreferenced entries:**
+   - rejected → 0;
+   - `requires_review` → pending until an override (this also applies to a referenced entry);
+   - otherwise counted: legacy rows and today's grammar, unchanged.
+5. **AI owner:** approved → `approved_amount` once; rejected → 0; otherwise the #193 automatic rules (date, outlier, duplicate).
+6. **Visibility:** a pending entry is never silently dropped. It appears in settlement (uncertainty line) and the White Sheet (advisory warning). Round-close rows use the same rule: `excluded` covers wallet, outlier, missing date and rejected reads; it doesn't block the close, and the money difference stays visible.
+7. **BR-02:** reference resolution refuses to give a reference to a check while another slip of that reference has a decision.
 
-**Manual entry:**
-1. rejected override → 0;
-2. reference matches a live AI winner → **superseded** (the AI check is the money row);
-3. reference matches a **rejected** AI winner → **pending** until an override;
-4. no reference and `requires_review` → **pending** until an override;
-5. otherwise counted. Legacy rows and today's grammar are unchanged; an approved override counts its approved amount.
-
-A pending entry is never silently dropped: `loadMarketScopedManualSlipBreakdown` returns `pendingCount`/`pendingAmount`/`supersededCount`, and settlement lists pending entries as an uncertainty line.
+**M3 hardening** (`20261102140000_slip_review_hardening.sql`):
+- **Finalized** means `sending`/`sent`/`ambiguous`. A `failed` or unclaimed row doesn't block reviews; its retry re-reconciles.
+- The lock is also taken on the `failed → sending` re-claim.
+- Round-bound reviews take the round **and** day locks and also honour legacy day-level (NULL-round) finalizations.
+- A revoke is refused when it could move the money to a row of another round.
+- An identical retry is idempotent even after finalization.
+- `service_role` cannot write decisions directly.
 
 ## Server-side authorization
 `POST /api/admin/slip-reviews` (`handler.ts`):
@@ -68,7 +81,9 @@ Same method as PR #182: local `next start` + local PostgreSQL/PostgREST, all mig
 9. Roll back M2 then M1 → rows kept, old app code runs.
 
 ## Tests
-- `src/lib/slips/slip-check-approval.pg.test.ts`: 19 cases on PG 17 covering everything above, plus the concurrency/close race (an in-flight finalization blocks the review, which then refuses), idempotent re-apply of M2, rollback, and app/schema version skew (no migration, M1 only).
+- `src/lib/slips/slip-check-approval.pg.test.ts` (30 cases, PG 17): the full B1 matrix, concurrency and close races (in-flight INSERT and `failed → sending` re-claim), finalized-status scope, legacy NULL-round finalization, cross-round freeze, BR-02, privileges, idempotent re-apply, rollback M3 → M2 → M1, and version skew.
+- `src/lib/slips/reference-ownership.test.ts` (10 cases): the pure ownership rule.
+- `src/lib/slips/uat-manual-approval.pg.test.ts` (12 scenarios, E2E through webhook → ledger → LINE summary → loaders → round close → admin route); artifact `docs/uat/slip-money-uat.md`.
 - `src/app/api/admin/slip-reviews/handler.test.ts`: 4 cases (401/403, reviewer = verified admin, routing, 400/422/409).
 
 ## Deploy order (for approval; nothing applied)
@@ -79,5 +94,6 @@ Same method as PR #182: local `next start` + local PostgreSQL/PostgREST, all mig
 5. Enable the LINE grammar phases.
 
 ## Rollback
+Full procedure, limits and triggers: `docs/release/slip-money-release-runbook.md` §9. Order: M3 down → M2 down → M1 down. M1 cannot be re-applied after its down file. A code revert makes old code ignore decisions (a rejected AI slip counts again, and `requires_review` entries count as ordinary money), so turn the LINE grammar phase 2 off first.
 - **Code:** revert. With the code reverted nothing reads the new objects; money returns to the #193 rules.
 - **Database:** `supabase/rollback/20261102130000_manual_slip_entry_review.down.sql`, then `20261102120000_slip_check_approval_link.down.sql`. They drop the RPCs and lock trigger and restore the previous append RPC. **Every decision row, `reference_id` and `requires_review` is kept.**
