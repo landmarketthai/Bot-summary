@@ -82,6 +82,19 @@ export function stubManualSlipTables(options?: {
         }),
       };
     }
+    if (table === "slip_check_approvals") return emptyApprovalTable();
     return null;
   };
+}
+
+/** No operator decisions: .select().in().eq() resolves to zero rows. */
+export function emptyApprovalTable() {
+  const builder = {
+    select: () => builder,
+    in: () => builder,
+    eq: () => builder,
+    then: (resolve: (value: unknown) => unknown, reject?: (reason: unknown) => unknown) =>
+      Promise.resolve({ data: [], error: null }).then(resolve, reject),
+  };
+  return builder;
 }

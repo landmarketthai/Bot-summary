@@ -33,6 +33,13 @@ export interface VerifiedTransferCheckRow {
    * computeValidationFlags, same stored batch rows). Required, like the date.
    */
   amount_outlier: boolean;
+  /**
+   * Active operator decision on this AI check (slip_check_approvals). Absent =
+   * no decision, which can never add money. Approved counts approved_amount
+   * once in place of the AI read, past the date/outlier rules; rejected never
+   * counts.
+   */
+  approval?: { decision: "approved"; amount: number } | { decision: "rejected" } | null;
 }
 
 export interface MarketScopedVerifiedTransferResult {
@@ -52,6 +59,11 @@ export interface MarketScopedVerifiedTransferResult {
   /** Global winners the LINE batch summary suspended as ยอดเงินสูงผิดปกติ. Never auto-counted. */
   pendingOutlierCount:       number;
   pendingOutlierAmount:      number;
+  /** Global winners counted through an operator approval (amount is inside attributedTotal). */
+  approvedCount?:            number;
+  /** Global winners an operator rejected: never counted. */
+  rejectedCount?:            number;
+  rejectedAmount?:           number;
 }
 
 export interface MarketScopedAggregationOptions {
@@ -109,11 +121,26 @@ export function aggregateGloballyAcceptedVerifiedTransfers(
   let pendingDateAmount = 0;
   let pendingOutlierCount = 0;
   let pendingOutlierAmount = 0;
+  let approvedCount = 0;
+  let rejectedCount = 0;
+  let rejectedAmount = 0;
   // The global winner is chosen exactly as before (earliest verified check).
   // A winner that is suspended (outlier) or has a bad date is pending — it
   // never falls through to a later duplicate, so one reference can never be
-  // counted twice or re-assigned to a different read without evidence.
+  // counted twice or re-assigned to a different read without evidence. An
+  // operator decision on the winner replaces the automatic rules for it: the
+  // check is still ONE money row, counted at most once.
   const attribute = (check: VerifiedTransferCheckRow) => {
+    if (check.approval?.decision === "rejected") {
+      rejectedCount += 1;
+      rejectedAmount += Number(check.transfer_amount);
+      return;
+    }
+    if (check.approval?.decision === "approved") {
+      approvedCount += 1;
+      attributedTotal += check.approval.amount;
+      return;
+    }
     if (check.amount_outlier) {
       pendingOutlierCount += 1;
       pendingOutlierAmount += Number(check.transfer_amount);
@@ -168,6 +195,9 @@ export function aggregateGloballyAcceptedVerifiedTransfers(
     pendingDateAmount,
     pendingOutlierCount,
     pendingOutlierAmount,
+    approvedCount,
+    rejectedCount,
+    rejectedAmount,
   };
 }
 
@@ -236,6 +266,7 @@ async function loadVerifiedTransferChecksForSourceDate(
     .map((e) => (e as { batch_id?: string | null }).batch_id)
     .filter((id): id is string => typeof id === "string"))];
   const outliers = await loadBatchOutlierCheckIds(supabase, batchIds);
+  const approvals = await loadActiveApprovals(supabase, (checks ?? []).map((c) => c.id));
 
   return {
     checks: (checks ?? []).map(({ transaction_time, ...row }) => ({
@@ -243,6 +274,7 @@ async function loadVerifiedTransferChecksForSourceDate(
       transfer_amount: Number(row.transfer_amount),
       date_ineligibility: slipDateIneligibility(transaction_time, businessDate),
       amount_outlier: outliers.has(row.id),
+      approval: approvals.get(row.id) ?? null,
     })),
     evidenceMarketById,
   };
@@ -411,16 +443,7 @@ async function computeManualSlipTotal(
 
   const sessionIds = (sessions ?? []).map(s => s.id);
   if (sessionIds.length === 0) return 0;
-
-  const { data: entries, error: entryError } = await supabase
-    .from("manual_slip_entries")
-    .select("amount")
-    .in("session_id", sessionIds);
-  if (entryError) {
-    throw new Error(`manual_slip_entries query failed: ${entryError.message}`);
-  }
-
-  return (entries ?? []).reduce((sum, e) => sum + Number(e.amount), 0);
+  return countableManualEntryTotal(supabase, sessionIds);
 }
 
 /**
@@ -470,16 +493,8 @@ export async function loadMarketScopedManualSlipTotal(
     .map((session) => session.id);
   if (sessionIds.length === 0) return 0;
 
-  const { data: entries, error: entryError } = await supabase
-    .from("manual_slip_entries")
-    .select("amount")
-    .in("session_id", sessionIds);
-  if (entryError) {
-    throw new Error(`manual_slip_entries query failed: ${entryError.message}`);
-  }
-
   const round2 = (n: number) => Math.round(n * 100) / 100;
-  return round2((entries ?? []).reduce((sum, e) => sum + Number(e.amount), 0));
+  return round2(await countableManualEntryTotal(supabase, sessionIds));
 }
 
 export async function reconcile(
@@ -632,4 +647,67 @@ export async function reconcile(
   if (error) throw new Error(`reconciliation upsert failed: ${error.message}`);
 
   return { blocked: false, result, row: row as TransferReconciliationRow };
+}
+
+/**
+ * Sum of manual-slip entries that may count. An entry carrying a reference that
+ * is already an AI-verified slip check is NOT counted — that transfer's money
+ * row is the AI check (or its approval in slip_check_approvals), so counting
+ * both would be a double count. Entries without a reference (every legacy row,
+ * and today's LINE grammar) cannot be matched to an AI check and are counted
+ * as before; nothing is linked by guessing.
+ */
+async function countableManualEntryTotal(supabase: Supabase, sessionIds: string[]): Promise<number> {
+  let result = await supabase.from("manual_slip_entries").select("amount, reference_id").in("session_id", sessionIds);
+  if (result.error && isMissingSchemaObject(result.error)) {
+    // Migration 20261102120000 not applied yet: no entry can carry a reference.
+    result = await supabase.from("manual_slip_entries").select("amount").in("session_id", sessionIds) as unknown as typeof result;
+  }
+  if (result.error) throw new Error(`manual_slip_entries query failed: ${result.error.message}`);
+  const entries = (result.data ?? []) as Array<{ amount: number | string; reference_id?: string | null }>;
+
+  const refs = [...new Set(entries.map((e) => normalizeTransactionId(e.reference_id)).filter((r): r is string => r !== null))];
+  let aiRefs = new Set<string>();
+  if (refs.length > 0) {
+    const { data, error } = await supabase
+      .from("slip_checks")
+      .select("reference_id")
+      .in("reference_id", refs)
+      .in("status", ["EXTRACTED", "PARTIAL_EXTRACTED"]);
+    if (error) throw new Error(`manual reference cross-check failed: ${error.message}`);
+    aiRefs = new Set((data ?? []).map((r) => normalizeTransactionId(r.reference_id)).filter((r): r is string => r !== null));
+  }
+  return entries.reduce((sum, e) => {
+    const ref = normalizeTransactionId(e.reference_id);
+    return ref !== null && aiRefs.has(ref) ? sum : sum + Number(e.amount);
+  }, 0);
+}
+
+/** PostgREST / Postgres "relation or column does not exist" (migration not applied). */
+function isMissingSchemaObject(error: { code?: string }): boolean {
+  return error.code === "42P01" || error.code === "42703" || error.code === "PGRST204" || error.code === "PGRST205";
+}
+
+/** Active decisions (slip_check_approvals) for these checks; none before the migration. */
+async function loadActiveApprovals(
+  supabase: Supabase,
+  checkIds: string[],
+): Promise<Map<string, NonNullable<VerifiedTransferCheckRow["approval"]>>> {
+  const approvals = new Map<string, NonNullable<VerifiedTransferCheckRow["approval"]>>();
+  if (checkIds.length === 0) return approvals;
+  const { data, error } = await supabase.from("slip_check_approvals")
+    .select("slip_check_id, decision, approved_amount")
+    .in("slip_check_id", checkIds)
+    .eq("status", "active");
+  if (error) {
+    // Table absent = migration 20261102120000 not applied: no decision exists.
+    if (isMissingSchemaObject(error)) return approvals;
+    throw new Error(`slip check approval query failed: ${error.message}`);
+  }
+  for (const row of data ?? []) {
+    approvals.set(row.slip_check_id, row.decision === "approved"
+      ? { decision: "approved", amount: Number(row.approved_amount) }
+      : { decision: "rejected" });
+  }
+  return approvals;
 }

@@ -790,6 +790,7 @@ export interface Database {
           amount:          number;
           line_message_id: string;
           line_user_id:    string | null;
+          reference_id:    string | null;
           created_at:      string;
         };
         Insert: {
@@ -800,6 +801,7 @@ export interface Database {
           amount:           number;
           line_message_id:  string;
           line_user_id?:    string | null;
+          reference_id?:    string | null;
           created_at?:      string;
         };
         Update: {
@@ -810,8 +812,29 @@ export interface Database {
           amount?:          number;
           line_message_id?: string;
           line_user_id?:    string | null;
+          reference_id?:    string | null;
           created_at?:      string;
         };
+        Relationships: [];
+      };
+
+      slip_check_approvals: {
+        Row: {
+          id:              string;
+          slip_check_id:   string;
+          decision:        "approved" | "rejected";
+          approved_amount: number | null;
+          reason:          string;
+          reviewer:        string;
+          status:          "active" | "revoked";
+          revoked_at:      string | null;
+          revoked_by:      string | null;
+          revoke_reason:   string | null;
+          created_at:      string;
+        };
+        // Written only through review_slip_check / revoke_slip_check_review.
+        Insert: never;
+        Update: never;
         Relationships: [];
       };
 
@@ -2521,6 +2544,24 @@ export interface Database {
           p_error_message?: string | null;
         };
         Returns: boolean;
+      };
+      review_slip_check: {
+        Args: {
+          p_check_id: string;
+          p_decision: "approved" | "rejected";
+          p_amount: number | null;
+          p_reason: string;
+          p_reviewer: string;
+        };
+        Returns: Json;
+      };
+      revoke_slip_check_review: {
+        Args: {
+          p_approval_id: string;
+          p_revoked_by: string;
+          p_reason: string;
+        };
+        Returns: Json;
       };
       append_manual_slip_entries_atomic: {
         Args: {
