@@ -42,6 +42,7 @@ jobs:
         run: >-
           SLIP_INGEST_REQUIRE=1 bun test
           src/lib/slips/image-ingestion.pg.test.ts
+          src/lib/slips/financial-eligibility.pg.test.ts
           src/lib/slips/image-ingestion-ordering.pg.test.ts
           src/lib/slips/incident-baseline.pg.test.ts
           src/lib/slips/finalizer-accounting.pg.test.ts

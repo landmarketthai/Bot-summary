@@ -88,7 +88,7 @@ describe("P0 29/10/2569 — validation layer and LINE summary", () => {
     const flags = computeValidationFlags(BATCH, parseBatchDate("29/10/2569"));
     expect(flags[0].flagReasons).toEqual(["วันที่รายการไม่ตรงกับรอบ"]);
     expect(flags[3].flagReasons).toEqual(["วันที่รายการไม่ตรงกับรอบ"]);
-    expect(flags[4].flagReasons).toEqual(["ไม่พบวันที่รายการ"]);
+    expect(flags[4].flagReasons).toEqual(["ไม่พบวันที่รายการ", "ไม่พบเลขอ้างอิง"]);
   });
 
   test("summary separates AI-read, confirmed and pending amounts with specific reasons", () => {

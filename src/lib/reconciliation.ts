@@ -1,8 +1,10 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { bangkokBusinessDateFromTimestamp } from "@/lib/business-date";
 import { normalizedMarketLabel } from "@/lib/market";
+import { slipDateIneligibility, type SlipDateIneligibility } from "@/lib/slips/financial-eligibility";
 import { normalizeTransactionId, resolveGloballyAcceptedCheckIds } from "@/lib/slips/transaction-dedupe";
-import type { Database, TransferReconciliationRow } from "@/types/database";
+import { computeValidationFlags } from "@/lib/slips/validation-guard";
+import type { Database, SlipCheckStatus, SlipType, TransferReconciliationRow } from "@/types/database";
 
 type Supabase = SupabaseClient<Database>;
 
@@ -21,6 +23,16 @@ export interface VerifiedTransferCheckRow {
   transfer_amount:  number;
   reference_id:     string | null;
   created_at:       string;
+  /**
+   * Shared date rule (financial-eligibility.ts) against the business date the
+   * row was loaded for; null = eligible. Required so no caller can skip it.
+   */
+  date_ineligibility: SlipDateIneligibility | null;
+  /**
+   * The LINE batch summary suspended this amount as ยอดเงินสูงผิดปกติ (same
+   * computeValidationFlags, same stored batch rows). Required, like the date.
+   */
+  amount_outlier: boolean;
 }
 
 export interface MarketScopedVerifiedTransferResult {
@@ -30,6 +42,16 @@ export interface MarketScopedVerifiedTransferResult {
   /** BR-02: accepted checks with no reference id yet — pending manual resolution, never auto-counted. */
   pendingReferenceCount:     number;
   pendingReferenceAmount:    number;
+  /**
+   * Global winners whose printed date is missing or outside the round — the
+   * same slips the LINE summary leaves รอตรวจสอบ. Never auto-counted; an
+   * operator adds a confirmed one through a closed manual-slip session.
+   */
+  pendingDateCount:          number;
+  pendingDateAmount:         number;
+  /** Global winners the LINE batch summary suspended as ยอดเงินสูงผิดปกติ. Never auto-counted. */
+  pendingOutlierCount:       number;
+  pendingOutlierAmount:      number;
 }
 
 export interface MarketScopedAggregationOptions {
@@ -83,6 +105,27 @@ export function aggregateGloballyAcceptedVerifiedTransfers(
   let unresolvedAcceptedAmount = 0;
   let pendingReferenceCount = 0;
   let pendingReferenceAmount = 0;
+  let pendingDateCount = 0;
+  let pendingDateAmount = 0;
+  let pendingOutlierCount = 0;
+  let pendingOutlierAmount = 0;
+  // The global winner is chosen exactly as before (earliest verified check).
+  // A winner that is suspended (outlier) or has a bad date is pending — it
+  // never falls through to a later duplicate, so one reference can never be
+  // counted twice or re-assigned to a different read without evidence.
+  const attribute = (check: VerifiedTransferCheckRow) => {
+    if (check.amount_outlier) {
+      pendingOutlierCount += 1;
+      pendingOutlierAmount += Number(check.transfer_amount);
+      return;
+    }
+    if (check.date_ineligibility !== null) {
+      pendingDateCount += 1;
+      pendingDateAmount += Number(check.transfer_amount);
+      return;
+    }
+    attributedTotal += Number(check.transfer_amount);
+  };
 
   for (const check of checks) {
     const ref = normalizeTransactionId(check.reference_id);
@@ -96,7 +139,7 @@ export function aggregateGloballyAcceptedVerifiedTransfers(
     countedWinnerReferences.add(ref);
 
     if (targetMarket === undefined || !knownMarkets) {
-      attributedTotal += Number(check.transfer_amount);
+      attribute(check);
       continue;
     }
 
@@ -112,9 +155,7 @@ export function aggregateGloballyAcceptedVerifiedTransfers(
       unresolvedAcceptedAmount += Number(check.transfer_amount);
       continue;
     }
-    if (evidenceMarket === targetMarket) {
-      attributedTotal += Number(check.transfer_amount);
-    }
+    if (evidenceMarket === targetMarket) attribute(check);
   }
 
   return {
@@ -123,6 +164,10 @@ export function aggregateGloballyAcceptedVerifiedTransfers(
     unresolvedAcceptedAmount,
     pendingReferenceCount,
     pendingReferenceAmount,
+    pendingDateCount,
+    pendingDateAmount,
+    pendingOutlierCount,
+    pendingOutlierAmount,
   };
 }
 
@@ -141,7 +186,7 @@ async function loadVerifiedTransferChecksForSourceDate(
   // market_label_normalized (SQL trim/NFC) is storage/index only — not trusted alone.
   let evidenceQuery = supabase
     .from("slip_evidences")
-    .select("id, market_label")
+    .select("id, market_label, batch_id")
     .eq("source_id", sourceId);
 
   if (accountabilityRoundId !== undefined && accountabilityRoundId !== null) {
@@ -177,7 +222,7 @@ async function loadVerifiedTransferChecksForSourceDate(
 
   const { data: checks, error: checkError } = await supabase
     .from("slip_checks")
-    .select("id, evidence_id, transfer_amount, reference_id, created_at")
+    .select("id, evidence_id, transfer_amount, reference_id, created_at, transaction_time")
     .in("evidence_id", evidenceIds)
     .in("status", ["EXTRACTED", "PARTIAL_EXTRACTED"])
     .not("transfer_amount", "is", null)
@@ -187,10 +232,67 @@ async function loadVerifiedTransferChecksForSourceDate(
     throw new Error(`slip check query failed: ${checkError.message}`);
   }
 
+  const batchIds = [...new Set((evidences ?? [])
+    .map((e) => (e as { batch_id?: string | null }).batch_id)
+    .filter((id): id is string => typeof id === "string"))];
+  const outliers = await loadBatchOutlierCheckIds(supabase, batchIds);
+
   return {
-    checks: (checks ?? []) as VerifiedTransferCheckRow[],
+    checks: (checks ?? []).map(({ transaction_time, ...row }) => ({
+      ...row,
+      transfer_amount: Number(row.transfer_amount),
+      date_ineligibility: slipDateIneligibility(transaction_time, businessDate),
+      amount_outlier: outliers.has(row.id),
+    })),
     evidenceMarketById,
   };
+}
+
+/**
+ * The LINE batch summary's outlier guard, re-run with the SAME function
+ * (computeValidationFlags) on the SAME stored rows of each whole batch — every
+ * evidence of the batch, not only the in-scope ones, because the batch median
+ * is what the summary used. No new rule: a slip the summary suspended as
+ * ยอดเงินสูงผิดปกติ is suspended here too. Single-image evidence (no batch)
+ * has no outlier guard in either path.
+ */
+export async function loadBatchOutlierCheckIds(supabase: Supabase, batchIds: string[]): Promise<Set<string>> {
+  if (batchIds.length === 0) return new Set();
+  const { data: batchEvidences, error: evidenceError } = await supabase
+    .from("slip_evidences")
+    .select("id, batch_id")
+    .in("batch_id", batchIds);
+  if (evidenceError) throw new Error(`batch evidence query failed: ${evidenceError.message}`);
+  const batchOf = new Map((batchEvidences ?? []).map((e) => [e.id, e.batch_id as string]));
+  if (batchOf.size === 0) return new Set();
+
+  const { data: batchChecks, error: checkError } = await supabase
+    .from("slip_checks")
+    .select("id, evidence_id, status, slip_type, transfer_amount, paid_amount, gross_amount, discount_amount")
+    .in("evidence_id", [...batchOf.keys()]);
+  if (checkError) throw new Error(`batch check query failed: ${checkError.message}`);
+
+  const byBatch = new Map<string, NonNullable<typeof batchChecks>>();
+  for (const check of batchChecks ?? []) {
+    const batchId = batchOf.get(check.evidence_id);
+    if (!batchId) continue;
+    byBatch.set(batchId, [...(byBatch.get(batchId) ?? []), check]);
+  }
+
+  const outliers = new Set<string>();
+  const num = (v: unknown) => (v === null || v === undefined ? null : Number(v));
+  for (const rows of byBatch.values()) {
+    const flags = computeValidationFlags(rows.map((c) => ({
+      checkStatus: c.status as SlipCheckStatus, slipType: c.slip_type as SlipType,
+      transferAmount: num(c.transfer_amount), paidAmount: num(c.paid_amount),
+      grossAmount: num(c.gross_amount), discountAmount: num(c.discount_amount),
+      transactionTime: null, referenceId: null,
+    })), null);
+    rows.forEach((c, i) => {
+      if (flags[i].flagReasons.includes("ยอดเงินสูงผิดปกติ")) outliers.add(c.id);
+    });
+  }
+  return outliers;
 }
 
 async function resolveGlobalWinnersForChecks(
@@ -269,6 +371,10 @@ export async function loadMarketScopedAiVerifiedTransfers(
       unresolvedAcceptedAmount: 0,
       pendingReferenceCount: 0,
       pendingReferenceAmount: 0,
+      pendingDateCount: 0,
+      pendingDateAmount: 0,
+      pendingOutlierCount: 0,
+      pendingOutlierAmount: 0,
     };
   }
 

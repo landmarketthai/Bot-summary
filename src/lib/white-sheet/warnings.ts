@@ -21,6 +21,15 @@ export const UNATTRIBUTED_VERIFIED_TRANSFER_WARNING =
 export const PENDING_REFERENCE_VERIFIED_TRANSFER_WARNING =
   "พบสลิปที่ยืนยันแล้วแต่ยังไม่มีเลขอ้างอิง ต้องรอผู้ดูแลระบบยืนยันก่อนนับเป็นยอดโอน";
 
+/**
+ * Shared slip date rule (slips/financial-eligibility.ts): an accepted slip with
+ * a missing or out-of-round printed date is not in verifiedTransfers. Advisory,
+ * not a hard stop: the amount is already excluded, and the operator settles a
+ * genuine one through a closed manual-slip session (no in-system override).
+ */
+export const PENDING_DATE_VERIFIED_TRANSFER_WARNING =
+  "พบสลิปที่วันที่ในสลิปไม่ตรงกับรอบหรืออ่านวันที่ไม่ได้ ไม่นับเป็นยอดโอน ต้องตรวจมือ";
+
 /** BR-01: central selling price is missing for a product/unit/date — never guessed. */
 export const MISSING_CENTRAL_PRICE_WARNING_PREFIX =
   "ไม่พบราคากลางสำหรับ";
@@ -71,6 +80,21 @@ export function pendingReferenceVerifiedTransferWarning(
   amount: number,
 ): string {
   return `${PENDING_REFERENCE_VERIFIED_TRANSFER_WARNING} (${count} รายการ, ${formatBaht(amount)} บาท)`;
+}
+
+/** The LINE batch summary's outlier guard, applied to verifiedTransfers too. Advisory, like the date rule. */
+export const PENDING_OUTLIER_VERIFIED_TRANSFER_WARNING =
+  "พบสลิปยอดเงินสูงผิดปกติ ไม่นับเป็นยอดโอน ต้องตรวจมือ";
+
+export function pendingOutlierVerifiedTransferWarning(count: number, amount: number): string {
+  return `${PENDING_OUTLIER_VERIFIED_TRANSFER_WARNING} (${count} รายการ, ${formatBaht(amount)} บาท)`;
+}
+
+export function pendingDateVerifiedTransferWarning(
+  count: number,
+  amount: number,
+): string {
+  return `${PENDING_DATE_VERIFIED_TRANSFER_WARNING} (${count} รายการ, ${formatBaht(amount)} บาท)`;
 }
 
 export function missingCentralPriceWarning(

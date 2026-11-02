@@ -150,6 +150,7 @@ function makeExtracted(amount: number, idx: number, slipType: SlipType = "BANK_S
     paidAmount:      slipType === "GWALLET" || slipType === "THAI_HELP_THAI" ? amount : null,
     transactionTime: null,
     _idx:            idx,
+    referenceId:     `REF-${idx}`,
   };
 }
 
@@ -244,7 +245,7 @@ describe("duplicate guard", () => {
     expect(flags.map((f) => f.flagged)).toEqual([false, true, true]);
   });
 
-  it("does not flag distinct references or missing references", () => {
+  it("distinct references are not duplicates; a missing reference is pending (BR-02), never a duplicate", () => {
     const evidences = [
       makeExtractedWithRef(500, "REF-001"),
       makeExtractedWithRef(500, null),
@@ -253,7 +254,9 @@ describe("duplicate guard", () => {
       makeExtractedWithRef(500, "REF-002"),
     ];
     const flags = computeValidationFlags(evidences, null);
-    expect(flags.every((f) => !f.flagged)).toBe(true);
+    expect(flags.map((f) => f.flagReasons)).toEqual([
+      [], ["ไม่พบเลขอ้างอิง"], ["ไม่พบเลขอ้างอิง"], ["ไม่พบเลขอ้างอิง"], [],
+    ]);
   });
 
   it("a FAILED check does not consume a reference for the duplicate guard", () => {
@@ -292,6 +295,7 @@ function makeExtractedWithTime(
     paidAmount:      null,
     transactionTime,
     _idx:            idx,
+    referenceId:     `REF-${idx}`,
   };
 }
 
@@ -572,6 +576,7 @@ describe("Production batch fixture: n0i — wat takl0m — 10/6/2569", () => {
 
   type EvFields = {
     id:              string;
+    referenceId:     string;
     batchIndex:      number;
     checkStatus:     SlipCheckStatus;
     slipType:        SlipType | null;
@@ -595,6 +600,7 @@ describe("Production batch fixture: n0i — wat takl0m — 10/6/2569", () => {
   ): EvFields {
     return {
       id:              `ev-${idx}`,
+      referenceId:     `REF-${idx}`,
       batchIndex:      idx,
       checkStatus:     status,
       slipType,

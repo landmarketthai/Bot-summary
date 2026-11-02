@@ -238,6 +238,11 @@ class Builder implements PromiseLike<Result> {
   is(c: string, v: null | boolean) {
     this.filters.push(`${ident(c)} IS ${v === null ? "NULL" : v ? "TRUE" : "FALSE"}`); return this;
   }
+  /** PostgREST not(): only the `is null` form app code uses. */
+  not(c: string, op: "is", v: null) {
+    if (op !== "is" || v !== null) throw new Error(`harness not(${op}) unsupported`);
+    this.filters.push(`${ident(c)} IS NOT NULL`); return this;
+  }
   in(c: string, vs: unknown[]) {
     this.filters.push(vs.length ? `${ident(c)} IN (${vs.map(lit).join(",")})` : "FALSE"); return this;
   }

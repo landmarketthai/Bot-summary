@@ -13,7 +13,12 @@ import type {
   WhiteSheetExpenses,
   WhiteSheetTransactionRow,
 } from "./types";
-import { pendingReferenceVerifiedTransferWarning, unattributedVerifiedTransferWarning } from "./warnings";
+import {
+  pendingDateVerifiedTransferWarning,
+  pendingOutlierVerifiedTransferWarning,
+  pendingReferenceVerifiedTransferWarning,
+  unattributedVerifiedTransferWarning,
+} from "./warnings";
 
 export { normalizedMarketLabel } from "@/lib/market";
 
@@ -404,6 +409,22 @@ export async function loadDigitalWhiteSheetCalculation(
           pendingReferenceVerifiedTransferWarning(
             verifiedTransferResult.pendingReferenceCount,
             verifiedTransferResult.pendingReferenceAmount,
+          ),
+        ]
+      : []),
+    ...(verifiedTransferResult.pendingDateCount > 0
+      ? [
+          pendingDateVerifiedTransferWarning(
+            verifiedTransferResult.pendingDateCount,
+            verifiedTransferResult.pendingDateAmount,
+          ),
+        ]
+      : []),
+    ...(verifiedTransferResult.pendingOutlierCount > 0
+      ? [
+          pendingOutlierVerifiedTransferWarning(
+            verifiedTransferResult.pendingOutlierCount,
+            verifiedTransferResult.pendingOutlierAmount,
           ),
         ]
       : []),

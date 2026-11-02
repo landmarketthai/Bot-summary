@@ -19,6 +19,8 @@ function makeFullSupabase(cfg: {
   // (i.e. no cross-source exclusion), preserving prior same-scope-only behavior.
   globalWinners?:  Array<{ id: string; reference_id: string; created_at: string }>;
   scopedOrder?:    number[];
+  /** Printed slip time per check (default: inside the 2026-06-17 business date). */
+  transactionTimes?: Array<string | null>;
   globalError?:    { message: string } | null;
   upserts?:        UpsertCapture[];
   /** produce_sessions rows with non-null parser_errors for this business date. */
@@ -80,6 +82,7 @@ function makeFullSupabase(cfg: {
           transfer_amount: a,
           reference_id: cfg.transferRefs?.[i] ?? null,
           created_at: `2026-01-01T00:00:${String(i).padStart(2, "0")}Z`,
+          transaction_time: cfg.transactionTimes && i < cfg.transactionTimes.length ? cfg.transactionTimes[i] : "2026-06-17T05:00:00Z",
         }));
         const scopedChecks = (cfg.scopedOrder ?? allScopedChecks.map((_, index) => index))
           .map((index) => allScopedChecks[index]);
@@ -343,6 +346,45 @@ describe("reconcile", () => {
     });
     const result = await reconcile(db as never, "grp1", "2026-06-17", 1000);
     expect(result.blocked).toBe(false);
+  });
+
+  // KNOWN BLOCKER (pre-existing, not from this PR): a manual-slip entry stores
+  // only an amount — no reference, no link to the slip_checks row — so when
+  // the operator re-enters a slip the AI ALREADY counted, nothing can tell it
+  // is the same transfer and checked_slip_total counts it twice. This states
+  // the required behaviour and is expected to fail until a link exists
+  // (needs an approved schema change). bun reports a pass while it still fails.
+  it.failing("BLOCKER: the same slip as an eligible AI check AND a manual entry is counted once", async () => {
+    const db = makeFullSupabase({
+      openSession:     false,
+      transferAmounts: [50],
+      transferRefs:    ["REF-SAME-SLIP"],
+      closedSessions:  ["sess1"],
+      entryAmounts:    [50],          // operator re-keyed the same 50 baht slip
+    });
+    const result = await reconcile(db as never, "grp1", "2026-06-17", 50);
+    expect(result.blocked).toBe(false);
+    if (!result.blocked) expect(result.result.checked_slip_total).toBe(50); // today: 100
+  });
+
+  it("a misdated or undated AI slip is not AI-verified; a manual-slip entry counts it exactly once", async () => {
+    // P0 29/10/2569 shape: one slip read with the wrong month, one with no date.
+    const db = makeFullSupabase({
+      openSession:      false,
+      transferAmounts:  [40, 50, 40],
+      transferRefs:     ["REF-OK", "REF-JULY", "REF-NODATE"],
+      transactionTimes: ["2026-06-17T05:00:00Z", "2026-03-17T05:00:00Z", null],
+      closedSessions:   ["sess1"],
+      entryAmounts:     [50],          // operator re-entered the misread 50 manually
+    });
+    const result = await reconcile(db as never, "grp1", "2026-06-17", 90);
+    expect(result.blocked).toBe(false);
+    if (!result.blocked) {
+      expect(result.result.ai_verified_total).toBe(40);   // was 130 before the shared rule
+      expect(result.result.manual_slip_total).toBe(50);
+      expect(result.result.checked_slip_total).toBe(90);  // 50 counted once, the undated 40 not at all
+      expect(result.result.matched).toBe(true);
+    }
   });
 
   it("returns matched=true when submitted equals checked total", async () => {

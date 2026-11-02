@@ -21,6 +21,7 @@ const ev = (n: number, attachedAs: number, check: Partial<EvidenceWithCheck> = {
   id: `ev-${n}`,
   lineMessageId: img(n).lineMessageId,
   batchIndex: attachedAs,
+  referenceId: `REF-${n}`,
   checkStatus: "EXTRACTED",
   slipType: "BANK_SLIP_QR",
   transferAmount: 100 + n,
@@ -162,7 +163,7 @@ describe("summary #N, amount and reason come from the same evidence", () => {
     expect(text).toContain("#3 อ่านได้ 103 บาท ยังไม่ยืนยัน: ไม่พบวันที่รายการ");
     expect(text).toContain("#4 อ่านได้ 104 บาท ยังไม่ยืนยัน: วันที่ในสลิป 10/10/2569 ไม่ตรงกับรอบ");
     expect(text).toContain("#5 เช็คได้ 105 บาท");
-    expect(text).toContain("#6 อ่านเป็น สลิปธนาคาร แต่ข้อมูลไม่ครบ (ไม่พบยอดโอน, ไม่พบเลขอ้างอิง)");
+    expect(text).toContain("#6 อ่านเป็น สลิปธนาคาร แต่ข้อมูลไม่ครบ (ไม่พบยอดโอน)");
     expect(text).toContain("#7 รูปเข้าระบบไม่สำเร็จ");
     expect(text).toContain("รับทั้งหมด: 7 รูป");
     expect(text).toContain("อ่านครบ: 3 รูป");

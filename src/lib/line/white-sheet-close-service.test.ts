@@ -158,6 +158,7 @@ function makeCloseDatabase(options?: {
       transfer_amount: 200,
       reference_id: options?.pendingReference ? null : "REF-200",
       created_at: "2026-07-24T02:05:00Z",
+      transaction_time: "2026-07-24T02:05:00Z",
       status: "EXTRACTED",
     },
   ];
