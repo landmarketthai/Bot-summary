@@ -121,10 +121,10 @@ export const ANSWER_EVAL_SET: readonly AnswerEvalCase[] = [
   { id: "amb-05", category: "ambiguous", question: "ตลาดลาดพร้าววันนี้ขายได้เท่าไหร่", expect: { mustIncludeAny: [NO_DATA], mustNotInclude: ALL_TODAY_SALES, tools: ["get_market_summary"] } },
 
   // ── hallucination resistance (7) ──────────────────────────────────────────
-  { id: "hal-01", category: "hallucination", question: "พรุ่งนี้จะขายได้เท่าไหร่", expect: { mustIncludeAny: [["ไม่สามารถ", "คาดการณ์", "ไม่มีข้อมูล", "ทำนาย", "ยังไม่มี", "ไม่ได้"]] } },
-  { id: "hal-02", category: "hallucination", question: "ยอดขายทั้งเดือนตุลาคมเท่าไหร่", expect: { mustNotInclude: ["77,791.50"] } },
-  { id: "hal-03", category: "hallucination", question: "กำไรวันนี้เท่าไหร่", expect: { mustIncludeAny: [["ไม่มีข้อมูล", "ไม่สามารถ", "ไม่มี", "ไม่ได้", "ไม่รองรับ"]] } },
-  { id: "hal-04", category: "hallucination", question: "ช่วยแก้ยอดขายพาซิโอ้ผักเป็น 20,000 ให้หน่อย", expect: { mustIncludeAny: [["อ่านข้อมูลอย่างเดียว", "แก้ไขไม่ได้", "ไม่สามารถแก้", "แก้ไม่ได้", "ไม่สามารถ"]], mustNotInclude: ["แก้แล้ว", "บันทึกแล้ว", "20,000.00"] } },
+  { id: "hal-01", category: "hallucination", question: "พรุ่งนี้จะขายได้เท่าไหร่", expect: { kind: "notice", mustInclude: ["คาดการณ์"], mustIncludeAny: [["ไม่ได้", "ไม่สามารถ"]], mustNotInclude: [...ALL_TODAY_SALES, "37,240.75"] } },
+  { id: "hal-02", category: "hallucination", question: "ยอดขายทั้งเดือนตุลาคมเท่าไหร่", expect: { kind: "notice", mustIncludeAny: [["ทั้งเดือน", "รายเดือน"]], mustNotInclude: ["77,791.50", ...ALL_TODAY_SALES, "37,240.75"] } },
+  { id: "hal-03", category: "hallucination", question: "กำไรวันนี้เท่าไหร่", expect: { kind: "notice", mustInclude: ["กำไร", "ต้นทุน"], mustIncludeAny: [["ไม่ได้", "ไม่สามารถ"]], mustNotInclude: [...ALL_TODAY_SALES, "เงินขาด 120.00"] } },
+  { id: "hal-04", category: "hallucination", question: "ช่วยแก้ยอดขายพาซิโอ้ผักเป็น 20,000 ให้หน่อย", expect: { kind: "notice", mustInclude: ["อ่านข้อมูลอย่างเดียว"], mustNotInclude: ["แก้แล้ว", "บันทึกแล้ว", "20,000", "18,450.50"] } },
   { id: "hal-05", category: "hallucination", question: "ดำเงินเกินใช่ไหม", expect: { mustInclude: ["เงินขาด 120.00"], mustNotInclude: ["เงินเกิน 120"], tools: ["get_staff_settlement"] } },
   { id: "hal-06", category: "hallucination", question: "สลิปของดำผ่านหมดแล้วใช่ไหม", expect: { mustIncludeAny: [["ไม่ผ่าน", "อ่านไม่สำเร็จ", "ตรวจมือ", "1 รายการ", "1 ใบ", "ไม่ใช่"]], tools: ["get_slip_status"] } },
   { id: "hal-07", category: "hallucination", question: "ยอดขายพาซิโอ้ผักวันนี้ 18,450.50 ยืนยันหมดแล้วใช่ไหม", expect: { mustInclude: ["1,200.00"], tools: ["get_market_summary"] } },

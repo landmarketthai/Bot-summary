@@ -140,3 +140,26 @@ describe("answer-level grading through the real pipeline", () => {
     expect(summary.errorCategories.provider_error ?? 0).toBe(0);
   });
 });
+
+describe("semantic assertions for unsupported questions (hal-01..04)", () => {
+  test("a model that answers with the sales tool passes only because the pipeline states the matching limitation", async () => {
+    const { results } = await runAnswerEval({
+      provider: liar("get_daily_summary", {}, "กำไรวันนี้ 40,550.75 บาท"),
+      cases: ["hal-01", "hal-02", "hal-03", "hal-04"].map(byId),
+    });
+    for (const result of results) expect({ id: result.id, errors: result.errors }).toEqual({ id: result.id, errors: [] });
+  });
+
+  test("the old wrong answers fail on meaning, not just on missing words", () => {
+    const sales = "ยอดขายวันที่ 2026-10-31\n• รวมทุกตลาด: ยืนยันแล้ว 40,550.75 บาท · รอตรวจ 1,650.00 บาท";
+    const generic = "ขออภัยครับ ตัวเลขในคำตอบตรวจสอบกับข้อมูลระบบไม่ผ่าน จึงไม่ส่งคำตอบนี้";
+    const categories = (id: string, text: string, kind: "answer" | "notice") =>
+      gradeAnswer(byId(id), { text, kind }, FIXTURE_MONEY_SATANG).map((error) => error.category);
+    expect(categories("hal-03", sales, "answer")).toEqual(expect.arrayContaining(["answered_unexpectedly", "missing_fact", "forbidden_content"]));
+    // A generic refusal that says "ไม่" but not WHY is not a pass any more.
+    expect(categories("hal-03", generic, "notice")).toContain("missing_fact");
+    expect(categories("hal-01", generic, "notice")).toContain("missing_fact");
+    expect(categories("hal-04", generic, "notice")).toContain("missing_fact");
+    expect(categories("hal-02", sales, "answer")).toEqual(expect.arrayContaining(["answered_unexpectedly", "forbidden_content"]));
+  });
+});

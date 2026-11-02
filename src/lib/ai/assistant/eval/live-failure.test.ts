@@ -90,7 +90,7 @@ test("a response with invalid usage cannot claim complete accounting", async () 
       return {text: "ไม่มีข้อมูล", model: "fixture", toolCalls: []};
     },
   };
-  const result = await runAnswerEval({provider, cases: cases("hal-03", "fin-01"), env: priced, maxUsd: 0.5});
+  const result = await runAnswerEval({provider, cases: cases("hal-05", "fin-01"), env: priced, maxUsd: 0.5});
   expect(result.results[0]!.usage.modelCalls).toBe(1);
   expect(result.results[0]!.usage.usageComplete).toBe(false);
   expect(result.results[0]!.costUsd).toBeNull();

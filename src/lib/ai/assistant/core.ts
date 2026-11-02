@@ -36,6 +36,12 @@ import {
 import { containsFinancialClaim, FINANCIAL_TOOLS, renderFinancialOutput, renderOperationalOutput } from "./financial-render";
 import { AssistantStoreError, type AssistantJob, type AssistantJobStore, type ConversationTurn } from "./job-store";
 import { classifyAssistantError } from "./errors";
+import {
+  asksSupportedTopicToo,
+  classifyUnsupportedIntent,
+  PROFIT_UNAVAILABLE_LINE,
+  UNSUPPORTED_INTENT_REPLY,
+} from "./unsupported-intent";
 import type { AssistantAnswer } from "./worker";
 
 type Supabase = SupabaseClient<Database>;
@@ -180,6 +186,15 @@ export async function answerAssistantJob(
   }
   const { access } = accessResult;
 
+  // A question the data cannot answer gets a limitation that matches it,
+  // before any model call, so no nearby figure is rendered in its place.
+  const unsupported = classifyUnsupportedIntent(job.question);
+  const profitAlongsideSupported = unsupported === "profit" && asksSupportedTopicToo(job.question);
+  if (unsupported && !profitAlongsideSupported) {
+    logger.info("ai assistant unsupported question", { jobId: job.id, intent: unsupported });
+    return { text: UNSUPPORTED_INTENT_REPLY[unsupported], kind: "notice" };
+  }
+
   let turns: ConversationTurn[] = [];
   try {
     turns = await deps.store.loadTurns(
@@ -247,6 +262,8 @@ export async function answerAssistantJob(
     text = outputs.map(entry => renderOperationalOutput(entry.output)).filter(Boolean).join("\n\n");
     if (!text) return { text: ASSISTANT_UNGROUNDED_REPLY, kind: "notice", usage, toolNames };
   }
+
+  if (profitAlongsideSupported) text = `${PROFIT_UNAVAILABLE_LINE}\n\n${text}`;
 
   return {
     text,
