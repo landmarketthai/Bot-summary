@@ -86,6 +86,13 @@ export function pendingReferenceVerifiedTransferWarning(
 export const PENDING_OUTLIER_VERIFIED_TRANSFER_WARNING =
   "พบสลิปยอดเงินสูงผิดปกติ ไม่นับเป็นยอดโอน ต้องตรวจมือ";
 
+/** Manual slip entries waiting for an authorized decision (not counted). Advisory, like the date rule. */
+export const PENDING_MANUAL_SLIP_WARNING = "พบสลิปมือที่รออนุมัติ ไม่นับเป็นยอดโอนจนกว่าผู้ดูแลจะอนุมัติ";
+
+export function pendingManualSlipWarning(count: number, amount: number): string {
+  return `${PENDING_MANUAL_SLIP_WARNING} (${count} รายการ, ${formatBaht(amount)} บาท)`;
+}
+
 export function pendingOutlierVerifiedTransferWarning(count: number, amount: number): string {
   return `${PENDING_OUTLIER_VERIFIED_TRANSFER_WARNING} (${count} รายการ, ${formatBaht(amount)} บาท)`;
 }

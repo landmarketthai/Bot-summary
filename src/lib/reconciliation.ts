@@ -4,6 +4,12 @@ import { normalizedMarketLabel } from "@/lib/market";
 import { slipDateIneligibility, type SlipDateIneligibility } from "@/lib/slips/financial-eligibility";
 import { normalizeTransactionId, resolveGloballyAcceptedCheckIds } from "@/lib/slips/transaction-dedupe";
 import { computeValidationFlags } from "@/lib/slips/validation-guard";
+import {
+  isMissingSchemaObject,
+  loadActiveDecisions,
+  loadReferenceIndex,
+  ownershipFor,
+} from "@/lib/slips/reference-ownership";
 import type { Database, SlipCheckStatus, SlipType, TransferReconciliationRow } from "@/types/database";
 
 type Supabase = SupabaseClient<Database>;
@@ -40,6 +46,8 @@ export interface VerifiedTransferCheckRow {
    * counts.
    */
   approval?: { decision: "approved"; amount: number } | { decision: "rejected" } | null;
+  /** An earlier counted manual entry owns this reference (slips/reference-ownership.ts). */
+  superseded_by_manual?: boolean;
 }
 
 export interface MarketScopedVerifiedTransferResult {
@@ -64,6 +72,9 @@ export interface MarketScopedVerifiedTransferResult {
   /** Global winners an operator rejected: never counted. */
   rejectedCount?:            number;
   rejectedAmount?:           number;
+  /** Live AI reads whose reference an earlier counted manual entry already owns. */
+  supersededByManualCount?:  number;
+  supersededByManualAmount?: number;
 }
 
 export interface MarketScopedAggregationOptions {
@@ -124,6 +135,8 @@ export function aggregateGloballyAcceptedVerifiedTransfers(
   let approvedCount = 0;
   let rejectedCount = 0;
   let rejectedAmount = 0;
+  let supersededByManualCount = 0;
+  let supersededByManualAmount = 0;
   // The global winner is chosen exactly as before (earliest verified check).
   // A winner that is suspended (outlier) or has a bad date is pending — it
   // never falls through to a later duplicate, so one reference can never be
@@ -131,6 +144,11 @@ export function aggregateGloballyAcceptedVerifiedTransfers(
   // operator decision on the winner replaces the automatic rules for it: the
   // check is still ONE money row, counted at most once.
   const attribute = (check: VerifiedTransferCheckRow) => {
+    if (check.superseded_by_manual) {
+      supersededByManualCount += 1;
+      supersededByManualAmount += Number(check.transfer_amount);
+      return;
+    }
     if (check.approval?.decision === "rejected") {
       rejectedCount += 1;
       rejectedAmount += Number(check.transfer_amount);
@@ -198,6 +216,8 @@ export function aggregateGloballyAcceptedVerifiedTransfers(
     approvedCount,
     rejectedCount,
     rejectedAmount,
+    supersededByManualCount,
+    supersededByManualAmount,
   };
 }
 
@@ -267,6 +287,7 @@ async function loadVerifiedTransferChecksForSourceDate(
     .filter((id): id is string => typeof id === "string"))];
   const outliers = await loadBatchOutlierCheckIds(supabase, batchIds);
   const approvals = await loadActiveApprovals(supabase, (checks ?? []).map((c) => c.id));
+  const owners = await loadReferenceIndex(supabase, (checks ?? []).map((c) => c.reference_id ?? ""));
 
   return {
     checks: (checks ?? []).map(({ transaction_time, ...row }) => ({
@@ -275,6 +296,9 @@ async function loadVerifiedTransferChecksForSourceDate(
       date_ineligibility: slipDateIneligibility(transaction_time, businessDate),
       amount_outlier: outliers.has(row.id),
       approval: approvals.get(row.id) ?? null,
+      superseded_by_manual: row.reference_id !== null
+        && owners.ai.get(row.reference_id.trim())?.id === row.id
+        && ownershipFor(owners, row.reference_id)?.aiSupersededByManual === true,
     })),
     evidenceMarketById,
   };
@@ -678,57 +702,34 @@ async function countableManualEntryTotal(supabase: Supabase, sessionIds: string[
 type ManualEntryRow = { id: string; amount: number | string; reference_id?: string | null; requires_review?: boolean };
 
 /**
- * One transfer, one money row, per manual entry:
- *   1. an active REJECTED decision on the entry  → 0;
- *   2. a reference whose AI global winner is live (not rejected) → superseded:
- *      the AI check or its approval is the money, never both;
- *   3. a reference whose AI winner was REJECTED → pending until an authorized
- *      override (the reviewer decides which read is real);
- *   4. no reference and requires_review (new LINE flow) → pending until an
- *      authorized override;
- *   5. otherwise counted — every legacy row and today's grammar, unchanged;
- *      an approved override counts its approved amount.
- * Nothing is linked to an AI check by guessing (no amount/date matching).
+ * Per closed manual entry, one money row per transaction:
+ *   * referenced entries follow the shared ownership rule
+ *     (slips/reference-ownership.ts): the earliest AI read or counted manual
+ *     entry of a full reference owns its money; every other claim is
+ *     superseded (same amount) or pending (different amount / rejected AI);
+ *   * unreferenced entries: rejected → 0; requires_review (new LINE flow)
+ *     → pending until an authorized override; otherwise counted — every
+ *     legacy row and today's grammar, unchanged (known limitation: such an
+ *     entry cannot be matched to an AI read, see docs/manual-slip-ai-approval.md).
+ * Nothing is linked by amount, date or a partial reference.
  */
 async function loadManualEntryBreakdown(supabase: Supabase, sessionIds: string[]): Promise<ManualSlipBreakdown> {
   const entries = await loadManualEntries(supabase, sessionIds);
-  const entryDecisions = await loadActiveDecisions(supabase, "manual_entry_id", entries.map((e) => e.id));
-
-  const refs = [...new Set(entries.map((e) => normalizeTransactionId(e.reference_id)).filter((r): r is string => r !== null))];
-  const winnerByRef = new Map<string, string>();
-  if (refs.length > 0) {
-    const { data, error } = await supabase
-      .from("slip_checks")
-      .select("id, reference_id, created_at")
-      .in("reference_id", refs)
-      .in("status", ["EXTRACTED", "PARTIAL_EXTRACTED"])
-      .order("created_at", { ascending: true })
-      .order("id", { ascending: true });
-    if (error) throw new Error(`manual reference cross-check failed: ${error.message}`);
-    for (const row of data ?? []) {
-      const ref = normalizeTransactionId(row.reference_id);
-      if (ref && !winnerByRef.has(ref)) winnerByRef.set(ref, row.id);
-    }
-  }
-  const aiDecisions = await loadActiveDecisions(supabase, "slip_check_id", [...winnerByRef.values()]);
+  const decisions = await loadActiveDecisions(supabase, "manual_entry_id", entries.map((e) => e.id));
+  const index = await loadReferenceIndex(supabase, entries.map((e) => e.reference_id ?? ""));
 
   const breakdown: ManualSlipBreakdown = { total: 0, pendingCount: 0, pendingAmount: 0, supersededCount: 0 };
-  const pending = (amount: number) => { breakdown.pendingCount += 1; breakdown.pendingAmount += amount; };
   for (const e of entries) {
     const amount = Number(e.amount);
-    const decision = entryDecisions.get(e.id);
-    if (decision?.decision === "rejected") continue;
-    const approved = decision?.decision === "approved" ? decision.amount : null;
-    const ref = normalizeTransactionId(e.reference_id);
-    const winner = ref ? winnerByRef.get(ref) : undefined;
-    if (winner) {
-      if (aiDecisions.get(winner)?.decision !== "rejected") { breakdown.supersededCount += 1; continue; }
-      if (approved === null) { pending(amount); continue; }
-    } else if (!ref && e.requires_review === true && approved === null) {
-      pending(amount);
-      continue;
-    }
-    breakdown.total += approved ?? amount;
+    const decision = decisions.get(e.id);
+    const counted = decision?.decision === "approved" ? decision.amount : amount;
+    const ownership = ownershipFor(index, e.reference_id)?.manual.get(e.id);
+    const state = ownership
+      ?? (decision?.decision === "rejected" ? "rejected"
+        : e.requires_review === true && decision?.decision !== "approved" ? "pending" : "counted");
+    if (state === "counted") breakdown.total += counted;
+    else if (state === "pending") { breakdown.pendingCount += 1; breakdown.pendingAmount += amount; }
+    else if (state === "superseded") breakdown.supersededCount += 1;
   }
   return breakdown;
 }
@@ -758,40 +759,5 @@ export async function loadMarketScopedManualSlipBreakdown(
   return loadManualEntryBreakdown(supabase, sessionIds);
 }
 
-/** PostgREST / Postgres "relation or column does not exist" (migration not applied). */
-function isMissingSchemaObject(error: { code?: string }): boolean {
-  return error.code === "42P01" || error.code === "42703" || error.code === "PGRST204" || error.code === "PGRST205";
-}
-
 const loadActiveApprovals = (supabase: Supabase, checkIds: string[]) =>
   loadActiveDecisions(supabase, "slip_check_id", checkIds);
-
-/**
- * Active decisions (slip_check_approvals) keyed by AI check or manual entry.
- * None before the migrations: an absent table (20261102120000) or column
- * (manual_entry_id, 20261102130000) means no decision can exist.
- */
-async function loadActiveDecisions(
-  supabase: Supabase,
-  target: "slip_check_id" | "manual_entry_id",
-  ids: string[],
-): Promise<Map<string, NonNullable<VerifiedTransferCheckRow["approval"]>>> {
-  const decisions = new Map<string, NonNullable<VerifiedTransferCheckRow["approval"]>>();
-  if (ids.length === 0) return decisions;
-  const { data, error } = await supabase.from("slip_check_approvals")
-    .select(`${target}, decision, approved_amount` as "slip_check_id, manual_entry_id, decision, approved_amount")
-    .in(target, ids)
-    .eq("status", "active");
-  if (error) {
-    if (isMissingSchemaObject(error)) return decisions;
-    throw new Error(`slip review query failed: ${error.message}`);
-  }
-  for (const row of data ?? []) {
-    const key = row[target];
-    if (!key) continue;
-    decisions.set(key, row.decision === "approved"
-      ? { decision: "approved", amount: Number(row.approved_amount) }
-      : { decision: "rejected" });
-  }
-  return decisions;
-}

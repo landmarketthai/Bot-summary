@@ -331,6 +331,22 @@ describe.skipIf(!pgAvailable)("P0 slip image ingestion on PostgreSQL 17", () => 
     ]);
     await runTasks();
 
+    // Ordered per-source processing: a worker that finds the head event held
+    // by another worker backs off (claim_line_webhook_event returns NULL), and
+    // one recovery pass is bounded (maxQueueEvents = 15). When recovery wins
+    // the head, the request drains exit and the rest waits for the next
+    // recovery pass — delayed and durable, never lost (see the bounded-pass
+    // test below). Production runs that pass every 5 minutes; here it is
+    // driven explicitly, at most 3 passes, and every pass must make progress.
+    const pendingQueue = () => count("line_webhook_event_queue", `source_id='${G}' AND status='pending'`);
+    for (let pass = 0; pass < 3 && (await pendingQueue()) > 0; pass++) {
+      const before = await count("slip_evidences");
+      await makeWebhook().recoverSlipIngest();
+      await runTasks();
+      expect(await count("slip_evidences")).toBeGreaterThan(before);
+    }
+    expect(await pendingQueue()).toBe(0);
+
     expect(await count("slip_evidences")).toBe(25);
     expect(Number(await db.scalar("SELECT count(DISTINCT line_message_id) FROM slip_evidences"))).toBe(25);
     expect((await ledger(batchId)).filter((r) => r.state === "attached")).toHaveLength(25);
@@ -338,6 +354,31 @@ describe.skipIf(!pgAvailable)("P0 slip image ingestion on PostgreSQL 17", () => 
     expect(Number(await db.scalar(`SELECT count(DISTINCT batch_index) FROM slip_evidences WHERE batch_id='${batchId}'`))).toBe(25);
     expect(new Set(ocrRuns).size).toBe(ocrRuns.length); // each evidence OCRed once
     expect(await count("slip_checks")).toBe(25);
+  }, 120_000);
+
+  test("one recovery pass is bounded; the next pass continues — nothing lost, nothing duplicated", async () => {
+    const G = "G-bound";
+    const batchId = await openBatch(G);
+    const webhook = makeWebhook();
+    for (let i = 1; i <= 25; i++) await deliver(webhook, [imageEvent(G, i, T0 + 1000 * i)]);
+    await closeBatchSql(batchId, T0 + 26_000);
+    backgroundTasks.splice(0); // the request drains never run (worker died after the ack)
+    const inBatch = () => count("slip_evidences", `batch_id='${batchId}'`);
+
+    const first = await makeWebhook().recoverSlipIngest();
+    await runTasks();
+    expect(first.queueProcessed).toBe(15);
+    expect(await inBatch()).toBe(15);
+    const pushes: string[] = [];
+    await backdate(batchId, 30);
+    expect(await finalizeNow(pushes)).toBe(0); // never finalized while 10 images are still queued
+
+    const second = await makeWebhook().recoverSlipIngest();
+    await runTasks();
+    expect(second.queueProcessed).toBe(10);
+    expect(await inBatch()).toBe(25);
+    expect(Number(await db.scalar(`SELECT count(DISTINCT batch_index) FROM slip_evidences WHERE batch_id='${batchId}'`))).toBe(25);
+    expect((await ledger(batchId)).filter((r) => r.state === "attached")).toHaveLength(25);
   }, 120_000);
 
   test("finalizer race: parallel claims vs late workers lose nothing and finalize at most once", async () => {

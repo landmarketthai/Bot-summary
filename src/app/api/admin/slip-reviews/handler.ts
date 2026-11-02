@@ -31,6 +31,7 @@ interface SlipReviewBody {
 
 const CONFLICT_CODES = new Set([
   "slip_check_already_reviewed", "slip_check_is_duplicate", "manual_entry_is_ai_slip", "slip_check_round_finalized",
+  "manual_entry_is_duplicate", "slip_check_superseded_by_manual", "slip_check_review_has_dependents",
 ]);
 
 export async function handleSlipReviewRequest(

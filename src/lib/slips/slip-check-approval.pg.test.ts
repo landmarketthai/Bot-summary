@@ -37,6 +37,7 @@ if (!pgAvailable && process.env.SLIP_INGEST_REQUIRE === "1") {
 
 const M1 = "20261102120000_slip_check_approval_link";
 const M2 = "20261102130000_manual_slip_entry_review";
+const M3 = "20261102140000_slip_review_hardening";
 const BASE_MIGRATIONS = [
   ...SLIP_PIPELINE_MIGRATIONS,
   "0027_manual_slip_session.sql",
@@ -60,6 +61,7 @@ async function freshDb(prefix: string, migrations: string[]): Promise<SlipTestDb
   await created.query(`ALTER TABLE public.slip_evidences ADD COLUMN IF NOT EXISTS accountability_round_id uuid`);
   await created.query(`ALTER TABLE public.settlement_finalizations ADD COLUMN IF NOT EXISTS accountability_round_id uuid`);
   await created.query(`ALTER TABLE public.manual_slip_sessions ADD COLUMN IF NOT EXISTS accountability_round_id uuid`);
+  await created.query(`CREATE TABLE IF NOT EXISTS public.accountability_rounds (id uuid PRIMARY KEY, business_date date NOT NULL)`);
   for (const m of migrations) await created.exec(await file("migrations", m));
   return created;
 }
@@ -70,7 +72,7 @@ let supa: any;
 let seq = 0;
 
 async function seedCheck(on: SlipTestDb, s: {
-  source: string; amount: number; ref: string | null; time: string | null; market?: string; createdAt?: string;
+  source: string; amount: number; ref: string | null; time: string | null; market?: string; createdAt?: string; round?: string;
 }): Promise<string> {
   const id = ++seq;
   const [raw] = await on.query<{ id: string }>(
@@ -78,9 +80,9 @@ async function seedCheck(on: SlipTestDb, s: {
      VALUES ('evt-${id}', 'dest', 'message', 'group', '${s.source}', 'msg-${id}', 'image', '{}'::jsonb) RETURNING id`,
   );
   const [ev] = await on.query<{ id: string }>(
-    `INSERT INTO public.slip_evidences (raw_message_id, line_message_id, source_id, source_type, storage_path, sha256, received_at, market_label, market_label_normalized)
+    `INSERT INTO public.slip_evidences (raw_message_id, line_message_id, source_id, source_type, storage_path, sha256, received_at, market_label, market_label_normalized, accountability_round_id)
      VALUES ('${raw.id}', 'msg-${id}', '${s.source}', 'group', 'p/${id}', '${id.toString(16).padStart(64, "b")}', '${RECEIVED}',
-             '${s.market ?? MARKET}', '${s.market ?? MARKET}') RETURNING id`,
+             '${s.market ?? MARKET}', '${s.market ?? MARKET}', ${s.round ? `'${s.round}'` : "NULL"}) RETURNING id`,
   );
   const [check] = await on.query<{ id: string }>(
     `INSERT INTO public.slip_checks (evidence_id, status, slip_type, transfer_amount, reference_id, transaction_time, created_at)
@@ -128,7 +130,7 @@ const approveAi = (checkId: string, amount: number) =>
 
 describe.skipIf(!pgAvailable)("one transfer, one money row across AI and manual (PG 17)", () => {
   beforeAll(async () => {
-    db = await freshDb("slip_approval", [M1, M2]);
+    db = await freshDb("slip_approval", [M1, M2, M3]);
     supa = createPgSupabase(db, { failUpload: new Set(), uploaded: new Map() });
   });
   afterAll(async () => { await db?.drop(); });
@@ -180,13 +182,37 @@ describe.skipIf(!pgAvailable)("one transfer, one money row across AI and manual 
     expect((await loadMarketScopedAiVerifiedTransfers(supa, "V1", DATE, MARKET, new Set([MARKET]))).pendingDateCount).toBe(1);
   });
 
-  test("manual entry first, AI read of the same reference later: counted once at every point in time", async () => {
+  test("manual entry first, AI read of the same reference later: the earlier manual entry keeps the money", async () => {
     await seedManual("O1", [{ amount: 70, reference_id: "O1-R" }]);
     expect(await checked("O1")).toBe(70);                       // manual only
-    await seedCheck(db, { source: "O1", amount: 70, ref: "O1-R", time: OK_TIME });
-    expect(await ai("O1")).toBe(70);
-    expect(await manual("O1")).toMatchObject({ total: 0, supersededCount: 1 });
+    const later = await seedCheck(db, { source: "O1", amount: 70, ref: "O1-R", time: OK_TIME, createdAt: new Date(Date.now() + 60_000).toISOString() });
+    expect(await ai("O1")).toBe(0);                             // never moved to the later AI read
+    expect((await loadMarketScopedAiVerifiedTransfers(supa, "O1", DATE, MARKET, new Set([MARKET]))).supersededByManualCount).toBe(1);
+    expect(await manual("O1")).toMatchObject({ total: 70, supersededCount: 0 });
     expect(await checked("O1")).toBe(70);                       // still once
+    expect(await refusalCode(approveAi(later, 70))).toBe("slip_check_superseded_by_manual");
+  });
+
+  test("AI first, manual later: the AI read keeps the money; a different manual amount is a pending conflict", async () => {
+    await seedCheck(db, { source: "O2", amount: 70, ref: "O2-R", time: OK_TIME });
+    await seedManual("O2", [{ amount: 700, reference_id: "O2-R" }]);
+    expect(await ai("O2")).toBe(70);
+    expect(await manual("O2")).toMatchObject({ total: 0, pendingCount: 1, pendingAmount: 700, supersededCount: 0 });
+  });
+
+  test("a wallet read (no transfer amount) never swallows a manual entry of its reference", async () => {
+    await seedCheck(db, { source: "W1", amount: 0, ref: "W1-R", time: OK_TIME });
+    await db.query(`UPDATE public.slip_checks SET transfer_amount = NULL, slip_type = 'GWALLET', gross_amount = 70 WHERE reference_id = 'W1-R'`);
+    const [entry] = await seedManual("W1", [{ amount: 70, reference_id: "W1-R" }]);
+    expect(await checked("W1")).toBe(70);                       // counted, not superseded by a non-bank read
+    expect((await reviewManualSlipEntry(supa, { entryId: entry, decision: "approved", amount: 70, reason: "G-Wallet", reviewer: "a" })).already).toBe(false);
+  });
+
+  test("same amount and date, different references: two transfers, both counted", async () => {
+    await seedCheck(db, { source: "D1", amount: 50, ref: "D1-A", time: OK_TIME });
+    await seedCheck(db, { source: "D1", amount: 50, ref: "D1-B", time: OK_TIME });
+    await seedManual("D1", [{ amount: 50, reference_id: "D1-C" }]);
+    expect(await checked("D1")).toBe(150);
   });
 
   test("rejected AI slip never counts; revoking returns it to the automatic rule", async () => {
@@ -231,7 +257,7 @@ describe.skipIf(!pgAvailable)("one transfer, one money row across AI and manual 
     const holder = Bun.spawn([PSQL, "-X", "-v", "ON_ERROR_STOP=1", "-f", "-"], {
       env: { ...process.env, PGHOST, PGUSER, PGPASSWORD, PGPORT, PGDATABASE: db.name, PGAPPNAME: "finalize-holder" },
       stdin: new TextEncoder().encode(
-        `BEGIN; INSERT INTO public.settlement_finalizations (source_id, business_date) VALUES ('Z1', '${DATE}'); SELECT pg_sleep(1.5); COMMIT;`,
+        `BEGIN; INSERT INTO public.settlement_finalizations (source_id, business_date, status) VALUES ('Z1', '${DATE}', 'sending'); SELECT pg_sleep(1.5); COMMIT;`,
       ),
       stdout: "pipe", stderr: "pipe",
     });
@@ -265,7 +291,7 @@ describe.skipIf(!pgAvailable)("one transfer, one money row across AI and manual 
     const check = await seedCheck(db, { source: "F1", amount: 40, ref: "F1-R", time: JULY });
     const { approvalId } = await approveAi(check, 40);
     const [entry] = await seedManual("F1", [{ amount: 10, requires_review: true }]);
-    await db.query(`INSERT INTO public.settlement_finalizations (source_id, business_date) VALUES ('F1', '${DATE}')`);
+    await db.query(`INSERT INTO public.settlement_finalizations (source_id, business_date, status) VALUES ('F1', '${DATE}', 'sent')`);
     expect(await refusalCode(revokeSlipCheckReview(supa, { approvalId, revokedBy: "b", reason: "x" }))).toBe("slip_check_round_finalized");
     const other = await seedCheck(db, { source: "F1", amount: 10, ref: "F1-R2", time: JULY });
     expect(await refusalCode(approveAi(other, 10))).toBe("slip_check_round_finalized");
@@ -301,14 +327,105 @@ describe.skipIf(!pgAvailable)("one transfer, one money row across AI and manual 
     expect(await manual("L1")).toMatchObject({ total: 60, pendingCount: 0, supersededCount: 0 });
   });
 
-  test("migration 20261102130000 re-applies cleanly (idempotent)", async () => {
-    await db.exec(await file("migrations", M2));
+  // ── review hardening (20261102140000) ──────────────────────────────────────
+  test("a finalized round never changes: a later AI read of a counted manual reference is not counted anywhere", async () => {
+    const [entry] = await seedManual("FR", [{ amount: 500, reference_id: "FR-R" }]);
+    await db.query(`INSERT INTO public.settlement_finalizations (source_id, business_date, status) VALUES ('FR', '${DATE}', 'sent')`);
+    expect(await checked("FR")).toBe(500);
+    // The same transfer read by the AI the next day, in another source/round.
+    const next = await seedCheck(db, { source: "FR2", amount: 500, ref: "FR-R", time: OK_TIME, createdAt: new Date(Date.now() + 60_000).toISOString() });
+    expect(await checked("FR")).toBe(500);                      // finalized round unchanged
+    expect(await ai("FR2")).toBe(0);                            // and not counted a second time
+    expect(await refusalCode(approveAi(next, 500))).toBe("slip_check_superseded_by_manual");
+    expect(entry).toBeTruthy();
+  });
+
+  test("only a handed-out finalization blocks reviews: failed does not, sending/sent/ambiguous do", async () => {
+    for (const [source, status, expected] of [
+      ["S-FAIL", "failed", "ok"], ["S-SEND", "sending", "slip_check_round_finalized"],
+      ["S-SENT", "sent", "slip_check_round_finalized"], ["S-AMB", "ambiguous", "slip_check_round_finalized"],
+    ] as const) {
+      const check = await seedCheck(db, { source, amount: 40, ref: `${source}-R`, time: JULY });
+      await db.query(`INSERT INTO public.settlement_finalizations (source_id, business_date, status) VALUES ('${source}', '${DATE}', '${status}')`);
+      expect(await refusalCode(approveAi(check, 40))).toBe(expected);
+    }
+  });
+
+  test("the failed → sending re-claim takes the money-close lock too", async () => {
+    const check = await seedCheck(db, { source: "RC", amount: 40, ref: "RC-R", time: JULY });
+    await db.query(`INSERT INTO public.settlement_finalizations (source_id, business_date, status) VALUES ('RC', '${DATE}', 'failed')`);
+    const holder = Bun.spawn([PSQL, "-X", "-v", "ON_ERROR_STOP=1", "-f", "-"], {
+      env: { ...process.env, PGHOST, PGUSER, PGPASSWORD, PGPORT, PGDATABASE: db.name, PGAPPNAME: "reclaim-holder" },
+      stdin: new TextEncoder().encode(
+        `BEGIN; UPDATE public.settlement_finalizations SET status = 'sending' WHERE source_id = 'RC'; SELECT pg_sleep(1.5); COMMIT;`,
+      ),
+      stdout: "pipe", stderr: "pipe",
+    });
+    for (let i = 0; i < 100; i++) {
+      if (await db.scalar(`SELECT count(*) FROM pg_stat_activity WHERE application_name = 'reclaim-holder' AND query LIKE '%pg_sleep%'`) === "1") break;
+      await Bun.sleep(20);
+    }
+    const code = await refusalCode(approveAi(check, 40));
+    expect(await holder.exited).toBe(0);
+    expect(code).toBe("slip_check_round_finalized");
+  });
+
+  test("a legacy day-level finalization (no round) also closes reviews of round-bound slips of that day", async () => {
+    const round = "30000000-0000-4000-8000-000000000001";
+    await db.query(`INSERT INTO public.accountability_rounds (id, business_date) VALUES ('${round}', '${DATE}')`);
+    const check = await seedCheck(db, { source: "LG", amount: 40, ref: "LG-R", time: JULY, round });
+    await db.query(`INSERT INTO public.settlement_finalizations (source_id, business_date, status) VALUES ('LG', '${DATE}', 'sent')`);
+    expect(await refusalCode(approveAi(check, 40))).toBe("slip_check_round_finalized");
+  });
+
+  test("an identical retry after finalization returns the existing decision (idempotent)", async () => {
+    const check = await seedCheck(db, { source: "IR", amount: 40, ref: "IR-R", time: JULY });
+    const first = await approveAi(check, 40);
+    await db.query(`INSERT INTO public.settlement_finalizations (source_id, business_date, status) VALUES ('IR', '${DATE}', 'sent')`);
+    expect(await approveAi(check, 40)).toEqual({ approvalId: first.approvalId, already: true });
+  });
+
+  test("revoke never moves money to another row: refused while the other path claims the reference", async () => {
+    const check = await seedCheck(db, { source: "RV", amount: 60, ref: "RV-R", time: OK_TIME });
+    const rejection = await reviewSlipCheck(supa, { checkId: check, decision: "rejected", reason: "ผิดตลาด", reviewer: "a" });
+    const [entry] = await seedManual("RV", [{ amount: 60, reference_id: "RV-R" }]);
+    const override = await reviewManualSlipEntry(supa, { entryId: entry, decision: "approved", amount: 60, reason: "จริง", reviewer: "b" });
+    expect(await checked("RV")).toBe(60);
+    expect(await refusalCode(revokeSlipCheckReview(supa, { approvalId: rejection.approvalId, revokedBy: "c", reason: "x" })))
+      .toBe("slip_check_review_has_dependents");
+    // The manual override can be revoked: the AI read stays rejected, nothing else takes the money.
+    await revokeSlipCheckReview(supa, { approvalId: override.approvalId, revokedBy: "c", reason: "ตรวจใหม่" });
+    expect(await manual("RV")).toMatchObject({ total: 0, pendingCount: 1 });
+  });
+
+  test("BR-02: a reference that already has a reviewed slip cannot be given to another check", async () => {
+    const reviewed = await seedCheck(db, { source: "BR", amount: 40, ref: "BR-R", time: JULY });
+    await approveAi(reviewed, 40);
+    const earlier = await seedCheck(db, { source: "BR", amount: 40, ref: null, time: OK_TIME, createdAt: "2026-10-29T11:00:00Z" });
+    const { resolveSlipCheckReference, ReferenceResolutionError } = await import("@/lib/slips/reference-resolution");
+    await expect(resolveSlipCheckReference(supa, { checkId: earlier, referenceId: "BR-R", actor: "admin" }))
+      .rejects.toBeInstanceOf(ReferenceResolutionError);
+    expect(await ai("BR")).toBe(40);
+  });
+
+  test("decisions are written only through the review RPCs (service_role has no direct write)", async () => {
+    const rows = await db.query<{ p: string; ok: boolean }>(
+      `SELECT p, has_table_privilege('service_role', 'public.slip_check_approvals', p) AS ok
+       FROM unnest(ARRAY['INSERT', 'UPDATE', 'DELETE', 'TRUNCATE']) p`,
+    );
+    expect(rows.every((r) => r.ok === false)).toBe(true);
+  });
+
+  test("migration 20261102140000 re-applies cleanly (idempotent)", async () => {
+    await db.exec(await file("migrations", M3));
     expect(await manual("L1")).toMatchObject({ total: 60 });
   });
 
-  test("rollback (M2 then M1) drops the RPCs, restores the old append RPC and keeps every financial row", async () => {
+  test("rollback (M3, M2, M1) drops the RPCs, restores the old append RPC and keeps every financial row", async () => {
     const decisions = await db.scalar(`SELECT count(*) FROM public.slip_check_approvals`);
     const entries = await db.scalar(`SELECT count(*) FROM public.manual_slip_entries`);
+    await db.exec(await file("rollback", M3));
+    expect(await db.scalar(`SELECT count(*) FROM pg_proc WHERE proname IN ('lock_money_close_scope', 'manual_entry_claims_reference')`)).toBe("0");
     await db.exec(await file("rollback", M2));
     await db.exec(await file("rollback", M1));
     expect(await db.scalar(`SELECT count(*) FROM pg_proc WHERE proname IN ('review_slip_check', 'review_manual_slip_entry', 'revoke_slip_check_review', 'lock_money_close')`)).toBe("0");

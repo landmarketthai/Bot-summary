@@ -30,6 +30,9 @@ const KNOWN_REFUSALS = [
   "manual_entry_not_found",
   "manual_entry_session_not_closed",
   "manual_entry_is_ai_slip",
+  "manual_entry_is_duplicate",
+  "slip_check_superseded_by_manual",
+  "slip_check_review_has_dependents",
 ] as const;
 
 function refusal(message: string): SlipCheckReviewError {

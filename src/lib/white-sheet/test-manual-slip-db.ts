@@ -70,6 +70,8 @@ export function stubManualSlipTables(options?: {
       return {
         select: () => ({
           in: async (column: string, ids: string[]) => {
+            // Reference-ownership lookup: stub entries carry no reference.
+            if (column === "reference_id") return { data: [], error: null };
             if (column !== "session_id") {
               throw new Error(`unexpected manual_slip_entries filter: ${column}`);
             }

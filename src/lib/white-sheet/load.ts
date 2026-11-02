@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { normalizedMarketLabel } from "@/lib/market";
 import {
   loadMarketScopedAiVerifiedTransfers,
-  loadMarketScopedManualSlipTotal,
+  loadMarketScopedManualSlipBreakdown,
 } from "@/lib/reconciliation";
 import type { Database } from "@/types/database";
 import { calculateDigitalWhiteSheet, resolveWithdrawalUnitPriceBaht } from "./calculate";
@@ -15,6 +15,7 @@ import type {
 } from "./types";
 import {
   pendingDateVerifiedTransferWarning,
+  pendingManualSlipWarning,
   pendingOutlierVerifiedTransferWarning,
   pendingReferenceVerifiedTransferWarning,
   unattributedVerifiedTransferWarning,
@@ -386,13 +387,14 @@ export async function loadDigitalWhiteSheetCalculation(
   );
   // checked_slip_total = ai_verified_total + manual_slip_total
   // White Sheet verifiedTransfers must include closed market-scoped manual slips.
-  const manualSlipTotal = await loadMarketScopedManualSlipTotal(
+  const manualSlips = await loadMarketScopedManualSlipBreakdown(
     supabase,
     scope.sourceId,
     scope.businessDate,
     targetMarket,
     scope.accountabilityRoundId,
   );
+  const manualSlipTotal = Math.round(manualSlips.total * 100) / 100;
   const verifiedTransfers =
     Math.round((verifiedTransferResult.attributedTotal + manualSlipTotal) * 100) / 100;
   const verifiedTransferWarnings = [
@@ -427,6 +429,9 @@ export async function loadDigitalWhiteSheetCalculation(
             verifiedTransferResult.pendingOutlierAmount,
           ),
         ]
+      : []),
+    ...(manualSlips.pendingCount > 0
+      ? [pendingManualSlipWarning(manualSlips.pendingCount, manualSlips.pendingAmount)]
       : []),
   ];
   const pricing = await resolveCentralPricesForDate(supabase, scope.businessDate, rows);

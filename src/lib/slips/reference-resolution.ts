@@ -1,3 +1,4 @@
+import { loadReferenceIndex } from "@/lib/slips/reference-ownership";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 import { isVerifiedSlipCheckStatus, normalizeTransactionId } from "./transaction-dedupe";
@@ -75,6 +76,19 @@ export async function resolveSlipCheckReference(
   if (existing.reference_id !== null) {
     throw new ReferenceResolutionError(
       `slip check ${checkId} already has a reference id — resolution only applies to pending checks`,
+    );
+  }
+
+  // An operator decision (slip_check_approvals) on another AI read or manual
+  // entry of this reference fixes who owns its money; giving the reference to
+  // this check could silently take that money over (it may be earlier, i.e.
+  // the new global winner). Refuse; the reviewer revokes that decision first.
+  const index = await loadReferenceIndex(supabase, [referenceId]);
+  const ai = index.ai.get(referenceId);
+  const manuals = index.manual.get(referenceId) ?? [];
+  if (ai?.decision || manuals.some((m) => m.decision)) {
+    throw new ReferenceResolutionError(
+      `reference ${referenceId} already has a reviewed slip — revoke that decision before reassigning it`,
     );
   }
 

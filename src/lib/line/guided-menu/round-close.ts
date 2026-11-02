@@ -25,6 +25,7 @@ import {
 } from "@/lib/reconciliation";
 import { normalizedMarketLabel } from "@/lib/market";
 import { slipDateIneligibility } from "@/lib/slips/financial-eligibility";
+import { loadActiveDecisions, loadReferenceIndex, ownershipFor } from "@/lib/slips/reference-ownership";
 import {
   isVerifiedSlipCheckStatus,
   normalizeTransactionId,
@@ -46,7 +47,11 @@ export type GuidedSlipStatus =
   | "manual_review"
   | "date_mismatch"
   | "market_unclear"
-  | "duplicate";
+  | "duplicate"
+  /** Not in ai_verified_total and not blocking the close: wallet read, outlier,
+   *  unreadable date or a rejected read. The operator settles it by approval or
+   *  a manual slip; the money difference stays visible until then. */
+  | "excluded";
 
 export const GUIDED_SLIP_STATUS_LABEL: Record<GuidedSlipStatus, string> = {
   verified: "อ่านสำเร็จ",
@@ -54,6 +59,7 @@ export const GUIDED_SLIP_STATUS_LABEL: Record<GuidedSlipStatus, string> = {
   date_mismatch: "วันที่ไม่ตรง",
   market_unclear: "ตลาดไม่ชัด",
   duplicate: "สลิปซ้ำ",
+  excluded: "ไม่นับเป็นยอดโอน (รอตรวจ)",
 };
 
 export type GuidedSlipRow = {
@@ -206,6 +212,11 @@ export async function loadGuidedSlipRows(
   const outliers = await loadBatchOutlierCheckIds(supabase, [...new Set(evidenceRows
     .map((row) => (row as { batch_id?: string | null }).batch_id)
     .filter((id): id is string => typeof id === "string"))]);
+  const verifiedIds = checkRows
+    .filter((row) => isVerifiedSlipCheckStatus(row.status as SlipCheckStatus))
+    .map((row) => String(row.id));
+  const decisions = await loadActiveDecisions(supabase, "slip_check_id", verifiedIds);
+  const owners = await loadReferenceIndex(supabase, references);
 
   return checkRows.flatMap((row): GuidedSlipRow[] => {
     const checkId = String(row.id);
@@ -232,16 +243,25 @@ export async function loadGuidedSlipRows(
       // treating it as unresolved, so this round does not list it at all.
       return [];
     }
-    // The money loader counts only a transfer_amount (wallet slips are not in
-    // ai_verified_total) and suspends the LINE summary's outliers.
+    // Same order as aggregateGloballyAcceptedVerifiedTransfers, so every
+    // `verified` row (at the amount shown) is in ai_verified_total and nothing
+    // else is. Reasons the money loader excludes are `excluded`/`date_mismatch`,
+    // which do not block the close: the money difference does, until the slip
+    // is approved or keyed as a manual slip.
+    if (ownershipFor(owners, referenceId)?.aiSupersededByManual) {
+      return [{ ...base, status: "duplicate" as const }]; // an earlier manual entry owns it
+    }
+    const decision = decisions.get(checkId);
+    if (decision?.decision === "rejected") return [{ ...base, status: "excluded" as const }];
+    if (decision?.decision === "approved") return [{ ...base, amount: decision.amount, status: "verified" as const }];
     if (amount === null || outliers.has(checkId)) {
-      return [{ ...base, status: "manual_review" as const }];
+      return [{ ...base, status: "excluded" as const }]; // wallet read or LINE outlier
     }
     const dateProblem = slipDateIneligibility(row.transaction_time as string | null, context.businessDate);
     if (dateProblem === "date_out_of_round") {
       return [{ ...base, status: "date_mismatch" as const }];
     }
-    if (dateProblem) return [{ ...base, status: "manual_review" as const }];
+    if (dateProblem) return [{ ...base, status: "excluded" as const }];
     return [{ ...base, status: "verified" as const }];
   });
 }
