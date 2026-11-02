@@ -131,6 +131,20 @@ describe("other unsupported questions get a limitation that matches what was ask
     }
   });
 
+  test("cumulative stock asks explain why daily good returns cannot establish a monthly balance (sto-06)", async () => {
+    for (const question of ["สต๊อกสะสมทั้งเดือนเหลือเท่าไหร่", "สต็อกเดือนนี้เหลือเท่าไร", "ของเหลือสะสมเท่าไหร่"]) {
+      const model = salesToolModel();
+      const h = harness(model);
+      const answer = await h.ask(question);
+      expect(answer.kind).toBe("notice");
+      expect(answer.text).toContain("ชั่งคืนดีรายวัน");
+      expect(answer.text).toContain("ไม่ใช่บัญชีสินค้าคงคลังต่อเนื่อง");
+      expect(answer.text).not.toContain("40,550.75");
+      expect(model.requests).toHaveLength(0);
+      expect(h.reads).toHaveLength(0);
+    }
+  });
+
   test("a 1:1 chat or an unapproved group is still refused first", async () => {
     const h = harness(salesToolModel());
     expect((await h.ask("กำไรวันนี้เท่าไหร่", { sourceType: "user", sourceId: "Umember" })).text).toContain("ตอบเฉพาะในกลุ่ม");
@@ -146,6 +160,8 @@ describe("supported questions are not caught", () => {
     "ยอดขาย 7 วันย้อนหลัง",
     "ใบขาวเมื่อวานปิดครบไหม",
     "แก้ไขสลิปของดำเสร็จหรือยัง",
+    "แก้ไขสลิปให้ดำเสร็จหรือยัง",
+    "แก้ไขสลิปของดำเรียบร้อยแล้วหรือยัง",
     "ทำไมรายการของพี่ปลายังปิดไม่ได้?",
     "แล้วปลาล่ะ",
     "พี่ดำคืนเสียเท่าไหร่",

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 import { OpenAIAnalystError } from "@/lib/ai/openai-analyst";
-import type { AssistantModelProvider, ModelRoundRequest } from "@/lib/ai/model-provider";
+import type { AssistantModelProvider } from "@/lib/ai/model-provider";
 import { resolveAnalystBusinessDate } from "@/lib/ai/readonly-analyst";
 import { authorizeToolRequest, resolveGroupPolicy, type AssistantScope } from "./authorization";
 import {
@@ -102,17 +102,20 @@ describe("the six target questions, one supervisor conversation", () => {
     expect(followUp.text).not.toContain("ปลา");
   });
 
-  test("the follow-up model round sees this user's previous turn, oldest first", async () => {
+  test("an anchored follow-up reuses this user's tool context and reads the new subject without a model call", async () => {
     const model = new ScriptedThaiModel();
     const h = harness(model);
     await h.ask("ทำไมรายการของพี่ปลายังปิดไม่ได้?");
-    await h.ask("แล้วของพี่ขวัญล่ะ?");
-    const followUpRound = model.requests.find((request: ModelRoundRequest) =>
-      request.transcript.some((item) => item.kind === "message" && item.text === "แล้วของพี่ขวัญล่ะ?"))!;
-    const messages = followUpRound.transcript.filter((item) => item.kind === "message");
-    expect(messages.map((item) => (item as { role: string }).role)).toEqual(["user", "assistant", "user"]);
-    expect((messages[0] as { text: string }).text).toBe("ทำไมรายการของพี่ปลายังปิดไม่ได้?");
-    expect((messages[1] as { text: string }).text).toContain(`[businessDate ${FIXTURE_TODAY}]`);
+    model.requests.length = 0;
+    h.reads.length = 0;
+    const answer = await h.ask("แล้วของพี่ขวัญล่ะ?");
+    expect(answer.kind).toBe("answer");
+    expect(answer.toolNames).toEqual(["get_pending_items"]);
+    expect(answer.text).toContain("ขวัญ");
+    expect(answer.text).not.toContain("ปลา");
+    expect(model.requests).toHaveLength(0);
+    expect(h.reads).toHaveLength(1);
+    expect(h.reads[0]!.request).toMatchObject({ tool: "get_pending_items", staff: "ขวัญ", businessDate: FIXTURE_TODAY });
   });
 
   test("a follow-up keeps the previous turn's day; a new question uses the asked day", async () => {
@@ -131,10 +134,13 @@ describe("conversation memory isolation", () => {
     const model = new ScriptedThaiModel();
     const h = harness(model);
     await h.ask("ทำไมรายการของพี่ปลายังปิดไม่ได้?", { lineUserId: "Uboss" });
+    model.requests.length = 0;
+    h.reads.length = 0;
     const other = await h.ask("แล้วของพี่ขวัญล่ะ?", { lineUserId: "Upaseo" });
-    const round = model.requests.at(-1)!;
-    expect(round.transcript.filter((item) => item.kind === "message")).toHaveLength(1);
-    expect(JSON.stringify(round.transcript)).not.toContain("ปลา");
+    expect(other.kind).toBe("notice");
+    expect(other.text).not.toContain("ปลา");
+    expect(model.requests).toHaveLength(0);
+    expect(h.reads).toHaveLength(0);
     expect(other.toolNames).toEqual([]);
   });
 

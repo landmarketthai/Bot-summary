@@ -43,6 +43,7 @@ import {
   UNSUPPORTED_INTENT_REPLY,
 } from "./unsupported-intent";
 import type { AssistantAnswer } from "./worker";
+import { resolveAmbiguousSubject } from "./ambiguous-subject";
 
 type Supabase = SupabaseClient<Database>;
 
@@ -209,6 +210,9 @@ export async function answerAssistantJob(
     logger.warn("ai assistant memory unavailable", { jobId: job.id, code: classifyAssistantError(error).code });
   }
 
+  const subject = resolveAmbiguousSubject(job.question, turns);
+  if (subject.clarification) return { text: subject.clarification, kind: "notice" };
+
   const businessDate = resolveJobBusinessDate(job.question, job.asked_business_date, turns);
   const outputs: Array<{ tool: ReadonlyAnalystToolName; output: Record<string, unknown> }> = [];
   const denied: string[] = [];
@@ -223,7 +227,7 @@ export async function answerAssistantJob(
 
   const result = await answerWithReadonlyTools(
     deps.supabase,
-    job.question,
+    subject.question,
     {
       provider: deps.provider,
       stopOnRepeatedTools: true,
@@ -239,6 +243,7 @@ export async function answerAssistantJob(
   );
 
   const toolNames = result.toolExecutions.map((execution) => execution.tool);
+  if (result.clarification) return { text: result.answer, kind: "notice", usage: result.usage, toolNames };
   const financial = outputs.filter((entry) => FINANCIAL_TOOLS.has(entry.tool));
   const other = outputs.filter((entry) => !FINANCIAL_TOOLS.has(entry.tool));
   const usage = {
@@ -254,8 +259,12 @@ export async function answerAssistantJob(
     rendered.push(...other.map(entry => renderOperationalOutput(entry.output)).filter(Boolean));
     text = rendered.join("\n\n");
   } else {
-    if (containsFinancialClaim(result.answer)
-      || ungroundedNumbers(result.answer, outputs.map(entry => JSON.stringify(entry.output))).length) {
+    const stockOnly = outputs.length > 0 && outputs.every(entry =>
+      (entry.tool === "get_stock_summary" || entry.tool === "get_market_stock")
+      && entry.output.tool === entry.tool && Array.isArray(entry.output.markets)
+      && entry.output.status === undefined && entry.output.error === undefined);
+    if (!stockOnly && (containsFinancialClaim(result.answer)
+      || ungroundedNumbers(result.answer, outputs.map(entry => JSON.stringify(entry.output))).length)) {
       logger.warn("ai assistant answer withheld: unsupported figures", { jobId: job.id, tools: toolNames });
       return { text: ASSISTANT_UNGROUNDED_REPLY, kind: "notice", usage, toolNames };
     }
