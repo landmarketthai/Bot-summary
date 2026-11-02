@@ -633,7 +633,7 @@ describe("buildBatchSummaryMessage trusted slip lines", () => {
     expect(msg).toContain("#2 เช็คได้ 1,000 บาท");
     expect(msg).toContain("#5 เช็คได้ 1,000 บาท");
     expect(msg).toContain("รูปที่ต้องตรวจมือ:");
-    expect(msg).toContain("#9 ไม่พบข้อมูลครบถ้วน");
+    expect(msg).toContain("#9 อ่านเป็น สลิปธนาคาร แต่ข้อมูลไม่ครบ (ไม่พบยอดโอน, ไม่พบเลขอ้างอิง)");
     expect(msg.indexOf("รูปที่ตรวจผ่าน:")).toBeLessThan(msg.indexOf("รูปที่ต้องตรวจมือ:"));
   });
 
@@ -673,7 +673,7 @@ describe("buildBatchSummaryMessage trusted slip lines", () => {
 
     expect(msg).toContain("#1 เช็คได้");
     expect(msg).not.toContain("#4 เช็คได้");
-    expect(msg).toContain("#4 วันที่รายการไม่ตรงกับรอบ");
+    expect(msg).toContain("#4 อ่านได้ 1,000 บาท ยังไม่ยืนยัน: วันที่ในสลิป 08/06/2569 ไม่ตรงกับรอบ");
   });
 
   it("shows the per-slip amount next to เช็คได้ for trusted slips", () => {

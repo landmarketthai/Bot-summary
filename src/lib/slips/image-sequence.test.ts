@@ -159,15 +159,15 @@ describe("summary #N, amount and reason come from the same evidence", () => {
     const text = render(evidences);
     expect(text).toContain("#1 เช็คได้ 101 บาท");
     expect(text).toContain("#2 เช็คได้ 102 บาท");
-    expect(text).toContain("#3 ไม่พบวันที่รายการ");
-    expect(text).toContain("#4 วันที่รายการไม่ตรงกับรอบ");
+    expect(text).toContain("#3 อ่านได้ 103 บาท ยังไม่ยืนยัน: ไม่พบวันที่รายการ");
+    expect(text).toContain("#4 อ่านได้ 104 บาท ยังไม่ยืนยัน: วันที่ในสลิป 10/10/2569 ไม่ตรงกับรอบ");
     expect(text).toContain("#5 เช็คได้ 105 บาท");
-    expect(text).toContain("#6 ไม่พบข้อมูลครบถ้วน");
+    expect(text).toContain("#6 อ่านเป็น สลิปธนาคาร แต่ข้อมูลไม่ครบ (ไม่พบยอดโอน, ไม่พบเลขอ้างอิง)");
     expect(text).toContain("#7 รูปเข้าระบบไม่สำเร็จ");
     expect(text).toContain("รับทั้งหมด: 7 รูป");
     expect(text).toContain("อ่านครบ: 3 รูป");
     expect(text).toContain("รอตรวจมือ: 4 รูป");
-    expect(text).toContain("ยอดรวมที่อ่านได้: 308 บาท");
+    expect(text).toContain("ยอดยืนยัน: 308 บาท");
     expect(text).not.toContain("ยืนยันลำดับจาก LINE ไม่ได้");
     // Review lines are listed in #N order.
     const review = text.split("รูปที่ต้องตรวจมือ:")[1];
@@ -188,7 +188,7 @@ describe("summary #N, amount and reason come from the same evidence", () => {
     const seq = sequenceBatchImages(dupImages, new Set(dup.map((e) => e.lineMessageId!)));
     const text = buildBatchSummaryMessage(orderByLineSequence(dup, seq), { slipDate });
     expect(text).toContain("#1 เช็คได้ 101 บาท");
-    expect(text).toContain("#2 สลิปซ้ำ");
+    expect(text).toContain("#2 อ่านได้ 102 บาท ยังไม่ยืนยัน: สลิปซ้ำ");
   });
 
   test("evidence the ledger cannot place is shown as #? with a warning, never a guessed number", () => {
@@ -224,11 +224,11 @@ describe("summary #N, amount and reason come from the same evidence", () => {
     expect(text).toContain("#5? เช็คได้ 105 บาท");
     expect(text).toContain(SEQUENCE_UNVERIFIED_NOTE);
     // Same money as with a fully verified order: only the labels differ.
-    expect(text).toContain("ยอดรวมที่อ่านได้: 411 บาท");
+    expect(text).toContain("ยอดยืนยัน: 411 บาท");
   });
 
   test("money is unchanged by the reorder: same trusted count, total and duplicate exclusions as batch_index order", () => {
-    const totalOf = (text: string) => text.match(/ยอดรวมที่อ่านได้: ([\d,.]+) บาท/)?.[1] ?? "none";
+    const totalOf = (text: string) => text.match(/ยอดยืนยัน: ([\d,.]+) บาท/)?.[1] ?? "none";
     const countOf = (text: string, label: string) => text.match(new RegExp(`${label}: (\\d+) รูป`))?.[1];
     for (let seed = 1; seed <= 200; seed++) {
       const n = 3 + (seed % 25);

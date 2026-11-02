@@ -188,8 +188,8 @@ describe.skipIf(!pgAvailable)("slip summary #N = LINE send order on PostgreSQL 1
 
     for (let n = 1; n <= 30; n++) {
       if (n === 15) expect(text).toContain("#15 รูปเข้าระบบไม่สำเร็จ");
-      else if (n === 20) expect(text).toContain("#20 ไม่พบวันที่รายการ");
-      else if (n === 25) expect(text).toContain("#25 วันที่รายการไม่ตรงกับรอบ");
+      else if (n === 20) expect(text).toContain("#20 อ่านได้ 1,020 บาท ยังไม่ยืนยัน: ไม่พบวันที่รายการ");
+      else if (n === 25) expect(text).toContain("#25 อ่านได้ 1,025 บาท ยังไม่ยืนยัน: วันที่ในสลิป 10/10/2569 ไม่ตรงกับรอบ");
       else expect(text).toContain(`#${n} เช็คได้ ${amountOf(n).toLocaleString("th-TH")} บาท`);
     }
     expect(text.match(/^#\d+ /gm)).toHaveLength(30); // every image listed exactly once
@@ -204,7 +204,7 @@ describe.skipIf(!pgAvailable)("slip summary #N = LINE send order on PostgreSQL 1
     const trustedTotal = Array.from({ length: 30 }, (_, i) => i + 1)
       .filter((n) => ![15, 20, 25].includes(n))
       .reduce((sum, n) => sum + amountOf(n), 0);
-    expect(text).toContain(`ยอดรวมที่อ่านได้: ${trustedTotal.toLocaleString("th-TH")} บาท`);
+    expect(text).toContain(`ยอดยืนยัน: ${trustedTotal.toLocaleString("th-TH")} บาท`);
 
     const batch = (await db.query<Record<string, unknown>>(`SELECT * FROM slip_batches WHERE id='${batchId}'`))[0];
     expect(batch.status).toBe("review_needed");
@@ -272,7 +272,7 @@ describe.skipIf(!pgAvailable)("slip summary #N = LINE send order on PostgreSQL 1
     for (const n of [1, 2, 3]) expect(text).toContain(`#${n}? เช็คได้ ${amountOf(n).toLocaleString("th-TH")} บาท`);
     expect(text).not.toMatch(/^#\d+ /m);
     expect(text).toContain("ยืนยันลำดับจาก LINE ไม่ได้");
-    expect(text).toContain(`ยอดรวมที่อ่านได้: ${(amountOf(1) + amountOf(2) + amountOf(3)).toLocaleString("th-TH")} บาท`);
+    expect(text).toContain(`ยอดยืนยัน: ${(amountOf(1) + amountOf(2) + amountOf(3)).toLocaleString("th-TH")} บาท`);
   }, 120_000);
 
   test("two markets uploading at the same time are numbered independently", async () => {

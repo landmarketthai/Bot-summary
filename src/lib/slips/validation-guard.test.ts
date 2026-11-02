@@ -272,7 +272,7 @@ describe("duplicate guard", () => {
       { id: "e3", batchIndex: 3, failureReason: null, ...makeExtractedWithRef(300, "REF-002") },
     ];
     const message = buildBatchSummaryMessage(evidences, { slipDate: null });
-    expect(message).toContain("ยอดรวมที่อ่านได้: 800 บาท");
+    expect(message).toContain("ยอดยืนยัน: 800 บาท");
     expect(message).toContain("สลิปซ้ำ");
     expect(message).toContain("ยอดที่ถูกระงับ: 1 รายการ");
   });
@@ -735,10 +735,12 @@ describe("Production batch fixture: n0i — wat takl0m — 10/6/2569", () => {
     // Trusted total is 2,781.40
     expect(msg).toMatch(/2[,.]781/);
     expect(msg).not.toMatch(/53[,.]553/);
-    expect(msg).not.toMatch(/3[,.]553/);
+    // Date-flagged amounts (#6, #11, #15) are shown as read-but-unconfirmed, never in the confirmed total.
+    expect(msg).toContain("ยอดยืนยัน: 2,781.4 บาท");
+    expect(msg).toContain("ยอดรอตรวจ: 772 บาท (3 รูป) ยังไม่นับเป็นยอดยืนยัน");
     // Review section shows both reasons for #9
     expect(msg).toContain("ยอดเงินสูงผิดปกติ");
-    expect(msg).toContain("วันที่รายการไม่ตรงกับรอบ");
+    expect(msg).toContain("วันที่ในสลิป 10/12/2569 ไม่ตรงกับรอบ");
     // #11 flagged for missing date
     expect(msg).toContain("ไม่พบวันที่รายการ");
   });
