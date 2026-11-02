@@ -27,6 +27,9 @@ const KNOWN_REFUSALS = [
   "slip_check_round_finalized",
   "slip_check_already_reviewed",
   "slip_check_review_not_active",
+  "manual_entry_not_found",
+  "manual_entry_session_not_closed",
+  "manual_entry_is_ai_slip",
 ] as const;
 
 function refusal(message: string): SlipCheckReviewError {
@@ -47,6 +50,35 @@ export async function reviewSlipCheck(
   }
   const { data, error } = await supabase.rpc("review_slip_check", {
     p_check_id: input.checkId,
+    p_decision: input.decision,
+    p_amount: input.decision === "approved" ? Math.round((input.amount ?? 0) * 100) / 100 : null,
+    p_reason: reason,
+    p_reviewer: reviewer,
+  });
+  if (error) throw refusal(error.message);
+  const result = data as { approval_id: string; already: boolean };
+  return { approvalId: result.approval_id, already: result.already };
+}
+
+/**
+ * Authorized override for ONE manual slip entry (migration 20261102130000):
+ * an unreferenced entry in the new flow, or one whose reference conflicts with
+ * a REJECTED AI check. Refused when the reference belongs to a live AI check
+ * (approve that check instead), while the session is open, or after close.
+ */
+export async function reviewManualSlipEntry(
+  supabase: Supabase,
+  input: { entryId: string; decision: "approved" | "rejected"; amount?: number; reason: string; reviewer: string },
+): Promise<{ approvalId: string; already: boolean }> {
+  const reason = input.reason.trim();
+  const reviewer = input.reviewer.trim();
+  if (!reason) throw new SlipCheckReviewError("reason_required", "reason is required");
+  if (!reviewer) throw new SlipCheckReviewError("reviewer_required", "reviewer is required");
+  if (input.decision === "approved" && !(Number.isFinite(input.amount) && (input.amount ?? 0) > 0)) {
+    throw new SlipCheckReviewError("amount_required", "an approval needs a positive amount");
+  }
+  const { data, error } = await supabase.rpc("review_manual_slip_entry", {
+    p_entry_id: input.entryId,
     p_decision: input.decision,
     p_amount: input.decision === "approved" ? Math.round((input.amount ?? 0) * 100) / 100 : null,
     p_reason: reason,

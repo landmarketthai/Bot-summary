@@ -467,6 +467,22 @@ export async function loadMarketScopedManualSlipTotal(
   marketLabelNormalized: string,
   accountabilityRoundId?: string | null,
 ): Promise<number> {
+  const sessionIds = await marketScopedClosedManualSessionIds(
+    supabase, sourceId, businessDate, marketLabelNormalized, accountabilityRoundId,
+  );
+  if (sessionIds.length === 0) return 0;
+
+  const round2 = (n: number) => Math.round(n * 100) / 100;
+  return round2(await countableManualEntryTotal(supabase, sessionIds));
+}
+
+async function marketScopedClosedManualSessionIds(
+  supabase:              Supabase,
+  sourceId:              string,
+  businessDate:          string,
+  marketLabelNormalized: string,
+  accountabilityRoundId?: string | null,
+): Promise<string[]> {
   const targetMarket = marketLabelNormalized.normalize("NFC").trim();
   if (!targetMarket) {
     throw new Error("marketLabelNormalized must not be empty");
@@ -488,13 +504,9 @@ export async function loadMarketScopedManualSlipTotal(
     throw new Error(`manual_slip_sessions query failed: ${sessionError.message}`);
   }
 
-  const sessionIds = (sessions ?? [])
+  return (sessions ?? [])
     .filter((session) => normalizedMarketLabel(session.market_label) === targetMarket)
     .map((session) => session.id);
-  if (sessionIds.length === 0) return 0;
-
-  const round2 = (n: number) => Math.round(n * 100) / 100;
-  return round2(await countableManualEntryTotal(supabase, sessionIds));
 }
 
 export async function reconcile(
@@ -649,38 +661,101 @@ export async function reconcile(
   return { blocked: false, result, row: row as TransferReconciliationRow };
 }
 
-/**
- * Sum of manual-slip entries that may count. An entry carrying a reference that
- * is already an AI-verified slip check is NOT counted — that transfer's money
- * row is the AI check (or its approval in slip_check_approvals), so counting
- * both would be a double count. Entries without a reference (every legacy row,
- * and today's LINE grammar) cannot be matched to an AI check and are counted
- * as before; nothing is linked by guessing.
- */
+export interface ManualSlipBreakdown {
+  /** Money: counted entries (approved overrides at their approved amount). */
+  total:           number;
+  /** Not counted, waiting for an authorized decision — never silently dropped. */
+  pendingCount:    number;
+  pendingAmount:   number;
+  /** Not counted because the AI check with the same reference is that money row. */
+  supersededCount: number;
+}
+
 async function countableManualEntryTotal(supabase: Supabase, sessionIds: string[]): Promise<number> {
-  let result = await supabase.from("manual_slip_entries").select("amount, reference_id").in("session_id", sessionIds);
-  if (result.error && isMissingSchemaObject(result.error)) {
-    // Migration 20261102120000 not applied yet: no entry can carry a reference.
-    result = await supabase.from("manual_slip_entries").select("amount").in("session_id", sessionIds) as unknown as typeof result;
-  }
-  if (result.error) throw new Error(`manual_slip_entries query failed: ${result.error.message}`);
-  const entries = (result.data ?? []) as Array<{ amount: number | string; reference_id?: string | null }>;
+  return (await loadManualEntryBreakdown(supabase, sessionIds)).total;
+}
+
+type ManualEntryRow = { id: string; amount: number | string; reference_id?: string | null; requires_review?: boolean };
+
+/**
+ * One transfer, one money row, per manual entry:
+ *   1. an active REJECTED decision on the entry  → 0;
+ *   2. a reference whose AI global winner is live (not rejected) → superseded:
+ *      the AI check or its approval is the money, never both;
+ *   3. a reference whose AI winner was REJECTED → pending until an authorized
+ *      override (the reviewer decides which read is real);
+ *   4. no reference and requires_review (new LINE flow) → pending until an
+ *      authorized override;
+ *   5. otherwise counted — every legacy row and today's grammar, unchanged;
+ *      an approved override counts its approved amount.
+ * Nothing is linked to an AI check by guessing (no amount/date matching).
+ */
+async function loadManualEntryBreakdown(supabase: Supabase, sessionIds: string[]): Promise<ManualSlipBreakdown> {
+  const entries = await loadManualEntries(supabase, sessionIds);
+  const entryDecisions = await loadActiveDecisions(supabase, "manual_entry_id", entries.map((e) => e.id));
 
   const refs = [...new Set(entries.map((e) => normalizeTransactionId(e.reference_id)).filter((r): r is string => r !== null))];
-  let aiRefs = new Set<string>();
+  const winnerByRef = new Map<string, string>();
   if (refs.length > 0) {
     const { data, error } = await supabase
       .from("slip_checks")
-      .select("reference_id")
+      .select("id, reference_id, created_at")
       .in("reference_id", refs)
-      .in("status", ["EXTRACTED", "PARTIAL_EXTRACTED"]);
+      .in("status", ["EXTRACTED", "PARTIAL_EXTRACTED"])
+      .order("created_at", { ascending: true })
+      .order("id", { ascending: true });
     if (error) throw new Error(`manual reference cross-check failed: ${error.message}`);
-    aiRefs = new Set((data ?? []).map((r) => normalizeTransactionId(r.reference_id)).filter((r): r is string => r !== null));
+    for (const row of data ?? []) {
+      const ref = normalizeTransactionId(row.reference_id);
+      if (ref && !winnerByRef.has(ref)) winnerByRef.set(ref, row.id);
+    }
   }
-  return entries.reduce((sum, e) => {
+  const aiDecisions = await loadActiveDecisions(supabase, "slip_check_id", [...winnerByRef.values()]);
+
+  const breakdown: ManualSlipBreakdown = { total: 0, pendingCount: 0, pendingAmount: 0, supersededCount: 0 };
+  const pending = (amount: number) => { breakdown.pendingCount += 1; breakdown.pendingAmount += amount; };
+  for (const e of entries) {
+    const amount = Number(e.amount);
+    const decision = entryDecisions.get(e.id);
+    if (decision?.decision === "rejected") continue;
+    const approved = decision?.decision === "approved" ? decision.amount : null;
     const ref = normalizeTransactionId(e.reference_id);
-    return ref !== null && aiRefs.has(ref) ? sum : sum + Number(e.amount);
-  }, 0);
+    const winner = ref ? winnerByRef.get(ref) : undefined;
+    if (winner) {
+      if (aiDecisions.get(winner)?.decision !== "rejected") { breakdown.supersededCount += 1; continue; }
+      if (approved === null) { pending(amount); continue; }
+    } else if (!ref && e.requires_review === true && approved === null) {
+      pending(amount);
+      continue;
+    }
+    breakdown.total += approved ?? amount;
+  }
+  return breakdown;
+}
+
+/** Newest schema first; an older schema (migration not applied) simply has fewer columns. */
+async function loadManualEntries(supabase: Supabase, sessionIds: string[]): Promise<ManualEntryRow[]> {
+  for (const columns of ["id, amount, reference_id, requires_review", "id, amount, reference_id", "id, amount"]) {
+    const { data, error } = await supabase.from("manual_slip_entries").select(columns as "id, amount").in("session_id", sessionIds);
+    if (!error) return (data ?? []) as unknown as ManualEntryRow[];
+    if (!isMissingSchemaObject(error)) throw new Error(`manual_slip_entries query failed: ${error.message}`);
+  }
+  throw new Error("manual_slip_entries query failed: no compatible column set");
+}
+
+/** Market-scoped closed manual-slip breakdown (counted, pending, superseded). */
+export async function loadMarketScopedManualSlipBreakdown(
+  supabase:              Supabase,
+  sourceId:              string,
+  businessDate:          string,
+  marketLabelNormalized: string,
+  accountabilityRoundId?: string | null,
+): Promise<ManualSlipBreakdown> {
+  const sessionIds = await marketScopedClosedManualSessionIds(
+    supabase, sourceId, businessDate, marketLabelNormalized, accountabilityRoundId,
+  );
+  if (sessionIds.length === 0) return { total: 0, pendingCount: 0, pendingAmount: 0, supersededCount: 0 };
+  return loadManualEntryBreakdown(supabase, sessionIds);
 }
 
 /** PostgREST / Postgres "relation or column does not exist" (migration not applied). */
@@ -688,26 +763,35 @@ function isMissingSchemaObject(error: { code?: string }): boolean {
   return error.code === "42P01" || error.code === "42703" || error.code === "PGRST204" || error.code === "PGRST205";
 }
 
-/** Active decisions (slip_check_approvals) for these checks; none before the migration. */
-async function loadActiveApprovals(
+const loadActiveApprovals = (supabase: Supabase, checkIds: string[]) =>
+  loadActiveDecisions(supabase, "slip_check_id", checkIds);
+
+/**
+ * Active decisions (slip_check_approvals) keyed by AI check or manual entry.
+ * None before the migrations: an absent table (20261102120000) or column
+ * (manual_entry_id, 20261102130000) means no decision can exist.
+ */
+async function loadActiveDecisions(
   supabase: Supabase,
-  checkIds: string[],
+  target: "slip_check_id" | "manual_entry_id",
+  ids: string[],
 ): Promise<Map<string, NonNullable<VerifiedTransferCheckRow["approval"]>>> {
-  const approvals = new Map<string, NonNullable<VerifiedTransferCheckRow["approval"]>>();
-  if (checkIds.length === 0) return approvals;
+  const decisions = new Map<string, NonNullable<VerifiedTransferCheckRow["approval"]>>();
+  if (ids.length === 0) return decisions;
   const { data, error } = await supabase.from("slip_check_approvals")
-    .select("slip_check_id, decision, approved_amount")
-    .in("slip_check_id", checkIds)
+    .select(`${target}, decision, approved_amount` as "slip_check_id, manual_entry_id, decision, approved_amount")
+    .in(target, ids)
     .eq("status", "active");
   if (error) {
-    // Table absent = migration 20261102120000 not applied: no decision exists.
-    if (isMissingSchemaObject(error)) return approvals;
-    throw new Error(`slip check approval query failed: ${error.message}`);
+    if (isMissingSchemaObject(error)) return decisions;
+    throw new Error(`slip review query failed: ${error.message}`);
   }
   for (const row of data ?? []) {
-    approvals.set(row.slip_check_id, row.decision === "approved"
+    const key = row[target];
+    if (!key) continue;
+    decisions.set(key, row.decision === "approved"
       ? { decision: "approved", amount: Number(row.approved_amount) }
       : { decision: "rejected" });
   }
-  return approvals;
+  return decisions;
 }

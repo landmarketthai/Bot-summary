@@ -791,6 +791,7 @@ export interface Database {
           line_message_id: string;
           line_user_id:    string | null;
           reference_id:    string | null;
+          requires_review: boolean;
           created_at:      string;
         };
         Insert: {
@@ -802,6 +803,7 @@ export interface Database {
           line_message_id:  string;
           line_user_id?:    string | null;
           reference_id?:    string | null;
+          requires_review?: boolean;
           created_at?:      string;
         };
         Update: {
@@ -813,6 +815,7 @@ export interface Database {
           line_message_id?: string;
           line_user_id?:    string | null;
           reference_id?:    string | null;
+          requires_review?: boolean;
           created_at?:      string;
         };
         Relationships: [];
@@ -821,7 +824,8 @@ export interface Database {
       slip_check_approvals: {
         Row: {
           id:              string;
-          slip_check_id:   string;
+          slip_check_id:   string | null;
+          manual_entry_id: string | null;
           decision:        "approved" | "rejected";
           approved_amount: number | null;
           reason:          string;
@@ -2544,6 +2548,16 @@ export interface Database {
           p_error_message?: string | null;
         };
         Returns: boolean;
+      };
+      review_manual_slip_entry: {
+        Args: {
+          p_entry_id: string;
+          p_decision: "approved" | "rejected";
+          p_amount: number | null;
+          p_reason: string;
+          p_reviewer: string;
+        };
+        Returns: Json;
       };
       review_slip_check: {
         Args: {

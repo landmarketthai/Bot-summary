@@ -13,7 +13,7 @@ import { randomBytes } from "node:crypto";
 
 export const ROOT = join(import.meta.dir, "..", "..", "..", "..");
 const WIN_PSQL = "C:\\Program Files\\PostgreSQL\\17\\bin\\psql.exe";
-const PSQL = existsSync(WIN_PSQL) ? WIN_PSQL : "psql";
+export const PSQL = existsSync(WIN_PSQL) ? WIN_PSQL : "psql";
 export const PGHOST = process.env.PGHOST ?? "localhost";
 export const PGUSER = process.env.PGUSER ?? "postgres";
 export const PGPASSWORD = process.env.PGPASSWORD ?? "postgres";
