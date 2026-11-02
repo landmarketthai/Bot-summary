@@ -325,6 +325,11 @@ function normalizeVisibleThaiTimestamp(text: string): string | null {
     .trim()
     .replace(/\s+/g, " ")
     .replace(/[–—]/g, "-")
+    // Printed labels and separators only; the date and time digits themselves
+    // must all be present — nothing here supplies a missing part.
+    .replace(/^วันที่(?:ทำรายการ)?\s*:?\s*/u, "")
+    .replace(/\s*,?\s*เวลา\s*:?\s*/u, " ")
+    .replace(/\s*,\s*/u, " ")
     .replace(/\s*น\.?\s*$/u, "")
     .trim();
 
@@ -337,9 +342,10 @@ function normalizeVisibleThaiTimestamp(text: string): string | null {
 }
 
 function parseThaiMonthTimestamp(text: string): string | null {
-  const match = /^(\d{1,2})\s+([\u0E00-\u0E7F.]+)\s+(\d{4}|\d{2})(?:\s*-?\s*(.+))?$/.exec(text);
+  const match = /^(\d{1,2})\s*([\u0E00-\u0E7F.]+?)\s*(\d{4}|\d{2})(?:\s*-?\s*(.+))?$/.exec(text);
   if (!match) return null;
-  const month = THAI_MONTHS[match[2]];
+  // "\u0E15.\u0E04" printed without its final dot is still an exact table spelling.
+  const month = THAI_MONTHS[match[2]] ?? THAI_MONTHS[`${match[2]}.`];
   if (!month) return null;
   const clock = parseClock(match[4] ?? "00:00:00");
   if (!clock) return null;
@@ -396,7 +402,8 @@ function parseIsoTimestamp(text: string): string | null {
 
 function parseClock(text: string): { hour: number; minute: number; second: number } | null {
   const t = text.trim().replace(/^-\s*/, "");
-  const colon = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(t);
+  // Thai receipts print the clock as 17:49 or 17.49.
+  const colon = /^(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?$/.exec(t);
   if (colon) {
     return {
       hour: parseInt(colon[1], 10),
