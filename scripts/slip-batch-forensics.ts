@@ -118,6 +118,7 @@ for (const batch of batches) {
       : null;
     const d = diagnoseSlipImage(!!r.ev, stored, f?.flags ?? null);
     if (d.diagnosis === "CONFIRMED") confirmedTotal += f?.flags.effectiveAmount ?? 0;
+    const json = (r.c?.extracted_json ?? {}) as Record<string, unknown>;
     console.log(JSON.stringify({
       lineSeq: r.lineSeq,
       lineMessageId: r.msg,
@@ -137,6 +138,10 @@ for (const batch of batches) {
       amountSeen: r.extraction ? anyReadAmount(r.extraction) : null,
       effectiveAmount: f?.flags.effectiveAmount ?? null,
       transactionTime: r.c?.transaction_time ?? null,
+      // Stored only for reads made after raw-text persistence shipped; earlier rows: null.
+      rawTransactionTimeText: typeof json.transaction_time_text === "string" ? json.transaction_time_text : null,
+      rawSlipType: typeof json.slip_type_raw === "string" ? json.slip_type_raw : null,
+      modelId: typeof json.model_id === "string" ? json.model_id : null,
       reference: mask(r.c?.reference_id ?? null),
       paymentChannelText: r.extraction?.paymentChannelText ?? null,
       confidence: r.c?.confidence ?? null,

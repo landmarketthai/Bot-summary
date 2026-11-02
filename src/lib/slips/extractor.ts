@@ -206,7 +206,7 @@ export class OpenAiSlipExtractor implements SlipExtractor {
       throw new Error("Image extraction provider returned invalid JSON");
     }
 
-    return parseSlipExtraction(parsed);
+    return { ...parseSlipExtraction(parsed), modelId: this.model };
   }
 }
 

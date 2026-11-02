@@ -1078,11 +1078,6 @@ export function buildBatchSummaryMessage(
   // Flagged completed items are treated as manual review.
   const incomplete = [...failedEvs, ...needReview, ...pending, ...flagged];
 
-  const trustedTotal = trusted.reduce(
-    (sum, e) => sum + (e.flags.effectiveAmount ?? 0),
-    0,
-  );
-
   // ── Timeout forced: detailed breakdown ──────────────────────────────────────
   if (options?.isTimeout && (pending.length > 0 || failedEvs.length > 0 || missing.length > 0)) {
     const lines: string[] = [
@@ -1098,11 +1093,7 @@ export function buildBatchSummaryMessage(
       lines.push(`รอประมวลผล: ${pending.length} รูป`);
     if (missing.length > 0)
       lines.push(`ยังไม่เข้าระบบ: ${missing.length} รูป`);
-    if (trustedTotal > 0) {
-      lines.push(
-        `ยอดรวมที่อ่านได้: ${trustedTotal.toLocaleString("th-TH", { maximumFractionDigits: 2 })} บาท`,
-      );
-    }
+    appendAmountTotals(lines, trusted, incomplete);
     const amountFlaggedCountTimeout = flagged.filter(
       (e) => e.flags.flagReasons.some((r) => AMOUNT_FLAG_REASONS.has(r as ValidationReason)),
     ).length;
@@ -1116,7 +1107,9 @@ export function buildBatchSummaryMessage(
   }
 
   // ── Normal (non-timeout) rendering ──────────────────────────────────────────
-  if (trusted.length === 0 && flagged.length === 0) {
+  // Nothing confirmed AND nothing readable: no amounts to show. A batch whose
+  // only readable amounts are unconfirmed still renders them below as pending.
+  if (trusted.length === 0 && flagged.length === 0 && unconfirmedReadable(incomplete).length === 0) {
     if (options?.title) {
       return `${options.title}\n\nรับทั้งหมด: ${total} รูป แต่ระบบอ่านข้อมูลไม่ครบ กรุณาให้แอดมินตรวจมือ`;
     }
@@ -1130,11 +1123,7 @@ export function buildBatchSummaryMessage(
     `รอตรวจมือ: ${incomplete.length + missing.length} รูป`,
   ];
 
-  if (trustedTotal > 0) {
-    lines.push(
-      `ยอดรวมที่อ่านได้: ${trustedTotal.toLocaleString("th-TH", { maximumFractionDigits: 2 })} บาท`,
-    );
-  }
+  appendAmountTotals(lines, trusted, incomplete);
   const amountFlaggedCount = flagged.filter(
     (e) => e.flags.flagReasons.some((r) => AMOUNT_FLAG_REASONS.has(r as ValidationReason)),
   ).length;
@@ -1161,7 +1150,7 @@ function appendIncompleteLines(
 ): void {
   const items = [
     ...incomplete.map((e) => ({
-      no: displayNumber(e), label: evidenceLabel(e, legacyUnverified), text: describeIncompleteReason(e),
+      no: displayNumber(e), label: evidenceLabel(e, legacyUnverified), text: describeIncompleteLine(e),
     })),
     ...missing.map((m) => ({
       no: m.sequence, label: numberLabel(m.sequence, m.verified),
@@ -1204,11 +1193,70 @@ function appendTrustedEvidenceLines(
   }
 }
 
+const formatBaht = (amount: number) => amount.toLocaleString("th-TH", { maximumFractionDigits: 2 });
+const toSatang = (amount: number) => Math.round(amount * 100);
+
+/**
+ * Read but not confirmed. An amount-level flag (duplicate = same money, outlier =
+ * suspicious number) keeps the image listed with its amount but out of every sum.
+ */
+function unconfirmedReadable(incomplete: EnrichedEvidence[]): EnrichedEvidence[] {
+  return incomplete.filter((e) => e.flags.effectiveAmount !== null
+    && !e.flags.flagReasons.some((r) => AMOUNT_FLAG_REASONS.has(r)));
+}
+
+/** AI-read = confirmed + read-but-unconfirmed. Only the confirmed figure is a sale. */
+function appendAmountTotals(lines: string[], trusted: EnrichedEvidence[], incomplete: EnrichedEvidence[]): void {
+  const sum = (list: EnrichedEvidence[]) => list.reduce((s, e) => s + toSatang(e.flags.effectiveAmount ?? 0), 0);
+  const unconfirmed = unconfirmedReadable(incomplete);
+  const confirmedSatang = sum(trusted);
+  const pendingSatang = sum(unconfirmed);
+  if (confirmedSatang + pendingSatang <= 0) return;
+  lines.push(`ยอดที่ AI อ่านได้: ${formatBaht((confirmedSatang + pendingSatang) / 100)} บาท`);
+  lines.push(`ยอดยืนยัน: ${formatBaht(confirmedSatang / 100)} บาท`);
+  if (pendingSatang > 0) {
+    lines.push(`ยอดรอตรวจ: ${formatBaht(pendingSatang / 100)} บาท (${unconfirmed.length} รูป) ยังไม่นับเป็นยอดยืนยัน`);
+  }
+}
+
+function describeIncompleteLine(e: EnrichedEvidence): string {
+  const amount = e.flags.effectiveAmount;
+  const reason = describeIncompleteReason(e);
+  return amount !== null ? `อ่านได้ ${formatBaht(amount)} บาท ยังไม่ยืนยัน: ${reason}` : reason;
+}
+
+/** Bangkok calendar date in Buddhist Era, e.g. 29/07/2569, so a misread month is visible. */
+function thaiSlipDate(iso: string | null): string | null {
+  const ms = iso ? Date.parse(iso) : NaN;
+  if (!Number.isFinite(ms)) return null;
+  const d = new Date(ms + 7 * 60 * 60 * 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(d.getUTCDate())}/${pad(d.getUTCMonth() + 1)}/${d.getUTCFullYear() + 543}`;
+}
+
 function describeIncompleteReason(e: EnrichedEvidence): string {
   if (e.flags.flagged && e.flags.flagReasons.length > 0) {
-    return e.flags.flagReasons.join(", ");
+    return e.flags.flagReasons.map((r) => {
+      const read = r === "วันที่รายการไม่ตรงกับรอบ" ? thaiSlipDate(e.transactionTime) : null;
+      return read ? `วันที่ในสลิป ${read} ไม่ตรงกับรอบ` : r;
+    }).join(", ");
   }
   return describeReviewReason(e);
+}
+
+/** Which confirmation field the slip lacked, by type; mirrors determineSlipCheckStatus. */
+function describeNeedReview(e: EvidenceWithCheck): string {
+  const wallet = e.slipType === "GWALLET" || e.slipType === "THAI_HELP_THAI";
+  const bank = e.slipType === "BANK_SLIP_QR" || e.slipType === "BANK_SLIP_NO_QR";
+  if (!wallet && !bank) return "ไม่พบข้อมูลครบถ้วน";
+  const missing: string[] = [];
+  if (wallet && e.paidAmount === null) missing.push("ไม่พบยอด G-Wallet");
+  if (bank && e.transferAmount === null) missing.push("ไม่พบยอดโอน");
+  if (!e.transactionTime) missing.push("ไม่พบวันที่รายการ");
+  if (!e.referenceId) missing.push("ไม่พบเลขอ้างอิง");
+  if (missing.length === 0) return "ไม่พบข้อมูลครบถ้วน";
+  const type = e.slipType === "GWALLET" ? "G-Wallet" : e.slipType === "THAI_HELP_THAI" ? "ไทยช่วยไทย" : "สลิปธนาคาร";
+  return `อ่านเป็น ${type} แต่ข้อมูลไม่ครบ (${missing.join(", ")})`;
 }
 
 function describeReviewReason(e: EvidenceWithCheck): string {
@@ -1220,6 +1268,6 @@ function describeReviewReason(e: EvidenceWithCheck): string {
     if (e.failureReason === "extractor_not_configured") return "ระบบอ่านรูปไม่พร้อม";
     return "อ่านข้อมูลไม่ครบ";
   }
-  if (e.checkStatus === "NEED_REVIEW") return "ไม่พบข้อมูลครบถ้วน";
+  if (e.checkStatus === "NEED_REVIEW") return describeNeedReview(e);
   return "ยังไม่ได้ตรวจสอบ";
 }
