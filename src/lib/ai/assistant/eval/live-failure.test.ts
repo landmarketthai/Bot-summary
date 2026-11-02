@@ -54,7 +54,7 @@ test("genuine multiple tools remain available and rendered", async () => { let c
 }; const r = await runAnswerEval({
   provider, cases: cases("fin-01"), env: priced
 }); expect(r.results[0]!.pass).toBe(true); expect(r.results[0]!.toolsUsed).toEqual(["get_daily_summary", "get_stock_summary"]); expect(calls).toBe(3); });
-test("saved six-call usage trace survives final tool limit and exhausts budget", async () => { const trace = [{
+test("saved six-call usage trace survives explicit-question tool limit and exhausts budget", async () => { const trace = [{
     inputTokens: 1715, cachedInputTokens: 1700, outputTokens: 20
   }, {
     inputTokens: 1834, cachedInputTokens: 1712, outputTokens: 21
@@ -75,7 +75,8 @@ test("saved six-call usage trace survives final tool limit and exhausts budget",
       }]
   }; }
 }; const r = await runAnswerEval({
-  provider, cases: cases("mem-01", "hal-03"), env: {
+  // An explicit new question exercises the model loop; subject-only follow-ups now bypass it.
+  provider, cases: [{ ...cases("mem-01")[0]!, question: "ปลาเงินขาดหรือเกิน" }, ...cases("hal-03")], env: {
     ...priced, BOT_SUMMARY_ANALYST_CACHED_INPUT_USD_PER_MTOK: "0.01"
   }, maxUsd: .0002
 }); expect(n).toBe(6); expect(r.results[0]!.pass).toBe(false); expect(r.results[0]!.usage).toEqual({

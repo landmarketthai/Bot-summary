@@ -134,13 +134,22 @@ describe("approved group: every member shares the group scope", () => {
     const model = new ScriptedThaiModel();
     const h = harness({ provider: model });
     await h.ask("ทำไมรายการของพี่ปลายังปิดไม่ได้?", { lineUserId: "Uboss" });
-    await h.ask("แล้วของพี่ขวัญล่ะ?", { lineUserId: "Udam" });
-    const round = model.requests.at(-1)!;
-    expect(round.transcript.filter((item) => item.kind === "message")).toHaveLength(1);
-    expect(JSON.stringify(round.transcript)).not.toContain("ปลา");
-    // ...while the same member's own follow-up keeps context.
-    await h.ask("แล้วของพี่ขวัญล่ะ?", { lineUserId: "Uboss" });
-    expect(model.requests.at(-1)!.transcript.filter((item) => item.kind === "message")).toHaveLength(3);
+    model.requests.length = 0;
+    h.reads.length = 0;
+    const other = await h.ask("แล้วของพี่ขวัญล่ะ?", { lineUserId: "Udam" });
+    expect(other.kind).toBe("notice");
+    expect(other.text).not.toContain("ปลา");
+    expect(model.requests).toHaveLength(0);
+    expect(h.reads).toHaveLength(0);
+    // The same member resolves their own context and reads only the new subject.
+    const own = await h.ask("แล้วของพี่ขวัญล่ะ?", { lineUserId: "Uboss" });
+    expect(own.kind).toBe("answer");
+    expect(own.toolNames).toEqual(["get_pending_items"]);
+    expect(own.text).toContain("ขวัญ");
+    expect(own.text).not.toContain("ปลา");
+    expect(model.requests).toHaveLength(0);
+    expect(h.reads).toHaveLength(1);
+    expect(h.reads[0]!.request).toMatchObject({ tool: "get_pending_items", staff: "ขวัญ", businessDate: FIXTURE_TODAY });
   });
 
   test("a revoked group policy withholds an answer recorded before the revocation", async () => {

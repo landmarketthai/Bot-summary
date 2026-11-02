@@ -137,7 +137,7 @@ describe("other unsupported questions get a limitation that matches what was ask
       const h = harness(model);
       const answer = await h.ask(question);
       expect(answer.kind).toBe("notice");
-      expect(answer.text).toContain("ชั่งคืนดีรายวัน");
+      expect(answer.text).toContain("มีเฉพาะของชั่งคืนดีรายวัน");
       expect(answer.text).toContain("ไม่ใช่บัญชีสินค้าคงคลังต่อเนื่อง");
       expect(answer.text).not.toContain("40,550.75");
       expect(model.requests).toHaveLength(0);
