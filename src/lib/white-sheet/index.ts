@@ -73,6 +73,8 @@ export {
   isHardStopWarning,
   missingCentralPriceWarning,
   MISSING_CENTRAL_PRICE_WARNING_PREFIX,
+  pendingDateVerifiedTransferWarning,
+  PENDING_DATE_VERIFIED_TRANSFER_WARNING,
   pendingReferenceVerifiedTransferWarning,
   PENDING_REFERENCE_VERIFIED_TRANSFER_WARNING,
   splitWhiteSheetWarnings,

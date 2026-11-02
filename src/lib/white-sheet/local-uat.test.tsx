@@ -114,9 +114,9 @@ function makeLocalUatDatabase() {
   // Two checks share reference REF-100 (a duplicate transfer submission);
   // only the earlier one (chk-a) must count. REF-200 is unique and counted.
   const slipChecks = [
-    { id: "chk-a", evidence_id: "ev-uat-1", transfer_amount: 150, reference_id: "REF-100", created_at: "2026-07-24T02:05:00Z", status: "EXTRACTED" },
-    { id: "chk-b", evidence_id: "ev-uat-1", transfer_amount: 150, reference_id: "REF-100", created_at: "2026-07-24T02:10:00Z", status: "EXTRACTED" },
-    { id: "chk-c", evidence_id: "ev-uat-2", transfer_amount: 50, reference_id: "REF-200", created_at: "2026-07-24T03:05:00Z", status: "EXTRACTED" },
+    { id: "chk-a", evidence_id: "ev-uat-1", transfer_amount: 150, reference_id: "REF-100", created_at: "2026-07-24T02:05:00Z", transaction_time: "2026-07-24T02:05:00Z", status: "EXTRACTED" },
+    { id: "chk-b", evidence_id: "ev-uat-1", transfer_amount: 150, reference_id: "REF-100", created_at: "2026-07-24T02:10:00Z", transaction_time: "2026-07-24T02:10:00Z", status: "EXTRACTED" },
+    { id: "chk-c", evidence_id: "ev-uat-2", transfer_amount: 50, reference_id: "REF-200", created_at: "2026-07-24T03:05:00Z", transaction_time: "2026-07-24T03:05:00Z", status: "EXTRACTED" },
   ];
 
   // Cash-entry store keyed exactly like the real unique constraint, so

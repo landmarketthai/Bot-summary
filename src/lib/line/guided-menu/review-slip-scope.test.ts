@@ -75,7 +75,7 @@ function seedSlip(
       status: input.status ?? "EXTRACTED",
       transfer_amount: input.amount ?? 1000,
       reference_id: `ref-${input.id}`,
-      transaction_time: input.transactionTime ?? MID_WINDOW,
+      transaction_time: input.transactionTime === undefined ? MID_WINDOW : input.transactionTime,
       created_at: MID_WINDOW,
     },
   ]);
@@ -166,11 +166,18 @@ describe("slip list scope matches the reconciliation scope", () => {
     expect(list[0]).toMatchObject({ checkId: "tx-start", status: "verified" });
   });
 
-  it("treats a transaction time exactly at the end as outside", async () => {
+  it("a slip paid the next morning (past the 04:00 receipt cutoff) is within the shared ±1 day date rule", async () => {
     const db = baseDb();
     seedSlip(db, { id: "tx-end", transactionTime: endUtc });
     const list = await rows(db);
-    expect(list[0]).toMatchObject({ checkId: "tx-end", status: "date_mismatch" });
+    expect(list[0]).toMatchObject({ checkId: "tx-end", status: "verified" });
+  });
+
+  it("two calendar days after the business date is date_mismatch", async () => {
+    const db = baseDb();
+    seedSlip(db, { id: "tx-late", transactionTime: "2026-07-31T05:00:00Z" });
+    const list = await rows(db);
+    expect(list[0]).toMatchObject({ checkId: "tx-late", status: "date_mismatch" });
   });
 
   it("treats a transaction time before the start as outside", async () => {
@@ -217,15 +224,17 @@ describe("every verified row is inside the authoritative total", () => {
     expect(report.blockers).not.toContain("attribution_ambiguous");
   });
 
-  it("keeps a date_mismatch slip inside the total, as the loader does", async () => {
+  it("excludes date_mismatch and missing-date slips from the total, exactly as the rows say", async () => {
     const db = baseDb();
-    seedSlip(db, { id: "odd-time", amount: 1500, transactionTime: endUtc });
+    seedSlip(db, { id: "ok", amount: 700 });
+    seedSlip(db, { id: "wrong-month", amount: 1500, transactionTime: "2026-06-29T05:00:00Z" });
+    seedSlip(db, { id: "no-date", amount: 300, transactionTime: null });
 
     const report = await buildGuidedRoundReport(db.asClient(), CONTEXT, true);
-    expect(report.slips[0]).toMatchObject({ status: "date_mismatch" });
-    // The money loaders scope by received_at only: the status is a warning about
-    // the bank timestamp, never a claim that the amount was excluded.
-    expect(report.totals.aiVerifiedTotal).toBe(1500);
+    const byId = Object.fromEntries(report.slips.map((s) => [s.checkId, s.status]));
+    expect(byId).toEqual({ ok: "verified", "wrong-month": "date_mismatch", "no-date": "manual_review" });
+    // Shared rule (slips/financial-eligibility.ts): only the verified row is money.
+    expect(report.totals.aiVerifiedTotal).toBe(700);
   });
 
   it("keeps same-description round A and B slip/settlement totals isolated", async () => {

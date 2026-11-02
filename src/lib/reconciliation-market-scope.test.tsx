@@ -47,6 +47,7 @@ type SlipCheckRow = {
   transfer_amount: number;
   reference_id: string | null;
   created_at: string;
+  transaction_time?: string | null;
 };
 
 function makeTransferDatabase(options: {
@@ -105,8 +106,8 @@ describe("aggregateGloballyAcceptedVerifiedTransfers", () => {
     ["ev-b", MARKET_B_NORM],
   ]);
   const checks = [
-    { id: "c-a", evidence_id: "ev-a", transfer_amount: 100, reference_id: "REF-A", created_at: "2026-07-23T01:00:00Z" },
-    { id: "c-b", evidence_id: "ev-b", transfer_amount: 200, reference_id: "REF-B", created_at: "2026-07-23T02:00:00Z" },
+    { id: "c-a", evidence_id: "ev-a", transfer_amount: 100, reference_id: "REF-A", created_at: "2026-07-23T01:00:00Z", date_ineligibility: null },
+    { id: "c-b", evidence_id: "ev-b", transfer_amount: 200, reference_id: "REF-B", created_at: "2026-07-23T02:00:00Z", date_ineligibility: null },
   ];
   const globalWinners = new Set(["c-a", "c-b"]);
 
@@ -143,8 +144,8 @@ describe("market-scoped verified transfer loading", () => {
         { id: "ev-b", market_label: MARKET_B },
       ],
       checks: [
-        { id: "c-a", evidence_id: "ev-a", transfer_amount: 100, reference_id: "REF-A", created_at: "2026-07-23T01:00:00Z" },
-        { id: "c-b", evidence_id: "ev-b", transfer_amount: 200, reference_id: "REF-B", created_at: "2026-07-23T02:00:00Z" },
+        { id: "c-a", evidence_id: "ev-a", transfer_amount: 100, reference_id: "REF-A", created_at: "2026-07-23T01:00:00Z", transaction_time: "2026-07-23T05:00:00Z" },
+        { id: "c-b", evidence_id: "ev-b", transfer_amount: 200, reference_id: "REF-B", created_at: "2026-07-23T02:00:00Z", transaction_time: "2026-07-23T05:00:00Z" },
       ],
     });
 
@@ -168,8 +169,8 @@ describe("market-scoped verified transfer loading", () => {
         { id: "ev-b", market_label: MARKET_B },
       ],
       checks: [
-        { id: "c-a", evidence_id: "ev-a", transfer_amount: 100, reference_id: "REF-X", created_at: "2026-07-23T01:00:00Z" },
-        { id: "c-b", evidence_id: "ev-b", transfer_amount: 100, reference_id: "REF-X", created_at: "2026-07-23T02:00:00Z" },
+        { id: "c-a", evidence_id: "ev-a", transfer_amount: 100, reference_id: "REF-X", created_at: "2026-07-23T01:00:00Z", transaction_time: "2026-07-23T05:00:00Z" },
+        { id: "c-b", evidence_id: "ev-b", transfer_amount: 100, reference_id: "REF-X", created_at: "2026-07-23T02:00:00Z", transaction_time: "2026-07-23T05:00:00Z" },
       ],
       globalWinners: [
         { id: "c-a", reference_id: "REF-X", created_at: "2026-07-23T01:00:00Z" },
@@ -192,8 +193,8 @@ describe("market-scoped verified transfer loading", () => {
         { id: "ev-u", market_label: null },
       ],
       checks: [
-        { id: "c-a", evidence_id: "ev-a", transfer_amount: 100, reference_id: "REF-A", created_at: "2026-07-23T01:00:00Z" },
-        { id: "c-u", evidence_id: "ev-u", transfer_amount: 50, reference_id: "REF-U", created_at: "2026-07-23T02:00:00Z" },
+        { id: "c-a", evidence_id: "ev-a", transfer_amount: 100, reference_id: "REF-A", created_at: "2026-07-23T01:00:00Z", transaction_time: "2026-07-23T05:00:00Z" },
+        { id: "c-u", evidence_id: "ev-u", transfer_amount: 50, reference_id: "REF-U", created_at: "2026-07-23T02:00:00Z", transaction_time: "2026-07-23T05:00:00Z" },
       ],
     });
 
@@ -298,7 +299,7 @@ describe("legacy backfill attribution semantics", () => {
     expect(normalized).toBe(MARKET_A_NORM);
     expect(
       aggregateGloballyAcceptedVerifiedTransfers(
-        [{ id: "c-a", evidence_id: "ev-a", transfer_amount: 100, reference_id: "REF-A", created_at: "2026-07-23T01:00:00Z" }],
+        [{ id: "c-a", evidence_id: "ev-a", transfer_amount: 100, reference_id: "REF-A", created_at: "2026-07-23T01:00:00Z", date_ineligibility: null }],
         new Map([["ev-a", normalized]]),
         new Set(["c-a"]),
         { marketLabelNormalized: MARKET_A_NORM, knownMarkets: KNOWN_AB },
@@ -308,7 +309,7 @@ describe("legacy backfill attribution semantics", () => {
 
   it("B: batch_id present but market_name NULL → remains unresolved", () => {
     const result = aggregateGloballyAcceptedVerifiedTransfers(
-      [{ id: "c-u", evidence_id: "ev-u", transfer_amount: 50, reference_id: "REF-U", created_at: "2026-07-23T01:00:00Z" }],
+      [{ id: "c-u", evidence_id: "ev-u", transfer_amount: 50, reference_id: "REF-U", created_at: "2026-07-23T01:00:00Z", date_ineligibility: null }],
       new Map([["ev-u", null]]),
       new Set(["c-u"]),
       { marketLabelNormalized: MARKET_A_NORM, knownMarkets: KNOWN_AB },
@@ -319,7 +320,7 @@ describe("legacy backfill attribution semantics", () => {
 
   it("C: batch_id NULL → remains unresolved", () => {
     const result = aggregateGloballyAcceptedVerifiedTransfers(
-      [{ id: "c-u", evidence_id: "ev-null", transfer_amount: 75, reference_id: "REF-C", created_at: "2026-07-23T01:00:00Z" }],
+      [{ id: "c-u", evidence_id: "ev-null", transfer_amount: 75, reference_id: "REF-C", created_at: "2026-07-23T01:00:00Z", date_ineligibility: null }],
       new Map([["ev-null", null]]),
       new Set(["c-u"]),
       { marketLabelNormalized: MARKET_A_NORM, knownMarkets: KNOWN_AB },
@@ -331,7 +332,7 @@ describe("legacy backfill attribution semantics", () => {
 
   it("D (BR-02): reference_id NULL → pending manual resolution, not counted as market-unresolved", () => {
     const result = aggregateGloballyAcceptedVerifiedTransfers(
-      [{ id: "c-pending", evidence_id: "ev-a", transfer_amount: 60, reference_id: null, created_at: "2026-07-23T01:00:00Z" }],
+      [{ id: "c-pending", evidence_id: "ev-a", transfer_amount: 60, reference_id: null, created_at: "2026-07-23T01:00:00Z", date_ineligibility: null }],
       new Map([["ev-a", MARKET_A_NORM]]),
       new Set<string>(),
       { marketLabelNormalized: MARKET_A_NORM, knownMarkets: KNOWN_AB },
@@ -395,8 +396,8 @@ describe("White Sheet fail-closed for unattributed verified transfers", () => {
       { id: "ev-u", market_label: null },
     ];
     const checks = options?.checks ?? [
-      { id: "c-a", evidence_id: "ev-a", transfer_amount: 100, reference_id: "REF-A", created_at: "2026-07-23T01:00:00Z" },
-      { id: "c-u", evidence_id: "ev-u", transfer_amount: 50, reference_id: "REF-U", created_at: "2026-07-23T02:00:00Z" },
+      { id: "c-a", evidence_id: "ev-a", transfer_amount: 100, reference_id: "REF-A", created_at: "2026-07-23T01:00:00Z", transaction_time: "2026-07-23T05:00:00Z" },
+      { id: "c-u", evidence_id: "ev-u", transfer_amount: 50, reference_id: "REF-U", created_at: "2026-07-23T02:00:00Z", transaction_time: "2026-07-23T05:00:00Z" },
     ];
 
     const db = makeTransferDatabase({ evidences, checks });
@@ -645,6 +646,7 @@ describe("White Sheet fail-closed for unattributed verified transfers", () => {
             transfer_amount: 50,
             reference_id: "REF-A50",
             created_at: "2026-07-23T01:00:00Z",
+            transaction_time: "2026-07-23T05:00:00Z",
           },
         ],
         manualSessions: [{ id: "ms-a", market_label: MARKET_A }],

@@ -278,6 +278,7 @@ describe("finalizeSlipBatch: success_count and failed_count use validation-guard
       transfer_amount:  item.transferAmount,
       paid_amount:      null,
       transaction_time: item.transactionTime ?? null,
+      reference_id:     `REF-${i + 1}`,
       failure_reason:   null,
     }));
 
@@ -495,6 +496,7 @@ describe("buildBatchSummaryMessage timeout breakdown", () => {
   ) => ({
     id:              `ev-${idx}`,
     batchIndex:      idx,
+    referenceId:     `REF-${idx}`,
     checkStatus:     status,
     slipType:        "BANK_SLIP_QR" as const,
     transferAmount:  (status === "EXTRACTED" || status === "PARTIAL_EXTRACTED") ? 1000 : null,
@@ -593,6 +595,7 @@ describe("buildBatchSummaryMessage trusted slip lines", () => {
   ) => ({
     id:              `ev-${idx}`,
     batchIndex:      idx,
+    referenceId:     `REF-${idx}`,
     checkStatus:     status,
     slipType:        "BANK_SLIP_QR" as const,
     transferAmount:  options?.transferAmount ?? (

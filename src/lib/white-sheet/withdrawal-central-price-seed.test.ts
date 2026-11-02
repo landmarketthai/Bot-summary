@@ -629,9 +629,9 @@ describe("central price seeds on withdrawal write, not White Sheet read", () => 
       { id: "ev-uat-2", received_at: "2026-07-24T03:00:00Z", market_label: marketLabel },
     ];
     const slipChecks = [
-      { id: "chk-a", evidence_id: "ev-uat-1", transfer_amount: 150, reference_id: "REF-100", created_at: "2026-07-24T02:05:00Z", status: "EXTRACTED" },
-      { id: "chk-b", evidence_id: "ev-uat-1", transfer_amount: 150, reference_id: "REF-100", created_at: "2026-07-24T02:10:00Z", status: "EXTRACTED" },
-      { id: "chk-c", evidence_id: "ev-uat-2", transfer_amount: 50, reference_id: "REF-200", created_at: "2026-07-24T03:05:00Z", status: "EXTRACTED" },
+      { id: "chk-a", evidence_id: "ev-uat-1", transfer_amount: 150, reference_id: "REF-100", created_at: "2026-07-24T02:05:00Z", transaction_time: "2026-07-24T02:05:00Z", status: "EXTRACTED" },
+      { id: "chk-b", evidence_id: "ev-uat-1", transfer_amount: 150, reference_id: "REF-100", created_at: "2026-07-24T02:10:00Z", transaction_time: "2026-07-24T02:10:00Z", status: "EXTRACTED" },
+      { id: "chk-c", evidence_id: "ev-uat-2", transfer_amount: 50, reference_id: "REF-200", created_at: "2026-07-24T03:05:00Z", transaction_time: "2026-07-24T03:05:00Z", status: "EXTRACTED" },
     ];
 
     const database = {

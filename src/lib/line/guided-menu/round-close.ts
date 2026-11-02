@@ -23,6 +23,7 @@ import {
   loadMarketScopedManualSlipTotal,
 } from "@/lib/reconciliation";
 import { normalizedMarketLabel } from "@/lib/market";
+import { slipDateIneligibility } from "@/lib/slips/financial-eligibility";
 import {
   isVerifiedSlipCheckStatus,
   normalizeTransactionId,
@@ -128,10 +129,10 @@ const round2 = (value: number): number => Math.round(value * 100) / 100;
  *      is a duplicate;
  *   4. an evidence row whose market is missing, or not a known produce market
  *      for this source/date, is market_unclear (the loader calls it unresolved);
- *   5. a transaction time outside `startUtc <= time < endUtc` is date_mismatch.
- *      This one is informational: the money loaders scope by received_at, so
- *      such a slip is still inside the round's total and the status only tells
- *      the operator the bank timestamp looks wrong;
+ *   5. the shared slip date rule (slips/financial-eligibility.ts): a printed
+ *      date outside the round's tolerance is date_mismatch, a missing or
+ *      unreadable one is manual review. The money loaders apply the SAME rule,
+ *      so neither is inside ai_verified_total;
  *   6. only what survives all of that is verified.
  */
 export async function loadGuidedSlipRows(
@@ -222,10 +223,11 @@ export async function loadGuidedSlipRows(
       // treating it as unresolved, so this round does not list it at all.
       return [];
     }
-    const txTime = row.transaction_time as string | null;
-    if (txTime && (txTime < startUtc || txTime >= endUtc)) {
+    const dateProblem = slipDateIneligibility(row.transaction_time as string | null, context.businessDate);
+    if (dateProblem === "date_out_of_round") {
       return [{ ...base, status: "date_mismatch" as const }];
     }
+    if (dateProblem) return [{ ...base, status: "manual_review" as const }];
     return [{ ...base, status: "verified" as const }];
   });
 }

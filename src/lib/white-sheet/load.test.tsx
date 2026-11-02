@@ -153,6 +153,7 @@ function makeIntegrationDatabase(options?: {
   ]).map((check, index) => ({
     evidence_id: `evidence-${index + 1}`,
     created_at: `2026-07-23T00:0${index}:00Z`,
+    transaction_time: "2026-07-23T05:00:00Z",
     ...check,
   }));
 

@@ -173,8 +173,8 @@ describe("SlipBatchService.attachEvidence", () => {
 describe("buildBatchSummaryMessage", () => {
   it("returns all-failed message when every slip needs review", () => {
     const msg = buildBatchSummaryMessage([
-      { id: "e1", batchIndex: 1, checkStatus: "NEED_REVIEW", slipType: null, transferAmount: null, paidAmount: null, transactionTime: null, failureReason: null },
-      { id: "e2", batchIndex: 2, checkStatus: "FAILED",      slipType: null, transferAmount: null, paidAmount: null, transactionTime: null, failureReason: null },
+      { id: "e1", referenceId: "REF-e1", batchIndex: 1, checkStatus: "NEED_REVIEW", slipType: null, transferAmount: null, paidAmount: null, transactionTime: null, failureReason: null },
+      { id: "e2", referenceId: "REF-e2", batchIndex: 2, checkStatus: "FAILED",      slipType: null, transferAmount: null, paidAmount: null, transactionTime: null, failureReason: null },
     ]);
     expect(msg).toBe(
       "รับรูปหลักฐานแล้วทั้งหมด 2 รูป แต่ระบบอ่านข้อมูลไม่ครบ กรุณาให้แอดมินตรวจมือ",
@@ -183,9 +183,9 @@ describe("buildBatchSummaryMessage", () => {
 
   it("includes totals and review list for partial success", () => {
     const msg = buildBatchSummaryMessage([
-      { id: "e1", batchIndex: 1, checkStatus: "EXTRACTED",   slipType: "BANK_SLIP_QR", transferAmount: 1000, paidAmount: null, transactionTime: null, failureReason: null },
-      { id: "e2", batchIndex: 2, checkStatus: "NEED_REVIEW", slipType: null,           transferAmount: null, paidAmount: null, transactionTime: null, failureReason: null },
-      { id: "e3", batchIndex: 3, checkStatus: "EXTRACTED",   slipType: "BANK_SLIP_QR", transferAmount: 500,  paidAmount: null, transactionTime: null, failureReason: null },
+      { id: "e1", referenceId: "REF-e1", batchIndex: 1, checkStatus: "EXTRACTED",   slipType: "BANK_SLIP_QR", transferAmount: 1000, paidAmount: null, transactionTime: null, failureReason: null },
+      { id: "e2", referenceId: "REF-e2", batchIndex: 2, checkStatus: "NEED_REVIEW", slipType: null,           transferAmount: null, paidAmount: null, transactionTime: null, failureReason: null },
+      { id: "e3", referenceId: "REF-e3", batchIndex: 3, checkStatus: "EXTRACTED",   slipType: "BANK_SLIP_QR", transferAmount: 500,  paidAmount: null, transactionTime: null, failureReason: null },
     ]);
     expect(msg).toContain("สรุปรูปหลักฐานรอบนี้");
     expect(msg).toContain("รับทั้งหมด: 3 รูป");
@@ -197,22 +197,22 @@ describe("buildBatchSummaryMessage", () => {
 
   it("GWALLET slip uses paid_amount as the effective amount", () => {
     const msg = buildBatchSummaryMessage([
-      { id: "e1", batchIndex: 1, checkStatus: "EXTRACTED", slipType: "GWALLET", transferAmount: null, paidAmount: 800, transactionTime: null, failureReason: null },
+      { id: "e1", referenceId: "REF-e1", batchIndex: 1, checkStatus: "EXTRACTED", slipType: "GWALLET", transferAmount: null, paidAmount: 800, transactionTime: null, failureReason: null },
     ]);
     expect(msg).toContain("800");
   });
 
   it("omits amount line when effective amount is zero", () => {
     const msg = buildBatchSummaryMessage([
-      { id: "e1", batchIndex: 1, checkStatus: "EXTRACTED", slipType: "BANK_SLIP_QR", transferAmount: 0, paidAmount: null, transactionTime: null, failureReason: null },
+      { id: "e1", referenceId: "REF-e1", batchIndex: 1, checkStatus: "EXTRACTED", slipType: "BANK_SLIP_QR", transferAmount: 0, paidAmount: null, transactionTime: null, failureReason: null },
     ]);
     expect(msg).not.toContain("ยอดรวม");
   });
 
   it("all successful — no review section", () => {
     const msg = buildBatchSummaryMessage([
-      { id: "e1", batchIndex: 1, checkStatus: "EXTRACTED",         slipType: "BANK_SLIP_QR", transferAmount: 300, paidAmount: null, transactionTime: null, failureReason: null },
-      { id: "e2", batchIndex: 2, checkStatus: "PARTIAL_EXTRACTED", slipType: "BANK_SLIP_QR", transferAmount: 200, paidAmount: null, transactionTime: null, failureReason: null },
+      { id: "e1", referenceId: "REF-e1", batchIndex: 1, checkStatus: "EXTRACTED",         slipType: "BANK_SLIP_QR", transferAmount: 300, paidAmount: null, transactionTime: null, failureReason: null },
+      { id: "e2", referenceId: "REF-e2", batchIndex: 2, checkStatus: "PARTIAL_EXTRACTED", slipType: "BANK_SLIP_QR", transferAmount: 200, paidAmount: null, transactionTime: null, failureReason: null },
     ]);
     expect(msg).toContain("รอตรวจมือ: 0 รูป");
     expect(msg).not.toContain("รูปที่ต้องตรวจมือ");
@@ -224,16 +224,16 @@ describe("buildBatchSummaryMessage", () => {
 
   it("shows FAILED reason for known failure codes", () => {
     const msg = buildBatchSummaryMessage([
-      { id: "e1", batchIndex: 1, checkStatus: "EXTRACTED", slipType: "BANK_SLIP_QR", transferAmount: 100, paidAmount: null, transactionTime: null, failureReason: null },
-      { id: "e2", batchIndex: 2, checkStatus: "FAILED",    slipType: null,           transferAmount: null, paidAmount: null, transactionTime: null, failureReason: "evidence_download_failed" },
+      { id: "e1", referenceId: "REF-e1", batchIndex: 1, checkStatus: "EXTRACTED", slipType: "BANK_SLIP_QR", transferAmount: 100, paidAmount: null, transactionTime: null, failureReason: null },
+      { id: "e2", referenceId: "REF-e2", batchIndex: 2, checkStatus: "FAILED",    slipType: null,           transferAmount: null, paidAmount: null, transactionTime: null, failureReason: "evidence_download_failed" },
     ]);
     expect(msg).toContain("#2 ดาวน์โหลดรูปไม่สำเร็จ");
   });
 
   it("treats PROCESSING status as needing manual review", () => {
     const msg = buildBatchSummaryMessage([
-      { id: "e1", batchIndex: 1, checkStatus: "EXTRACTED",  slipType: "BANK_SLIP_QR", transferAmount: 500, paidAmount: null, transactionTime: null, failureReason: null },
-      { id: "e2", batchIndex: 2, checkStatus: "PROCESSING", slipType: null,           transferAmount: null, paidAmount: null, transactionTime: null, failureReason: null },
+      { id: "e1", referenceId: "REF-e1", batchIndex: 1, checkStatus: "EXTRACTED",  slipType: "BANK_SLIP_QR", transferAmount: 500, paidAmount: null, transactionTime: null, failureReason: null },
+      { id: "e2", referenceId: "REF-e2", batchIndex: 2, checkStatus: "PROCESSING", slipType: null,           transferAmount: null, paidAmount: null, transactionTime: null, failureReason: null },
     ]);
     expect(msg).toContain("#2 รอผลการตรวจสอบ");
   });

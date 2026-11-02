@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { bangkokBusinessDateFromTimestamp } from "@/lib/business-date";
 import { normalizedMarketLabel } from "@/lib/market";
+import { slipDateIneligibility, type SlipDateIneligibility } from "@/lib/slips/financial-eligibility";
 import { normalizeTransactionId, resolveGloballyAcceptedCheckIds } from "@/lib/slips/transaction-dedupe";
 import type { Database, TransferReconciliationRow } from "@/types/database";
 
@@ -21,6 +22,11 @@ export interface VerifiedTransferCheckRow {
   transfer_amount:  number;
   reference_id:     string | null;
   created_at:       string;
+  /**
+   * Shared date rule (financial-eligibility.ts) against the business date the
+   * row was loaded for; null = eligible. Required so no caller can skip it.
+   */
+  date_ineligibility: SlipDateIneligibility | null;
 }
 
 export interface MarketScopedVerifiedTransferResult {
@@ -30,6 +36,13 @@ export interface MarketScopedVerifiedTransferResult {
   /** BR-02: accepted checks with no reference id yet — pending manual resolution, never auto-counted. */
   pendingReferenceCount:     number;
   pendingReferenceAmount:    number;
+  /**
+   * Global winners whose printed date is missing or outside the round — the
+   * same slips the LINE summary leaves รอตรวจสอบ. Never auto-counted; an
+   * operator adds a confirmed one through a closed manual-slip session.
+   */
+  pendingDateCount:          number;
+  pendingDateAmount:         number;
 }
 
 export interface MarketScopedAggregationOptions {
@@ -83,6 +96,20 @@ export function aggregateGloballyAcceptedVerifiedTransfers(
   let unresolvedAcceptedAmount = 0;
   let pendingReferenceCount = 0;
   let pendingReferenceAmount = 0;
+  let pendingDateCount = 0;
+  let pendingDateAmount = 0;
+  // The global winner is chosen exactly as before (earliest verified check).
+  // A winner with a bad date is pending — it never falls through to a later
+  // duplicate, so one reference can never be counted twice or re-assigned
+  // to a different read without evidence.
+  const attribute = (check: VerifiedTransferCheckRow) => {
+    if (check.date_ineligibility !== null) {
+      pendingDateCount += 1;
+      pendingDateAmount += Number(check.transfer_amount);
+      return;
+    }
+    attributedTotal += Number(check.transfer_amount);
+  };
 
   for (const check of checks) {
     const ref = normalizeTransactionId(check.reference_id);
@@ -96,7 +123,7 @@ export function aggregateGloballyAcceptedVerifiedTransfers(
     countedWinnerReferences.add(ref);
 
     if (targetMarket === undefined || !knownMarkets) {
-      attributedTotal += Number(check.transfer_amount);
+      attribute(check);
       continue;
     }
 
@@ -112,9 +139,7 @@ export function aggregateGloballyAcceptedVerifiedTransfers(
       unresolvedAcceptedAmount += Number(check.transfer_amount);
       continue;
     }
-    if (evidenceMarket === targetMarket) {
-      attributedTotal += Number(check.transfer_amount);
-    }
+    if (evidenceMarket === targetMarket) attribute(check);
   }
 
   return {
@@ -123,6 +148,8 @@ export function aggregateGloballyAcceptedVerifiedTransfers(
     unresolvedAcceptedAmount,
     pendingReferenceCount,
     pendingReferenceAmount,
+    pendingDateCount,
+    pendingDateAmount,
   };
 }
 
@@ -177,7 +204,7 @@ async function loadVerifiedTransferChecksForSourceDate(
 
   const { data: checks, error: checkError } = await supabase
     .from("slip_checks")
-    .select("id, evidence_id, transfer_amount, reference_id, created_at")
+    .select("id, evidence_id, transfer_amount, reference_id, created_at, transaction_time")
     .in("evidence_id", evidenceIds)
     .in("status", ["EXTRACTED", "PARTIAL_EXTRACTED"])
     .not("transfer_amount", "is", null)
@@ -188,7 +215,11 @@ async function loadVerifiedTransferChecksForSourceDate(
   }
 
   return {
-    checks: (checks ?? []) as VerifiedTransferCheckRow[],
+    checks: (checks ?? []).map(({ transaction_time, ...row }) => ({
+      ...row,
+      transfer_amount: Number(row.transfer_amount),
+      date_ineligibility: slipDateIneligibility(transaction_time, businessDate),
+    })),
     evidenceMarketById,
   };
 }
@@ -269,6 +300,8 @@ export async function loadMarketScopedAiVerifiedTransfers(
       unresolvedAcceptedAmount: 0,
       pendingReferenceCount: 0,
       pendingReferenceAmount: 0,
+      pendingDateCount: 0,
+      pendingDateAmount: 0,
     };
   }
 

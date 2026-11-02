@@ -1,4 +1,5 @@
 import type { SlipCheckStatus, SlipType } from "@/types/database";
+import { slipDateIneligibility } from "@/lib/slips/financial-eligibility";
 
 export type ValidationReason =
   | "ยอดเงินสูงผิดปกติ"
@@ -6,6 +7,7 @@ export type ValidationReason =
   | "วันที่รายการไม่ตรงกับรอบ"
   | "วันที่รายการไม่ถูกต้อง"
   | "ไม่พบวันที่รายการ"
+  | "ไม่พบเลขอ้างอิง"
   | "ข้อมูลไม่ครบ";
 
 export interface EvidenceFlags {
@@ -14,11 +16,15 @@ export interface EvidenceFlags {
   flagReasons:     ValidationReason[];
 }
 
-const BANGKOK_OFFSET_MS      = 7 * 60 * 60 * 1000;
 const OUTLIER_MIN_BATCH_SIZE = 5;
 const OUTLIER_MIN_AMOUNT_THB = 5000;
 const OUTLIER_RATIO          = 10;
-const DATE_TOLERANCE_DAYS    = 1;
+
+const DATE_REASON = {
+  missing_transaction_time: "ไม่พบวันที่รายการ",
+  invalid_transaction_time: "วันที่รายการไม่ถูกต้อง",
+  date_out_of_round:        "วันที่รายการไม่ตรงกับรอบ",
+} as const satisfies Record<string, ValidationReason>;
 
 /**
  * Parses a slip_date string into a Gregorian "YYYY-MM-DD" string or null.
@@ -221,25 +227,17 @@ export function computeValidationFlags(
         reasons.push("ยอดเงินสูงผิดปกติ");
       }
 
-      // Date guard — independent of amount; only when batchDateStr is known
+      // Date guard — the shared financial rule (financial-eligibility.ts), so
+      // reconciliation excludes exactly what this summary leaves pending.
       if (batchDateStr) {
-        if (!e.transactionTime) {
-          reasons.push("ไม่พบวันที่รายการ");
-        } else {
-          const txMs = Date.parse(e.transactionTime);
-          if (!Number.isFinite(txMs)) {
-            reasons.push("วันที่รายการไม่ถูกต้อง");
-          } else {
-            const txDateStr = new Date(txMs + BANGKOK_OFFSET_MS).toISOString().slice(0, 10);
-            const diffDays  =
-              Math.abs(
-                new Date(txDateStr).getTime() - new Date(batchDateStr).getTime(),
-              ) / (1000 * 60 * 60 * 24);
-            if (diffDays > DATE_TOLERANCE_DAYS) {
-              reasons.push("วันที่รายการไม่ตรงกับรอบ");
-            }
-          }
-        }
+        const dateProblem = slipDateIneligibility(e.transactionTime, batchDateStr);
+        if (dateProblem) reasons.push(DATE_REASON[dateProblem]);
+      }
+
+      // BR-02: reconciliation never counts a slip without a reference id, so
+      // the LINE summary must not confirm it either.
+      if (typeof e.referenceId !== "string" || !e.referenceId.trim()) {
+        reasons.push("ไม่พบเลขอ้างอิง");
       }
     }
 
