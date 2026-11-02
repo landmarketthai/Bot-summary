@@ -1,4 +1,4 @@
-# Isolated UAT — slip money end to end (2026-11-02T11:06:00.079Z)
+# Isolated UAT — slip money end to end (2026-11-02T11:31:36.345Z)
 
 Local PostgreSQL 17, business date 2026-11-02 (slip date 2/11/2569). Real webhook, ledger, recovery, LINE summary builder, money loaders, round-close rows, admin route and review RPCs; simulated LINE download/Storage/OCR provider only.
 
@@ -18,6 +18,7 @@ Local PostgreSQL 17, business date 2026-11-02 (slip date 2/11/2569). Real webhoo
 | 12 | Review after the round entered finalization is refused | approve UAT-3 after close | `{"status":409,"error":"slip_check_round_finalized","ai":220}` | `{"status":409,"error":"slip_check_round_finalized","ai":220}` | PASS | route + money-close lock |
 
 **12/12 PASS**
+
 ## Coverage of the required UAT flows
 
 | Flow | Evidence (all real PostgreSQL 17 unless noted) |
@@ -35,5 +36,5 @@ Local PostgreSQL 17, business date 2026-11-02 (slip date 2/11/2569). Real webhoo
 | 11 Failed image ingestion followed by recovery | row 1; `image-ingestion.pg.test.ts` bounded-pass test (15 then 10, never finalized early) |
 | 12 Legacy unreferenced manual entry | row 5 (counted, known limitation); `slip-check-approval.pg.test.ts` |
 | 13 Repeated webhooks / API requests | rows 1, 8 |
-| 14 Code/schema version mismatch | `slip-check-approval.pg.test.ts` (new code on no migration / M1 only); old-code probe (#193 code on M1, M1+M2, M1+M2+M3: 3/3) |
+| 14 Code/schema version mismatch | `slip-check-approval.pg.test.ts` (new code on no migration / M1 only); old-code probe (#193 code on M1, M1+M2, M1+M2+M3: 3/3); M4 forward + rollback chain M4 → M3 → M2 → M1 in `slip-check-approval.pg.test.ts` |
 | 15 Settlement and White Sheet totals compared with LINE | rows 2, 9, 10. LINE "ยอดยืนยัน" (270) = bank money (170 before review) + the ไทยช่วยไทย gross (100): wallet amounts are confirmed in LINE but never bank-transfer money, pending the wallet accounting decision |
