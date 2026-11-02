@@ -61,8 +61,8 @@ async function ocr(evidenceId: string) {
   const source = id.slice(2, id.lastIndexOf("-"));
   const time = n === 20 ? "NULL" : n === 25 ? "'2026-10-10T12:00:00+07'" : "'2026-10-16T12:00:00+07'";
   await db.query(
-    `INSERT INTO slip_checks (evidence_id, status, slip_type, transfer_amount, transaction_time)
-     VALUES ('${evidenceId}', 'EXTRACTED', 'BANK_SLIP_QR', ${amountOf(n, source)}, ${time})
+    `INSERT INTO slip_checks (evidence_id, status, slip_type, transfer_amount, transaction_time, reference_id)
+     VALUES ('${evidenceId}', 'EXTRACTED', 'BANK_SLIP_QR', ${amountOf(n, source)}, ${time}, 'REF-${evidenceId}')
      ON CONFLICT (evidence_id) DO NOTHING`,
   );
 }

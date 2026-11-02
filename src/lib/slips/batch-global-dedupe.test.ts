@@ -319,8 +319,8 @@ describe("batch finalizer global slip dedupe", () => {
     // The no-reference slip is never a duplicate, and (BR-02, shared with
     // reconciliation) never confirmed either: only the original 500 counts.
     expect(message).toContain("อ่านครบ: 1 รูป");
-    expect(message).toMatch(/ยอดรวมที่อ่านได้: 500(?:[,.]0+)? บาท/);
-    expect(message).toContain("#3 ไม่พบเลขอ้างอิง");
+    expect(message).toMatch(/ยอดยืนยัน: 500(?:[,.]0+)? บาท/);
+    expect(message).toContain("#3 อ่านได้ 100 บาท ยังไม่ยืนยัน: ไม่พบเลขอ้างอิง");
     expect(message).toContain("สลิปซ้ำ");
     expect(message).not.toContain("REF-001");
   });

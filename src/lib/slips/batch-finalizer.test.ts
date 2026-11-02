@@ -636,7 +636,7 @@ describe("buildBatchSummaryMessage trusted slip lines", () => {
     expect(msg).toContain("#2 เช็คได้ 1,000 บาท");
     expect(msg).toContain("#5 เช็คได้ 1,000 บาท");
     expect(msg).toContain("รูปที่ต้องตรวจมือ:");
-    expect(msg).toContain("#9 อ่านเป็น สลิปธนาคาร แต่ข้อมูลไม่ครบ (ไม่พบยอดโอน, ไม่พบเลขอ้างอิง)");
+    expect(msg).toContain("#9 อ่านเป็น สลิปธนาคาร แต่ข้อมูลไม่ครบ (ไม่พบยอดโอน)");
     expect(msg.indexOf("รูปที่ตรวจผ่าน:")).toBeLessThan(msg.indexOf("รูปที่ต้องตรวจมือ:"));
   });
 
