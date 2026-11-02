@@ -49,7 +49,7 @@ export type ReadonlyAnalystResult = {
 };
 
 /** One earlier exchange of the same conversation (same chat + same LINE user). */
-export type AnalystHistoryTurn = { question: string; answer: string; businessDate: string };
+export type AnalystHistoryTurn = { question: string; answer: string; businessDate: string; context?: Record<string, unknown> };
 
 /**
  * Executes one validated tool request and returns the compact JSON-able
@@ -70,6 +70,9 @@ export type ReadonlyAnalystOptions = OpenAIAnalystOptions & {
   executeTool?: AnalystToolExecutor;
   /** Requester-specific rules appended to the system instructions. */
   extraInstructions?: readonly string[];
+  /** Assistant renders authoritative fields; repeated completed requests need no new reads. */
+  stopOnRepeatedTools?: boolean;
+  onUsage?: (usage: AnalystUsageSummary) => void;
 };
 
 const MAX_TOOL_ROUNDS = 3;
@@ -622,7 +625,8 @@ class AnalystUsageLog {
     // Record billing evidence before response-status validation can throw.
     this.respondedCalls += 1;
     this.model = model ?? this.model;
-    if (!usage) {
+    if (!usage || ![usage.inputTokens, usage.cachedInputTokens, usage.outputTokens].every(n => Number.isInteger(n) && n >= 0)
+      || usage.cachedInputTokens > usage.inputTokens) {
       this.usageMissing = true;
       return;
     }
@@ -680,7 +684,8 @@ function historyTranscript(history: readonly AnalystHistoryTurn[]): ModelTranscr
     {
       kind: "message",
       role: "assistant",
-      text: `[businessDate ${turn.businessDate}] ${turn.answer.slice(0, MAX_HISTORY_ANSWER_CHARS)}`,
+      text: `[businessDate ${turn.businessDate}] ${turn.answer.slice(0, MAX_HISTORY_ANSWER_CHARS)}`
+        + (turn.context ? `\nPrevious tool context (context only, re-read for the new subject): ${JSON.stringify(turn.context).slice(0, 2000)}` : ""),
     },
   ]);
 }
@@ -703,12 +708,16 @@ export async function answerWithReadonlyTools(
     extraInstructions = [],
     timeoutMs,
     signal,
+    stopOnRepeatedTools = false,
+    onUsage,
     ...openaiOptions
   } = options;
   const provider = providerOption ?? createOpenAIResponsesProvider(openaiOptions);
   const deadlineAt = Date.now() + (budgetMs ?? DEFAULT_BUDGET_MS);
   const usageLog = new AnalystUsageLog();
   const executions: AnalystToolExecution[] = [];
+  const completedRequests = new Set<string>();
+  const requestKey = (name: string, args: Record<string, unknown>) => JSON.stringify([name, Object.entries(args).sort(([a], [b]) => a.localeCompare(b))]);
   const instructions = analystInstructions(businessDate, extraInstructions);
   const tools = toolSpecs(allowedTools);
   let outcome: "answered" | "error" = "error";
@@ -736,6 +745,13 @@ export async function answerWithReadonlyTools(
         return { businessDate, toolExecutions: executions, answer, usage: usageLog.summary(outcome) };
       }
 
+      if (stopOnRepeatedTools && result.toolCalls.every(call => {
+        try { return completedRequests.has(requestKey(call.name, JSON.parse(call.arguments))); } catch { return false; }
+      })) {
+        outcome = "answered";
+        return { businessDate, toolExecutions: executions, answer: "", usage: usageLog.summary(outcome) };
+      }
+
       // Hard-bound the awaited read-only tools as well as model calls.
       // A provider that ignores abort may finish its read later, but
       // runToolCalls checks the deadline before any subsequent tool starts.
@@ -749,6 +765,7 @@ export async function answerWithReadonlyTools(
         if (isIoTimeout(error)) throw timedOut();
         throw error;
       });
+      for (const execution of executions) completedRequests.add(requestKey(execution.tool, execution.arguments));
       transcript.push(
         ...result.toolCalls.map((call): ModelTranscriptItem => ({
           kind: "tool_call",
@@ -764,6 +781,7 @@ export async function answerWithReadonlyTools(
 
     throw new OpenAIAnalystError("OpenAI analyst exceeded the tool-call round limit.", "limit");
   } finally {
+    onUsage?.(usageLog.summary(outcome));
     usageLog.write({ businessDate, outcome, executions });
   }
 }

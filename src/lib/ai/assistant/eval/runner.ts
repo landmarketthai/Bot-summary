@@ -95,10 +95,10 @@ export async function runAnswerEval(options: {
   for (const testCase of options.cases) {
     const chat = testCase.chat ?? "approved_group";
     const expectedTools = testCase.expect.tools ?? [];
-    if (options.maxUsd != null && spentUsd >= options.maxUsd) {
+    if (options.maxUsd != null && (!costKnown || spentUsd >= options.maxUsd)) {
       results.push({
         id: testCase.id, category: testCase.category, chat, question: testCase.question, pass: false,
-        errors: [{ category: "not_run_budget", detail: `budget ${options.maxUsd} USD reached` }],
+        errors: [{ category: "not_run_budget", detail: costKnown ? `budget ${options.maxUsd} USD reached` : "previous usage or cost is unknown" }],
         answer: null, kind: null, toolsUsed: [], expectedTools, toolMatch: null, latencyMs: 0,
         usage: { modelCalls: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, usageComplete: true }, costUsd: 0,
       });
@@ -140,8 +140,19 @@ export async function runAnswerEval(options: {
       const [job] = await store.claim("eval", { limit: 1, leaseSeconds: 300, maxRunning: 5 });
       const budget = options.perCaseBudgetMs ?? 45_000;
       const deadlineAt = Date.now() + budget;
-      const answer = await withTimeout("eval answer", budget, (signal) => answerAssistantJob(job!, { deadlineAt, signal }, deps));
-      addUsage(answer.usage);
+      let observed = false;
+      let acceptingUsage = true;
+      deps.onUsage = (usage) => { if (acceptingUsage) { observed = true; addUsage(usage); } };
+      let answer;
+      try {
+        answer = await withTimeout("eval answer", budget, (signal) => answerAssistantJob(job!, { deadlineAt, signal }, deps));
+        if (!observed) addUsage(answer.usage);
+      } catch (error) {
+        if (!observed) usage.usageComplete = false;
+        throw error;
+      } finally {
+        acceptingUsage = false;
+      }
       await store.recordAnswer(job!.id, job!.lease_token!, {
         answer: answer.text, kind: answer.kind ?? "answer", turn: answer.turn ?? null,
         scopeKey: answer.scopeKey ?? null,
@@ -180,7 +191,7 @@ export async function runAnswerEval(options: {
         expectedTools, toolMatch: expectedTools.length ? false : null, latencyMs: Date.now() - started, usage, costUsd: null,
       };
     }
-    const cost = usage.modelCalls > 0 && usage.usageComplete ? estimateAnalystCostUsd(usage, env) : usage.modelCalls === 0 ? 0 : null;
+    const cost = !usage.usageComplete ? null : usage.modelCalls > 0 ? estimateAnalystCostUsd(usage, env) : 0;
     result.costUsd = cost;
     if (cost === null) costKnown = false;
     else spentUsd += cost;

@@ -18,6 +18,7 @@ import {
   questionNamesDate,
   resolveAnalystBusinessDate,
   type AnalystToolExecutor,
+  type AnalystUsageSummary,
 } from "@/lib/ai/readonly-analyst";
 import type { AssistantModelProvider } from "@/lib/ai/model-provider";
 import type { ReadonlyAnalystToolName } from "@/lib/ai/readonly-tools";
@@ -107,6 +108,7 @@ export interface AssistantCoreDeps {
   supabase: Supabase;
   store: AssistantJobStore;
   provider: AssistantModelProvider;
+  onUsage?: (usage: AnalystUsageSummary) => void;
   resolveGroupPolicy?: (sourceId: string) => Promise<GroupPolicyResolution>;
   /** Signed-webhook source allowlist, re-checked at answer and delivery time. */
   sourceAllowed?: (sourceId: string) => boolean;
@@ -209,7 +211,9 @@ export async function answerAssistantJob(
     job.question,
     {
       provider: deps.provider,
-      history: turns.map((turn) => ({ question: turn.question, answer: turn.answer, businessDate: turn.businessDate })),
+      stopOnRepeatedTools: true,
+      onUsage: deps.onUsage,
+      history: turns.map((turn) => ({ question: turn.question, answer: turn.answer, businessDate: turn.businessDate, context: turn.context })),
       allowedTools: access.allowedTools,
       executeTool,
       extraInstructions: scopeInstructions(access),
