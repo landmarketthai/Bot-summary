@@ -129,7 +129,7 @@ describe.skipIf(!pgAvailable)("incident baseline (pre-fix schema, legacy path)",
     );
     expect(claimed).toBe(1);
     expect(pushes[0]).toContain("รับทั้งหมด: 5 รูป"); // the seller is told 5, not 25
-    expect(pushes[0]).toContain("ยอดรวมที่อ่านได้: 500 บาท"); // looks complete, is not
+    expect(pushes[0]).toContain("ยอดยืนยัน: 500 บาท"); // looks complete, is not
     expect(pushes[0]).not.toContain("ยังไม่ครบ");
 
     // Once the batch left 'closing', the remaining queue events find no active

@@ -39,6 +39,12 @@ export interface SlipExtraction {
   paymentChannelText: string | null;
   headlineTotalAmount: number | null;
   confidence: number;
+  // Forensics only: what the model literally returned before normalization, and
+  // which model answered. Lets "model misread vs parser rejected" be proven from
+  // the stored row instead of a fresh, non-deterministic re-extraction.
+  rawTransactionTimeText?: string | null;
+  rawSlipType?: string | null;
+  modelId?: string | null;
 }
 
 export const SLIP_EXTRACTION_JSON_SCHEMA = {
@@ -181,6 +187,8 @@ export function parseSlipExtraction(value: unknown): SlipExtraction {
     paymentChannelText,
     headlineTotalAmount,
     confidence: parseConfidence(value.confidence),
+    rawTransactionTimeText: parseRawText(value.transaction_time, 64),
+    rawSlipType: parseRawText(value.slip_type, 40),
   };
 }
 
@@ -231,6 +239,9 @@ export function extractionToJson(extraction: SlipExtraction): Json {
     payment_channel_text: extraction.paymentChannelText,
     headline_total_amount: extraction.headlineTotalAmount,
     confidence: extraction.confidence,
+    transaction_time_text: extraction.rawTransactionTimeText ?? null,
+    slip_type_raw: extraction.rawSlipType ?? null,
+    model_id: extraction.modelId ?? null,
   };
 }
 
@@ -273,6 +284,13 @@ function parseChannelText(value: unknown): string | null {
   if (!text) return null;
   const redacted = normalizeWhitespace(text).replace(/\d{4,}/g, "[redacted]");
   return redacted.length > 0 ? redacted.slice(0, CHANNEL_TEXT_MAX_LENGTH) : null;
+}
+
+// Raw model text kept for forensics. Runs of 7+ digits (account or phone numbers)
+// are redacted; a date's 4-digit year and clock digits stay readable.
+function parseRawText(value: unknown, maxLength: number): string | null {
+  const text = parseNullableText(value);
+  return text ? normalizeWhitespace(text).replace(/\d{7,}/g, "[redacted]").slice(0, maxLength) : null;
 }
 
 function parseReferenceId(value: unknown): string | null {
