@@ -73,8 +73,8 @@ const PENDING = [
 ] as const;
 
 const SLIPS = [
-  { seller: "เล็ก", market: PASEO, counts: { PROCESSING: 1, EXTRACTED: 5, PARTIAL_EXTRACTED: 0, NEED_REVIEW: 2, FAILED: 0, NOT_CHECKED: 0 } },
-  { seller: "ดำ", market: RATCHAPHRUEK, counts: { PROCESSING: 0, EXTRACTED: 7, PARTIAL_EXTRACTED: 0, NEED_REVIEW: 0, FAILED: 1, NOT_CHECKED: 0 } },
+  { seller: "เล็ก", market: PASEO, successCount: 5, counts: { PROCESSING: 1, EXTRACTED: 5, PARTIAL_EXTRACTED: 0, NEED_REVIEW: 2, FAILED: 0, NOT_CHECKED: 0 } },
+  { seller: "ดำ", market: RATCHAPHRUEK, successCount: 7, counts: { PROCESSING: 0, EXTRACTED: 7, PARTIAL_EXTRACTED: 0, NEED_REVIEW: 0, FAILED: 1, NOT_CHECKED: 0 } },
 ] as const;
 
 const SLIP_STATUS_MEANING = {
@@ -272,7 +272,7 @@ export function createFixtureDataReader(reads: FixtureRead[] = [], options: { to
         return {
           tool: request.tool, businessDate, requestedStaff: request.staff, requestedMarket: request.market,
           found: batches.length > 0, partial: false, truncated: false, statusMeaning: SLIP_STATUS_MEANING,
-          batches: batches.map((batch) => ({ seller: batch.seller, market: batch.market, checkStatusCounts: batch.counts })),
+          batches: batches.map((batch) => ({ seller: batch.seller, market: batch.market, successCount: batch.successCount, checkStatusCounts: batch.counts })),
         };
       }
       case "get_staff_settlement": {

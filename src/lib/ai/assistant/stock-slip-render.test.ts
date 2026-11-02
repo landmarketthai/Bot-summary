@@ -6,6 +6,7 @@ import * as stockService from "@/lib/summary/stock-summary-service";
 import { buildStockSummaryFromRows } from "@/lib/summary/stock-summary";
 import { FakeDatabase } from "@/lib/summary/test-fake-supabase";
 import { getMarketStockTool, getSlipStatusTool, getStockSummaryTool } from "@/lib/ai/readonly-tools";
+import { createFixtureDataReader } from "./testing/fixture-data";
 import { renderOperationalOutput } from "./financial-render";
 
 const DATE = "2026-10-31";
@@ -108,4 +109,9 @@ describe("authoritative slip rendering", () => {
     expect(empty).toContain("ไม่มีข้อมูลการยืนยันจากธนาคาร");
     expect(empty).not.toContain(" 0 ");
   });
+});
+
+test("evaluation slip fixtures retain authoritative batch counters without changing expected totals", async () => {
+  const output = await createFixtureDataReader()({tool: "get_slip_status", businessDate: DATE, staff: null, market: null}, {markets: null});
+  expect(renderOperationalOutput(output)).toContain("รวม อ่านข้อมูลได้แล้ว 12 ใบ");
 });
