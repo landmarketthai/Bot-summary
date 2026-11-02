@@ -157,6 +157,26 @@ export function containsFinancialClaim(text: string): boolean {
   return FINANCIAL_CLAIM.test(text.normalize("NFC").replace(/[๐-๙]/gu, (digit) => String("๐๑๒๓๔๕๖๗๘๙".indexOf(digit))));
 }
 
+function renderSlips(batches: Row[], partial: boolean): string {
+  const count = (value: unknown): number | null => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const readCounts = batches.map(row => count(row.successCount));
+  const total = readCounts.every(value => value !== null) ? readCounts.reduce<number>((sum, value) => sum + value!, 0) : null;
+  const lines = batches.length ? [
+    `${partial ? "เฉพาะข้อมูลที่พบ" : "รวม"} อ่านข้อมูลได้แล้ว ${total ?? "ไม่มีข้อมูล"} ใบ (ตามผลสรุปชุด)`,
+    ...batches.map(row => {
+      const counts = (row.checkStatusCounts ?? {}) as Row;
+      const needReview = count(counts.NEED_REVIEW);
+      const failed = count(counts.FAILED);
+      const review = needReview === null || failed === null ? null : needReview + failed;
+      return `${row.seller ?? ""} (${row.market}): อ่านข้อมูลได้แล้ว ${count(row.successCount) ?? "ไม่มีข้อมูล"} ใบ (ตามผลสรุปชุด)`
+        + ` · สถานะจากรูป: อ่านครบ ${count(counts.EXTRACTED) ?? "ไม่มีข้อมูล"} ใบ อ่านได้บางส่วน ${count(counts.PARTIAL_EXTRACTED) ?? "ไม่มีข้อมูล"} ใบ`
+        + ` ต้องให้แอดมินตรวจมือ ${review ?? "ไม่มีข้อมูล"} รายการ กำลังอ่าน ${count(counts.PROCESSING) ?? "ไม่มีข้อมูล"} รายการ ยังไม่มีผลตรวจ ${count(counts.NOT_CHECKED) ?? "ไม่มีข้อมูล"} รายการ`;
+    }),
+  ] : ["ไม่พบข้อมูลสลิป"];
+  lines.push("การอ่านข้อมูลจากรูป (OCR/EXTRACTED) ยังไม่ใช่การยืนยันจากธนาคาร ไม่มีข้อมูลการยืนยันจากธนาคาร");
+  return lines.join("\n");
+}
+
 /** Business statements are rendered from tool fields; model prose is never evidence. */
 export function renderOperationalOutput(output: Row): string {
   if (output.status === "forbidden") return "ไม่มีสิทธิ์ดูข้อมูลส่วนนี้ครับ";
@@ -169,12 +189,12 @@ export function renderOperationalOutput(output: Row): string {
     case "get_pending_items":
       return list(output.items).length ? `รายการค้าง ${output.activeCount} รายการ: ` + list(output.items).map(row => `${row.staff ?? ""} ${row.transactionKind ?? "เอกสาร"} ที่ ${row.market ?? "ไม่ทราบตลาด"}`).join(", ") + partial : "ไม่พบรายการค้าง";
     case "get_slip_status":
-      return (list(output.batches).map(row => { const counts = (row.checkStatusCounts ?? {}) as Row; return `${row.seller ?? ""} (${row.market}): ต้องให้แอดมินตรวจมือ ${Number(counts.NEED_REVIEW ?? 0) + Number(counts.FAILED ?? 0)} รายการ กำลังอ่าน ${counts.PROCESSING ?? 0} รายการ`; }).join("\n") || "ไม่พบข้อมูลสลิป") + partial;
+      return renderSlips(list(output.batches), Boolean(partial)) + partial;
     case "get_white_sheet_status":
       return (list(output.sheets).map(row => `${row.market}: ${row.finalized ? "ปิดใบขาวแล้ว" : "ยังไม่ปิดใบขาว"}`).join("\n") || "ไม่พบข้อมูลใบขาว") + partial;
     case "get_stock_summary":
     case "get_market_stock":
-      return (list(output.markets).map(market => `${market.market}: ` + list(market.items).map(row => `${row.product} เหลือขายต่อ ${row.hasReturnGoodData === false ? "ไม่มีข้อมูล" : row.remainingForResaleQuantity ?? "ไม่มีข้อมูล"} ${row.unit ?? ""}`).join(", ")).join("\n") || "ไม่พบข้อมูลของคงเหลือ") + (output.isComplete === false ? "\nข้อมูลชั่งคืนยังไม่ครบ" : "") + partial;
+      return (list(output.markets).map(market => `${market.market}: ` + list(market.items).map(row => `${row.product} เหลือขายต่อ ${row.hasReturnGoodData === false ? "ไม่มีข้อมูล" : row.remainingForResaleQuantity ?? "ไม่มีข้อมูล"} ${row.unit ?? ""} · คืนเสีย ${row.hasDamagedData === false ? "ไม่มีข้อมูล" : row.damagedQuantity ?? "ไม่มีข้อมูล"} ${row.unit ?? ""}`).join(", ")).join("\n") || "ไม่พบข้อมูลของคงเหลือ") + (output.isComplete === false ? "\nข้อมูลชั่งคืนยังไม่ครบ" : "") + partial;
     default: return "";
   }
 }

@@ -315,14 +315,14 @@ export async function getStockSummaryTool(
     unidentified: restricted ? [] : summary.unidentified,
     markets: summary.detail.markets.filter((market) => marketInScope(scope, market.marketName)).map((market) => ({
       market: market.marketName,
-      items: market.items
-        .filter((item) => item.hasReturnGoodData)
-        .map((item) => ({
-          product: item.fruitName,
-          unit: item.unit,
-          remainingForResaleQuantity: item.remainingForResaleQuantity,
-          damagedQuantity: item.damagedQuantity,
-        })),
+      items: market.items.map((item) => ({
+        product: item.fruitName,
+        unit: item.unit,
+        remainingForResaleQuantity: item.remainingForResaleQuantity,
+        damagedQuantity: item.damagedQuantity,
+        hasReturnGoodData: item.hasReturnGoodData,
+        hasDamagedData: item.hasDamagedData,
+      })),
     })),
   };
 }
@@ -361,6 +361,7 @@ export async function getMarketStockTool(
         damagedQuantity: item.damagedQuantity,
         remainingForResaleQuantity: item.remainingForResaleQuantity,
         hasReturnGoodData: item.hasReturnGoodData,
+        hasDamagedData: item.hasDamagedData,
       })),
     })),
   };
