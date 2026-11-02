@@ -109,7 +109,7 @@ export class SupabaseAssistantJobStore implements AssistantJobStore {
     request: AssistantJobRequest,
     limits: { maxOutstandingPerConversation?: number; maxBacklog?: number } = {},
   ): Promise<EnqueueOutcome> {
-    const { data, error } = await this.supabase.rpc("enqueue_ai_assistant_job", {
+    const query = this.supabase.rpc("enqueue_ai_assistant_job", {
       p_job: {
         line_event_id: request.lineEventId,
         raw_message_id: request.rawMessageId,
@@ -127,6 +127,7 @@ export class SupabaseAssistantJobStore implements AssistantJobStore {
       p_max_outstanding_per_conversation: limits.maxOutstandingPerConversation ?? 3,
       p_max_backlog: limits.maxBacklog ?? 500,
     });
+    const { data, error } = await ("abortSignal" in query ? query.abortSignal(AbortSignal.timeout(2_000)) : query);
     if (error) fail("enqueue", error);
     const row = data as { outcome?: unknown; job_id?: unknown } | null;
     const outcome = row?.outcome;

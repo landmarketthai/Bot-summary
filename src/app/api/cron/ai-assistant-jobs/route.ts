@@ -43,6 +43,8 @@ export async function GET(req: NextRequest) {
     supabase: recoveryClient,
     dispatcher: createAssistantDispatcher(new SupabaseAssistantJobStore(recoveryClient)),
     analystEnabled: true,
+    deadlineAt: startedAt + 7_000,
+    checkpointClient: createServiceClient({ fetch: deadlineFetch(startedAt + 10_000, 2_000) }),
     sourceAllowed: (sourceId) => isBotSummaryAnalystSourceAllowed(sourceId),
     whiteSheetReaderEnabled: isWhiteSheetReaderEnabled(),
   }).catch(() => {

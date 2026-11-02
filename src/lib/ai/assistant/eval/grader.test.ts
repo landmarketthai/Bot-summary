@@ -77,7 +77,7 @@ describe("expectations are fair to correct answers that include other markets or
 });
 
 describe("answer-level grading through the real pipeline", () => {
-  test("the right tool with a wrong quantity fails", async () => {
+  test("the right tool with a wrong quantity is withheld", async () => {
     const { results } = await runAnswerEval({
       provider: liar("get_staff_produce", { staff: "ดำ" }, "ดำคืนเสียมะม่วง 2.5 กก. ครับ"),
       cases: [byId("pro-04")],

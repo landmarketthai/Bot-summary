@@ -166,6 +166,10 @@ async function processJob(
     // P1-C: the group's approval may have been revoked or changed since the
     // answer was produced — including by a crashed worker long before this delivery.
     const verdict = options.revalidate ? await options.revalidate(job, scopeKey) : "changed";
+    if (verdict === "transient" && job.attempts >= job.max_attempts) {
+      if (!await store.withholdAnswer(job.id, lease, options.temporaryErrorText)) return "fenced";
+      return await store.complete(job.id, lease, "failed", "access_revalidation_failed") ? "failed" : "fenced";
+    }
     if (verdict === "transient") {
       const retried = await store.retry(job.id, lease, retryDelaySeconds(job.attempts), "access_revalidation_failed");
       return retried ? "retried" : "fenced";

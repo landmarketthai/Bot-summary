@@ -16,6 +16,7 @@ export const ASSISTANT_MIGRATIONS = [
   "20261031150000_ai_assistant_access_scope.sql",
   "20261031160000_ai_assistant_queue_hardening.sql",
   "20261031170000_ai_assistant_recovery_scan.sql",
+  "20261102090000_ai_assistant_enqueue_lock_timeout.sql",
 ];
 
 export async function createAssistantTestDb(): Promise<SlipTestDb | null> {

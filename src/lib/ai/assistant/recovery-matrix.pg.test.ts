@@ -9,6 +9,7 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
+import { bangkokBusinessDateFromTimestamp } from "@/lib/business-date";
 import { BOT_SUMMARY_TEMPORARY_ERROR_REPLY } from "@/lib/ai/line-command";
 import type { AssistantModelProvider } from "@/lib/ai/model-provider";
 import type { LineMessageEvent } from "@/lib/line/types";
@@ -69,7 +70,7 @@ function pipeline(database: SlipTestDb, overrides: { model?: AssistantModelProvi
     supabase, store, provider: model,
     sourceAllowed: () => true,
     resolveGroupPolicy: async (sourceId) => ({ ok: true, policy: { sourceId, markets: null } }),
-    readData: createFixtureDataReader(),
+    readData: createFixtureDataReader([], { today: bangkokBusinessDateFromTimestamp(Date.now())! }),
   };
   const service = new WebhookService(supabase, {
     botSummaryAnalystEnabled: true,

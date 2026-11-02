@@ -155,8 +155,9 @@ category totals are withheld.
 1. Review and merge PR #189, then this PR.
 2. Apply, in order, `supabase/migrations/20261031090000_ai_assistant_jobs.sql`,
    `20261031150000_ai_assistant_access_scope.sql`,
-   `20261031160000_ai_assistant_queue_hardening.sql` and
-   `20261031170000_ai_assistant_recovery_scan.sql` (rollbacks in
+   `20261031160000_ai_assistant_queue_hardening.sql`,
+   `20261031170000_ai_assistant_recovery_scan.sql` and
+   `20261102090000_ai_assistant_enqueue_lock_timeout.sql` (rollbacks in
    `supabase/rollback/`, applied in reverse order).
    Turn on webhook redelivery in the test channel (see above) — recommended,
    not required.

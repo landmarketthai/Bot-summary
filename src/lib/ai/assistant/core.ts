@@ -32,7 +32,7 @@ import {
   type JobAccess,
   type ScopedDataReader,
 } from "./authorization";
-import { containsFinancialClaim, FINANCIAL_TOOLS, renderFinancialOutput } from "./financial-render";
+import { containsFinancialClaim, FINANCIAL_TOOLS, renderFinancialOutput, renderOperationalOutput } from "./financial-render";
 import { AssistantStoreError, type AssistantJob, type AssistantJobStore, type ConversationTurn } from "./job-store";
 import { classifyAssistantError } from "./errors";
 import type { AssistantAnswer } from "./worker";
@@ -222,8 +222,6 @@ export async function answerAssistantJob(
   const toolNames = result.toolExecutions.map((execution) => execution.tool);
   const financial = outputs.filter((entry) => FINANCIAL_TOOLS.has(entry.tool));
   const other = outputs.filter((entry) => !FINANCIAL_TOOLS.has(entry.tool));
-  const modelTextIsSafe = (grounding: typeof outputs) => !containsFinancialClaim(result.answer)
-    && ungroundedNumbers(result.answer, grounding.map((entry) => JSON.stringify(entry.output))).length === 0;
   const usage = {
     ...result.usage,
     provider: deps.provider.name,
@@ -234,15 +232,16 @@ export async function answerAssistantJob(
   let text: string;
   if (financial.length > 0) {
     const rendered = [...new Set(financial.map((entry) => renderFinancialOutput(entry.output)).filter(Boolean))];
-    // Non-financial context from the model only when it states no money and
-    // every figure in it comes from a non-financial tool of this answer.
-    if (other.length > 0 && modelTextIsSafe(other)) rendered.push(result.answer);
+    rendered.push(...other.map(entry => renderOperationalOutput(entry.output)).filter(Boolean));
     text = rendered.join("\n\n");
-  } else if (!modelTextIsSafe(outputs)) {
-    logger.warn("ai assistant answer withheld: unsupported figures", { jobId: job.id, tools: toolNames });
-    return { text: ASSISTANT_UNGROUNDED_REPLY, kind: "notice", usage, toolNames };
   } else {
-    text = result.answer;
+    if (containsFinancialClaim(result.answer)
+      || ungroundedNumbers(result.answer, outputs.map(entry => JSON.stringify(entry.output))).length) {
+      logger.warn("ai assistant answer withheld: unsupported figures", { jobId: job.id, tools: toolNames });
+      return { text: ASSISTANT_UNGROUNDED_REPLY, kind: "notice", usage, toolNames };
+    }
+    text = outputs.map(entry => renderOperationalOutput(entry.output)).filter(Boolean).join("\n\n");
+    if (!text) return { text: ASSISTANT_UNGROUNDED_REPLY, kind: "notice", usage, toolNames };
   }
 
   return {

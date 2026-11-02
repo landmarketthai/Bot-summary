@@ -88,10 +88,10 @@ describe("approved group: every member shares the group scope", () => {
       for (const [tool, args, fragment] of [
         ["get_daily_summary", {}, "40,550.75"],
         ["get_staff_produce", { staff: "ขวัญ" }, "ผักกาดขาว"],
-        ["get_slip_status", { staff: "เล็ก", market: null }, "NEED_REVIEW"],
+        ["get_slip_status", { staff: "เล็ก", market: null }, "ตรวจมือ"],
         ["get_staff_settlement", { staff: "ดำ" }, "เงินขาด 120.00 บาท"],
-        ["get_pending_items", { staff: "ปลา", market: null }, "pending_session"],
-        ["get_white_sheet_status", { market: null }, "finalized"],
+        ["get_pending_items", { staff: "ปลา", market: null }, "รายการค้าง"],
+        ["get_white_sheet_status", { market: null }, "ปิดใบขาว"],
       ] as const) {
         const h = harness({ provider: oneTool(tool, args) });
         const answer = await h.ask("คำถาม", { lineUserId: member });

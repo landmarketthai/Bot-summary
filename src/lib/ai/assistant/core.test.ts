@@ -189,7 +189,7 @@ describe("V1 access: approved groups only (server-side)", () => {
     const other = harness(rogue("ราชพฤกษ์"));
     const answer = await other.ask("ราชพฤกษ์เหลือของเท่าไหร่", paseoGroup);
     expect(other.reads).toHaveLength(0);
-    expect(answer.text).toContain("market_not_permitted");
+    expect(answer.text).toContain("ไม่มีสิทธิ์");
   });
 
   test("a market-limited group sees only its markets; totals come from the scoped source", async () => {

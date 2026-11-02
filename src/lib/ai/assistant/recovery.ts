@@ -86,6 +86,8 @@ export async function recoverUnenqueuedQuestions(options: {
   /** Rows examined per sweep, across pages. */
   maxRows?: number;
   now?: number;
+  deadlineAt?: number;
+  checkpointClient?: Supabase;
 }): Promise<RecoverySummary> {
   const summary: RecoverySummary = { scanned: 0, enqueued: 0, duplicate: 0, deferred: 0, skipped: 0 };
   if (!options.analystEnabled) return summary;
@@ -100,32 +102,36 @@ export async function recoverUnenqueuedQuestions(options: {
   // rounded through Date would repeat or skip rows at the boundary.
   let after = await readCursor(options.supabase);
   let reachedEnd = false;
-  while (summary.scanned < maxRows) {
-    const want = Math.min(pageSize, maxRows - summary.scanned);
-    const { data, error } = await options.supabase.rpc("list_ai_assistant_recovery_candidates", {
-      p_since: since,
-      p_until: until,
-      p_after_created_at: after?.createdAt ?? null,
-      p_after_id: after?.id ?? null,
-      p_limit: want,
+  try {
+    while (summary.scanned < maxRows && Date.now() < (options.deadlineAt ?? Infinity)) {
+      const want = Math.min(pageSize, maxRows - summary.scanned);
+      const { data, error } = await options.supabase.rpc("list_ai_assistant_recovery_candidates", {
+        p_since: since,
+        p_until: until,
+        p_after_created_at: after?.createdAt ?? null,
+        p_after_id: after?.id ?? null,
+        p_limit: want,
+      });
+      if (error) throw new Error("ai assistant recovery scan failed");
+      const rows = (data ?? []) as RecoveryCandidate[];
+      for (const row of rows) {
+        if (Date.now() >= (options.deadlineAt ?? Infinity)) break;
+        await recoverRow(row);
+        after = { createdAt: String(row.created_at), id: row.id };
+      }
+      if (rows.length === 0 || (rows.length < want && after?.id === rows.at(-1)?.id)) {
+        reachedEnd = true;
+        break;
+      }
+    }
+  } finally {
+    // End of the window: start from its beginning next time. Otherwise resume here.
+    const { error: cursorError } = await (options.checkpointClient ?? options.supabase).rpc("set_ai_assistant_recovery_cursor", {
+      p_after_created_at: reachedEnd ? null : after?.createdAt ?? null,
+      p_after_id: reachedEnd ? null : after?.id ?? null,
     });
-    if (error) throw new Error("ai assistant recovery scan failed");
-    const rows = (data ?? []) as RecoveryCandidate[];
-    for (const row of rows) {
-      await recoverRow(row);
-      after = { createdAt: String(row.created_at), id: row.id };
-    }
-    if (rows.length < want) {
-      reachedEnd = true;
-      break;
-    }
+    if (cursorError) logger.warn("ai assistant recovery could not store its cursor", { code: cursorError.code });
   }
-  // End of the window: start from its beginning next time. Otherwise resume here.
-  const { error: cursorError } = await options.supabase.rpc("set_ai_assistant_recovery_cursor", {
-    p_after_created_at: reachedEnd ? null : after?.createdAt ?? null,
-    p_after_id: reachedEnd ? null : after?.id ?? null,
-  });
-  if (cursorError) logger.warn("ai assistant recovery could not store its cursor", { code: cursorError.code });
 
   async function recoverRow(row: RecoveryCandidate) {
     summary.scanned += 1;

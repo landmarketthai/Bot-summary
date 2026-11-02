@@ -6,6 +6,7 @@
  * the worker, so a slow or failing model can no longer delay produce, slip or
  * white-sheet events of the same chat.
  */
+import { withTimeout } from "@/lib/slips/io-timeout";
 import { bangkokBusinessDateFromTimestamp, bangkokBusinessDateNow } from "@/lib/business-date";
 import type { LineMessageEvent } from "@/lib/line/types";
 import type { AssistantJobRequest, AssistantJobStore, EnqueueOutcome } from "./job-store";
@@ -77,7 +78,7 @@ export function createAssistantDispatcher(store: AssistantJobStore): AssistantDi
   return async (input) => {
     const request = buildAssistantJobRequest(input);
     if (!request) return { outcome: "no_user", jobId: null };
-    return store.enqueue(request);
+    return withTimeout("assistant enqueue", 2_000, () => store.enqueue(request));
   };
 }
 

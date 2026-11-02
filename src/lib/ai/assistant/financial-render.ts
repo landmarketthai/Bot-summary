@@ -68,6 +68,7 @@ function scopeLabel(output: Row): string {
 
 function renderDaily(output: Row): string {
   const markets = (output.markets as Row[] | undefined) ?? [];
+  if (markets.length === 0) return `วันที่ ${output.businessDate}: ไม่พบข้อมูลยอดขาย ยังสรุปไม่ได้`;
   const lines = [`ยอดขายวันที่ ${output.businessDate}`, salesLine(scopeLabel(output), (output.total as Row) ?? {})];
   for (const market of markets) lines.push(salesLine(String(market.market), market));
   if (Number(output.blockedIdentityCount ?? 0) > 0) {
@@ -88,8 +89,12 @@ function renderCompare(output: Row): string {
   const dates = (output.dates as Row[] | undefined) ?? [];
   const lines = [`เทียบยอดขาย (${scopeLabel(output)})`];
   for (const day of dates) {
-    lines.push(`วันที่ ${day.businessDate}`, salesLine("รวม", (day.total as Row) ?? {}));
     const markets = (day.markets as Row[] | undefined) ?? [];
+    if (markets.length === 0) {
+      lines.push(`วันที่ ${day.businessDate}: ไม่พบข้อมูลยอดขาย ยังสรุปไม่ได้`);
+      continue;
+    }
+    lines.push(`วันที่ ${day.businessDate}`, salesLine("รวม", (day.total as Row) ?? {}));
     for (const market of markets) lines.push(salesLine(String(market.market), market));
     const ranked = markets
       .map((market) => ({ market: String(market.market), satang: satangFrom(market, "confirmedSalesSatang", "confirmedSalesBaht") }))
@@ -150,4 +155,26 @@ const FINANCIAL_CLAIM = /\d[\d,]*(?:\.\d+)?\s*บาท|เงิน\s*(?:ขา
 /** True when text states money or a cash result (must then come from the renderer). */
 export function containsFinancialClaim(text: string): boolean {
   return FINANCIAL_CLAIM.test(text.normalize("NFC").replace(/[๐-๙]/gu, (digit) => String("๐๑๒๓๔๕๖๗๘๙".indexOf(digit))));
+}
+
+/** Business statements are rendered from tool fields; model prose is never evidence. */
+export function renderOperationalOutput(output: Row): string {
+  if (output.status === "forbidden") return "ไม่มีสิทธิ์ดูข้อมูลส่วนนี้ครับ";
+  const list = (value: unknown): Row[] => Array.isArray(value) ? value as Row[] : [];
+  const partial = output.partial || output.truncated ? "\nข้อมูลบางส่วน ยังสรุปทั้งหมดไม่ได้" : "";
+  const items = (rows: Row[]) => rows.map(row => `${row.product ?? ""} ${row.quantity ?? "ไม่มีข้อมูล"} ${row.unit ?? ""}`).join(", ");
+  switch (output.tool) {
+    case "get_staff_produce":
+      return `${output.requestedStaff} วันที่ ${output.businessDate}: ` + (list(output.documents).map(doc => `${doc.transactionType} (${doc.market}) ${items(list(doc.items))}`).join(" | ") || "ไม่พบรายการเบิก/คืน") + partial;
+    case "get_pending_items":
+      return list(output.items).length ? `รายการค้าง ${output.activeCount} รายการ: ` + list(output.items).map(row => `${row.staff ?? ""} ${row.transactionKind ?? "เอกสาร"} ที่ ${row.market ?? "ไม่ทราบตลาด"}`).join(", ") + partial : "ไม่พบรายการค้าง";
+    case "get_slip_status":
+      return (list(output.batches).map(row => { const counts = (row.checkStatusCounts ?? {}) as Row; return `${row.seller ?? ""} (${row.market}): ต้องให้แอดมินตรวจมือ ${Number(counts.NEED_REVIEW ?? 0) + Number(counts.FAILED ?? 0)} รายการ กำลังอ่าน ${counts.PROCESSING ?? 0} รายการ`; }).join("\n") || "ไม่พบข้อมูลสลิป") + partial;
+    case "get_white_sheet_status":
+      return (list(output.sheets).map(row => `${row.market}: ${row.finalized ? "ปิดใบขาวแล้ว" : "ยังไม่ปิดใบขาว"}`).join("\n") || "ไม่พบข้อมูลใบขาว") + partial;
+    case "get_stock_summary":
+    case "get_market_stock":
+      return (list(output.markets).map(market => `${market.market}: ` + list(market.items).map(row => `${row.product} เหลือขายต่อ ${row.hasReturnGoodData === false ? "ไม่มีข้อมูล" : row.remainingForResaleQuantity ?? "ไม่มีข้อมูล"} ${row.unit ?? ""}`).join(", ")).join("\n") || "ไม่พบข้อมูลของคงเหลือ") + (output.isComplete === false ? "\nข้อมูลชั่งคืนยังไม่ครบ" : "") + partial;
+    default: return "";
+  }
 }
