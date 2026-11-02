@@ -38,6 +38,7 @@ if (!pgAvailable && process.env.SLIP_INGEST_REQUIRE === "1") {
 const M1 = "20261102120000_slip_check_approval_link";
 const M2 = "20261102130000_manual_slip_entry_review";
 const M3 = "20261102140000_slip_review_hardening";
+const M4 = "20261102150000_slip_reference_scope";
 const BASE_MIGRATIONS = [
   ...SLIP_PIPELINE_MIGRATIONS,
   "0027_manual_slip_session.sql",
@@ -130,7 +131,7 @@ const approveAi = (checkId: string, amount: number) =>
 
 describe.skipIf(!pgAvailable)("one transfer, one money row across AI and manual (PG 17)", () => {
   beforeAll(async () => {
-    db = await freshDb("slip_approval", [M1, M2, M3]);
+    db = await freshDb("slip_approval", [M1, M2, M3, M4]);
     supa = createPgSupabase(db, { failUpload: new Set(), uploaded: new Map() });
   });
   afterAll(async () => { await db?.drop(); });
@@ -408,6 +409,51 @@ describe.skipIf(!pgAvailable)("one transfer, one money row across AI and manual 
     expect(await ai("BR")).toBe(40);
   });
 
+  // ── re-review fixes (20261102150000 + containment) ─────────────────────────
+  test("containment: a manual session closed AFTER another round was finalized cannot take the transfer from it", async () => {
+    const [session] = await db.query<{ id: string }>(
+      `INSERT INTO public.manual_slip_sessions (source_id, business_date, status, market_label, market_key)
+       VALUES ('CA', '${DATE}', 'open', '${MARKET}', 'ca') RETURNING id`,
+    );
+    const r = await supa.rpc("append_manual_slip_entries_atomic", {
+      p_session_id: session.id, p_entries: [{ raw_line: "ยอด 70", amount: 70, reference_id: "CA-R" }], p_line_message_id: "ca-1", p_line_user_id: null,
+    });
+    expect(r.error).toBeNull();
+    // The same transfer read by the AI in round B, counted, and B is handed out.
+    await seedCheck(db, { source: "CB", amount: 70, ref: "CA-R", time: OK_TIME, createdAt: new Date(Date.now() + 60_000).toISOString() });
+    expect(await ai("CB")).toBe(70);
+    await db.query(`INSERT INTO public.settlement_finalizations (source_id, business_date, status) VALUES ('CB', '${DATE}', 'sent')`);
+    // Only now is the earlier manual entry closed (it was keyed first).
+    await db.query(`UPDATE public.manual_slip_sessions SET status = 'closed', closed_at = now() WHERE id = '${session.id}'`);
+    expect(await ai("CB")).toBe(70);                                     // the handed-out round keeps it
+    expect(await loadMarketScopedManualSlipBreakdown(supa, "CA", DATE, MARKET)).toMatchObject({ total: 0, supersededCount: 1 });
+  });
+
+  test("normalization: a manual reference typed with spaces / no-break space matches the AI read", async () => {
+    await seedCheck(db, { source: "NM", amount: 45, ref: "NM01234567", time: OK_TIME });
+    await seedManual("NM", [{ amount: 45, reference_id: "NM0123 4567 " }]);
+    expect(await db.scalar(`SELECT reference_id FROM public.manual_slip_entries WHERE reference_id LIKE 'NM%'`)).toBe("NM01234567");
+    expect(await checked("NM")).toBe(45);
+  });
+
+  test("a legacy day-level finalization of the RECEIPT day closes reviews of a round-bound slip of another business day", async () => {
+    const round = "30000000-0000-4000-8000-000000000002";
+    await db.query(`INSERT INTO public.accountability_rounds (id, business_date) VALUES ('${round}', '2026-10-28')`);
+    const check = await seedCheck(db, { source: "RD", amount: 40, ref: "RD-R", time: JULY, round }); // received on ${DATE}
+    await db.query(`INSERT INTO public.settlement_finalizations (source_id, business_date, status) VALUES ('RD', '${DATE}', 'sent')`);
+    expect(await refusalCode(approveAi(check, 40))).toBe("slip_check_round_finalized");
+  });
+
+  test("BR-02: a reference that already belongs to another slip (reviewed or not) is refused", async () => {
+    await seedCheck(db, { source: "BX", amount: 40, ref: "BX-R", time: OK_TIME });
+    const pending = await seedCheck(db, { source: "BX", amount: 40, ref: null, time: OK_TIME, createdAt: "2026-10-29T11:00:00Z" });
+    const { resolveSlipCheckReference, ReferenceResolutionError } = await import("@/lib/slips/reference-resolution");
+    let refused: unknown = null;
+    try { await resolveSlipCheckReference(supa, { checkId: pending, referenceId: "BX-R", actor: "admin" }); } catch (e) { refused = e; }
+    expect(refused).toBeInstanceOf(ReferenceResolutionError);
+    expect(await ai("BX")).toBe(40);
+  });
+
   test("decisions are written only through the review RPCs (service_role has no direct write)", async () => {
     const rows = await db.query<{ p: string; ok: boolean }>(
       `SELECT p, has_table_privilege('service_role', 'public.slip_check_approvals', p) AS ok
@@ -416,14 +462,17 @@ describe.skipIf(!pgAvailable)("one transfer, one money row across AI and manual 
     expect(rows.every((r) => r.ok === false)).toBe(true);
   });
 
-  test("migration 20261102140000 re-applies cleanly (idempotent)", async () => {
+  test("migrations 20261102140000 and 20261102150000 re-apply cleanly (idempotent)", async () => {
     await db.exec(await file("migrations", M3));
+    await db.exec(await file("migrations", M4));
     expect(await manual("L1")).toMatchObject({ total: 60 });
   });
 
-  test("rollback (M3, M2, M1) drops the RPCs, restores the old append RPC and keeps every financial row", async () => {
+  test("rollback (M4, M3, M2, M1) drops the RPCs, restores the old append RPC and keeps every financial row", async () => {
     const decisions = await db.scalar(`SELECT count(*) FROM public.slip_check_approvals`);
     const entries = await db.scalar(`SELECT count(*) FROM public.manual_slip_entries`);
+    await db.exec(await file("rollback", M4));
+    expect(await db.scalar(`SELECT count(*) FROM pg_proc WHERE proname = 'normalize_slip_reference'`)).toBe("0");
     await db.exec(await file("rollback", M3));
     expect(await db.scalar(`SELECT count(*) FROM pg_proc WHERE proname IN ('lock_money_close_scope', 'manual_entry_claims_reference')`)).toBe("0");
     await db.exec(await file("rollback", M2));

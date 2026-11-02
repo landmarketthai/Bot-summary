@@ -97,3 +97,15 @@ Same method as PR #182: local `next start` + local PostgreSQL/PostgREST, all mig
 Full procedure, limits and triggers: `docs/release/slip-money-release-runbook.md` §9. Order: M3 down → M2 down → M1 down. M1 cannot be re-applied after its down file. A code revert makes old code ignore decisions (a rejected AI slip counts again, and `requires_review` entries count as ordinary money), so turn the LINE grammar phase 2 off first.
 - **Code:** revert. With the code reverted nothing reads the new objects; money returns to the #193 rules.
 - **Database:** `supabase/rollback/20261102130000_manual_slip_entry_review.down.sql`, then `20261102120000_slip_check_approval_link.down.sql`. They drop the RPCs and lock trigger and restore the previous append RPC. **Every decision row, `reference_id` and `requires_review` is kept.**
+
+## Second adversarial review: fixes and residual limits (`20261102150000_slip_reference_scope.sql` + containment)
+- **Containment of finalized money:** once any valid claim on a reference sits in a finalized round/day (`sending`/`sent`/`ambiguous`), only finalized claims can own it. Claims in open rounds become superseded (same amount) or pending. This holds no matter how they became valid later: session close, approval of an older pending entry, rejection of the owner, or a late OCR completion. One transfer can no longer be paid in two settlements.
+- **One reference normalizer:** every whitespace kind, including no-break and zero-width spaces, is removed in TypeScript (`normalizeSlipReference`) and in SQL (`normalize_slip_reference`, applied when manual references are written).
+- **Receipt day:** a round-bound slip's review also locks and checks the legacy NULL-round settlement of its receipt day.
+- **BR-02 behaviour change (needs sign-off):** reference resolution now refuses a reference that already exists on another slip, reviewed or not, because that check is its duplicate. Before, it was allowed and could make the older check the new owner.
+
+**Residual limits (documented, not fixed):**
+1. **Live recomputation of a finalized day can differ from its sent message.** Example: rejecting an open-round owner can let an already-finalized claim become owner in that day's live view. Nothing is paid twice; the sent message is the authority.
+2. **AI-vs-AI duplicate winner** (pre-existing since main): a check whose OCR completes late keeps its original `created_at` and can become the global winner over a newer check. Containment does not cover AI-vs-AI.
+3. **Push timeout that LINE actually delivered:** the row is marked `failed`, so reviews reopen; the retry recomputes. The group may have seen the earlier totals.
+4. **Unreferenced manual entries:** legacy entries and today's grammar cannot be matched to an AI read (no identity).

@@ -1,7 +1,7 @@
-import { loadReferenceIndex } from "@/lib/slips/reference-ownership";
+import { loadReferenceIndex, normalizeSlipReference } from "@/lib/slips/reference-ownership";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
-import { isVerifiedSlipCheckStatus, normalizeTransactionId } from "./transaction-dedupe";
+import { isVerifiedSlipCheckStatus } from "./transaction-dedupe";
 
 type Supabase = SupabaseClient<Database>;
 
@@ -47,7 +47,7 @@ export async function resolveSlipCheckReference(
   if (!checkId) {
     throw new ReferenceResolutionError("checkId must not be empty");
   }
-  const referenceId = normalizeTransactionId(input.referenceId);
+  const referenceId = normalizeSlipReference(input.referenceId);
   if (!referenceId) {
     throw new ReferenceResolutionError("referenceId must not be empty");
   }
@@ -79,16 +79,16 @@ export async function resolveSlipCheckReference(
     );
   }
 
-  // An operator decision (slip_check_approvals) on another AI read or manual
-  // entry of this reference fixes who owns its money; giving the reference to
-  // this check could silently take that money over (it may be earlier, i.e.
-  // the new global winner). Refuse; the reviewer revokes that decision first.
   const index = await loadReferenceIndex(supabase, [referenceId]);
   const ai = index.ai.get(referenceId);
   const manuals = index.manual.get(referenceId) ?? [];
-  if (ai?.decision || manuals.some((m) => m.decision)) {
+  // The reference already belongs to another AI read or manual entry: this
+  // check is its duplicate. Giving it the reference could make it the new
+  // (earlier) owner and take money from a row that was already counted —
+  // possibly in a finalized round. Refuse; a reviewer decides on the slips.
+  if (ai || manuals.length > 0) {
     throw new ReferenceResolutionError(
-      `reference ${referenceId} already has a reviewed slip — revoke that decision before reassigning it`,
+      `reference ${referenceId} already belongs to another slip — this check is its duplicate`,
     );
   }
 

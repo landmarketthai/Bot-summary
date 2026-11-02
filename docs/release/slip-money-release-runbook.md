@@ -77,3 +77,8 @@ SELECT count(*) FROM public.settlement_finalizations WHERE status = 'sending';  
 - 🔒 Wallet / Thai Help Thai accounting policy (not implemented; wallet amounts stay out of bank-transfer money)
 - 🔒 Full-reference format for the LINE grammar (phase 2)
 - 🔒 Gemini: evaluation only. No Production model change has been requested or made.
+
+## Addendum: migration M4 and the second review
+- **Migrations are now four:** add `20261102150000_slip_reference_scope.sql` (M4) after M3. Rollback order: M4 → M3 → M2 → M1 (each `.down.sql` keeps every row).
+- **🔒 Approve the BR-02 rule change:** a reference that already exists on another slip can no longer be assigned to a pending check.
+- **Monitor:** `settlement_finalizations` rows `failed` after a push attempt (limit 3 in `docs/manual-slip-ai-approval.md`), and AI references held by more than one check (limit 2).
