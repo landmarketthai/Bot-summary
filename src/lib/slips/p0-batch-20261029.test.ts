@@ -38,7 +38,9 @@ describe("P0 29/10/2569 — parser layer", () => {
 
   test("formats the parser does not read stay null (fail closed, never guessed)", () => {
     const t = (s: string) => parseSlipExtraction({ slip_type: "BANK_SLIP_NO_QR", transaction_time: s }).transactionTime;
-    for (const s of ["29 ต.ค.69 17:49", "29 ต.ค 69 17:49", "29 ต.ค. 69 เวลา 17:49", "29 ต.ค. 69 17.49 น."]) {
+    // Printed label/spacing variants (วันที่, เวลา, ต.ค.69, 17.49) are handled in
+    // PR #193's parser; these stay unreadable with or without it.
+    for (const s of ["29 Oct 2026 17:49", "๒๙ ต.ค. ๖๙ ๑๗:๔๙", "29 ตค 2569 17:49", "17:49 29 ต.ค. 69"]) {
       expect(t(s)).toBeNull();
     }
   });
