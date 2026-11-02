@@ -26,7 +26,8 @@ function setup(db = new PreviewDatabase(), allowed = true, enabled = true, reade
   const dependencies = {
     botSummaryAnalystEnabled: enabled, botSummaryAnalystSourceAllowed: () => allowed,
     whiteSheetReaderEnabled: readerEnabled,
-    botSummaryAnalystAnswerer: async (question: string) => { asked.push(question); return "ยอดขายวันนี้"; },
+    botSummaryAssistantDispatcher: async ({ question }: { question: string }) => { asked.push(question); return { outcome: "queued" as const, jobId: "job-1" }; },
+    botSummaryAssistantKick: async () => {},
     whiteSheetBaseReader: async (id: string): Promise<WhiteSheetBaseRead> => { images.push(id); return { outcome: "applied", snapshot: SHEET, replies: ["preview"] }; },
     replyMessage: async (_token: string, text: string) => { replies.push(text); },
     slipSessionService: {

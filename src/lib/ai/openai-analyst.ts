@@ -13,6 +13,8 @@ export type OpenAIAnalystOptions = {
   maxOutputTokens?: number;
   /** Receive API usage even when the response status is incomplete or failed. */
   onResponsePayload?: (payload: OpenAIResponsePayload) => void;
+  /** Caller cancellation (job deadline); aborts the HTTP request. */
+  signal?: AbortSignal;
 };
 
 export type OpenAIResponseFunctionCall = {
@@ -53,6 +55,23 @@ export type OpenAIResponsePayload = {
     total_tokens?: number;
   };
 };
+
+/**
+ * Typed so callers can classify a failure without reading free text. The
+ * message never includes the HTTP response body or the provider's error
+ * message: both can echo the prompt (staff names, financial figures).
+ */
+export class OpenAIAnalystError extends Error {
+  constructor(
+    message: string,
+    readonly kind: "http" | "timeout" | "network" | "status" | "provider" | "config" | "empty" | "limit",
+    readonly httpStatus: number | null = null,
+    readonly providerCode: string | null = null,
+  ) {
+    super(message);
+    this.name = "OpenAIAnalystError";
+  }
+}
 
 export type AnalystTokenUsage = {
   inputTokens: number;
@@ -100,7 +119,7 @@ export type OpenAIResponseRequest = {
 };
 
 const DEFAULT_ENDPOINT = "https://api.openai.com/v1/responses";
-const DEFAULT_MODEL = "gpt-6-luna";
+export const DEFAULT_ANALYST_MODEL = "gpt-6-luna";
 const DEFAULT_TIMEOUT_MS = 20_000;
 
 export const BOT_SUMMARY_ANALYST_INSTRUCTIONS = [
@@ -120,7 +139,7 @@ export const BOT_SUMMARY_ANALYST_INSTRUCTIONS = [
 
 function apiKeyFrom(options: OpenAIAnalystOptions): string {
   const value = options.apiKey ?? process.env.OPENAI_API_KEY;
-  if (!value?.trim()) throw new Error("OPENAI_API_KEY is not configured.");
+  if (!value?.trim()) throw new OpenAIAnalystError("OPENAI_API_KEY is not configured.", "config");
   return value.trim();
 }
 
@@ -159,6 +178,9 @@ export async function createOpenAIResponse(
     () => controller.abort(),
     options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
   );
+  const abortFromCaller = () => controller.abort();
+  if (options.signal?.aborted) controller.abort();
+  options.signal?.addEventListener("abort", abortFromCaller, { once: true });
 
   try {
     const response = await (options.fetchImpl ?? fetch)(DEFAULT_ENDPOINT, {
@@ -168,7 +190,7 @@ export async function createOpenAIResponse(
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        model: options.model ?? process.env.BOT_SUMMARY_ANALYST_MODEL ?? DEFAULT_MODEL,
+        model: options.model ?? process.env.BOT_SUMMARY_ANALYST_MODEL ?? DEFAULT_ANALYST_MODEL,
         store: false,
         reasoning: { effort: "none" },
         max_output_tokens: request.maxOutputTokens ?? options.maxOutputTokens ?? 320,
@@ -185,28 +207,42 @@ export async function createOpenAIResponse(
     });
 
     if (!response.ok) {
-      const detail = await response.text().catch(() => "");
-      throw new Error(
-        `OpenAI analyst request failed: HTTP ${response.status}${detail ? ` - ${detail.slice(0, 300)}` : ""}`,
+      // Drained, never surfaced: the body can echo the request.
+      await response.text().catch(() => "");
+      throw new OpenAIAnalystError(
+        `OpenAI analyst request failed: HTTP ${response.status}`,
+        "http",
+        response.status,
       );
     }
 
     const payload = await response.json() as OpenAIResponsePayload;
     options.onResponsePayload?.(payload);
-    if (payload.error?.message) {
-      throw new Error(`OpenAI analyst error: ${payload.error.message}`);
+    if (payload.error?.message || payload.error?.code) {
+      const code = payload.error.code ?? null;
+      throw new OpenAIAnalystError(`OpenAI analyst error${code ? ` (${code})` : ""}`, "provider", null, code);
     }
     if (payload.status && payload.status !== "completed") {
-      throw new Error(`OpenAI analyst response status: ${payload.status}`);
+      throw new OpenAIAnalystError(
+        `OpenAI analyst response status: ${payload.status}`,
+        "status",
+        null,
+        payload.status,
+      );
     }
     return payload;
   } catch (error) {
+    if (error instanceof OpenAIAnalystError) throw error;
     if (error instanceof Error && error.name === "AbortError") {
-      throw new Error("OpenAI analyst request timed out.");
+      throw new OpenAIAnalystError("OpenAI analyst request timed out.", "timeout");
     }
-    throw error;
+    if (error instanceof SyntaxError) {
+      throw new OpenAIAnalystError("OpenAI analyst returned invalid JSON.", "provider", null, "invalid_json");
+    }
+    throw new OpenAIAnalystError("OpenAI analyst network error.", "network");
   } finally {
     clearTimeout(timeout);
+    options.signal?.removeEventListener("abort", abortFromCaller);
   }
 }
 
@@ -243,6 +279,6 @@ export async function answerBotSummaryQuestion(
   );
 
   const answer = extractOpenAIOutputText(payload);
-  if (!answer) throw new Error("OpenAI analyst returned an empty answer.");
+  if (!answer) throw new OpenAIAnalystError("OpenAI analyst returned an empty answer.", "empty");
   return answer;
 }
