@@ -82,6 +82,14 @@ export function pendingReferenceVerifiedTransferWarning(
   return `${PENDING_REFERENCE_VERIFIED_TRANSFER_WARNING} (${count} รายการ, ${formatBaht(amount)} บาท)`;
 }
 
+/** The LINE batch summary's outlier guard, applied to verifiedTransfers too. Advisory, like the date rule. */
+export const PENDING_OUTLIER_VERIFIED_TRANSFER_WARNING =
+  "พบสลิปยอดเงินสูงผิดปกติ ไม่นับเป็นยอดโอน ต้องตรวจมือ";
+
+export function pendingOutlierVerifiedTransferWarning(count: number, amount: number): string {
+  return `${PENDING_OUTLIER_VERIFIED_TRANSFER_WARNING} (${count} รายการ, ${formatBaht(amount)} บาท)`;
+}
+
 export function pendingDateVerifiedTransferWarning(
   count: number,
   amount: number,

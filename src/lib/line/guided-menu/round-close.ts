@@ -19,6 +19,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, SlipCheckStatus } from "@/types/database";
 import {
   businessDateToUtcRange,
+  loadBatchOutlierCheckIds,
   loadMarketScopedAiVerifiedTransfers,
   loadMarketScopedManualSlipTotal,
 } from "@/lib/reconciliation";
@@ -142,16 +143,20 @@ export async function loadGuidedSlipRows(
 ): Promise<GuidedSlipRow[]> {
   const { startUtc, endUtc } = businessDateToUtcRange(context.businessDate);
 
+  // Same scope as loadVerifiedTransferChecksForSourceDate: a round binding is
+  // authoritative (a late image bound to this round is listed, as it is counted);
+  // only unbound/legacy evidence falls back to the 04:00 receipt window.
   let evidenceQuery = supabase
     .from("slip_evidences")
-    .select("id, market_label, received_at")
-    .eq("source_id", context.sourceId)
-    .gte("received_at", startUtc)
-    .lt("received_at", endUtc);
-  if (context.accountabilityRoundId !== undefined) {
-    evidenceQuery = context.accountabilityRoundId === null
-      ? evidenceQuery.is("accountability_round_id", null)
-      : evidenceQuery.eq("accountability_round_id", context.accountabilityRoundId);
+    .select("id, market_label, received_at, batch_id")
+    .eq("source_id", context.sourceId);
+  if (context.accountabilityRoundId) {
+    evidenceQuery = evidenceQuery.eq("accountability_round_id", context.accountabilityRoundId);
+  } else {
+    evidenceQuery = evidenceQuery.gte("received_at", startUtc).lt("received_at", endUtc);
+    if (context.accountabilityRoundId === null) {
+      evidenceQuery = evidenceQuery.is("accountability_round_id", null);
+    }
   }
   const { data: evidences, error: evidenceError } = await evidenceQuery;
   if (evidenceError) {
@@ -198,6 +203,10 @@ export async function loadGuidedSlipRows(
     winners = new Set();
   }
 
+  const outliers = await loadBatchOutlierCheckIds(supabase, [...new Set(evidenceRows
+    .map((row) => (row as { batch_id?: string | null }).batch_id)
+    .filter((id): id is string => typeof id === "string"))]);
+
   return checkRows.flatMap((row): GuidedSlipRow[] => {
     const checkId = String(row.id);
     const amount =
@@ -222,6 +231,11 @@ export async function loadGuidedSlipRows(
       // Another known market's slip. The money loader skips it rather than
       // treating it as unresolved, so this round does not list it at all.
       return [];
+    }
+    // The money loader counts only a transfer_amount (wallet slips are not in
+    // ai_verified_total) and suspends the LINE summary's outliers.
+    if (amount === null || outliers.has(checkId)) {
+      return [{ ...base, status: "manual_review" as const }];
     }
     const dateProblem = slipDateIneligibility(row.transaction_time as string | null, context.businessDate);
     if (dateProblem === "date_out_of_round") {

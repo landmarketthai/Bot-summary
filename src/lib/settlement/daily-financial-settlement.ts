@@ -293,6 +293,12 @@ export async function loadTransferInputs(
         + `(${ai.pendingDateAmount.toFixed(2)} บาท) — รอตรวจสอบ ไม่รวมในยอดโอนด้านบน`,
     );
   }
+  if (ai.pendingOutlierCount > 0) {
+    uncertainty.push(
+      `มีสลิปยอดเงินสูงผิดปกติ ${ai.pendingOutlierCount} รายการ `
+        + `(${ai.pendingOutlierAmount.toFixed(2)} บาท) — รอตรวจสอบ ไม่รวมในยอดโอนด้านบน`,
+    );
+  }
 
   const total = fromCents(toCents(ai.attributedTotal) + toCents(manualTotal));
   return { total, uncertainty };

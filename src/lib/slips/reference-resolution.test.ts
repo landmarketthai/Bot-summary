@@ -150,7 +150,7 @@ describe("BR-02 scenarios: manual resolution cannot make duplicate money count t
     ]);
     const winners = await resolveGloballyAcceptedCheckIds(db, ["REF-A"]);
     const result = aggregateGloballyAcceptedVerifiedTransfers(
-      [{ id: "c-a", evidence_id: "ev-a", transfer_amount: 100, reference_id: "REF-A", created_at: "2026-07-24T01:00:00Z", date_ineligibility: null }],
+      [{ id: "c-a", evidence_id: "ev-a", transfer_amount: 100, reference_id: "REF-A", created_at: "2026-07-24T01:00:00Z", date_ineligibility: null, amount_outlier: false }],
       new Map(),
       winners,
     );
@@ -164,8 +164,8 @@ describe("BR-02 scenarios: manual resolution cannot make duplicate money count t
     const winners = await resolveGloballyAcceptedCheckIds(db, ["REF-B"]);
     const result = aggregateGloballyAcceptedVerifiedTransfers(
       [
-        { id: "c-first", evidence_id: "ev-a", transfer_amount: 100, reference_id: "REF-B", created_at: "2026-07-24T01:00:00Z", date_ineligibility: null },
-        { id: "c-second", evidence_id: "ev-a", transfer_amount: 100, reference_id: "REF-B", created_at: "2026-07-24T02:00:00Z", date_ineligibility: null },
+        { id: "c-first", evidence_id: "ev-a", transfer_amount: 100, reference_id: "REF-B", created_at: "2026-07-24T01:00:00Z", date_ineligibility: null, amount_outlier: false },
+        { id: "c-second", evidence_id: "ev-a", transfer_amount: 100, reference_id: "REF-B", created_at: "2026-07-24T02:00:00Z", date_ineligibility: null, amount_outlier: false },
       ],
       new Map(),
       winners,
@@ -182,7 +182,7 @@ describe("BR-02 scenarios: manual resolution cannot make duplicate money count t
     ]);
     const winners = await resolveGloballyAcceptedCheckIds(db, ["REF-CD"]);
     const result = aggregateGloballyAcceptedVerifiedTransfers(
-      [{ id: "c-local", evidence_id: "ev-a", transfer_amount: 100, reference_id: "REF-CD", created_at: "2026-07-24T01:00:00Z", date_ineligibility: null }],
+      [{ id: "c-local", evidence_id: "ev-a", transfer_amount: 100, reference_id: "REF-CD", created_at: "2026-07-24T01:00:00Z", date_ineligibility: null, amount_outlier: false }],
       new Map(),
       winners,
     );
@@ -191,7 +191,7 @@ describe("BR-02 scenarios: manual resolution cannot make duplicate money count t
 
   it("E: an unresolved (no-reference) check is pending and never auto-counted", () => {
     const result = aggregateGloballyAcceptedVerifiedTransfers(
-      [{ id: "c-pending", evidence_id: "ev-a", transfer_amount: 100, reference_id: null, created_at: "2026-07-24T01:00:00Z", date_ineligibility: null }],
+      [{ id: "c-pending", evidence_id: "ev-a", transfer_amount: 100, reference_id: null, created_at: "2026-07-24T01:00:00Z", date_ineligibility: null, amount_outlier: false }],
       new Map(),
       new Set<string>(),
     );
@@ -210,9 +210,9 @@ describe("BR-02 scenarios: manual resolution cannot make duplicate money count t
     const winners = await resolveGloballyAcceptedCheckIds(db, ["REF-F"]);
     const result = aggregateGloballyAcceptedVerifiedTransfers(
       [
-        { id: "c-earlier", evidence_id: "ev-a", transfer_amount: 100, reference_id: "REF-F", created_at: "2026-07-24T00:00:00Z", date_ineligibility: null },
+        { id: "c-earlier", evidence_id: "ev-a", transfer_amount: 100, reference_id: "REF-F", created_at: "2026-07-24T00:00:00Z", date_ineligibility: null, amount_outlier: false },
         // c-pending's reference_id is now REF-F after manual resolution.
-        { id: "c-pending", evidence_id: "ev-b", transfer_amount: 100, reference_id: "REF-F", created_at: "2026-07-24T01:00:00Z", date_ineligibility: null },
+        { id: "c-pending", evidence_id: "ev-b", transfer_amount: 100, reference_id: "REF-F", created_at: "2026-07-24T01:00:00Z", date_ineligibility: null, amount_outlier: false },
       ],
       new Map(),
       winners,

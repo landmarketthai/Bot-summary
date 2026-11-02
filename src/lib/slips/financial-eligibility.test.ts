@@ -49,7 +49,7 @@ function lineConfirmed(slips: Slip[]): number {
 function reconciliationTotal(slips: Slip[], winners = new Set(slips.map((s) => s.id))) {
   const rows: VerifiedTransferCheckRow[] = slips.map((s) => ({
     id: s.id, evidence_id: `ev-${s.id}`, transfer_amount: s.amount, reference_id: s.ref,
-    created_at: "2026-10-29T12:00:00Z", date_ineligibility: slipDateIneligibility(s.time, BUSINESS_DATE),
+    created_at: "2026-10-29T12:00:00Z", date_ineligibility: slipDateIneligibility(s.time, BUSINESS_DATE), amount_outlier: false,
   }));
   return aggregateGloballyAcceptedVerifiedTransfers(rows, new Map(), winners);
 }

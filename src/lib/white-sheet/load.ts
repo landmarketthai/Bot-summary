@@ -15,6 +15,7 @@ import type {
 } from "./types";
 import {
   pendingDateVerifiedTransferWarning,
+  pendingOutlierVerifiedTransferWarning,
   pendingReferenceVerifiedTransferWarning,
   unattributedVerifiedTransferWarning,
 } from "./warnings";
@@ -416,6 +417,14 @@ export async function loadDigitalWhiteSheetCalculation(
           pendingDateVerifiedTransferWarning(
             verifiedTransferResult.pendingDateCount,
             verifiedTransferResult.pendingDateAmount,
+          ),
+        ]
+      : []),
+    ...(verifiedTransferResult.pendingOutlierCount > 0
+      ? [
+          pendingOutlierVerifiedTransferWarning(
+            verifiedTransferResult.pendingOutlierCount,
+            verifiedTransferResult.pendingOutlierAmount,
           ),
         ]
       : []),

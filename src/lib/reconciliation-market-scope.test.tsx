@@ -106,8 +106,8 @@ describe("aggregateGloballyAcceptedVerifiedTransfers", () => {
     ["ev-b", MARKET_B_NORM],
   ]);
   const checks = [
-    { id: "c-a", evidence_id: "ev-a", transfer_amount: 100, reference_id: "REF-A", created_at: "2026-07-23T01:00:00Z", date_ineligibility: null },
-    { id: "c-b", evidence_id: "ev-b", transfer_amount: 200, reference_id: "REF-B", created_at: "2026-07-23T02:00:00Z", date_ineligibility: null },
+    { id: "c-a", evidence_id: "ev-a", transfer_amount: 100, reference_id: "REF-A", created_at: "2026-07-23T01:00:00Z", date_ineligibility: null, amount_outlier: false },
+    { id: "c-b", evidence_id: "ev-b", transfer_amount: 200, reference_id: "REF-B", created_at: "2026-07-23T02:00:00Z", date_ineligibility: null, amount_outlier: false },
   ];
   const globalWinners = new Set(["c-a", "c-b"]);
 
@@ -299,7 +299,7 @@ describe("legacy backfill attribution semantics", () => {
     expect(normalized).toBe(MARKET_A_NORM);
     expect(
       aggregateGloballyAcceptedVerifiedTransfers(
-        [{ id: "c-a", evidence_id: "ev-a", transfer_amount: 100, reference_id: "REF-A", created_at: "2026-07-23T01:00:00Z", date_ineligibility: null }],
+        [{ id: "c-a", evidence_id: "ev-a", transfer_amount: 100, reference_id: "REF-A", created_at: "2026-07-23T01:00:00Z", date_ineligibility: null, amount_outlier: false }],
         new Map([["ev-a", normalized]]),
         new Set(["c-a"]),
         { marketLabelNormalized: MARKET_A_NORM, knownMarkets: KNOWN_AB },
@@ -309,7 +309,7 @@ describe("legacy backfill attribution semantics", () => {
 
   it("B: batch_id present but market_name NULL → remains unresolved", () => {
     const result = aggregateGloballyAcceptedVerifiedTransfers(
-      [{ id: "c-u", evidence_id: "ev-u", transfer_amount: 50, reference_id: "REF-U", created_at: "2026-07-23T01:00:00Z", date_ineligibility: null }],
+      [{ id: "c-u", evidence_id: "ev-u", transfer_amount: 50, reference_id: "REF-U", created_at: "2026-07-23T01:00:00Z", date_ineligibility: null, amount_outlier: false }],
       new Map([["ev-u", null]]),
       new Set(["c-u"]),
       { marketLabelNormalized: MARKET_A_NORM, knownMarkets: KNOWN_AB },
@@ -320,7 +320,7 @@ describe("legacy backfill attribution semantics", () => {
 
   it("C: batch_id NULL → remains unresolved", () => {
     const result = aggregateGloballyAcceptedVerifiedTransfers(
-      [{ id: "c-u", evidence_id: "ev-null", transfer_amount: 75, reference_id: "REF-C", created_at: "2026-07-23T01:00:00Z", date_ineligibility: null }],
+      [{ id: "c-u", evidence_id: "ev-null", transfer_amount: 75, reference_id: "REF-C", created_at: "2026-07-23T01:00:00Z", date_ineligibility: null, amount_outlier: false }],
       new Map([["ev-null", null]]),
       new Set(["c-u"]),
       { marketLabelNormalized: MARKET_A_NORM, knownMarkets: KNOWN_AB },
@@ -332,7 +332,7 @@ describe("legacy backfill attribution semantics", () => {
 
   it("D (BR-02): reference_id NULL → pending manual resolution, not counted as market-unresolved", () => {
     const result = aggregateGloballyAcceptedVerifiedTransfers(
-      [{ id: "c-pending", evidence_id: "ev-a", transfer_amount: 60, reference_id: null, created_at: "2026-07-23T01:00:00Z", date_ineligibility: null }],
+      [{ id: "c-pending", evidence_id: "ev-a", transfer_amount: 60, reference_id: null, created_at: "2026-07-23T01:00:00Z", date_ineligibility: null, amount_outlier: false }],
       new Map([["ev-a", MARKET_A_NORM]]),
       new Set<string>(),
       { marketLabelNormalized: MARKET_A_NORM, knownMarkets: KNOWN_AB },

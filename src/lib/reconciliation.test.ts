@@ -348,6 +348,25 @@ describe("reconcile", () => {
     expect(result.blocked).toBe(false);
   });
 
+  // KNOWN BLOCKER (pre-existing, not from this PR): a manual-slip entry stores
+  // only an amount — no reference, no link to the slip_checks row — so when
+  // the operator re-enters a slip the AI ALREADY counted, nothing can tell it
+  // is the same transfer and checked_slip_total counts it twice. This states
+  // the required behaviour and is expected to fail until a link exists
+  // (needs an approved schema change). bun reports a pass while it still fails.
+  it.failing("BLOCKER: the same slip as an eligible AI check AND a manual entry is counted once", async () => {
+    const db = makeFullSupabase({
+      openSession:     false,
+      transferAmounts: [50],
+      transferRefs:    ["REF-SAME-SLIP"],
+      closedSessions:  ["sess1"],
+      entryAmounts:    [50],          // operator re-keyed the same 50 baht slip
+    });
+    const result = await reconcile(db as never, "grp1", "2026-06-17", 50);
+    expect(result.blocked).toBe(false);
+    if (!result.blocked) expect(result.result.checked_slip_total).toBe(50); // today: 100
+  });
+
   it("a misdated or undated AI slip is not AI-verified; a manual-slip entry counts it exactly once", async () => {
     // P0 29/10/2569 shape: one slip read with the wrong month, one with no date.
     const db = makeFullSupabase({
