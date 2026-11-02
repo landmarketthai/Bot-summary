@@ -40,7 +40,7 @@ Nothing writes to Supabase, `slip_checks`, settlement or LINE. Sender/receiver n
 3. `export` them to a folder outside the repo (also exports the result Production stored, as model `production:stored`).
 4. A reviewer fills `label` for each image **from the image itself** (never from either model's output) and `tags`:
    `{ slipType, amount, dateVisible, referenceId, shouldAccept }`.
-5. `run <dir> openai:<current model> gemini:gemini-3.8-flash [gemini:gemini-3.1-flash-lite] --runs 3`
+5. `run <dir> openai:<current model> gemini:gemini-3.5-flash-lite [gemini:gemini-3.8-flash] --runs 3`
    (extraction is nondeterministic; 3 runs per image is the minimum).
 6. `report.md` gives per model, overall, per tag and per slip type: correct accept, **false accept**, review rate,
    unnecessary review, missing amount/date/reference, run-to-run consistency, p50/p95 latency, measured cost per image.

@@ -37,6 +37,11 @@ describe("incomplete or invalid dates are still rejected (never guessed)", () =>
   test.each([
     "วันที่ 29 ต.ค. เวลา 17:49",       // no year
     "เวลา 17:49 น.",                   // no date
+    "29 ต.ค. 69",                      // date without time: never filled with 00:00
+    "วันที่ 29 ต.ค. 2569",
+    "29 ตุลาคม 2569 น.",
+    "29/10/2569",
+    "29-10-69",
     "วันที่",                          // label only
     "วันที่ 31 ก.พ. 2569 เวลา 10:00",  // impossible day
     "วันที่ 29 ต.ค. 2569 เวลา 25:10",  // impossible hour

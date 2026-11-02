@@ -23,7 +23,7 @@ import { withTimeout } from "@/lib/slips/io-timeout";
  * retry policy before this ever serves Production traffic.
  */
 const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models";
-export const DEFAULT_GEMINI_SLIP_MODEL = "gemini-3.8-flash";
+export const DEFAULT_GEMINI_SLIP_MODEL = "gemini-3.5-flash-lite";
 
 export class GeminiSlipExtractor implements SlipExtractor {
   constructor(

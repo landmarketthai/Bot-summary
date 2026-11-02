@@ -12,7 +12,7 @@
  *   run     Sends the LOCAL labelled images to each model N times. Refuses a
  *           provider not listed in SLIP_EVAL_PROVIDER_UPLOAD_APPROVED
  *           (comma list: openai,gemini) — slip images are private data.
- *     bun scripts/slip-ocr-eval.ts run <outDir> openai:gpt-6-luna gemini:gemini-3.8-flash [--runs 3]
+ *     bun scripts/slip-ocr-eval.ts run <outDir> openai:gpt-6-luna gemini:gemini-3.5-flash-lite [--runs 3]
  *
  *   score   Re-scores <outDir>/runs.jsonl against the labels. No network.
  *     bun scripts/slip-ocr-eval.ts score <outDir>

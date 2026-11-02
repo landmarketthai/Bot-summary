@@ -347,7 +347,8 @@ function parseThaiMonthTimestamp(text: string): string | null {
   // "\u0E15.\u0E04" printed without its final dot is still an exact table spelling.
   const month = THAI_MONTHS[match[2]] ?? THAI_MONTHS[`${match[2]}.`];
   if (!month) return null;
-  const clock = parseClock(match[4] ?? "00:00:00");
+  // A printed date without a printed time is incomplete: never invent 00:00.
+  const clock = match[4] ? parseClock(match[4]) : null;
   if (!clock) return null;
   return formatOffsetDate(
     normalizeThaiYear(parseInt(match[3], 10)),
@@ -361,7 +362,7 @@ function parseThaiMonthTimestamp(text: string): string | null {
 function parseNumericDateTimestamp(text: string): string | null {
   const match = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4}|\d{2})(?:\s*-?\s*(.+))?$/.exec(text);
   if (!match) return null;
-  const clock = parseClock(match[4] ?? "00:00:00");
+  const clock = match[4] ? parseClock(match[4]) : null;
   if (!clock) return null;
   return formatOffsetDate(
     normalizeThaiYear(parseInt(match[3], 10)),
