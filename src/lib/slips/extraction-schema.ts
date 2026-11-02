@@ -1,3 +1,4 @@
+import { normalizeSlipReference } from "@/lib/slips/reference-ownership";
 import type { Json } from "@/types/database";
 
 export const SLIP_CHECK_STATUSES = [
@@ -293,11 +294,10 @@ function parseRawText(value: unknown, maxLength: number): string | null {
   return text ? normalizeWhitespace(text).replace(/\d{7,}/g, "[redacted]").slice(0, maxLength) : null;
 }
 
+// The ownership normalizer (also strips zero-width spaces), so an AI read and a
+// manual entry of the same reference always match.
 function parseReferenceId(value: unknown): string | null {
-  const text = parseNullableText(value);
-  if (!text) return null;
-  const compact = text.replace(/\s+/g, "");
-  return compact.length > 0 ? compact : null;
+  return normalizeSlipReference(parseNullableText(value));
 }
 
 function parseNullableTimestamp(value: unknown): string | null {

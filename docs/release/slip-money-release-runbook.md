@@ -82,3 +82,9 @@ SELECT count(*) FROM public.settlement_finalizations WHERE status = 'sending';  
 - **Migrations are now four:** add `20261102150000_slip_reference_scope.sql` (M4) after M3. Rollback order: M4 → M3 → M2 → M1 (each `.down.sql` keeps every row).
 - **🔒 Approve the BR-02 rule change:** a reference that already exists on another slip can no longer be assigned to a pending check.
 - **Monitor:** `settlement_finalizations` rows `failed` after a push attempt (limit 3 in `docs/manual-slip-ai-approval.md`), and AI references held by more than one check (limit 2).
+
+## Addendum: migration M5 and the third review
+- **Migrations are now five:** add `20261102160000_finalization_claim_order.sql` (M5) after M4. It adds `settlement_finalizations.money_claimed_at` and replaces the finalization trigger function, which now takes one global lock and stamps the claim time in the database. It also pins `normalize_slip_reference` to an explicit character list. Apply M1–M5 in one window, with no settlement in `sending`.
+- **Rollback order:** revert the app code first, then M5 → M4 → M3 → M2 → M1. Every row is kept, including `money_claimed_at`.
+- **🔒 Sign off the rule:** a cross-scope duplicate (an AI read and a manual entry with the same full reference) goes to the scope that finalizes first. See `docs/manual-slip-ai-approval.md`, third review.
+- **Still gated:** the AI-vs-manual path stays dormant until LINE grammar phase 1 writes `manual_slip_entries.reference_id`. Nothing in Production writes it today.

@@ -86,6 +86,22 @@ describe("containment: money already handed out in a finalized round never moves
     expect(states(r)).toEqual({ e1: "rejected", e3: "superseded" });
   });
 
+  test("both scopes finalized: the one that finalized FIRST keeps the transfer, whatever the creation order", () => {
+    const aiFirst = resolveReferenceOwnership(ai({ createdAt: T(30), finalized: true, finalizedAt: T(40) }),
+      [man("m", { createdAt: T(10), finalized: true, finalizedAt: T(50) })]);
+    expect(aiFirst.aiOwns).toBe(true);
+    expect(states(aiFirst)).toEqual({ m: "superseded" });
+    const manualFirst = resolveReferenceOwnership(ai({ createdAt: T(5), finalized: true, finalizedAt: T(50) }),
+      [man("m", { createdAt: T(10), finalized: true, finalizedAt: T(40) })]);
+    expect(manualFirst).toMatchObject({ aiOwns: false, aiSupersededByManual: true });
+    expect(states(manualFirst)).toEqual({ m: "counted" });
+    const twoManual = resolveReferenceOwnership(null, [
+      man("early", { createdAt: T(1), finalized: true, finalizedAt: T(50) }),
+      man("late", { createdAt: T(9), finalized: true, finalizedAt: T(45) }),
+    ]);
+    expect(states(twoManual)).toEqual({ early: "superseded", late: "counted" });
+  });
+
   test("an open AI read loses to a finalized manual claim even if it is earlier", () => {
     const r = resolveReferenceOwnership(ai({ createdAt: T(1) }), [man("m", { createdAt: T(20), finalized: true })]);
     expect(r).toMatchObject({ aiOwns: false, aiSupersededByManual: true });
@@ -100,5 +116,12 @@ describe("one reference normalizer", () => {
     expect(normalizeSlipReference("01​23\t45\n67")).toBe("01234567");
     expect(normalizeSlipReference("   ")).toBeNull();
     expect(normalizeSlipReference(null)).toBeNull();
+    expect(normalizeSlipReference("0123​4567﻿")).toBe("01234567");
+  });
+
+  test("AI reads go through the same normalizer (zero-width space removed)", async () => {
+    const { parseSlipExtraction } = await import("@/lib/slips/extraction-schema");
+    const parsed = parseSlipExtraction({ is_slip: true, slip_type: "BANK_SLIP_QR", transfer_amount: 50, reference_id: "0123​ 4567" });
+    expect(parsed.referenceId).toBe("01234567");
   });
 });

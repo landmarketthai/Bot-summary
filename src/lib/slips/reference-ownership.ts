@@ -17,9 +17,11 @@ type Supabase = SupabaseClient<Database>;
  *      rejected, and it is approved — or it needs no review and the AI read of
  *      the same reference was not rejected (a rejected AI read means a human
  *      must decide).
- *   3. The EARLIEST candidate owns the money (AI wins a tie). A later arrival
- *      never takes money away from an earlier owner, so a finalized round's
- *      total cannot be moved by an image or entry that comes afterwards.
+ *   3. The EARLIEST candidate owns the money (AI wins a tie). Once a claim's
+ *      round/day is finalized, only finalized claims can own it, and among them
+ *      the one whose scope finalized FIRST (that scope counted the transfer):
+ *      a later finalizer, or a claim that becomes valid afterwards, never
+ *      counts it again.
  *   4. Every other manual entry of the reference: same amount as the owner →
  *      superseded (not counted); different amount → pending (a conflict a
  *      human resolves; never silently reconciled). With no owner, an entry
@@ -37,6 +39,8 @@ export interface AiCandidate {
   decision?: ReviewDecision | null;
   /** Its round/day settlement was handed out (sending / sent / ambiguous). */
   finalized?: boolean;
+  /** When that settlement was first claimed (money_claimed_at); orders finalized claims. */
+  finalizedAt?: string | null;
   evidenceId?: string;
 }
 
@@ -48,6 +52,7 @@ export interface ManualCandidate {
   closed: boolean;
   decision?: ReviewDecision | null;
   finalized?: boolean;
+  finalizedAt?: string | null;
   sessionId?: string;
 }
 
@@ -76,16 +81,23 @@ export function resolveReferenceOwnership(
     m.closed && m.decision?.decision !== "rejected"
     && (m.decision?.decision === "approved" || (!m.requiresReview && !(ai !== null && aiRejected)));
   // Containment for money already handed out: when ANY valid claim of this
-  // reference sits in a finalized round/day, only finalized claims can own it.
-  // A claim in an open round — however it became valid later (session close,
-  // approval, a rejected owner, a late OCR completion) — never counts the same
-  // transfer a second time; it is superseded (same amount) or pending.
+  // reference sits in a finalized round/day, only finalized claims can own it,
+  // and the scope that finalized FIRST wins: when it finalized, its own claim
+  // was the only finalized one, so it counted the transfer. A claim in an open
+  // round — however it became valid later (session close, approval, a rejected
+  // owner, a late OCR completion) — or one whose scope finalizes later never
+  // counts the same transfer a second time; it is superseded or pending.
   const validManuals = sorted.filter(isCandidate);
   const finalizedOnly = (aiLive && ai!.finalized === true) || validManuals.some((m) => m.finalized === true);
   const aiEligible = aiLive && (!finalizedOnly || ai!.finalized === true);
-  const firstManual = validManuals.find((m) => !finalizedOnly || m.finalized === true) ?? null;
+  const rank = (c: { createdAt: string; finalizedAt?: string | null }) =>
+    finalizedOnly ? Date.parse(c.finalizedAt ?? c.createdAt) : 0;
+  const firstManual = validManuals
+    .filter((m) => !finalizedOnly || m.finalized === true)
+    .reduce<ManualCandidate | null>((best, m) => (best === null || rank(m) < rank(best) ? m : best), null);
 
-  const aiOwns = aiEligible && (firstManual === null || Date.parse(ai!.createdAt) <= Date.parse(firstManual.createdAt));
+  const aiOwns = aiEligible && (firstManual === null || rank(ai!) < rank(firstManual)
+    || (rank(ai!) === rank(firstManual) && Date.parse(ai!.createdAt) <= Date.parse(firstManual.createdAt)));
   const owner = aiOwns ? null : firstManual;
   const ownerAmount = aiOwns
     ? (ai!.decision?.decision === "approved" ? ai!.decision.amount : ai!.amount!)
@@ -124,7 +136,7 @@ export function isMissingSchemaObject(error: { code?: string }): boolean {
  * zero-width spaces an operator may paste. Matching is exact after this.
  */
 export const normalizeSlipReference = (raw: string | null | undefined): string | null => {
-  const t = typeof raw === "string" ? raw.replace(/[\s​‌‍﻿]+/g, "") : "";
+  const t = typeof raw === "string" ? raw.replace(/[\s\u200B-\u200D\uFEFF]+/g, "") : "";
   return t.length > 0 ? t : null;
 };
 const norm = normalizeSlipReference;
@@ -210,7 +222,7 @@ async function selectWithFallback<T>(
 
 /**
  * Marks claims whose round/day settlement was handed out (sending / sent /
- * ambiguous), only for references with competing claims — the only case the
+ * ambiguous) with WHEN it was claimed, only for references with competing claims — the only case the
  * containment rule needs. Scope = accountability round when bound, plus the
  * source's legacy day-level (NULL-round) settlement for the receipt day and
  * the round's business day.
@@ -245,16 +257,53 @@ async function markFinalizedClaims(supabase: Supabase, index: ReferenceIndex): P
   const scopeOfSession = new Map<string, Scope>(sessions.map((s) =>
     [s.id, { source: s.source_id, round: s.accountability_round_id ?? null, days: [s.business_date] }]));
 
-  const sources = [...new Set([...scopeOfEvidence.values(), ...scopeOfSession.values()].map((s) => s.source))];
-  const finals = sources.length === 0 ? [] : await selectWithFallback<{ source_id: string; business_date: string; accountability_round_id?: string | null }>(
-    (cols) => supabase.from("settlement_finalizations").select(cols as "source_id").in("source_id", sources).in("status", FINALIZED_STATUSES),
-    ["source_id, business_date, accountability_round_id", "source_id, business_date"], "claim finalization lookup");
-  const finalized = (scope: Scope | undefined) => scope !== undefined && finals.some((f) =>
-    (scope.round !== null && f.accountability_round_id === scope.round)
-    || ((f.accountability_round_id ?? null) === null && f.source_id === scope.source && scope.days.includes(f.business_date)));
+  // Only the claims' own rounds and (source, day) pairs: an unbounded history
+  // would be cut by PostgREST max_rows and silently drop a finalization.
+  type Final = {
+    source_id: string; business_date: string; accountability_round_id?: string | null;
+    money_claimed_at?: string | null; claimed_at?: string | null; finalized_at?: string | null;
+  };
+  const scopes = [...scopeOfEvidence.values(), ...scopeOfSession.values()];
+  const claimRounds = [...new Set(scopes.map((s) => s.round).filter((r): r is string => r !== null))];
+  const sources = [...new Set(scopes.map((s) => s.source))];
+  const days = [...new Set(scopes.flatMap((s) => s.days))];
+  // money_claimed_at comes with 20261102160000; before it, the app-side claim time.
+  const columns = [
+    "source_id, business_date, accountability_round_id, money_claimed_at, claimed_at, finalized_at",
+    "source_id, business_date, accountability_round_id, claimed_at, finalized_at",
+    "source_id, business_date, claimed_at, finalized_at",
+  ];
+  const byRound = claimRounds.length === 0 ? [] : await selectWithFallback<Final>(
+    (cols) => supabase.from("settlement_finalizations").select(cols as "source_id")
+      .in("accountability_round_id", claimRounds).in("status", FINALIZED_STATUSES),
+    columns.slice(0, 2), "claim round finalization lookup");
+  const byDay = sources.length === 0 ? [] : await selectWithFallback<Final>((cols) => {
+    const q = supabase.from("settlement_finalizations").select(cols as "source_id")
+      .in("source_id", sources).in("business_date", days).in("status", FINALIZED_STATUSES);
+    return cols.includes("accountability_round_id") ? q.is("accountability_round_id", null) : q;
+  }, columns, "claim day finalization lookup");
+  const finals = [...byRound, ...byDay];
+  /** When the earliest finalization covering the scope claimed it; null = not finalized. */
+  const finalizedAt = (scope: Scope | undefined): string | null => {
+    if (!scope) return null;
+    let first: string | null = null;
+    for (const f of finals) {
+      const covers = (scope.round !== null && f.accountability_round_id === scope.round)
+        || ((f.accountability_round_id ?? null) === null && f.source_id === scope.source && scope.days.includes(f.business_date));
+      const at = f.money_claimed_at ?? f.claimed_at ?? f.finalized_at ?? null;
+      if (covers && at && (first === null || Date.parse(at) < Date.parse(first))) first = at;
+    }
+    return first;
+  };
 
-  for (const a of ai) a.finalized = finalized(scopeOfEvidence.get(a.evidenceId!));
-  for (const m of manual) m.finalized = finalized(scopeOfSession.get(m.sessionId!));
+  for (const a of ai) {
+    a.finalizedAt = finalizedAt(scopeOfEvidence.get(a.evidenceId!));
+    a.finalized = a.finalizedAt !== null;
+  }
+  for (const m of manual) {
+    m.finalizedAt = finalizedAt(scopeOfSession.get(m.sessionId!));
+    m.finalized = m.finalizedAt !== null;
+  }
 }
 
 export function ownershipFor(index: ReferenceIndex, reference: string | null | undefined): ReferenceOwnership | null {

@@ -39,6 +39,7 @@ const M1 = "20261102120000_slip_check_approval_link";
 const M2 = "20261102130000_manual_slip_entry_review";
 const M3 = "20261102140000_slip_review_hardening";
 const M4 = "20261102150000_slip_reference_scope";
+const M5 = "20261102160000_finalization_claim_order";
 const BASE_MIGRATIONS = [
   ...SLIP_PIPELINE_MIGRATIONS,
   "0027_manual_slip_session.sql",
@@ -131,9 +132,9 @@ const approveAi = (checkId: string, amount: number) =>
 
 describe.skipIf(!pgAvailable)("one transfer, one money row across AI and manual (PG 17)", () => {
   beforeAll(async () => {
-    db = await freshDb("slip_approval", [M1, M2, M3, M4]);
+    db = await freshDb("slip_approval", [M1, M2, M3, M4, M5]);
     supa = createPgSupabase(db, { failUpload: new Set(), uploaded: new Map() });
-  });
+  }, 120_000);
   afterAll(async () => { await db?.drop(); });
 
   // ── AI approvals ───────────────────────────────────────────────────────────
@@ -436,6 +437,18 @@ describe.skipIf(!pgAvailable)("one transfer, one money row across AI and manual 
     expect(await checked("NM")).toBe(45);
   });
 
+  test("the SQL and TypeScript normalizers remove exactly the same characters (no ctype dependence)", async () => {
+    const { normalizeSlipReference } = await import("@/lib/slips/reference-ownership");
+    const codePoints = [0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x20, 0x85, 0xa0, 0x1680, 0x180e, 0x2000, 0x200a, 0x200b, 0x200d,
+      0x200e, 0x2028, 0x2029, 0x202f, 0x205f, 0x2060, 0x3000, 0xfeff];
+    for (const cp of codePoints) {
+      const raw = `A${String.fromCodePoint(cp)}B`;
+      const sql = await db.scalar(
+        `SELECT public.normalize_slip_reference(convert_from(decode('${Buffer.from(raw).toString("hex")}', 'hex'), 'UTF8'))`);
+      expect({ cp, sql }).toEqual({ cp, sql: normalizeSlipReference(raw)! });
+    }
+  });
+
   test("a legacy day-level finalization of the RECEIPT day closes reviews of a round-bound slip of another business day", async () => {
     const round = "30000000-0000-4000-8000-000000000002";
     await db.query(`INSERT INTO public.accountability_rounds (id, business_date) VALUES ('${round}', '2026-10-28')`);
@@ -462,15 +475,101 @@ describe.skipIf(!pgAvailable)("one transfer, one money row across AI and manual 
     expect(rows.every((r) => r.ok === false)).toBe(true);
   });
 
-  test("migrations 20261102140000 and 20261102150000 re-apply cleanly (idempotent)", async () => {
+  // ── claim order (20261102160000) — third review ────────────────────────────
+  const finalize = (source: string) =>
+    db.query(`INSERT INTO public.settlement_finalizations (source_id, business_date, status) VALUES ('${source}', '${DATE}', 'sending')`);
+  const setStatus = (source: string, status: string) =>
+    db.query(`UPDATE public.settlement_finalizations SET status = '${status}' WHERE source_id = '${source}'`);
+  const later = () => new Date(Date.now() + 60_000).toISOString();
+
+  test("two scopes finalize in turn: the FIRST one counts the transfer and the second never does (both orders)", async () => {
+    // Manual entry keyed first in CO-A; the AI read of the same transfer later in CO-B.
+    await seedManual("CO-A", [{ amount: 70, reference_id: "CO-R1" }]);
+    await seedCheck(db, { source: "CO-B", amount: 70, ref: "CO-R1", time: OK_TIME, createdAt: later() });
+    await finalize("CO-B");                       // the finalizer reconciles under its own sending row
+    expect(await ai("CO-B")).toBe(70);
+    await setStatus("CO-B", "sent");
+    await finalize("CO-A");
+    expect(await manual("CO-A")).toMatchObject({ total: 0, supersededCount: 1 }); // was 70: paid twice
+    expect(await ai("CO-B")).toBe(70);
+
+    // Reverse order: the manual scope finalizes first.
+    await seedManual("CO-C", [{ amount: 80, reference_id: "CO-R2" }]);
+    await seedCheck(db, { source: "CO-D", amount: 80, ref: "CO-R2", time: OK_TIME, createdAt: later() });
+    await finalize("CO-C");
+    expect(await manual("CO-C")).toMatchObject({ total: 80 });
+    await setStatus("CO-C", "sent");
+    await finalize("CO-D");
+    expect(await ai("CO-D")).toBe(0);
+    expect(await manual("CO-C")).toMatchObject({ total: 80 });
+  });
+
+  test("a failed claim that retries after another scope finalized does not count the transfer again", async () => {
+    await seedManual("FA-A", [{ amount: 30, reference_id: "FA-R" }]);
+    await seedCheck(db, { source: "FA-B", amount: 30, ref: "FA-R", time: OK_TIME, createdAt: later() });
+    await finalize("FA-A");
+    expect(await manual("FA-A")).toMatchObject({ total: 30 });
+    await setStatus("FA-A", "failed");             // not handed out: the other scope may take it
+    await finalize("FA-B");
+    expect(await ai("FA-B")).toBe(30);
+    await setStatus("FA-A", "sending");            // the retry is a NEW claim, after FA-B's
+    expect(await manual("FA-A")).toMatchObject({ total: 0, supersededCount: 1 });
+    expect(await ai("FA-B")).toBe(30);
+  });
+
+  test("money_claimed_at: stamped by the database on entering a handed-out status, kept on sent and stale re-claim, cleared on failed", async () => {
+    const at = () => db.scalar(`SELECT coalesce(money_claimed_at::text, 'null') FROM public.settlement_finalizations WHERE source_id = 'ST'`);
+    await db.query(`INSERT INTO public.settlement_finalizations (source_id, business_date, status, claimed_at, money_claimed_at)
+                    VALUES ('ST', '${DATE}', 'sending', '2020-01-01', '2020-01-01')`);
+    const t1 = await at();
+    expect(t1.startsWith("2020")).toBe(false);
+    await setStatus("ST", "sent");
+    expect(await at()).toBe(t1);
+    await db.query(`UPDATE public.settlement_finalizations SET claimed_at = now() WHERE source_id = 'ST'`); // stale re-claim shape
+    expect(await at()).toBe(t1);
+    await setStatus("ST", "failed");
+    expect(await at()).toBe("null");
+    await setStatus("ST", "sending");
+    expect(await db.scalar(`SELECT (money_claimed_at > '${t1}'::timestamptz)::text FROM public.settlement_finalizations WHERE source_id = 'ST'`)).toBe("true");
+  });
+
+  test("claims are serialized: a claim waits for another scope's uncommitted claim and is stamped after it", async () => {
+    const holder = Bun.spawn([PSQL, "-X", "-v", "ON_ERROR_STOP=1", "-f", "-"], {
+      env: { ...process.env, PGHOST, PGUSER, PGPASSWORD, PGPORT, PGDATABASE: db.name, PGAPPNAME: "claim-holder" },
+      stdin: new TextEncoder().encode(
+        `BEGIN; INSERT INTO public.settlement_finalizations (source_id, business_date, status) VALUES ('SQ-1', '${DATE}', 'sending'); SELECT pg_sleep(1.5); COMMIT;`,
+      ),
+      stdout: "pipe", stderr: "pipe",
+    });
+    for (let i = 0; i < 100; i++) {
+      if (await db.scalar(`SELECT count(*) FROM pg_stat_activity WHERE application_name = 'claim-holder' AND query LIKE '%pg_sleep%'`) === "1") break;
+      await Bun.sleep(20);
+    }
+    const started = Date.now();
+    await finalize("SQ-2");
+    const waited = Date.now() - started;
+    expect(await holder.exited).toBe(0);
+    expect(waited).toBeGreaterThan(500);
+    expect(await db.scalar(
+      `SELECT ((SELECT money_claimed_at FROM public.settlement_finalizations WHERE source_id = 'SQ-2')
+             > (SELECT money_claimed_at FROM public.settlement_finalizations WHERE source_id = 'SQ-1'))::text`,
+    )).toBe("true");
+  });
+
+  test("migrations 20261102140000 to 20261102160000 re-apply cleanly (idempotent)", async () => {
     await db.exec(await file("migrations", M3));
     await db.exec(await file("migrations", M4));
+    await db.exec(await file("migrations", M5));
     expect(await manual("L1")).toMatchObject({ total: 60 });
   });
 
-  test("rollback (M4, M3, M2, M1) drops the RPCs, restores the old append RPC and keeps every financial row", async () => {
+  test("rollback (M5, M4, M3, M2, M1) drops the RPCs, restores the old append RPC and keeps every financial row", async () => {
     const decisions = await db.scalar(`SELECT count(*) FROM public.slip_check_approvals`);
     const entries = await db.scalar(`SELECT count(*) FROM public.manual_slip_entries`);
+    const stamped = await db.scalar(`SELECT count(money_claimed_at) FROM public.settlement_finalizations`);
+    await db.exec(await file("rollback", M5));
+    expect(await db.scalar(`SELECT (prosrc LIKE '%claim-order%')::text FROM pg_proc WHERE proname = 'lock_settlement_finalization_money'`)).toBe("false");
+    expect(await db.scalar(`SELECT count(money_claimed_at) FROM public.settlement_finalizations`)).toBe(stamped);
     await db.exec(await file("rollback", M4));
     expect(await db.scalar(`SELECT count(*) FROM pg_proc WHERE proname = 'normalize_slip_reference'`)).toBe("0");
     await db.exec(await file("rollback", M3));
@@ -505,7 +604,7 @@ describe.skipIf(!pgAvailable)("app code and schema at different versions (PG 17)
     } finally {
       await old.drop();
     }
-  });
+  }, 60_000);
 
   test("new code with only the first migration: references honoured, review flag absent = counted", async () => {
     const mid = await freshDb("slip_skew1", [M1]);
@@ -525,5 +624,5 @@ describe.skipIf(!pgAvailable)("app code and schema at different versions (PG 17)
     } finally {
       await mid.drop();
     }
-  });
+  }, 60_000);
 });

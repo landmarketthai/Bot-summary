@@ -99,13 +99,30 @@ Full procedure, limits and triggers: `docs/release/slip-money-release-runbook.md
 - **Database:** `supabase/rollback/20261102130000_manual_slip_entry_review.down.sql`, then `20261102120000_slip_check_approval_link.down.sql`. They drop the RPCs and lock trigger and restore the previous append RPC. **Every decision row, `reference_id` and `requires_review` is kept.**
 
 ## Second adversarial review: fixes and residual limits (`20261102150000_slip_reference_scope.sql` + containment)
-- **Containment of finalized money:** once any valid claim on a reference sits in a finalized round/day (`sending`/`sent`/`ambiguous`), only finalized claims can own it. Claims in open rounds become superseded (same amount) or pending. This holds no matter how they became valid later: session close, approval of an older pending entry, rejection of the owner, or a late OCR completion. One transfer can no longer be paid in two settlements.
+- **Containment of finalized money:** once any valid claim on a reference sits in a finalized round/day (`sending`/`sent`/`ambiguous`), only finalized claims can own it. Claims in open rounds become superseded (same amount) or pending. This holds no matter how they became valid later: session close, approval of an older pending entry, rejection of the owner, or a late OCR completion. **Corrected by the third review (below):** ranking finalized claims by `created_at` still paid a transfer twice when the scope holding the later-created claim finalized first.
 - **One reference normalizer:** every whitespace kind, including no-break and zero-width spaces, is removed in TypeScript (`normalizeSlipReference`) and in SQL (`normalize_slip_reference`, applied when manual references are written).
 - **Receipt day:** a round-bound slip's review also locks and checks the legacy NULL-round settlement of its receipt day.
 - **BR-02 behaviour change (needs sign-off):** reference resolution now refuses a reference that already exists on another slip, reviewed or not, because that check is its duplicate. Before, it was allowed and could make the older check the new owner.
 
 **Residual limits (documented, not fixed):**
-1. **Live recomputation of a finalized day can differ from its sent message.** Example: rejecting an open-round owner can let an already-finalized claim become owner in that day's live view. Nothing is paid twice; the sent message is the authority.
+1. **Live recomputation of a finalized day can differ from its sent message.** Example: rejecting an open-round owner can let an already-finalized claim become owner in that day's live view. The sent message is the authority. (The double payment across two sent settlements is fixed by M5; see below.)
 2. **AI-vs-AI duplicate winner** (pre-existing since main): a check whose OCR completes late keeps its original `created_at` and can become the global winner over a newer check. Containment does not cover AI-vs-AI.
 3. **Push timeout that LINE actually delivered:** the row is marked `failed`, so reviews reopen; the retry recomputes. The group may have seen the earlier totals.
 4. **Unreferenced manual entries:** legacy entries and today's grammar cannot be matched to an AI read (no identity).
+
+## Third adversarial review: claim order (`20261102160000_finalization_claim_order.sql`, M5)
+- **P1 found and fixed.** The finalizer reconciles under its own `sending` row, so its claim always counted as "finalized". When both scopes of a reference were finalized, the earlier-created claim won, so the scope that finalized second counted the transfer again. Example: CB is sent with AI ฿70; CA (manual ฿70, keyed earlier) then finalizes and also counts ฿70.
+- **Rule now:** among finalized claims, the scope that finalized **first** owns the reference. When it finalized, its own claim was the only finalized one, so it is the scope that counted the transfer. Open claims, and scopes that finalize later, are superseded (same amount) or pending.
+- **Exact claim order:** `settlement_finalizations.money_claimed_at` is stamped by the database when a row enters `sending`/`sent`/`ambiguous`. It is kept on `sent` and on the stale re-claim, cleared on `failed`, and stamped again when a failed row is re-claimed. One global advisory key, taken before the scope key, serializes claims, so a later claimant always sees the earlier claim. Reviews never take that key, so no deadlock.
+- **Also fixed:**
+  - The finalization lookup is limited to the claims' own rounds and (source, day) pairs. An unbounded lookup could be truncated by PostgREST `max_rows`.
+  - AI reads use the same normalizer, so a zero-width space no longer hides a duplicate.
+  - The SQL normalizer uses an explicit character list identical to the TypeScript one (no ctype dependence).
+- **Tests:** both finalization orders, a failed claim that retries after another scope finalized, the stamp lifecycle, claim serialization against an uncommitted claim, normalizer parity per code point, and rollback M5 → M1. Proof: the two money scenarios fail on the previous rule (฿70 counted twice).
+- **Business rule to sign off:** a cross-scope duplicate (an AI read and a manual entry with the same full reference) goes to the scope that finalizes first, not to the earliest-created claim. Before either scope finalizes, previews still show the earliest-created claim as owner, so the first finalizer's sent total can differ from its own preview.
+
+**Residual limits (third review, documented, not fixed):**
+5. **Review RPCs (M3) still use the earliest-created rule.** An approval can be accepted that the loader then shows as superseded or pending, because another scope finalized first. This never causes double money; the reviewer sees the entry still pending.
+6. **A claim that becomes valid after its own scope finalized** (late OCR, late session close) can leave the transfer counted nowhere. It is under-counted and visible, never doubled.
+7. **`ambiguous` counts as finalized** (as for reviews). An ambiguous scope can hold a reference it never paid out; the transfer is then counted nowhere until the scope is resolved.
+8. **Rollback with new code:** revert the app code before running the M5/M4 down files. Without a code revert the down files still work, but the exact claim order (M5) and the normalization of new manual references (M4) are lost.
