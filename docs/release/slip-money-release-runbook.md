@@ -8,17 +8,17 @@
 | 1 | PR #192 `fix/p0-slip-image-ordering-20261031` | LINE `#N` follows LINE send order | none |
 | 2 | PR #194 `fix/p0-slip-pending-amounts-20261102` (on #192) | AI-read / confirmed / pending in the LINE summary | none |
 | 3 | PR #193 `feat/slip-ocr-gemini-eval` (on #194) + 3a | shared eligibility (date / outlier / reference) in every money path; Gemini evaluation tooling only. **3a** = the round-close `excluded` status and the ingestion race test from the local branch. 3a must be in #193 before it ships. | none |
-| 4 | local `feat/manual-slip-ai-approval-20261102` (needs a PR) | AI and manual reviews; persisted per-reference credits; finalizer fail-closed; settled-scope manual guard; immutable manual slips; database write stop with pilot allowlist | **M0–M7** |
+| 4 | local `feat/manual-slip-ai-approval-20261102` (needs a PR) | AI and manual reviews; persisted per-reference credits; finalizer fail-closed; settled-scope manual guard; immutable manual slips and credit stamps; M0 write stop including finalization DELETE, with pilot allowlist | **M0–M7** |
 
 Migrations of step 4, in order (all additive; M0 inserts only its paused control row, with no financial-row changes):
-- **M0 `20261102110000_financial_write_stop`: applied FIRST. Installs the stop already paused.** It guards `settlement_entries`, `transfer_reconciliations`, `manual_slip_sessions`, `manual_slip_entries` and finalizations entering `sending`/`sent`/`ambiguous`, for code of every version.
+- **M0 `20261102110000_financial_write_stop`: applied FIRST. Installs the stop already paused.** It guards `settlement_entries`, `transfer_reconciliations`, `manual_slip_sessions`, `manual_slip_entries`, finalizations entering `sending`/`sent`/`ambiguous`, and finalization DELETE, for code of every version.
 - M1 `20261102120000_slip_check_approval_link`
 - M2 `20261102130000_manual_slip_entry_review`
 - M3 `20261102140000_slip_review_hardening`
 - M4 `20261102150000_slip_reference_scope`
 - M5 `20261102160000_finalization_claim_order`
 - M6 `20261103100000_slip_reference_claims`
-- M7 `20261103120000_financial_write_guards`
+- M7 `20261103120000_financial_write_guards` (settled-scope/manual guards, immutable credit stamp, rollback gate)
 
 ## 2. Compatibility rules (why the order matters)
 - **Step-4 code fails closed without M6.** A settlement is never sent on the uncredited preview rule; that rule paid one ฿70 transfer as ฿140. Without the RPC every finalization ends `failed` and nothing is pushed. After M6 the retry credits and sends normally (test P0-A).
@@ -50,7 +50,7 @@ Migrations of step 4, in order (all additive; M0 inserts only its paused control
    SELECT paused, pilot_sources FROM public.financial_maintenance;                 -- true, NULL
    SELECT count(*) FROM pg_trigger WHERE tgname LIKE '%_financial_stop';          -- 5
    ```
-   From the commit of M0 on, `settlement_entries`, `transfer_reconciliations`, `manual_slip_*` and finalizations entering `sending`/`sent`/`ambiguous` refuse every new writer (error `financial_maintenance`), whatever its code version. A database write that already passed the check holds a share lock on the switch until its transaction ends, and the pause waits for it (test P0-2). **When M0 returns there is no overlapping uncommitted write to a guarded table.** A worker that committed `sending` before M0 may still be outside the database and must finish or be stopped in step 2 before M1. Evidence ingestion and OCR keep running and stay pending, so no LINE event is lost.
+   From the commit of M0 on, `settlement_entries`, `transfer_reconciliations`, `manual_slip_*`, finalizations entering `sending`/`sent`/`ambiguous`, and finalization DELETE refuse every new writer (error `financial_maintenance`), whatever its code version. A database write that already passed the check holds a share lock on the switch until its transaction ends, and the pause waits for it (test P0-2). **When M0 returns there is no overlapping uncommitted write to a guarded table.** A worker that committed `sending` before M0 may still be outside the database and must finish or be stopped in step 2 before M1. Evidence ingestion and OCR keep running and stay pending, so no LINE event is lost.
 2. **Drain old workers** (the stop makes them harmless; the drain makes the release provable):
    - pause the pg_cron jobs that call the money routes (`finalize-slip-batches`, daily reports), e.g. `UPDATE cron.job SET active = false WHERE jobname IN (…)`; record job ids and state;
    - wait until nothing is in flight:
@@ -70,7 +70,7 @@ Migrations of step 4, in order (all additive; M0 inserts only its paused control
    SELECT has_table_privilege('service_role', 'public.manual_slip_sessions', 'INSERT'),
           has_table_privilege('service_role', 'public.manual_slip_sessions', 'UPDATE'),
           has_table_privilege('service_role', 'public.manual_slip_entries', 'INSERT');                       -- true, false, false
-   SELECT tgname FROM pg_trigger WHERE tgname IN ('manual_slip_sessions_scope_guard','manual_slip_entries_scope_guard','slip_check_approvals_maintenance_guard','settlement_finalizations_money_close_lock','slip_reference_claims_append_only','manual_slip_sessions_no_truncate','manual_slip_entries_no_truncate'); -- 7 rows
+   SELECT tgname FROM pg_trigger WHERE tgname IN ('manual_slip_sessions_scope_guard','manual_slip_entries_scope_guard','slip_check_approvals_maintenance_guard','settlement_finalizations_money_close_lock','slip_reference_claims_append_only','manual_slip_sessions_no_truncate','manual_slip_entries_no_truncate','settlement_finalizations_record_guard'); -- 8 rows
    SELECT paused FROM public.financial_maintenance;   -- true
    ```
 5. **Deploy the code** in this order: #192 → #194 → #193 (+3a) → step 4. Check that the deployed SHA is the approved head. Still paused: the new code's money writes are refused too, so a bad deploy cannot send.
@@ -121,10 +121,10 @@ Run `docs/sql/slip-money-exception-register.sql` (`SET register.from_day = '…'
 | Situation | Action | Limits |
 |---|---|---|
 | step-4 code misbehaves | **Pause first** (§4 emergency stop). **Keep the schema, M0 included.** Fix forward and redeploy new code. Redeploying the previous code is allowed **only while `SELECT count(*) FROM public.slip_reference_claims` is 0**; with credits it is forbidden, and the stop stays on until the fix ships. | Old code ignores decisions and credits. |
-| schema must go | Only while `slip_reference_claims` is empty. Pause, code first, then the down files M7 → M6 → … → M1 → **M0 last** (`supabase/rollback/…down.sql`). The M0 down file **refuses with `financial_stop_rollback_refused` while any credit exists** (test: `slip-check-approval.pg.test.ts`). With credits there is no schema rollback; use a forward fix. | No row is deleted. Credits, decisions, `reference_id`, `requires_review` and the stamps stay. M1 cannot be re-applied after its down file. |
+| schema must go | Only while `slip_reference_claims` is empty. Pause, code first, then the down files M7 → M6 → … → M1 → **M0 last** (`supabase/rollback/…down.sql`). The M7 down file **refuses first with `financial_guards_rollback_refused` while any credit exists**; M0 down has a second refusal (`financial_stop_rollback_refused`). Both are tested. With credits there is no schema rollback; use a forward fix. | No row is deleted. Credits, decisions, `reference_id`, `requires_review` and the stamps stay. M1 cannot be re-applied after its down file. |
 | #193 misbehaves | revert #193 (+3a) | Misdated/undated/outlier AI slips count again. Recomputed snapshots stay recomputed (§3.2). |
 
-**Day vs round scope (asymmetric by design).** A legacy-day settlement (no round) settles *every* round of that source and day: manual slips for any of them are then refused. A round settlement settles only that round and does not freeze the day scope. Locks match: a round write takes the round key then the day key; a day write takes the day key, so both meet on the day key. Consequence for operators: finalizing the day-level message early closes the manual-slip door for rounds still open that day (visible as `manual_slip_scope_settled`).
+**Day vs round scope (asymmetric by design).** A legacy-day settlement (no round) settles *every* round of that source and day: manual slips for any of them are then refused. A round settlement settles only that round and does not freeze the day scope. Manual capture/review paths take the round key then the day key; day capture/review takes the day key, so those paths meet. Finalization uses a global claim-order key plus its own scope key, and the credit RPC locks the maintenance row before its finalization row. Do not assume all write paths use identical locks. Consequence for operators: finalizing the day-level message early closes the manual-slip door for rounds still open that day (visible as `manual_slip_scope_settled`).
 
 **Immediate rollback or stop triggers:**
 - any E2, E3 or E7 row;

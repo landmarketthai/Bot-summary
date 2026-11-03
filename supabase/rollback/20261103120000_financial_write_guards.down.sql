@@ -6,6 +6,18 @@
 
 BEGIN;
 
+-- Rolling M7 back while reference credits exist restores a credit RPC without
+-- the maintenance/pilot guard. Refuse before changing ANY trigger or privilege.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM public.slip_reference_claims) THEN
+    RAISE EXCEPTION 'financial_guards_rollback_refused: reference credits exist; keep financial_maintenance paused and ship a forward fix'
+      USING ERRCODE = 'object_not_in_prerequisite_state';
+  END IF;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS settlement_finalizations_record_guard ON public.settlement_finalizations;
 DROP TRIGGER IF EXISTS manual_slip_sessions_scope_guard ON public.manual_slip_sessions;
 DROP TRIGGER IF EXISTS manual_slip_entries_scope_guard ON public.manual_slip_entries;
 DROP TRIGGER IF EXISTS manual_slip_sessions_no_truncate ON public.manual_slip_sessions;
@@ -58,6 +70,7 @@ $$;
 REVOKE ALL ON FUNCTION public.claim_slip_references(uuid, jsonb) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.claim_slip_references(uuid, jsonb) TO service_role;
 
+DROP FUNCTION IF EXISTS public.guard_settlement_finalization_record();
 DROP FUNCTION IF EXISTS public.guard_slip_review_write();
 DROP FUNCTION IF EXISTS public.guard_manual_slip_entry_write();
 DROP FUNCTION IF EXISTS public.guard_manual_slip_session_write();

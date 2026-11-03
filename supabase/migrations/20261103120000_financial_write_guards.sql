@@ -25,8 +25,10 @@
 --    owner/direct SQL.
 -- 3. The financial write stop of 20261102110000 also covers review decisions
 --    (slip_check_approvals INSERT / UPDATE) and reference credits
---    (claim_slip_references), including the pilot source allowlist.
--- Lock order: stop row (FOR SHARE) → scope keys round → day.
+--    (claim_slip_references), including the pilot source allowlist, and
+--    finalization DELETE (guarded since M0). The credit stamp claims_recorded_at is write-once.
+-- Lock order: stop row (FOR SHARE) → scope keys round → day; the credit RPC:
+-- stop row → finalization row.
 
 BEGIN;
 
@@ -244,10 +246,18 @@ DECLARE
   v_status text;
   v_recorded timestamptz;
   v_source text;
+  v_locked_source text;
 BEGIN
-  SELECT f.status, f.claims_recorded_at, f.source_id INTO v_status, v_recorded, v_source
-  FROM public.settlement_finalizations f WHERE f.id = p_finalization_id FOR UPDATE;
+  -- Stop row first, then the finalization row (the order a pause transaction
+  -- uses); the unlocked read only names the source. A source moved meanwhile
+  -- is checked again (the stop row is already held, so no new order).
+  SELECT f.source_id INTO v_source FROM public.settlement_finalizations f WHERE f.id = p_finalization_id;
   PERFORM public.assert_financial_writes_open(v_source);
+  SELECT f.status, f.claims_recorded_at, f.source_id INTO v_status, v_recorded, v_locked_source
+  FROM public.settlement_finalizations f WHERE f.id = p_finalization_id FOR UPDATE;
+  IF v_locked_source IS DISTINCT FROM v_source THEN
+    PERFORM public.assert_financial_writes_open(v_locked_source);
+  END IF;
   IF v_status IS DISTINCT FROM 'sending' THEN
     RAISE EXCEPTION 'slip_claim_finalization_not_sending' USING ERRCODE = 'object_not_in_prerequisite_state';
   END IF;
@@ -275,6 +285,26 @@ BEGIN
 END;
 $$;
 
+-- The credit stamp freezes a scope (money_scope_is_settled) and stops a retry
+-- from adding credits, so once set it never changes. M0 separately guards
+-- finalization DELETE during maintenance / outside the pilot.
+CREATE OR REPLACE FUNCTION public.guard_settlement_finalization_record()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF OLD.claims_recorded_at IS NOT NULL AND NEW.claims_recorded_at IS DISTINCT FROM OLD.claims_recorded_at THEN
+    RAISE EXCEPTION 'settlement_claims_stamp_immutable' USING ERRCODE = 'object_not_in_prerequisite_state';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS settlement_finalizations_record_guard ON public.settlement_finalizations;
+CREATE TRIGGER settlement_finalizations_record_guard
+BEFORE UPDATE OF claims_recorded_at ON public.settlement_finalizations
+FOR EACH ROW EXECUTE FUNCTION public.guard_settlement_finalization_record();
+
 REVOKE ALL ON FUNCTION public.claim_slip_references(uuid, jsonb) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.claim_slip_references(uuid, jsonb) TO service_role;
 REVOKE ALL ON FUNCTION public.money_scope_is_settled(text, date, uuid) FROM PUBLIC, anon, authenticated;
@@ -283,5 +313,6 @@ REVOKE ALL ON FUNCTION public.guard_manual_slip_session_write() FROM PUBLIC, ano
 REVOKE ALL ON FUNCTION public.guard_manual_slip_entry_write() FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.refuse_manual_slip_truncate() FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.guard_slip_review_write() FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.guard_settlement_finalization_record() FROM PUBLIC, anon, authenticated;
 
 COMMIT;

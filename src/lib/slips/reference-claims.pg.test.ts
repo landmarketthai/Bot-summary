@@ -592,6 +592,18 @@ describe.skipIf(!pgAvailable || process.env.CLAIMS_BASELINE === "1")("release bl
     } finally { await db.drop(); }
   }, 180_000);
 
+  test("P0-1b: the M0 stop refuses deletion of a prior finalization before any M1–M7 migration", async () => {
+    await gateDb([]);
+    try {
+      await db.query(`INSERT INTO public.settlement_finalizations (source_id, business_date, status)
+        VALUES ('PM-D', '${DATE}', 'sent')`);
+      await db.exec(await file(STOP));                           // pause already true
+      expect(await sqlError(`DELETE FROM public.settlement_finalizations WHERE source_id = 'PM-D'`))
+        .toContain("financial_maintenance");
+      expect(await db.scalar(`SELECT count(*) FROM public.settlement_finalizations WHERE source_id = 'PM-D'`)).toBe("1");
+    } finally { await db.drop(); }
+  }, 120_000);
+
   test("P0-2: the stop is a lock — a pause waits for writes in progress, and a write behind a pause is refused", async () => {
     await gateDb(MIGRATIONS);
     try {
@@ -653,6 +665,98 @@ describe.skipIf(!pgAvailable || process.env.CLAIMS_BASELINE === "1")("release bl
       await db.query(`UPDATE public.financial_maintenance SET pilot_sources = NULL`);
       expect(await sqlError(`SELECT public.assert_slip_check_round_open('${checkId}')`))
         .toBe("no error");
+    } finally { await db.drop(); }
+  }, 120_000);
+
+  test("M7 lock order: the credit RPC takes the stop before the finalization row; pause, pilot and a moved source stay fail-closed", async () => {
+    await gateDb(MIGRATIONS);
+    try {
+      await db.query(RESUME);
+      await db.query(`INSERT INTO public.settlement_finalizations (source_id, business_date, status) VALUES ('LO-A', '${DATE}', 'sending')`);
+      const fin = await db.scalar(`SELECT id FROM public.settlement_finalizations WHERE source_id = 'LO-A'`);
+      // (a) The operator pauses and records the in-flight outcome in one transaction while a credit call arrives.
+      const pauser = backend("lo-pauser");
+      const claimer = backend("lo-claimer");
+      pauser.send(`BEGIN; UPDATE public.financial_maintenance SET paused = true, reason = 'lock order';`);
+      expect(await reaches("lo-pauser", "idle in transaction")).toBe(true);
+      claimer.send(`SELECT count(*) FROM public.claim_slip_references('${fin}', '[]'::jsonb);`);
+      expect(await reaches("lo-claimer", "Lock")).toBe(true);
+      pauser.send(`UPDATE public.settlement_finalizations SET status = 'failed' WHERE id = '${fin}'; COMMIT;`);
+      const [paused, claimed] = await Promise.all([pauser.close(), claimer.close()]);
+      expect(paused).not.toContain("ERROR");                              // the pause is not rolled back
+      expect(claimed).not.toContain("deadlock");
+      expect(claimed).toMatch(/ERROR:\s+financial_maintenance\s/);
+      expect(await db.scalar(`SELECT paused::text FROM public.financial_maintenance`)).toBe("true");
+      expect(await db.scalar(`SELECT status || '/' || (claims_recorded_at IS NULL)::text FROM public.settlement_finalizations WHERE id = '${fin}'`)).toBe("failed/true");
+
+      // (b) Pilot: a finalization moved to another source while the RPC waits for its row is refused.
+      await db.query(`UPDATE public.financial_maintenance SET paused = false, pilot_sources = ARRAY['LO-A']`);
+      await db.query(`UPDATE public.settlement_finalizations SET status = 'sending' WHERE id = '${fin}'`);
+      const mover = backend("lo-mover");
+      const claimer2 = backend("lo-claimer-2");
+      mover.send(`BEGIN; UPDATE public.settlement_finalizations SET source_id = 'LO-OTHER' WHERE id = '${fin}';`);
+      expect(await reaches("lo-mover", "idle in transaction")).toBe(true);
+      claimer2.send(`SELECT count(*) FROM public.claim_slip_references('${fin}', '[]'::jsonb);`);
+      expect(await reaches("lo-claimer-2", "Lock")).toBe(true);
+      mover.send(`COMMIT;`);
+      expect(await mover.close()).not.toContain("ERROR");
+      expect(await claimer2.close()).toContain("financial_maintenance_pilot_scope");
+      expect(await db.scalar(`SELECT (claims_recorded_at IS NULL)::text FROM public.settlement_finalizations WHERE id = '${fin}'`)).toBe("true");
+
+      // (c) A missing finalization never credits: refused by the pilot, or as not sending.
+      const missing = crypto.randomUUID();
+      expect(await sqlError(`SELECT public.claim_slip_references('${missing}', '[]'::jsonb)`)).toContain("financial_maintenance_pilot_scope");
+      await db.query(`UPDATE public.financial_maintenance SET pilot_sources = NULL`);
+      expect(await sqlError(`SELECT public.claim_slip_references('${missing}', '[]'::jsonb)`)).toContain("slip_claim_finalization_not_sending");
+      await db.query(`UPDATE public.financial_maintenance SET paused = true`);
+      expect(await sqlError(`SELECT public.claim_slip_references('${missing}', '[]'::jsonb)`)).toContain("financial_maintenance");
+      expect(await db.scalar(`SELECT count(*) FROM public.slip_reference_claims`)).toBe("0");
+    } finally { await db.drop(); }
+  }, 120_000);
+
+  test("M7 rollback refuses while credits exist (even paused) and leaves the guards; with no credit M7 → M0 roll back cleanly", async () => {
+    const down = (m: string) => Bun.file(`${ROOT}/supabase/rollback/${m}.down.sql`).text();
+    const guards = `SELECT count(*) FROM pg_trigger WHERE tgname IN ('manual_slip_sessions_scope_guard', 'manual_slip_entries_scope_guard', 'slip_check_approvals_maintenance_guard')`;
+    await gateDb(MIGRATIONS);
+    try {
+      await db.query(RESUME);
+      await seedCheck({ source: "RB-A", amount: 70, ref: "RB-R" });
+      await entryFor("RB-A");
+      expect(await finalize("RB-A")).toBe("finalized");
+      await db.query(`UPDATE public.financial_maintenance SET paused = true`);
+      expect(await db.exec(await down(MIGRATIONS.at(-1)!)).then(() => "dropped", (e: Error) => e.message))
+        .toContain("financial_guards_rollback_refused");
+      expect(await db.scalar(guards)).toBe("3");
+      expect(await db.scalar(`SELECT (prosrc LIKE '%assert_financial_writes_open%')::text FROM pg_proc WHERE proname = 'claim_slip_references'`)).toBe("true");
+      expect(await db.scalar(`SELECT count(*) FROM public.slip_reference_claims`)).toBe("1");
+    } finally { await db.drop(); }
+
+    await gateDb(MIGRATIONS);                                           // installs paused, no credit
+    try {
+      for (const m of [...MIGRATIONS].reverse()) await db.exec(await down(m));
+      expect(await db.scalar(guards)).toBe("0");
+      expect(await db.scalar(`SELECT to_regclass('public.financial_maintenance') IS NULL`)).toBe("true");
+    } finally { await db.drop(); }
+  }, 180_000);
+
+  test("item 3: the credit stamp cannot be cleared, and a finalization cannot be deleted during the stop", async () => {
+    await gateDb(MIGRATIONS);
+    try {
+      await db.query(RESUME);
+      await seedCheck({ source: "ST-A", amount: 70, ref: "ST-R" });
+      await entryFor("ST-A");
+      expect(await finalize("ST-A", undefined, "timeout")).toBe("failed");   // credits recorded, push failed
+      expect(await sqlError(`UPDATE public.settlement_finalizations SET claims_recorded_at = NULL WHERE source_id = 'ST-A'`))
+        .toContain("settlement_claims_stamp_immutable");
+      expect(await sqlError(`INSERT INTO public.manual_slip_sessions (source_id, business_date, status, market_label, market_key) VALUES ('ST-A', '${DATE}', 'open', '${MARKET}', 'st-a')`))
+        .toContain("manual_slip_scope_settled");
+      await db.query(`INSERT INTO public.settlement_finalizations (source_id, business_date, status) VALUES ('ST-B', '${DATE}', 'sent')`);
+      await db.query(`UPDATE public.financial_maintenance SET paused = true`);
+      expect(await sqlError(`DELETE FROM public.settlement_finalizations WHERE source_id = 'ST-B'`)).toContain("financial_maintenance");
+      expect(await sqlError(`DELETE FROM public.settlement_finalizations WHERE source_id = 'ST-A'`)).toContain("financial_maintenance");
+      await db.query(RESUME);
+      expect(await sqlError(`DELETE FROM public.settlement_finalizations WHERE source_id = 'ST-A'`)).toContain("slip_reference_claims"); // credited: FK
+      expect(await db.scalar(`SELECT count(*) FROM public.settlement_finalizations WHERE source_id IN ('ST-A', 'ST-B')`)).toBe("2");
     } finally { await db.drop(); }
   }, 120_000);
 

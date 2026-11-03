@@ -23,7 +23,7 @@
 -- 4. Guards on the money tables that exist before M1 (so old code is covered):
 --      settlement_entries, transfer_reconciliations      every INSERT/UPDATE/DELETE
 --      manual_slip_sessions, manual_slip_entries          every INSERT/UPDATE/DELETE
---      settlement_finalizations                           entering sending/sent/ambiguous
+--      settlement_finalizations                           entering sending/sent/ambiguous and DELETE
 --    Leaving a handed-out status (sending → sent / failed) stays allowed, so
 --    an in-flight settlement can record its outcome during a stop. Evidence
 --    ingestion and OCR (slip_evidences, slip_checks, slip_batches) are not
@@ -114,6 +114,10 @@ LANGUAGE plpgsql
 SET search_path = public, pg_temp
 AS $$
 BEGIN
+  IF TG_OP = 'DELETE' THEN
+    PERFORM public.assert_financial_writes_open(OLD.source_id);
+    RETURN OLD;
+  END IF;
   IF NEW.status IN ('sending', 'sent', 'ambiguous')
      AND (TG_OP = 'INSERT' OR OLD.status NOT IN ('sending', 'sent', 'ambiguous')) THEN
     PERFORM public.assert_financial_writes_open(NEW.source_id);
@@ -144,7 +148,7 @@ FOR EACH ROW EXECUTE FUNCTION public.guard_manual_slip_entry_financial_write();
 
 DROP TRIGGER IF EXISTS settlement_finalizations_financial_stop ON public.settlement_finalizations;
 CREATE TRIGGER settlement_finalizations_financial_stop
-BEFORE INSERT OR UPDATE ON public.settlement_finalizations
+BEFORE INSERT OR UPDATE OR DELETE ON public.settlement_finalizations
 FOR EACH ROW EXECUTE FUNCTION public.guard_settlement_finalization_handout();
 
 -- The guards run as the writing role (service_role in Production), so it keeps EXECUTE.

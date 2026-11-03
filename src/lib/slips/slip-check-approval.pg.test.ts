@@ -519,44 +519,27 @@ describe.skipIf(!pgAvailable)("one transfer, one money row across AI and manual 
     expect(await manual("L1")).toMatchObject({ total: 60 });
   });
 
-  test("rollback (M7, M6, M5, M4, M3, M2, M1) drops the RPCs, restores the old append RPC and keeps every financial row", async () => {
+  test("M7 rollback refuses when credits exist and preserves all guards and data", async () => {
     const decisions = await db.scalar(`SELECT count(*) FROM public.slip_check_approvals`);
     const entries = await db.scalar(`SELECT count(*) FROM public.manual_slip_entries`);
     await db.query(`INSERT INTO public.settlement_finalizations (source_id, business_date, status) VALUES ('RB-CL', '${DATE}', 'sending')`);
     const finalization = await db.scalar(`SELECT id FROM public.settlement_finalizations WHERE source_id = 'RB-CL'`);
     const check = await seedCheck(db, { source: "RB-CL", amount: 9, ref: "RB-CL-R", time: OK_TIME });
     await supa.rpc("claim_slip_references", { p_finalization_id: finalization, p_claims: [{ reference_id: "RB-CL-R", slip_check_id: check, amount: 9 }] });
+    expect(await db.scalar(`SELECT count(*) FROM public.slip_reference_claims WHERE reference_id = 'RB-CL-R'`)).toBe("1");
     const credits = await db.scalar(`SELECT count(*) FROM public.slip_reference_claims`);
-    expect(Number(credits)).toBeGreaterThan(0);
-    const stamped = await db.scalar(`SELECT count(money_claimed_at) FROM public.settlement_finalizations`);
-    await db.exec(await file("rollback", M7));
-    expect(await db.scalar(`SELECT count(*) FROM pg_trigger WHERE tgname IN ('manual_slip_sessions_scope_guard', 'manual_slip_entries_scope_guard', 'slip_check_approvals_maintenance_guard')`)).toBe("0");
-    expect(await db.scalar(`SELECT has_table_privilege('service_role', 'public.manual_slip_sessions', 'UPDATE')::text`)).toBe("true");
-    expect(await db.scalar(`SELECT has_table_privilege('service_role', 'public.manual_slip_entries', 'INSERT')::text`)).toBe("true");
-    await db.exec(await file("rollback", M6));
-    expect(await db.scalar(`SELECT count(*) FROM pg_proc WHERE proname = 'claim_slip_references'`)).toBe("0");
+
+    await db.query(`UPDATE public.financial_maintenance SET paused = true`);
+    const downError = await db.exec(await file("rollback", M7)).then(() => "rolled back", (e: Error) => e.message);
+    expect(downError).toContain("financial_guards_rollback_refused");
+    expect(await db.scalar(`SELECT count(*) FROM pg_trigger WHERE tgname IN
+      ('settlement_finalizations_record_guard', 'manual_slip_sessions_scope_guard',
+       'manual_slip_entries_scope_guard', 'slip_check_approvals_maintenance_guard')`)).toBe("4");
+    expect(await db.scalar(`SELECT has_table_privilege('service_role', 'public.manual_slip_entries', 'INSERT')::text`)).toBe("false");
     expect(await db.scalar(`SELECT count(*) FROM public.slip_reference_claims`)).toBe(credits);
-    await db.exec(await file("rollback", M5));
-    expect(await db.scalar(`SELECT (prosrc LIKE '%claim-order%')::text FROM pg_proc WHERE proname = 'lock_settlement_finalization_money'`)).toBe("false");
-    expect(await db.scalar(`SELECT count(money_claimed_at) FROM public.settlement_finalizations`)).toBe(stamped);
-    await db.exec(await file("rollback", M4));
-    expect(await db.scalar(`SELECT count(*) FROM pg_proc WHERE proname = 'normalize_slip_reference'`)).toBe("0");
-    await db.exec(await file("rollback", M3));
-    expect(await db.scalar(`SELECT count(*) FROM pg_proc WHERE proname IN ('lock_money_close_scope', 'manual_entry_claims_reference')`)).toBe("0");
-    await db.exec(await file("rollback", M2));
-    await db.exec(await file("rollback", M1));
-    expect(await db.scalar(`SELECT count(*) FROM pg_proc WHERE proname IN ('review_slip_check', 'review_manual_slip_entry', 'revoke_slip_check_review', 'lock_money_close')`)).toBe("0");
-    expect(await db.scalar(`SELECT count(*) FROM pg_trigger WHERE tgname = 'settlement_finalizations_money_close_lock'`)).toBe("0");
     expect(await db.scalar(`SELECT count(*) FROM public.slip_check_approvals`)).toBe(decisions);
     expect(await db.scalar(`SELECT count(*) FROM public.manual_slip_entries`)).toBe(entries);
-    expect(await db.scalar(`SELECT count(*) FROM public.slip_reference_claims`)).toBe(credits);
-    expect(Number(decisions)).toBeGreaterThan(0);
-    await seedManual("RB", [{ amount: 12, reference_id: "ignored-by-old-rpc" }]);
-    expect(await db.scalar(`SELECT count(*) FROM public.manual_slip_entries WHERE reference_id = 'ignored-by-old-rpc'`)).toBe("0");
-    // The stop cannot be removed while credits exist: old code would recount them.
-    const stopDown = await db.exec(await file("rollback", M0)).then(() => "dropped", (e: Error) => e.message);
-    expect(stopDown).toContain("financial_stop_rollback_refused");
-    expect(await db.scalar(`SELECT count(*) FROM pg_trigger WHERE tgname LIKE '%_financial_stop'`)).toBe("5");
+    expect(await db.scalar(`SELECT paused::text FROM public.financial_maintenance`)).toBe("true");
   });
 });
 
