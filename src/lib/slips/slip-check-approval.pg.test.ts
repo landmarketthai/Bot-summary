@@ -41,6 +41,7 @@ const M3 = "20261102140000_slip_review_hardening";
 const M4 = "20261102150000_slip_reference_scope";
 const M5 = "20261102160000_finalization_claim_order";
 const M6 = "20261103100000_slip_reference_claims";
+const M7 = "20261103120000_financial_write_guards";
 const BASE_MIGRATIONS = [
   ...SLIP_PIPELINE_MIGRATIONS,
   "0027_manual_slip_session.sql",
@@ -133,7 +134,7 @@ const approveAi = (checkId: string, amount: number) =>
 
 describe.skipIf(!pgAvailable)("one transfer, one money row across AI and manual (PG 17)", () => {
   beforeAll(async () => {
-    db = await freshDb("slip_approval", [M1, M2, M3, M4, M5, M6]);
+    db = await freshDb("slip_approval", [M1, M2, M3, M4, M5, M6, M7]);
     supa = createPgSupabase(db, { failUpload: new Set(), uploaded: new Map() });
   }, 120_000);
   afterAll(async () => { await db?.drop(); });
@@ -502,15 +503,16 @@ describe.skipIf(!pgAvailable)("one transfer, one money row across AI and manual 
     )).toBe("true");
   });
 
-  test("migrations 20261102140000 to 20261103100000 re-apply cleanly (idempotent)", async () => {
+  test("migrations 20261102140000 to 20261103120000 re-apply cleanly (idempotent)", async () => {
     await db.exec(await file("migrations", M3));
     await db.exec(await file("migrations", M4));
     await db.exec(await file("migrations", M5));
     await db.exec(await file("migrations", M6));
+    await db.exec(await file("migrations", M7));
     expect(await manual("L1")).toMatchObject({ total: 60 });
   });
 
-  test("rollback (M6, M5, M4, M3, M2, M1) drops the RPCs, restores the old append RPC and keeps every financial row", async () => {
+  test("rollback (M7, M6, M5, M4, M3, M2, M1) drops the RPCs, restores the old append RPC and keeps every financial row", async () => {
     const decisions = await db.scalar(`SELECT count(*) FROM public.slip_check_approvals`);
     const entries = await db.scalar(`SELECT count(*) FROM public.manual_slip_entries`);
     await db.query(`INSERT INTO public.settlement_finalizations (source_id, business_date, status) VALUES ('RB-CL', '${DATE}', 'sending')`);
@@ -520,6 +522,8 @@ describe.skipIf(!pgAvailable)("one transfer, one money row across AI and manual 
     const credits = await db.scalar(`SELECT count(*) FROM public.slip_reference_claims`);
     expect(Number(credits)).toBeGreaterThan(0);
     const stamped = await db.scalar(`SELECT count(money_claimed_at) FROM public.settlement_finalizations`);
+    await db.exec(await file("rollback", M7));
+    expect(await db.scalar(`SELECT count(*) FROM pg_trigger WHERE tgname IN ('manual_slip_sessions_scope_guard', 'manual_slip_entries_scope_guard', 'slip_check_approvals_maintenance_guard')`)).toBe("0");
     await db.exec(await file("rollback", M6));
     expect(await db.scalar(`SELECT count(*) FROM pg_proc WHERE proname = 'claim_slip_references'`)).toBe("0");
     expect(await db.scalar(`SELECT count(*) FROM public.slip_reference_claims`)).toBe(credits);

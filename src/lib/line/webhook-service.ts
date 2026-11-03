@@ -101,7 +101,7 @@ import { bangkokBusinessDateNow, bangkokBusinessDateFromTimestamp } from "@/lib/
 import { upsertDataQualityIssuesAtomically } from "@/lib/data-quality/inbox";
 import type { DataQualityIssueCandidate } from "@/lib/data-quality/types";
 import { parseManualSlipAmounts } from "@/lib/parsers/manual-slip-amount";
-import { ManualSlipSessionService } from "@/lib/line/manual-slip-session-service";
+import { ManualSlipSessionService, manualSlipRefusalReply } from "@/lib/line/manual-slip-session-service";
 import { SlipEvidenceService } from "@/lib/slips/evidence-service";
 import type { SlipEvidenceIngestor } from "@/lib/slips/types";
 import {
@@ -3319,7 +3319,7 @@ export class WebhookService {
       log.error("manual slip open failed", { error: errorMessage });
       if (replyToken) {
         try {
-          await this.replyMessage(replyToken, "เปิดสลิปมือไม่สำเร็จ กรุณาลองอีกครั้ง");
+          await this.replyMessage(replyToken, manualSlipRefusalReply(errorMessage) ?? "เปิดสลิปมือไม่สำเร็จ กรุณาลองอีกครั้ง");
         } catch { /* ignore reply error */ }
       }
       return { eventId, eventType, status: "saved", parsed: false, error: errorMessage };
@@ -3647,7 +3647,7 @@ export class WebhookService {
       log.error("manual slip close failed", { error: errorMessage });
       if (replyToken) {
         try {
-          await this.replyMessage(replyToken, "ปิดสลิปมือไม่สำเร็จ กรุณาลองอีกครั้ง");
+          await this.replyMessage(replyToken, manualSlipRefusalReply(errorMessage) ?? "ปิดสลิปมือไม่สำเร็จ กรุณาลองอีกครั้ง");
         } catch { /* ignore reply error */ }
       }
       return { eventId, eventType, status: "saved", parsed: false, error: errorMessage };
@@ -3694,6 +3694,10 @@ export class WebhookService {
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       log.error("manual slip entry append failed", { error: errorMessage });
+      const refusal = manualSlipRefusalReply(errorMessage);
+      if (refusal && event.replyToken) {
+        try { await this.replyMessage(event.replyToken, refusal); } catch { /* ignore reply error */ }
+      }
       return { eventId, eventType, status: "saved", parsed: false, error: errorMessage };
     }
   }

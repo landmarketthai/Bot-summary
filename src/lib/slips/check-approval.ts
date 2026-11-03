@@ -26,6 +26,7 @@ const KNOWN_REFUSALS = [
   "slip_check_is_duplicate",
   "slip_check_round_finalized",
   "slip_reference_credited",
+  "financial_maintenance",
   "slip_check_already_reviewed",
   "slip_check_review_not_active",
   "manual_entry_not_found",

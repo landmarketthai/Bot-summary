@@ -38,7 +38,7 @@ Problem: four review rounds showed that ownership derived from the *current* sta
 
 7. **Rollback and version skew.**
    - **Down file:** restores the assert functions, drops the RPC, and keeps the table and every claim row.
-   - **New code on the old schema:** the RPC is missing (42883), so no claims are made; the claims table is missing, so the loaders see no claims. This is today's behaviour.
+   - **New code on the old schema:** the RPC is missing (42883), so the finalization fails closed (`failed`, nothing pushed, retryable). It is never sent on the uncredited preview rule, which paid ฿70 twice. Read paths still work: the loaders see no claims. (Release gate P0-A, test "P0-A".)
    - **Old code on the new schema:** claims are ignored, which is the pre-change behaviour. Reviews of credited targets are still refused while the asserts exist.
    - **Order:** schema first, then code.
 

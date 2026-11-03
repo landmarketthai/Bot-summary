@@ -890,8 +890,10 @@ export async function loadMarketScopedManualSlipBreakdown(
  * reconciles (docs/slip-reference-claims.md). The same loaders reconcile uses
  * decide what the scope would count; the primary key of slip_reference_claims
  * lets only the first finalization credit a reference, and the reconcile that
- * follows counts what was credited. Before migration 20261103100000 (no RPC)
- * nothing is credited and money follows the preview rule, as before.
+ * follows counts what was credited. Fail-closed: without migration
+ * 20261103100000 (RPC missing) the finalization fails and stays retryable —
+ * money is never settled on the uncredited preview rule (it paid one ฿70
+ * transfer twice). The retry after the schema is installed credits normally.
  */
 export async function claimFinalizationReferences(
   supabase:       Supabase,
@@ -908,8 +910,9 @@ export async function claimFinalizationReferences(
     reference_id: c.reference, slip_check_id: c.slipCheckId ?? null, manual_entry_id: c.manualEntryId ?? null, amount: c.amount,
   }));
   const { error } = await supabase.rpc("claim_slip_references" as never, { p_finalization_id: finalizationId, p_claims: claims } as never);
-  if (error && error.code !== "42883" && error.code !== "PGRST202") {
-    throw new Error(`slip reference credit failed: ${error.message}`);
+  if (error) {
+    const missing = error.code === "42883" || error.code === "PGRST202";
+    throw new Error(`slip reference credit failed${missing ? " (migration 20261103100000 not applied)" : ""}: ${error.message}`);
   }
 }
 

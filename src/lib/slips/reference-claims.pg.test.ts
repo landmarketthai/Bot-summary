@@ -23,7 +23,7 @@ if (!pgAvailable && process.env.SLIP_INGEST_REQUIRE === "1") {
 const MIGRATIONS = [
   "20261102120000_slip_check_approval_link", "20261102130000_manual_slip_entry_review",
   "20261102140000_slip_review_hardening", "20261102150000_slip_reference_scope",
-  "20261102160000_finalization_claim_order", "20261103100000_slip_reference_claims",
+  "20261102160000_finalization_claim_order", "20261103100000_slip_reference_claims", "20261103120000_financial_write_guards",
 ];
 const MARKET = "วัดทุ่งลานนา";
 const DATE = "2026-10-29";
@@ -156,8 +156,8 @@ describe.skipIf(!pgAvailable)("one credited owner per transfer reference — rea
       "0030_manual_slip_market_key.sql", "20260926090000_manual_slip_atomic_append_close.sql",
     ]);
     await db.exec(FINALIZER_STUBS);
-    // CLAIMS_BASELINE=1 reproduces the findings on the schema before 20261103100000.
-    for (const m of process.env.CLAIMS_BASELINE === "1" ? MIGRATIONS.slice(0, -1) : MIGRATIONS) await db.exec(await file(m));
+    // CLAIMS_BASELINE=1 reproduces the findings on the schema before 20261103100000 (no credits, no guards).
+    for (const m of process.env.CLAIMS_BASELINE === "1" ? MIGRATIONS.slice(0, -2) : MIGRATIONS) await db.exec(await file(m));
     supa = createPgSupabase(db, { failUpload: new Set(), uploaded: new Map() });
     if (ARTIFACT) writeFileSync(ARTIFACT,
       "| Scenario | Before | Expected handed out | Actual handed out | Reference | Credited owner | Finalized totals unchanged | Result |\n|---|---|---|---|---|---|---|---|\n");
@@ -376,5 +376,119 @@ describe.skipIf(!pgAvailable)("one credited owner per transfer reference — rea
     const rows = await db.query<{ ok: boolean }>(
       `SELECT has_table_privilege(r, 'public.slip_reference_claims', 'INSERT') AS ok FROM unnest(ARRAY['anon', 'authenticated', 'service_role']) r`);
     expect(rows.every((r) => r.ok === false)).toBe(true);
+  });
+});
+
+/** Release gates (20261103120000 + fail-closed finalizer): run on their own database. */
+describe.skipIf(!pgAvailable || process.env.CLAIMS_BASELINE === "1")("release gates — fail-closed schema, settled scopes, maintenance stop (PG 17)", () => {
+  const freshGateDb = async (migrations: string[]) => {
+    const created = await createSlipTestDb("slip_gates", [
+      ...SLIP_PIPELINE_MIGRATIONS, "0027_manual_slip_session.sql", "0029_settlement_finalizations.sql",
+      "0030_manual_slip_market_key.sql", "20260926090000_manual_slip_atomic_append_close.sql",
+    ]);
+    await created.exec(FINALIZER_STUBS);
+    for (const m of migrations) await created.exec(await file(m));
+    return created;
+  };
+  const pause = (on: boolean) => db.query(`UPDATE public.financial_maintenance SET paused = ${on}, reason = 'rehearsal', changed_at = now()`);
+  const sqlError = async (statement: string) => {
+    try { await db.query(statement); return "no error"; } catch (e) { return e instanceof Error ? e.message : String(e); }
+  };
+  afterAll(async () => { await db?.drop(); });
+
+  test("P0-A: new code on a schema WITHOUT the credit RPC never settles; after the migration the retry credits once", async () => {
+    db = await freshGateDb(MIGRATIONS.slice(0, -2));               // M1–M5 only
+    supa = createPgSupabase(db, { failUpload: new Set(), uploaded: new Map() });
+    delivered = [];
+    const [session] = await db.query<{ id: string }>(
+      `INSERT INTO public.manual_slip_sessions (source_id, business_date, status, market_label, market_key) VALUES ('NA-B', '${DATE}', 'open', '${MARKET}', 'na-b') RETURNING id`);
+    await supa.rpc("append_manual_slip_entries_atomic", {
+      p_session_id: session.id, p_entries: [{ raw_line: "ยอด 70", amount: 70, reference_id: "NA-R" }], p_line_message_id: "na-b-1", p_line_user_id: null });
+    await seedCheck({ source: "NA-A", amount: 70, ref: "NA-R", createdAt: new Date(Date.now() + 60_000).toISOString() });
+    await entryFor("NA-A");
+    expect(await finalize("NA-A")).toBe("failed");                 // fail closed: nothing pushed
+    await db.query(`UPDATE public.manual_slip_sessions SET status = 'closed', closed_at = now() WHERE id = '${session.id}'`);
+    await entryFor("NA-B");
+    expect(await finalize("NA-B")).toBe("failed");
+    expect(delivered).toEqual([]);
+    expect(await db.scalar(`SELECT string_agg(status, ',' ORDER BY source_id) FROM public.settlement_finalizations`)).toBe("failed,failed");
+    // Schema installed: the pending settlements recover.
+    for (const m of MIGRATIONS.slice(-2)) await db.exec(await file(m));
+    expect(await finalize("NA-A")).toBe("finalized");
+    expect(await finalize("NA-B")).toBe("finalized");
+    const actual = handedOut(["NA-A", "NA-B"]);
+    report({ scenario: "P0-A no credit RPC: fail closed, then recover", before: 0, expected: 70, actual, ref: "NA-R", owner: await credited("NA-R"), unchanged: true });
+    expect({ actual, owner: await credited("NA-R") }).toEqual({ actual: 70, owner: "NA-B" });
+    await db.drop();
+  }, 120_000);
+
+  test("P0-B: a settled scope takes no new manual money — LINE service, RPC and direct SQL are all refused", async () => {
+    db = await freshGateDb(MIGRATIONS);
+    supa = createPgSupabase(db, { failUpload: new Set(), uploaded: new Map() });
+    delivered = [];
+    await seedCheck({ source: "MD-A", amount: 70, ref: "MD-R" });
+    await entryFor("MD-A");
+    expect(await finalize("MD-A")).toBe("finalized");
+    const { ManualSlipSessionService } = await import("@/lib/line/manual-slip-session-service");
+    const svc = new ManualSlipSessionService(supa);
+    const viaLine = await svc.openSession({ sourceId: "MD-A", businessDate: DATE, marketKey: "md-late", marketLabel: MARKET, lineUserId: "U", lineMessageId: "md-1" })
+      .then(() => "opened", (e: Error) => e.message);
+    expect(viaLine).toContain("manual_slip_scope_settled");
+    expect(await sqlError(`INSERT INTO public.manual_slip_sessions (source_id, business_date, status, market_label, market_key) VALUES ('MD-A', '${DATE}', 'closed', '${MARKET}', 'md-sql')`))
+      .toContain("manual_slip_scope_settled");
+    // A session of another round of the same day is also covered by the day-level settlement.
+    const r = await newRound();
+    expect(await sqlError(`INSERT INTO public.manual_slip_sessions (source_id, business_date, status, market_label, market_key, accountability_round_id) VALUES ('MD-A', '${DATE}', 'open', '${MARKET}', 'md-r', '${r}')`))
+      .toContain("manual_slip_scope_settled");
+    const live70 = await live("MD-A");
+    report({ scenario: "P0-B late manual ฿30 after settlement", before: 70, expected: 70, actual: live70, ref: "—", owner: "refused", unchanged: live70 === 70 });
+    expect(live70).toBe(70);
+    // A failed settlement that already recorded credits is settled too (its retry re-sends them).
+    await seedCheck({ source: "MD-F", amount: 40, ref: "MD-FR" });
+    await entryFor("MD-F");
+    expect(await finalize("MD-F", undefined, "timeout")).toBe("failed");
+    expect(await sqlError(`INSERT INTO public.manual_slip_sessions (source_id, business_date, status, market_label, market_key) VALUES ('MD-F', '${DATE}', 'open', '${MARKET}', 'md-f')`))
+      .toContain("manual_slip_scope_settled");
+    // An open scope still accepts manual slips (legacy capture unchanged before settlement).
+    const ok = await svc.openSession({ sourceId: "MD-OPEN", businessDate: DATE, marketKey: "md-open", marketLabel: MARKET, lineUserId: "U", lineMessageId: "md-2" });
+    expect(ok.opened).toBe(true);
+    await svc.appendEntries({ sessionId: ok.session!.id, entries: [{ rawLine: "ยอด 30", amount: 30 }], lineMessageId: "md-3", lineUserId: "U" });
+    expect((await svc.closeSession({ sessionId: ok.session!.id, lineUserId: "U", lineMessageId: "md-4" })).total).toBe(30);
+  }, 120_000);
+
+  test("P0-C: maintenance stop — no settlement, credit, review or manual capture commits; ingestion is kept; resume settles once", async () => {
+    delivered = [];
+    await seedCheck({ source: "MT-A", amount: 70, ref: "MT-R" });
+    await entryFor("MT-A");
+    // An in-flight settlement claimed before the stop, not yet credited.
+    await db.query(`INSERT INTO public.settlement_finalizations (source_id, business_date, status) VALUES ('MT-FLY', '${DATE}', 'sending')`);
+    await pause(true);
+    const stopped = await finalize("MT-A").then((r) => r, (e: Error) => e.message);
+    expect(String(stopped)).toContain("financial_maintenance");
+    const inFlight = await db.scalar(`SELECT id FROM public.settlement_finalizations WHERE source_id = 'MT-FLY'`);
+    const claim = await supa.rpc("claim_slip_references", { p_finalization_id: inFlight, p_claims: [] });
+    expect(String(claim.error?.message)).toContain("financial_maintenance");
+    expect(await sqlError(`UPDATE public.settlement_finalizations SET status = 'failed' WHERE source_id = 'MT-FLY'`)).toBe("no error"); // its outcome can still be recorded
+    const aiRead = await seedCheck({ source: "MT-B", amount: 9, ref: "MT-B-R" });                     // ingestion keeps working
+    expect(await refusal(reviewSlipCheck(supa, { checkId: aiRead, decision: "rejected", reason: "x", reviewer: "a" }))).toContain("financial_maintenance");
+    expect(await sqlError(`INSERT INTO public.manual_slip_sessions (source_id, business_date, status, market_label, market_key) VALUES ('MT-M', '${DATE}', 'open', '${MARKET}', 'mt-m')`))
+      .toContain("financial_maintenance");
+    expect(await db.scalar(`SELECT count(*) FROM public.slip_reference_claims WHERE reference_id LIKE 'MT-%'`)).toBe("0");
+    expect(await db.scalar(`SELECT count(*) FROM public.settlement_finalizations WHERE source_id = 'MT-A'`)).toBe("0");
+    expect(delivered).toEqual([]);
+    await pause(false);
+    expect(await finalize("MT-A")).toBe("finalized");
+    const actual = handedOut(["MT-A"]);
+    report({ scenario: "P0-C maintenance stop then resume", before: 0, expected: 70, actual, ref: "MT-R", owner: await credited("MT-R"), unchanged: true });
+    expect({ actual, owner: await credited("MT-R") }).toEqual({ actual: 70, owner: "MT-A" });
+  }, 120_000);
+
+  test("exception register (read-only SQL) runs and lists exactly the settlement an operator must explain", async () => {
+    // Header comments carry a sample SET with a semicolon; the query itself is one statement.
+    const register = (await Bun.file(`${ROOT}/docs/sql/slip-money-exception-register.sql`).text()).replace(/^--.*$/gm, "");
+    await db.query(`SET register.from_day = '2026-10-01'`);
+    const rows = await db.query<{ check_name: string; source_id: string }>(register);
+    // MD-F: credits recorded, then the push failed — the only open exception here.
+    expect(rows.map((r) => `${r.check_name}|${r.source_id}`)).toEqual(["E1 credited_not_delivered|MD-F"]);
   });
 });
