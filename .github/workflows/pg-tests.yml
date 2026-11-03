@@ -58,6 +58,7 @@ jobs:
           src/lib/slips/ingest-policy.test.ts
           src/lib/slips/evidence-service-timeout.test.ts
           src/lib/slips/check-service.test.ts
+          src/lib/slips/easyslip-bank.test.ts
           src/lib/slips/batch-claim-signature-fallback.test.ts
           src/lib/slips/batch-finalizer.test.ts
           src/lib/slips/batch-global-dedupe.test.ts
