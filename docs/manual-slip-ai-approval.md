@@ -126,3 +126,14 @@ Full procedure, limits and triggers: `docs/release/slip-money-release-runbook.md
 6. **A claim that becomes valid after its own scope finalized** (late OCR, late session close) can leave the transfer counted nowhere. It is under-counted and visible, never doubled.
 7. **`ambiguous` counts as finalized** (as for reviews). An ambiguous scope can hold a reference it never paid out; the transfer is then counted nowhere until the scope is resolved.
 8. **Rollback with new code:** revert the app code before running the M5/M4 down files. Without a code revert the down files still work, but the exact claim order (M5) and the normalization of new manual references (M4) are lost.
+
+## Round-4 review: OPEN BLOCKER (gates LINE grammar phase 1)
+Deriving ownership from the current state of claims cannot prove that one transfer is counted once across scopes. Each review round found a new path, so a targeted patch is not enough.
+- **P1-3, confirmed on PostgreSQL 17:** pinned as `test.failing` "OPEN BLOCKER P1-3" in `slip-check-approval.pg.test.ts`.
+  - M1 (CA) is counted and sent.
+  - An admin rejects the AI read of the same reference in open scope Z.
+  - M2 (CC) is approved and finalized, and ฿70 is counted again.
+- **P1-1, from the review, not reproduced:** a claim that appears after its scope's legacy day-level finalization inherits that early stamp. It can take a reference that another scope already counted.
+- **P1-2, from the review, not reproduced:** a push timeout that LINE actually delivered marks the row `failed` and clears its stamp. A second scope can then count the same transfer. This is limit 3, now known to cause a double count.
+- Limit 6 above ("never doubled") is wrong because of P1-1.
+- **Containment:** every path needs `manual_slip_entries.reference_id`, and no Production code writes it (`appendEntries` sends only raw_line/amount). AI-only references are unaffected. **Do not enable LINE grammar phase 1 (manual references)** until claims are persisted per finalization: the references each sent settlement counted, unique per reference, written under the claim lock. That is a new design and needs approval.

@@ -556,6 +556,21 @@ describe.skipIf(!pgAvailable)("one transfer, one money row across AI and manual 
     )).toBe("true");
   });
 
+  // ── round-4 review, P1-3: OPEN BLOCKER for LINE grammar phase 1 (manual references) ──
+  test.failing("OPEN BLOCKER P1-3: rejecting an open AI read must not let a second manual entry count money a finalized scope already counted", async () => {
+    await seedManual("P3-CA", [{ amount: 70, reference_id: "P3-R" }]);           // M1, counted
+    const aiRead = await seedCheck(db, { source: "P3-Z", amount: 70, ref: "P3-R", time: OK_TIME, createdAt: later() });
+    const [m2] = await seedManual("P3-CC", [{ amount: 70, reference_id: "P3-R" }]); // M2, superseded
+    await finalize("P3-CA");
+    expect(await manual("P3-CA")).toMatchObject({ total: 70 });
+    await setStatus("P3-CA", "sent");
+    await reviewSlipCheck(supa, { checkId: aiRead, decision: "rejected", reason: "ผิดตลาด", reviewer: "a" });
+    const approval = await refusalCode(reviewManualSlipEntry(supa, { entryId: m2, decision: "approved", amount: 70, reason: "จริง", reviewer: "b" }));
+    await finalize("P3-CC");
+    const cc = (await manual("P3-CC")).total;
+    expect(cc).toBe(0);
+  });
+
   test("migrations 20261102140000 to 20261102160000 re-apply cleanly (idempotent)", async () => {
     await db.exec(await file("migrations", M3));
     await db.exec(await file("migrations", M4));

@@ -88,3 +88,4 @@ SELECT count(*) FROM public.settlement_finalizations WHERE status = 'sending';  
 - **Rollback order:** revert the app code first, then M5 → M4 → M3 → M2 → M1. Every row is kept, including `money_claimed_at`.
 - **🔒 Sign off the rule:** a cross-scope duplicate (an AI read and a manual entry with the same full reference) goes to the scope that finalizes first. See `docs/manual-slip-ai-approval.md`, third review.
 - **Still gated:** the AI-vs-manual path stays dormant until LINE grammar phase 1 writes `manual_slip_entries.reference_id`. Nothing in Production writes it today.
+- **🔒 BLOCKER for grammar phase 1:** round-4 review P1-1, P1-2 and P1-3 (P1-3 confirmed and pinned as `test.failing`). Manual references must stay unwritten until persisted per-finalization claims are designed and approved. See `docs/manual-slip-ai-approval.md`, round-4 section.
