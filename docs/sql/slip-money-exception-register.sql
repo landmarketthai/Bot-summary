@@ -3,21 +3,25 @@
 -- settlement and daily during the pilot. Every row is an exception an
 -- operator must explain; an empty result means nothing to explain.
 --
--- Window: business days from `register.from_day` (default: 7 days back):
+-- Window: business days from `register.from_day` (default: 7 days back).
+-- E2 cutover: `register.cutover_at` = the release resume time (runbook §4.7).
+-- Unset, every sent settlement without credits in the window is listed.
 --   SET register.from_day = '2026-11-01';
+--   SET register.cutover_at = '2026-11-05 06:00+07';
 --
 -- Checks:
 --   E1 credited_not_delivered   credits recorded, settlement failed or stuck in sending > 10 min
---   E2 sent_without_credits     settlement sent after the credits migration but recorded no credits
+--   E2 sent_without_credits     settlement sent after the cutover but recorded no credits
 --   E3 credit_exceeds_stored    credited amount > the reconciliation total the message was built from
 --   E4 late_referenced_slip     verified referenced slip in a settled scope, not credited anywhere
 --   E5 day_round_credit_split   round-bound slip credited by the legacy day settlement (or the reverse)
---   E6 manual_after_settlement  manual entry created after its scope settled
+--   E6 manual_after_settlement  manual entry created after its scope settled (handed out, or credited and failed)
 --   E7 live_vs_stored           stored reconciliation differs from the credited + unreferenced money
 --                               (credited rows are final; compare with the White Sheet live view)
 
 WITH params AS (
-  SELECT coalesce(nullif(current_setting('register.from_day', true), '')::date, current_date - 7) AS from_day
+  SELECT coalesce(nullif(current_setting('register.from_day', true), '')::date, current_date - 7) AS from_day,
+         coalesce(nullif(current_setting('register.cutover_at', true), '')::timestamptz, '-infinity'::timestamptz) AS cutover_at
 ),
 fin AS (
   SELECT f.* FROM public.settlement_finalizations f, params p WHERE f.business_date >= p.from_day
@@ -42,9 +46,9 @@ WHERE f.claims_recorded_at IS NOT NULL
 UNION ALL
 SELECT 'E2 sent_without_credits', f.source_id, f.business_date, f.accountability_round_id,
        format('status=%s sent_at=%s', f.status, f.message_sent_at)
-FROM fin f
+FROM fin f, params p
 WHERE f.status = 'sent' AND f.claims_recorded_at IS NULL
-  AND f.message_sent_at > (SELECT min(created_at) FROM public.slip_reference_claims)
+  AND coalesce(f.message_sent_at, f.updated_at) >= p.cutover_at
 
 UNION ALL
 SELECT 'E3 credit_exceeds_stored', f.source_id, f.business_date, f.accountability_round_id,
@@ -79,13 +83,13 @@ WHERE ev.accountability_round_id IS DISTINCT FROM f.accountability_round_id
 
 UNION ALL
 SELECT 'E6 manual_after_settlement', s.source_id, s.business_date, s.accountability_round_id,
-       format('entry=%s amount=%s created=%s settled=%s', m.id, m.amount, m.created_at, coalesce(f.claims_recorded_at, f.claimed_at))
+       format('entry=%s amount=%s created=%s settled=%s status=%s', m.id, m.amount, m.created_at, least(f.claimed_at, f.claims_recorded_at), f.status)
 FROM public.manual_slip_entries m
 JOIN public.manual_slip_sessions s ON s.id = m.session_id
 JOIN fin f ON f.source_id = s.source_id AND f.business_date = s.business_date
           AND (f.accountability_round_id IS NULL OR f.accountability_round_id = s.accountability_round_id)
-WHERE f.status IN ('sending', 'sent', 'ambiguous')
-  AND m.created_at > coalesce(f.claims_recorded_at, f.claimed_at)
+WHERE (f.status IN ('sending', 'sent', 'ambiguous') OR f.claims_recorded_at IS NOT NULL)
+  AND m.created_at > least(f.claimed_at, f.claims_recorded_at)
 
 UNION ALL
 SELECT 'E7 live_vs_stored', f.source_id, f.business_date, f.accountability_round_id,

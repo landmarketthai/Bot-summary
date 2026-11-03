@@ -66,5 +66,5 @@ Local PostgreSQL 17, business date 2026-11-03 (slip date 3/11/2569). Real webhoo
 | 11 Failed image ingestion followed by recovery | row 1; `image-ingestion.pg.test.ts` bounded-pass test (15 then 10, never finalized early) |
 | 12 Legacy unreferenced manual entry | row 5 (counted, known limitation); `slip-check-approval.pg.test.ts` |
 | 13 Repeated webhooks / API requests | rows 1, 8 |
-| 14 Code/schema version mismatch | `slip-check-approval.pg.test.ts` (new code on no migration / M1 only); old-code probe (#193 code on M1, M1+M2, M1+M2+M3: 3/3); M7 forward + rollback chain M7 → M6 → M5 → M4 → M3 → M2 → M1 in `slip-check-approval.pg.test.ts` |
+| 14 Code/schema version mismatch | `slip-check-approval.pg.test.ts` (new code on no migration / M1 only); old-code probe (#193 code on M1, M1+M2, M1+M2+M3: 3/3); M0–M7 forward + rollback chain M7 → M6 → M5 → M4 → M3 → M2 → M1 in `slip-check-approval.pg.test.ts` (M0 down refuses while credits exist); pre-M1 stop, locked stop, immutable manual slips, E1–E7 register and pilot allowlist in `reference-claims.pg.test.ts` |
 | 15 Settlement and White Sheet totals compared with LINE | rows 2, 9, 10. LINE "ยอดยืนยัน" (270) = bank money (170 before review) + the ไทยช่วยไทย gross (100): wallet amounts are confirmed in LINE but never bank-transfer money, pending the wallet accounting decision |

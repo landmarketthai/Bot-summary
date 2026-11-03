@@ -35,6 +35,7 @@ if (!pgAvailable && process.env.SLIP_INGEST_REQUIRE === "1") {
   throw new Error("SLIP_INGEST_REQUIRE=1 but PostgreSQL 17 harness unavailable");
 }
 
+const M0 = "20261102110000_financial_write_stop";
 const M1 = "20261102120000_slip_check_approval_link";
 const M2 = "20261102130000_manual_slip_entry_review";
 const M3 = "20261102140000_slip_review_hardening";
@@ -66,7 +67,11 @@ async function freshDb(prefix: string, migrations: string[]): Promise<SlipTestDb
   await created.query(`ALTER TABLE public.settlement_finalizations ADD COLUMN IF NOT EXISTS accountability_round_id uuid`);
   await created.query(`ALTER TABLE public.manual_slip_sessions ADD COLUMN IF NOT EXISTS accountability_round_id uuid`);
   await created.query(`CREATE TABLE IF NOT EXISTS public.accountability_rounds (id uuid PRIMARY KEY, business_date date NOT NULL)`);
+  // Guarded by 20261102110000; Production has it since 0007 (source_id since 0028).
+  await created.query(`CREATE TABLE IF NOT EXISTS public.settlement_entries (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), source_id text)`);
   for (const m of migrations) await created.exec(await file("migrations", m));
+  // The stop installs paused; resume so the suite tests normal operation.
+  if (migrations.includes(M0)) await created.query(`UPDATE public.financial_maintenance SET paused = false`);
   return created;
 }
 
@@ -134,7 +139,7 @@ const approveAi = (checkId: string, amount: number) =>
 
 describe.skipIf(!pgAvailable)("one transfer, one money row across AI and manual (PG 17)", () => {
   beforeAll(async () => {
-    db = await freshDb("slip_approval", [M1, M2, M3, M4, M5, M6, M7]);
+    db = await freshDb("slip_approval", [M0, M1, M2, M3, M4, M5, M6, M7]);
     supa = createPgSupabase(db, { failUpload: new Set(), uploaded: new Map() });
   }, 120_000);
   afterAll(async () => { await db?.drop(); });
@@ -504,6 +509,8 @@ describe.skipIf(!pgAvailable)("one transfer, one money row across AI and manual 
   });
 
   test("migrations 20261102140000 to 20261103120000 re-apply cleanly (idempotent)", async () => {
+    await db.exec(await file("migrations", M0));
+    expect(await db.scalar(`SELECT paused::text FROM public.financial_maintenance`)).toBe("false"); // an existing switch is kept
     await db.exec(await file("migrations", M3));
     await db.exec(await file("migrations", M4));
     await db.exec(await file("migrations", M5));
@@ -524,6 +531,8 @@ describe.skipIf(!pgAvailable)("one transfer, one money row across AI and manual 
     const stamped = await db.scalar(`SELECT count(money_claimed_at) FROM public.settlement_finalizations`);
     await db.exec(await file("rollback", M7));
     expect(await db.scalar(`SELECT count(*) FROM pg_trigger WHERE tgname IN ('manual_slip_sessions_scope_guard', 'manual_slip_entries_scope_guard', 'slip_check_approvals_maintenance_guard')`)).toBe("0");
+    expect(await db.scalar(`SELECT has_table_privilege('service_role', 'public.manual_slip_sessions', 'UPDATE')::text`)).toBe("true");
+    expect(await db.scalar(`SELECT has_table_privilege('service_role', 'public.manual_slip_entries', 'INSERT')::text`)).toBe("true");
     await db.exec(await file("rollback", M6));
     expect(await db.scalar(`SELECT count(*) FROM pg_proc WHERE proname = 'claim_slip_references'`)).toBe("0");
     expect(await db.scalar(`SELECT count(*) FROM public.slip_reference_claims`)).toBe(credits);
@@ -544,6 +553,10 @@ describe.skipIf(!pgAvailable)("one transfer, one money row across AI and manual 
     expect(Number(decisions)).toBeGreaterThan(0);
     await seedManual("RB", [{ amount: 12, reference_id: "ignored-by-old-rpc" }]);
     expect(await db.scalar(`SELECT count(*) FROM public.manual_slip_entries WHERE reference_id = 'ignored-by-old-rpc'`)).toBe("0");
+    // The stop cannot be removed while credits exist: old code would recount them.
+    const stopDown = await db.exec(await file("rollback", M0)).then(() => "dropped", (e: Error) => e.message);
+    expect(stopDown).toContain("financial_stop_rollback_refused");
+    expect(await db.scalar(`SELECT count(*) FROM pg_trigger WHERE tgname LIKE '%_financial_stop'`)).toBe("5");
   });
 });
 

@@ -187,9 +187,12 @@ describe.skipIf(!pgAvailable)("isolated UAT: slip money end to end", () => {
       await db.query(`ALTER TABLE public.${table} ADD COLUMN IF NOT EXISTS accountability_round_id uuid`);
     }
     await db.query(`CREATE TABLE IF NOT EXISTS public.accountability_rounds (id uuid PRIMARY KEY, business_date date NOT NULL)`);
-    for (const m of ["20261102120000_slip_check_approval_link", "20261102130000_manual_slip_entry_review", "20261102140000_slip_review_hardening", "20261102150000_slip_reference_scope", "20261102160000_finalization_claim_order", "20261103100000_slip_reference_claims", "20261103120000_financial_write_guards"]) {
+    // Guarded by 20261102110000; Production has it since 0007 (source_id since 0028).
+    await db.query(`CREATE TABLE IF NOT EXISTS public.settlement_entries (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), source_id text)`);
+    for (const m of ["20261102110000_financial_write_stop", "20261102120000_slip_check_approval_link", "20261102130000_manual_slip_entry_review", "20261102140000_slip_review_hardening", "20261102150000_slip_reference_scope", "20261102160000_finalization_claim_order", "20261103100000_slip_reference_claims", "20261103120000_financial_write_guards"]) {
       await db.exec(await Bun.file(`${ROOT}/supabase/migrations/${m}.sql`).text());
     }
+    await db.query(`UPDATE public.financial_maintenance SET paused = false`); // the stop installs paused
     supa = createPgSupabase(db, { failUpload: new Set(), uploaded: new Map() });
   }, 180_000);
 

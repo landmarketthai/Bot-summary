@@ -1,35 +1,19 @@
 -- Roll back 20261103120000 to the 20261103100000 state. No financial data
--- changes. Run with traffic stopped, after reverting the app code if it
--- depends on the guards. The maintenance row is dropped (it is a switch, not
--- a record); make sure it is not paused-by-intent before rolling back.
+-- changes. Run with financial writes stopped (financial_maintenance.paused),
+-- after reverting the app code if it depends on the guards. The stop itself
+-- (financial_maintenance, 20261102110000) stays: it is rolled back by its own
+-- down file, last, and only when no credits exist.
 
 BEGIN;
 
 DROP TRIGGER IF EXISTS manual_slip_sessions_scope_guard ON public.manual_slip_sessions;
 DROP TRIGGER IF EXISTS manual_slip_entries_scope_guard ON public.manual_slip_entries;
+DROP TRIGGER IF EXISTS manual_slip_sessions_no_truncate ON public.manual_slip_sessions;
+DROP TRIGGER IF EXISTS manual_slip_entries_no_truncate ON public.manual_slip_entries;
 DROP TRIGGER IF EXISTS slip_check_approvals_maintenance_guard ON public.slip_check_approvals;
 
--- 20261102160000 definition.
-CREATE OR REPLACE FUNCTION public.lock_settlement_finalization_money()
-RETURNS trigger
-LANGUAGE plpgsql
-SET search_path = public, pg_temp
-AS $$
-BEGIN
-  PERFORM pg_advisory_xact_lock(hashtextextended('money-close:claim-order', 0));
-  PERFORM public.lock_money_close(NEW.source_id, NEW.business_date, NEW.accountability_round_id);
-  IF NEW.status IN ('sending', 'sent', 'ambiguous') THEN
-    IF TG_OP = 'INSERT' OR OLD.status NOT IN ('sending', 'sent', 'ambiguous') THEN
-      NEW.money_claimed_at := clock_timestamp();
-    ELSE
-      NEW.money_claimed_at := OLD.money_claimed_at;
-    END IF;
-  ELSE
-    NEW.money_claimed_at := NULL;
-  END IF;
-  RETURN NEW;
-END;
-$$;
+GRANT UPDATE, DELETE, TRUNCATE ON TABLE public.manual_slip_sessions TO service_role;
+GRANT INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.manual_slip_entries TO service_role;
 
 -- 20261103100000 definition.
 CREATE OR REPLACE FUNCTION public.claim_slip_references(p_finalization_id uuid, p_claims jsonb)
@@ -79,7 +63,75 @@ DROP FUNCTION IF EXISTS public.guard_manual_slip_entry_write();
 DROP FUNCTION IF EXISTS public.guard_manual_slip_session_write();
 DROP FUNCTION IF EXISTS public.assert_manual_slip_scope_open(text, date, uuid);
 DROP FUNCTION IF EXISTS public.money_scope_is_settled(text, date, uuid);
-DROP FUNCTION IF EXISTS public.assert_financial_writes_open();
-DROP TABLE IF EXISTS public.financial_maintenance;
+DROP FUNCTION IF EXISTS public.refuse_manual_slip_truncate();
+
+-- Restore M6 review entry points, without the M7 maintenance-row lock.
+CREATE OR REPLACE FUNCTION public.assert_slip_check_round_open(p_check_id uuid)
+RETURNS void
+LANGUAGE plpgsql
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_source text;
+  v_round uuid;
+  v_receipt_day date;
+  v_round_day date;
+  v_day date;
+BEGIN
+  SELECT e.source_id, e.accountability_round_id,
+         ((e.received_at AT TIME ZONE 'Asia/Bangkok') - interval '4 hours')::date
+  INTO v_source, v_round, v_receipt_day
+  FROM public.slip_checks c JOIN public.slip_evidences e ON e.id = c.evidence_id
+  WHERE c.id = p_check_id;
+  v_round_day := v_receipt_day;
+  IF v_round IS NOT NULL THEN
+    SELECT coalesce((SELECT r.business_date FROM public.accountability_rounds r WHERE r.id = v_round), v_receipt_day)
+    INTO v_round_day;
+    PERFORM public.lock_money_close(v_source, v_round_day, v_round);
+  END IF;
+  FOR v_day IN SELECT DISTINCT d FROM unnest(ARRAY[v_receipt_day, v_round_day]) d ORDER BY d LOOP
+    PERFORM public.lock_money_close(v_source, v_day, NULL);
+  END LOOP;
+  IF public.money_close_is_finalized(v_source, v_round_day, v_round)
+     OR public.money_close_is_finalized(v_source, v_receipt_day, NULL) THEN
+    RAISE EXCEPTION 'slip_check_round_finalized' USING ERRCODE = 'object_not_in_prerequisite_state';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM public.slip_checks k
+    JOIN public.slip_reference_claims c ON c.reference_id = public.normalize_slip_reference(k.reference_id)
+    WHERE k.id = p_check_id
+  ) THEN
+    RAISE EXCEPTION 'slip_reference_credited' USING ERRCODE = 'object_not_in_prerequisite_state';
+  END IF;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.assert_manual_entry_round_open(p_entry_id uuid)
+RETURNS void
+LANGUAGE plpgsql
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_source text;
+  v_round uuid;
+  v_day date;
+BEGIN
+  SELECT s.source_id, s.accountability_round_id, s.business_date
+  INTO v_source, v_round, v_day
+  FROM public.manual_slip_entries e JOIN public.manual_slip_sessions s ON s.id = e.session_id
+  WHERE e.id = p_entry_id;
+  PERFORM public.lock_money_close_scope(v_source, v_day, v_round);
+  IF public.money_close_is_finalized(v_source, v_day, v_round) THEN
+    RAISE EXCEPTION 'slip_check_round_finalized' USING ERRCODE = 'object_not_in_prerequisite_state';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM public.manual_slip_entries m
+    JOIN public.slip_reference_claims c ON c.reference_id = public.normalize_slip_reference(m.reference_id)
+    WHERE m.id = p_entry_id
+  ) THEN
+    RAISE EXCEPTION 'slip_reference_credited' USING ERRCODE = 'object_not_in_prerequisite_state';
+  END IF;
+END;
+$$;
 
 COMMIT;
