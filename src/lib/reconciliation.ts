@@ -214,7 +214,10 @@ export function aggregateGloballyAcceptedVerifiedTransfers(
       return;
     }
     attributedTotal += Number(check.transfer_amount);
-    credited.push({ reference: ref, slipCheckId: check.id, amount: Number(check.transfer_amount) });
+    // An accepted zero OCR read adds no money and must not consume a positive-only credit.
+    if (Number(check.transfer_amount) > 0) {
+      credited.push({ reference: ref, slipCheckId: check.id, amount: Number(check.transfer_amount) });
+    }
   };
 
   for (const check of checks) {
@@ -275,7 +278,7 @@ export function aggregateGloballyAcceptedVerifiedTransfers(
   };
 }
 
-async function loadVerifiedTransferChecksForSourceDate(
+export async function loadVerifiedTransferChecksForSourceDate(
   supabase:     Supabase,
   sourceId:     string,
   businessDate: string,

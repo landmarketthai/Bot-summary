@@ -196,6 +196,31 @@ describe("every verified row is inside the authoritative total", () => {
   const sum = (slips: Array<{ status: string; amount: number | null }>) =>
     slips.filter((s) => s.status === "verified").reduce((t, s) => t + (s.amount ?? 0), 0);
 
+  it("a check credited by the day settlement is duplicate in the overlapping round", async () => {
+    const db = baseDb();
+    seedSlip(db, { id: "day-credit", amount: 70, accountabilityRoundId: ROUND });
+    db.seed("settlement_finalizations", [{ id: "fin-day", source_id: SOURCE, business_date: DATE, accountability_round_id: null, status: "failed", claims_recorded_at: MID_WINDOW }]);
+    db.seed("slip_reference_claims", [{ reference_id: "ref-day-credit", finalization_id: "fin-day", slip_check_id: "day-credit", manual_entry_id: null, amount: 65 }]);
+    const report = await buildGuidedRoundReport(db.asClient(), { ...CONTEXT, accountabilityRoundId: ROUND }, true);
+    expect(report.slips).toEqual([{ checkId: "day-credit", referenceId: "ref-day-credit", amount: 70, status: "duplicate" }]);
+    expect(report.totals.aiVerifiedTotal).toBe(0);
+    const owner = await buildGuidedRoundReport(db.asClient(), CONTEXT, true);
+    expect(owner.slips[0]).toMatchObject({ status: "verified", amount: 65 });
+    expect(sum(owner.slips)).toBe(owner.totals.aiVerifiedTotal);
+  });
+
+  it("a late reference in a failed frozen scope is excluded even with an approval", async () => {
+    const db = baseDb();
+    seedSlip(db, { id: "late-credit", amount: 70, accountabilityRoundId: ROUND });
+    db.seed("settlement_finalizations", [{ id: "fin-round", source_id: SOURCE, business_date: DATE, accountability_round_id: ROUND, status: "failed", claims_recorded_at: MID_WINDOW }]);
+    db.seed("slip_check_approvals", [{ slip_check_id: "late-credit", decision: "approved", approved_amount: 60, status: "active" }]);
+    const report = await buildGuidedRoundReport(db.asClient(), { ...CONTEXT, accountabilityRoundId: ROUND }, true);
+    expect(report.slips[0]).toMatchObject({ status: "excluded" });
+    expect(report.totals.aiVerifiedTotal).toBe(0);
+    expect(sum(report.slips)).toBe(report.totals.aiVerifiedTotal);
+    expect(report.blockers).not.toContain("ocr_pending");
+  });
+
   it("a late image bound to the round is listed AND counted (rows == money)", async () => {
     const db = baseDb();
     seedSlip(db, { id: "on-time", amount: 400, accountabilityRoundId: ROUND });

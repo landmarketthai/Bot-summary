@@ -425,6 +425,9 @@ export async function tryFinalizeSettlement(
   // success so we proceed straight to marking sent.
   const retryKey = claimedRow.line_retry_key;
   try {
+    // Recheck the stop and sending row at the last DB boundary; recorded credits are immutable.
+    const { error } = await supabase.rpc("claim_slip_references" as never, { p_finalization_id: claimedRow.id, p_claims: [] } as never);
+    if (error) throw new Error(`settlement push authorization failed: ${error.message}`);
     await push(sourceId, message, retryKey);
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);

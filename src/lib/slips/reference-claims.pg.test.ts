@@ -9,8 +9,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { appendFileSync, writeFileSync } from "node:fs";
 import { loadAiVerifiedTransferTotal, loadMarketScopedManualSlipBreakdown } from "@/lib/reconciliation";
+import { determineSlipCheckStatus, parseSlipExtraction } from "@/lib/slips/extraction-schema";
 import { tryFinalizeSettlement } from "@/lib/settlement-finalizer";
-import { reviewManualSlipEntry, reviewSlipCheck, SlipCheckReviewError } from "@/lib/slips/check-approval";
+import { reviewManualSlipEntry, reviewSlipCheck, revokeSlipCheckReview, SlipCheckReviewError } from "@/lib/slips/check-approval";
 import {
   createPgSupabase, createSlipTestDb, PGHOST, PGPASSWORD, PGPORT, PGUSER, probePg, PSQL, ROOT, SLIP_PIPELINE_MIGRATIONS, type SlipTestDb,
 } from "@/lib/slips/testing/pg-slip-harness";
@@ -24,7 +25,7 @@ const STOP = "20261102110000_financial_write_stop";
 const MIGRATIONS = [
   STOP, "20261102120000_slip_check_approval_link", "20261102130000_manual_slip_entry_review",
   "20261102140000_slip_review_hardening", "20261102150000_slip_reference_scope",
-  "20261102160000_finalization_claim_order", "20261103100000_slip_reference_claims", "20261103120000_financial_write_guards",
+  "20261102160000_finalization_claim_order", "20261103100000_slip_reference_claims", "20261103120000_financial_write_guards", "20261103130000_financial_release_blockers",
 ];
 const MARKET = "วัดทุ่งลานนา";
 const DATE = "2026-10-29";
@@ -80,7 +81,7 @@ async function seedCheck(s: { source: string; amount: number; ref: string; round
   return check.id;
 }
 
-async function seedManual(source: string, amount: number, ref: string): Promise<string> {
+async function seedManual(source: string, amount: number, ref: string | null): Promise<string> {
   const [session] = await db.query<{ id: string }>(
     `INSERT INTO public.manual_slip_sessions (source_id, business_date, status, market_label, market_key)
      VALUES ('${source}', '${DATE}', 'open', '${MARKET}', 'cl-m-${++seq}') RETURNING id`);
@@ -159,7 +160,7 @@ describe.skipIf(!pgAvailable)("one credited owner per transfer reference — rea
     ]);
     await db.exec(FINALIZER_STUBS);
     // CLAIMS_BASELINE=1 reproduces the findings on the schema before 20261103100000 (no credits, no guards).
-    for (const m of process.env.CLAIMS_BASELINE === "1" ? MIGRATIONS.slice(0, -2) : MIGRATIONS) await db.exec(await file(m));
+    for (const m of process.env.CLAIMS_BASELINE === "1" ? MIGRATIONS.slice(0, -3) : MIGRATIONS) await db.exec(await file(m));
     await db.query(RESUME); // the stop installs paused; these suites test normal operation
     supa = createPgSupabase(db, { failUpload: new Set(), uploaded: new Map() });
     if (ARTIFACT) writeFileSync(ARTIFACT,
@@ -401,7 +402,7 @@ describe.skipIf(!pgAvailable || process.env.CLAIMS_BASELINE === "1")("release ga
   afterAll(async () => { await db?.drop(); });
 
   test("P0-A: new code on a schema WITHOUT the credit RPC never settles; after the migration the retry credits once", async () => {
-    db = await freshGateDb(MIGRATIONS.slice(0, -2));               // M1–M5 only
+    db = await freshGateDb(MIGRATIONS.slice(0, -3));               // M1–M5 only
     supa = createPgSupabase(db, { failUpload: new Set(), uploaded: new Map() });
     delivered = [];
     const [session] = await db.query<{ id: string }>(
@@ -417,7 +418,7 @@ describe.skipIf(!pgAvailable || process.env.CLAIMS_BASELINE === "1")("release ga
     expect(delivered).toEqual([]);
     expect(await db.scalar(`SELECT string_agg(status, ',' ORDER BY source_id) FROM public.settlement_finalizations`)).toBe("failed,failed");
     // Schema installed: the pending settlements recover.
-    for (const m of MIGRATIONS.slice(-2)) await db.exec(await file(m));
+    for (const m of MIGRATIONS.slice(-3)) await db.exec(await file(m));
     expect(await finalize("NA-A")).toBe("finalized");
     expect(await finalize("NA-B")).toBe("finalized");
     const actual = handedOut(["NA-A", "NA-B"]);
@@ -551,7 +552,102 @@ describe.skipIf(!pgAvailable || process.env.CLAIMS_BASELINE === "1")("release bl
     return false;
   };
 
-  test("P0-1: the stop is installed before M1 and starts paused — no code version commits money while M1–M7 apply; resume settles once", async () => {
+  test("M8: recorded credits freeze unreferenced manual approval, rejection and revocation after failed delivery", async () => {
+    await gateDb(MIGRATIONS);
+    try {
+      await db.query(RESUME);
+      const pending = await seedManual("FR-P", 30, null);
+      const approved = await seedManual("FR-A", 40, null);
+      const review = await reviewManualSlipEntry(supa, { entryId: approved, decision: "approved", amount: 35, reason: "checked", reviewer: "op" });
+      for (const source of ["FR-P", "FR-A"]) {
+        await entryFor(source);
+        expect(await finalize(source, undefined, "timeout")).toBe("failed");
+      }
+      for (const decision of ["approved", "rejected"] as const) {
+        expect(await refusal(reviewManualSlipEntry(supa, { entryId: pending, decision, amount: 99, reason: "late", reviewer: "op" })))
+          .toBe("slip_check_round_finalized");
+      }
+      expect(await refusal(revokeSlipCheckReview(supa, { approvalId: review.approvalId, reason: "late", revokedBy: "op" })))
+        .toBe("slip_check_round_finalized");
+      expect(await live("FR-P")).toBe(30);
+      expect(await live("FR-A")).toBe(35);
+      expect(await finalize("FR-P")).toBe("finalized");
+      expect(await snapshot("FR-P")).toBe(30);
+      // A failure before recording credits remains reviewable.
+      const open = await seedManual("FR-OPEN", 12, null);
+      await db.query(`INSERT INTO public.settlement_finalizations (source_id, business_date, status) VALUES ('FR-OPEN', '${DATE}', 'failed')`);
+      expect(await reviewManualSlipEntry(supa, { entryId: open, decision: "approved", amount: 10, reason: "checked", reviewer: "op" })).toMatchObject({ already: false });
+    } finally { await db.drop(); }
+  }, 120_000);
+
+  test("M8: approved NULL fails the table check; direct AI and manual RPCs reject NULL, zero, rounded-zero and nonfinite approvals", async () => {
+    await gateDb(MIGRATIONS);
+    try {
+      await db.query(RESUME);
+      const check = await seedCheck({ source: "VA-A", amount: 20, ref: "VA-R" });
+      const entry = await seedManual("VA-M", 20, null);
+      expect(await sqlError(`INSERT INTO public.slip_check_approvals (slip_check_id, decision, approved_amount, reason, reviewer)
+        VALUES ('${check}', 'approved', NULL, 'checked', 'op')`)).toContain("slip_check_approvals_amount_shape");
+      for (const [rpc, target, id] of [["review_slip_check", "p_check_id", check], ["review_manual_slip_entry", "p_entry_id", entry]]) {
+        for (const amount of [null, 0, -1, 0.001, "NaN", "Infinity", "-Infinity"]) {
+          const result = await supa.rpc(rpc, { [target]: id, p_decision: "approved", p_amount: amount, p_reason: "checked", p_reviewer: "op" });
+          expect(String(result.error?.message)).toContain("slip_review_positive_amount_required");
+        }
+        const args = { [target]: id, p_decision: "approved", p_amount: 15, p_reason: "checked", p_reviewer: "op" };
+        for (const bad of [{ p_decision: null }, { p_decision: "other" }, { p_reason: null }, { p_reviewer: " " }]) {
+          expect((await supa.rpc(rpc, { ...args, ...bad })).error).not.toBeNull();
+        }
+        expect((await supa.rpc(rpc, args)).error).toBeNull();
+        expect((await supa.rpc(rpc, args)).data.already).toBe(true);
+      }
+      await db.exec(await file(MIGRATIONS.at(-1)!)); // correction is re-runnable
+      expect(await db.scalar("SELECT count(*) FROM public.slip_check_approvals")).toBe("2");
+    } finally { await db.drop(); }
+  }, 120_000);
+
+  test("M8: accepted OCR zero transfer does not create a zero credit or fail the whole settlement", async () => {
+    await gateDb(MIGRATIONS);
+    try {
+      await db.query(RESUME);
+      const extraction = parseSlipExtraction({ slip_type: "BANK_SLIP_QR", transfer_amount: 0, reference_id: "ZERO-R", transaction_time: OK_TIME, confidence: 0.95 });
+      expect(determineSlipCheckStatus(extraction)).toBe("EXTRACTED");
+      await seedCheck({ source: "ZERO", amount: extraction.transferAmount!, ref: "ZERO-R" });
+      await seedCheck({ source: "ZERO", amount: 45, ref: "POS-R" });
+      await entryFor("ZERO");
+      expect(await finalize("ZERO")).toBe("finalized");
+      expect(await snapshot("ZERO")).toBe(45);
+      expect(await live("ZERO")).toBe(45);
+      expect(await db.scalar("SELECT count(*) FROM public.slip_reference_claims WHERE reference_id = 'ZERO-R'")).toBe("0");
+      expect(handedOut(["ZERO"])).toBe(45);
+    } finally { await db.drop(); }
+  }, 120_000);
+
+  test("M8: old uncredited sent writes are refused; a stop after credits but before push prevents delivery", async () => {
+    await gateDb(MIGRATIONS);
+    try {
+      await db.query(RESUME);
+      expect(await sqlError(`INSERT INTO public.settlement_finalizations (source_id, business_date, status) VALUES ('OLD', '${DATE}', 'sent')`))
+        .toContain("settlement_credits_required");
+      await db.query(`INSERT INTO public.settlement_finalizations (source_id, business_date, status) VALUES ('OLD', '${DATE}', 'sending')`);
+      for (const write of ["status = 'sent'", "status = 'ambiguous'", "message_sent_at = now()"]) {
+        expect(await sqlError(`UPDATE public.settlement_finalizations SET ${write} WHERE source_id = 'OLD'`)).toContain("settlement_credits_required");
+      }
+      await seedCheck({ source: "LAST", amount: 18, ref: "LAST-R" });
+      await entryFor("LAST");
+      const result = await tryFinalizeSettlement(supa, "LAST", DATE, pushFor("LAST", undefined), undefined, async () => {
+        await db.query("UPDATE public.financial_maintenance SET paused = true");
+        return "complete";
+      });
+      expect(result).toBe("failed");
+      expect(delivered).toEqual([]);
+      expect(await db.scalar("SELECT (claims_recorded_at IS NOT NULL)::text FROM public.settlement_finalizations WHERE source_id = 'LAST'")).toBe("true");
+      await db.query(RESUME);
+      expect(await finalize("LAST")).toBe("finalized");
+      expect(handedOut(["LAST"])).toBe(18);
+    } finally { await db.drop(); }
+  }, 120_000);
+
+  test("P0-1: the stop is installed before M1 and starts paused — no code version commits money while M1–M8 apply; resume settles once", async () => {
     await gateDb([]);                                                   // Production today: no money migrations
     try {
       // Before the window: a slip, an entry, an open manual session (old code at work).
@@ -592,7 +688,7 @@ describe.skipIf(!pgAvailable || process.env.CLAIMS_BASELINE === "1")("release bl
     } finally { await db.drop(); }
   }, 180_000);
 
-  test("P0-1b: the M0 stop refuses deletion of a prior finalization before any M1–M7 migration", async () => {
+  test("P0-1b: the M0 stop refuses deletion of a prior finalization before any M1–M8 migration", async () => {
     await gateDb([]);
     try {
       await db.query(`INSERT INTO public.settlement_finalizations (source_id, business_date, status)
@@ -714,7 +810,7 @@ describe.skipIf(!pgAvailable || process.env.CLAIMS_BASELINE === "1")("release bl
     } finally { await db.drop(); }
   }, 120_000);
 
-  test("M7 rollback refuses while credits exist (even paused) and leaves the guards; with no credit M7 → M0 roll back cleanly", async () => {
+  test("M8 rollback refuses while credits exist (even paused) and leaves the guards; with no credit M8 → M0 roll back cleanly", async () => {
     const down = (m: string) => Bun.file(`${ROOT}/supabase/rollback/${m}.down.sql`).text();
     const guards = `SELECT count(*) FROM pg_trigger WHERE tgname IN ('manual_slip_sessions_scope_guard', 'manual_slip_entries_scope_guard', 'slip_check_approvals_maintenance_guard')`;
     await gateDb(MIGRATIONS);
@@ -750,7 +846,7 @@ describe.skipIf(!pgAvailable || process.env.CLAIMS_BASELINE === "1")("release bl
         .toContain("settlement_claims_stamp_immutable");
       expect(await sqlError(`INSERT INTO public.manual_slip_sessions (source_id, business_date, status, market_label, market_key) VALUES ('ST-A', '${DATE}', 'open', '${MARKET}', 'st-a')`))
         .toContain("manual_slip_scope_settled");
-      await db.query(`INSERT INTO public.settlement_finalizations (source_id, business_date, status) VALUES ('ST-B', '${DATE}', 'sent')`);
+      await db.query(`INSERT INTO public.settlement_finalizations (source_id, business_date, status) VALUES ('ST-B', '${DATE}', 'pending')`);
       await db.query(`UPDATE public.financial_maintenance SET paused = true`);
       expect(await sqlError(`DELETE FROM public.settlement_finalizations WHERE source_id = 'ST-B'`)).toContain("financial_maintenance");
       expect(await sqlError(`DELETE FROM public.settlement_finalizations WHERE source_id = 'ST-A'`)).toContain("financial_maintenance");
@@ -761,14 +857,14 @@ describe.skipIf(!pgAvailable || process.env.CLAIMS_BASELINE === "1")("release bl
   }, 120_000);
 
   test("P1-3: service_role cannot UPDATE, DELETE or TRUNCATE manual slips; open → append → close still works", async () => {
-    await gateDb(MIGRATIONS.slice(0, -1));
+    await gateDb(MIGRATIONS.slice(0, -2));
     try {
       // Supabase grants service_role table writes before M7; M7 narrows them.
       await db.query(`GRANT USAGE ON SCHEMA public TO service_role`);
       await db.query(`GRANT SELECT ON ALL TABLES IN SCHEMA public TO service_role`);
       await db.query(`GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON public.manual_slip_sessions, public.manual_slip_entries TO service_role`);
       await db.query(`GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO service_role`);
-      await db.exec(await file(MIGRATIONS.at(-1)!));
+      for (const m of MIGRATIONS.slice(-2)) await db.exec(await file(m));
       await db.query(RESUME);
       const asService = (statement: string) => db.exec(`SET ROLE service_role;\n${statement};`).then(() => "no error", (e: Error) => e.message);
 

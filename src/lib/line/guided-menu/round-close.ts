@@ -19,13 +19,12 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, SlipCheckStatus } from "@/types/database";
 import {
   businessDateToUtcRange,
-  loadBatchOutlierCheckIds,
+  loadVerifiedTransferChecksForSourceDate,
   loadMarketScopedAiVerifiedTransfers,
   loadMarketScopedManualSlipTotal,
 } from "@/lib/reconciliation";
 import { normalizedMarketLabel } from "@/lib/market";
 import { slipDateIneligibility } from "@/lib/slips/financial-eligibility";
-import { loadActiveDecisions, loadReferenceIndex, ownershipFor } from "@/lib/slips/reference-ownership";
 import {
   isVerifiedSlipCheckStatus,
   normalizeTransactionId,
@@ -209,14 +208,10 @@ export async function loadGuidedSlipRows(
     winners = new Set();
   }
 
-  const outliers = await loadBatchOutlierCheckIds(supabase, [...new Set(evidenceRows
-    .map((row) => (row as { batch_id?: string | null }).batch_id)
-    .filter((id): id is string => typeof id === "string"))]);
-  const verifiedIds = checkRows
-    .filter((row) => isVerifiedSlipCheckStatus(row.status as SlipCheckStatus))
-    .map((row) => String(row.id));
-  const decisions = await loadActiveDecisions(supabase, "slip_check_id", verifiedIds);
-  const owners = await loadReferenceIndex(supabase, references);
+  const verified = await loadVerifiedTransferChecksForSourceDate(
+    supabase, context.sourceId, context.businessDate, context.accountabilityRoundId,
+  );
+  const verifiedById = new Map(verified.checks.map((check) => [check.id, check]));
 
   return checkRows.flatMap((row): GuidedSlipRow[] => {
     const checkId = String(row.id);
@@ -231,7 +226,8 @@ export async function loadGuidedSlipRows(
     if (!referenceId) {
       return [{ ...base, status: "manual_review" as const }];
     }
-    if (!winners.has(checkId)) {
+    const financial = verifiedById.get(checkId);
+    if (!winners.has(checkId) && financial?.credit?.kind !== "owner") {
       return [{ ...base, status: "duplicate" as const }];
     }
     const market = evidenceMarket.get(String(row.evidence_id)) ?? null;
@@ -248,13 +244,18 @@ export async function loadGuidedSlipRows(
     // else is. Reasons the money loader excludes are `excluded`/`date_mismatch`,
     // which do not block the close: the money difference does, until the slip
     // is approved or keyed as a manual slip.
-    if (ownershipFor(owners, referenceId)?.aiSupersededByManual) {
+    if (financial?.credit?.kind === "owner") {
+      return [{ ...base, amount: financial.credit.amount, status: "verified" as const }];
+    }
+    if (financial?.credit?.kind === "elsewhere") return [{ ...base, status: "duplicate" as const }];
+    if (financial?.credit?.kind === "late") return [{ ...base, status: "excluded" as const }];
+    if (financial?.superseded_by_manual) {
       return [{ ...base, status: "duplicate" as const }]; // an earlier manual entry owns it
     }
-    const decision = decisions.get(checkId);
+    const decision = financial?.approval;
     if (decision?.decision === "rejected") return [{ ...base, status: "excluded" as const }];
     if (decision?.decision === "approved") return [{ ...base, amount: decision.amount, status: "verified" as const }];
-    if (amount === null || outliers.has(checkId)) {
+    if (amount === null || financial?.amount_outlier) {
       return [{ ...base, status: "excluded" as const }]; // wallet read or LINE outlier
     }
     const dateProblem = slipDateIneligibility(row.transaction_time as string | null, context.businessDate);
