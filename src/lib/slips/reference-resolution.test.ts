@@ -64,6 +64,7 @@ function makeFakeSupabase(checks: FakeCheck[]) {
         };
       }
       if (table === "manual_slip_entries") return { select: () => ({ in: () => emptyRows() }) };
+      if (table === "slip_reference_claims") return { select: () => emptyRows() };
       if (table === "slip_check_reference_resolutions") {
         return {
           insert: (values: { check_id: string; reference_id: string; actor: string }) => {

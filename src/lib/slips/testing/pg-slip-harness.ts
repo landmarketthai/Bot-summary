@@ -275,9 +275,10 @@ class Builder implements PromiseLike<Result> {
       const tuples = rows.map((r) => `(${keys.map((k) => lit(r[k])).join(", ")})`).join(", ");
       stmt = `INSERT INTO ${t} (${keys.map(ident).join(", ")}) VALUES ${tuples}`;
       if (this.op === "upsert" && this.onConflict) {
-        const sets = keys.filter((k) => k !== this.onConflict)
+        const target = this.onConflict.split(",").map((c) => c.trim());
+        const sets = keys.filter((k) => !target.includes(k))
           .map((k) => `${ident(k)} = EXCLUDED.${ident(k)}`).join(", ");
-        stmt += ` ON CONFLICT (${ident(this.onConflict)}) DO UPDATE SET ${sets}`;
+        stmt += ` ON CONFLICT (${target.map(ident).join(", ")}) DO UPDATE SET ${sets}`;
       }
     } else if (this.op === "update") {
       const sets = Object.entries(rows[0] ?? {}).map(([k, v]) => `${ident(k)} = ${lit(v)}`).join(", ");

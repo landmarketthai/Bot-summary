@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { resolveReferenceOwnership, type AiCandidate, type ManualCandidate } from "@/lib/slips/reference-ownership";
+import { resolveReferenceOwnership, type AiCandidate, type ManualCandidate, type ReferenceCredit } from "@/lib/slips/reference-ownership";
 
 const T = (m: number) => `2026-10-29T12:${String(m).padStart(2, "0")}:00Z`;
 const ai = (o: Partial<AiCandidate> = {}): AiCandidate => ({ id: "ai", amount: 50, createdAt: T(10), ...o });
@@ -65,47 +65,33 @@ describe("one money row per full reference", () => {
   });
 });
 
-describe("containment: money already handed out in a finalized round never moves", () => {
-  test("scenario 1 — an earlier manual entry becomes valid (session closed) after the AI read's round was finalized", () => {
-    const r = resolveReferenceOwnership(ai({ createdAt: T(30), finalized: true }), [man("e1", { createdAt: T(10) })]);
-    expect(r.aiOwns).toBe(true);
-    expect(states(r)).toEqual({ e1: "superseded" });
+describe("a persisted credit is final: mutable review state never moves it", () => {
+  const credit = (o: Partial<ReferenceCredit> = {}): ReferenceCredit =>
+    ({ finalizationId: "f1", slipCheckId: null, manualEntryId: "m1", amount: 70, ...o });
+
+  test("credited manual entry keeps counting after the AI read is rejected (P1-3); another entry is superseded", () => {
+    const r = resolveReferenceOwnership(ai({ amount: 70, decision: { decision: "rejected" } }),
+      [man("m1", { amount: 70 }), man("m2", { amount: 70, decision: { decision: "approved", amount: 70 } })], credit());
+    expect(r.aiOwns).toBe(false);
+    expect(states(r)).toEqual({ m1: "counted", m2: "superseded" });
   });
 
-  test("scenario 2 — approving an earlier pending entry cannot take the reference from a finalized owner", () => {
-    const approvedEarlier = man("e1", { createdAt: T(5), requiresReview: true, decision: { decision: "approved", amount: 50 } });
-    const finalizedOwner = man("e2", { createdAt: T(20), finalized: true });
-    expect(states(resolveReferenceOwnership(null, [approvedEarlier, finalizedOwner]))).toEqual({ e2: "counted", e1: "superseded" });
+  test("credited AI read owns even when an earlier manual entry would win the preview (P1-1 / P1-2)", () => {
+    const r = resolveReferenceOwnership(ai({ amount: 70, createdAt: T(30) }), [man("m", { amount: 70, createdAt: T(1) })],
+      credit({ slipCheckId: "ai", manualEntryId: null }));
+    expect(r).toMatchObject({ aiOwns: true, aiSupersededByManual: false });
+    expect(states(r)).toEqual({ m: "superseded" });
   });
 
-  test("scenario 3 — rejecting the open-round owner never makes an open-round claim count; only a finalized claim can own", () => {
-    const rejectedOwner = man("e1", { createdAt: T(5), decision: { decision: "rejected" } });
-    const openLater = man("e3", { createdAt: T(30) });
-    const r = resolveReferenceOwnership(ai({ createdAt: T(40), finalized: true }), [rejectedOwner, openLater]);
-    expect(r.aiOwns).toBe(true);
-    expect(states(r)).toEqual({ e1: "rejected", e3: "superseded" });
+  test("a different amount on another claim is a pending conflict, never counted; open sessions stay open", () => {
+    const r = resolveReferenceOwnership(null, [man("m1", { amount: 70 }), man("m2", { amount: 700 }), man("m3", { closed: false })], credit());
+    expect(states(r)).toEqual({ m1: "counted", m2: "pending", m3: "open" });
   });
 
-  test("both scopes finalized: the one that finalized FIRST keeps the transfer, whatever the creation order", () => {
-    const aiFirst = resolveReferenceOwnership(ai({ createdAt: T(30), finalized: true, finalizedAt: T(40) }),
-      [man("m", { createdAt: T(10), finalized: true, finalizedAt: T(50) })]);
-    expect(aiFirst.aiOwns).toBe(true);
-    expect(states(aiFirst)).toEqual({ m: "superseded" });
-    const manualFirst = resolveReferenceOwnership(ai({ createdAt: T(5), finalized: true, finalizedAt: T(50) }),
-      [man("m", { createdAt: T(10), finalized: true, finalizedAt: T(40) })]);
-    expect(manualFirst).toMatchObject({ aiOwns: false, aiSupersededByManual: true });
-    expect(states(manualFirst)).toEqual({ m: "counted" });
-    const twoManual = resolveReferenceOwnership(null, [
-      man("early", { createdAt: T(1), finalized: true, finalizedAt: T(50) }),
-      man("late", { createdAt: T(9), finalized: true, finalizedAt: T(45) }),
-    ]);
-    expect(states(twoManual)).toEqual({ early: "superseded", late: "counted" });
-  });
-
-  test("an open AI read loses to a finalized manual claim even if it is earlier", () => {
-    const r = resolveReferenceOwnership(ai({ createdAt: T(1) }), [man("m", { createdAt: T(20), finalized: true })]);
-    expect(r).toMatchObject({ aiOwns: false, aiSupersededByManual: true });
-    expect(states(r)).toEqual({ m: "counted" });
+  test("credited to another finalization's row: nothing here counts", () => {
+    const r = resolveReferenceOwnership(ai({ amount: 70 }), [man("mx", { amount: 70 })], credit({ manualEntryId: "elsewhere" }));
+    expect(r.aiOwns).toBe(false);
+    expect(states(r)).toEqual({ mx: "superseded" });
   });
 });
 

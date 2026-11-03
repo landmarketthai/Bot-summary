@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 import {
+  claimFinalizationReferences,
   reconcile,
   businessDateToUtcRange,
 } from "@/lib/reconciliation";
@@ -122,6 +123,18 @@ export async function tryFinalizeSettlement(
         ? roundQuery.is("accountability_round_id", null)
         : roundQuery.eq("accountability_round_id", accountabilityRoundId);
   };
+  // The finalization ROW key is always (source, date, round ?? null) — the key
+  // the insert uses. A no-round call must never re-claim (or read) another
+  // round's row: it would send that row with the day view's money.
+  const rowScoped = <T>(query: T): T => {
+    const roundQuery = query as T & {
+      is(column: string, value: null): T;
+      eq(column: string, value: string): T;
+    };
+    return accountabilityRoundId
+      ? roundQuery.eq("accountability_round_id", accountabilityRoundId)
+      : roundQuery.is("accountability_round_id", null);
+  };
 
   // ── 1. Detect multiple settlement entries (ambiguous) ──────────────────────
   const { data: entries, error: entryErr } = await scoped(supabase
@@ -139,7 +152,7 @@ export async function tryFinalizeSettlement(
 
   if (entries.length > 1) {
     // Never downgrade a row that already sent the final message.
-    const { data: existingFin } = await scoped(supabase
+    const { data: existingFin } = await rowScoped(supabase
       .from("settlement_finalizations")
       .select("status, message_sent_at")
       .eq("source_id", sourceId)
@@ -250,7 +263,7 @@ export async function tryFinalizeSettlement(
     }
 
     // Stage 2: claim a pending or failed row.
-    const { data: claimedExisting } = await scoped(supabase
+    const { data: claimedExisting } = await rowScoped(supabase
       .from("settlement_finalizations")
       .update({ status: "sending", claimed_at: now, updated_at: now })
       .eq("source_id", sourceId)
@@ -265,7 +278,7 @@ export async function tryFinalizeSettlement(
       // Stage 3: reclaim a stale sending row (process crash / DB-update failure).
       // We only update claimed_at so the stable line_retry_key is preserved.
       const staleCutoff = new Date(Date.now() - STALE_SENDING_MS).toISOString();
-      const { data: reclaimedStale } = await scoped(supabase
+      const { data: reclaimedStale } = await rowScoped(supabase
         .from("settlement_finalizations")
         .update({ claimed_at: now, updated_at: now })
         .eq("source_id", sourceId)
@@ -281,7 +294,7 @@ export async function tryFinalizeSettlement(
         claimedRow = reclaimedStale;
       } else {
         // Row is in a non-claimable state: re-fetch to determine why.
-        const { data: existing } = await scoped(supabase
+        const { data: existing } = await rowScoped(supabase
           .from("settlement_finalizations")
           .select("status, message_sent_at")
           .eq("source_id", sourceId)
@@ -298,6 +311,22 @@ export async function tryFinalizeSettlement(
   }
 
   log.info("finalization claimed", { id: claimedRow.id });
+
+  // ── 5b. Credit the scope's references BEFORE reconciling ───────────────────
+  // slip_reference_claims (docs/slip-reference-claims.md): one finalization per
+  // transfer reference, final. A retry of this row re-credits the same rows; a
+  // LINE timeout or a failed status never erases a credit.
+  try {
+    await claimFinalizationReferences(supabase, claimedRow.id, sourceId, businessDate, accountabilityRoundId);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    await supabase
+      .from("settlement_finalizations")
+      .update({ status: "failed", last_error: reason, updated_at: now })
+      .eq("id", claimedRow.id);
+    log.error("slip reference credit failed", { reason });
+    return "failed";
+  }
 
   // ── 6. Reconcile (upserts transfer_reconciliations) ────────────────────────
   const reconcileResult = await reconcile(

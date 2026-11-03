@@ -1,5 +1,4 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { bangkokBusinessDateFromTimestamp } from "@/lib/business-date";
 import type { Database } from "@/types/database";
 
 type Supabase = SupabaseClient<Database>;
@@ -7,9 +6,13 @@ type Supabase = SupabaseClient<Database>;
 /**
  * ONE money row per full transaction reference, across the AI path (slip
  * checks + approvals) and the manual path (manual slip entries + overrides).
- * Pure; the review RPCs (migration 20261102140000) enforce the same rules.
  *
- * Ownership, in order:
+ * A CREDITED reference (slip_reference_claims, written by the settlement
+ * finalizer — docs/slip-reference-claims.md) counts only for its claimed AI
+ * check or manual entry, at the claimed amount, whatever happens afterwards.
+ * Every other claim of it is superseded (same amount) or pending.
+ *
+ * An uncredited reference follows the preview rule (pure):
  *   1. The AI global winner (earliest verified check) is a candidate only when
  *      it carries a transfer amount and is not REJECTED. Wallet reads (no
  *      transfer amount) are never bank money.
@@ -17,11 +20,7 @@ type Supabase = SupabaseClient<Database>;
  *      rejected, and it is approved — or it needs no review and the AI read of
  *      the same reference was not rejected (a rejected AI read means a human
  *      must decide).
- *   3. The EARLIEST candidate owns the money (AI wins a tie). Once a claim's
- *      round/day is finalized, only finalized claims can own it, and among them
- *      the one whose scope finalized FIRST (that scope counted the transfer):
- *      a later finalizer, or a claim that becomes valid afterwards, never
- *      counts it again.
+ *   3. The EARLIEST candidate owns the money (AI wins a tie).
  *   4. Every other manual entry of the reference: same amount as the owner →
  *      superseded (not counted); different amount → pending (a conflict a
  *      human resolves; never silently reconciled). With no owner, an entry
@@ -37,11 +36,6 @@ export interface AiCandidate {
   amount: number | null;
   createdAt: string;
   decision?: ReviewDecision | null;
-  /** Its round/day settlement was handed out (sending / sent / ambiguous). */
-  finalized?: boolean;
-  /** When that settlement was first claimed (money_claimed_at); orders finalized claims. */
-  finalizedAt?: string | null;
-  evidenceId?: string;
 }
 
 export interface ManualCandidate {
@@ -51,9 +45,16 @@ export interface ManualCandidate {
   requiresReview: boolean;
   closed: boolean;
   decision?: ReviewDecision | null;
-  finalized?: boolean;
-  finalizedAt?: string | null;
-  sessionId?: string;
+}
+
+/** A persisted credit: one finalization credited this reference to one target. */
+export interface ReferenceCredit {
+  finalizationId: string;
+  /** The crediting finalization's scope; a credit counts only there. Absent = unknown (never counted). */
+  scope?: { sourceId: string; businessDate: string; round: string | null };
+  slipCheckId: string | null;
+  manualEntryId: string | null;
+  amount: number;
 }
 
 export type ManualOwnership = "counted" | "pending" | "superseded" | "rejected" | "open";
@@ -64,6 +65,8 @@ export interface ReferenceOwnership {
   /** A live AI winner lost the reference to an earlier counted manual entry. */
   aiSupersededByManual: boolean;
   manual: Map<string, ManualOwnership>;
+  /** Set when the reference is credited: the only money row, at this amount. */
+  credit?: ReferenceCredit;
 }
 
 const satang = (amount: number) => Math.round(amount * 100);
@@ -73,35 +76,34 @@ const order = (a: { createdAt: string; id: string }, b: { createdAt: string; id:
 export function resolveReferenceOwnership(
   ai: AiCandidate | null,
   manuals: readonly ManualCandidate[],
+  credit?: ReferenceCredit | null,
 ): ReferenceOwnership {
   const aiRejected = ai?.decision?.decision === "rejected";
   const aiLive = ai !== null && ai.amount !== null && !aiRejected;
   const sorted = [...manuals].sort(order);
+  const own = (m: ManualCandidate) => (m.decision?.decision === "approved" ? m.decision.amount : m.amount);
+
+  if (credit) {
+    const manual = new Map<string, ManualOwnership>();
+    for (const m of sorted) {
+      manual.set(m.id, m.id === credit.manualEntryId ? "counted"
+        : !m.closed ? "open"
+        : m.decision?.decision === "rejected" ? "rejected"
+        : satang(own(m)) === satang(credit.amount) ? "superseded" : "pending");
+    }
+    const aiOwns = ai !== null && ai.id === credit.slipCheckId;
+    return { aiOwns, aiSupersededByManual: aiLive && !aiOwns, manual, credit };
+  }
+
   const isCandidate = (m: ManualCandidate) =>
     m.closed && m.decision?.decision !== "rejected"
     && (m.decision?.decision === "approved" || (!m.requiresReview && !(ai !== null && aiRejected)));
-  // Containment for money already handed out: when ANY valid claim of this
-  // reference sits in a finalized round/day, only finalized claims can own it,
-  // and the scope that finalized FIRST wins: when it finalized, its own claim
-  // was the only finalized one, so it counted the transfer. A claim in an open
-  // round — however it became valid later (session close, approval, a rejected
-  // owner, a late OCR completion) — or one whose scope finalizes later never
-  // counts the same transfer a second time; it is superseded or pending.
-  const validManuals = sorted.filter(isCandidate);
-  const finalizedOnly = (aiLive && ai!.finalized === true) || validManuals.some((m) => m.finalized === true);
-  const aiEligible = aiLive && (!finalizedOnly || ai!.finalized === true);
-  const rank = (c: { createdAt: string; finalizedAt?: string | null }) =>
-    finalizedOnly ? Date.parse(c.finalizedAt ?? c.createdAt) : 0;
-  const firstManual = validManuals
-    .filter((m) => !finalizedOnly || m.finalized === true)
-    .reduce<ManualCandidate | null>((best, m) => (best === null || rank(m) < rank(best) ? m : best), null);
-
-  const aiOwns = aiEligible && (firstManual === null || rank(ai!) < rank(firstManual)
-    || (rank(ai!) === rank(firstManual) && Date.parse(ai!.createdAt) <= Date.parse(firstManual.createdAt)));
+  const firstManual = sorted.find(isCandidate) ?? null;
+  const aiOwns = aiLive && (firstManual === null || Date.parse(ai!.createdAt) <= Date.parse(firstManual.createdAt));
   const owner = aiOwns ? null : firstManual;
   const ownerAmount = aiOwns
     ? (ai!.decision?.decision === "approved" ? ai!.decision.amount : ai!.amount!)
-    : owner ? (owner.decision?.decision === "approved" ? owner.decision.amount : owner.amount) : null;
+    : owner ? own(owner) : null;
 
   const manual = new Map<string, ManualOwnership>();
   for (const m of sorted) {
@@ -109,8 +111,7 @@ export function resolveReferenceOwnership(
     if (m.decision?.decision === "rejected") { manual.set(m.id, "rejected"); continue; }
     if (owner?.id === m.id) { manual.set(m.id, "counted"); continue; }
     if (ownerAmount !== null) {
-      const own = m.decision?.decision === "approved" ? m.decision.amount : m.amount;
-      manual.set(m.id, satang(own) === satang(ownerAmount) ? "superseded" : "pending");
+      manual.set(m.id, satang(own(m)) === satang(ownerAmount) ? "superseded" : "pending");
       continue;
     }
     manual.set(m.id, "pending"); // no owner: needs review, or its AI read was rejected
@@ -121,6 +122,7 @@ export function resolveReferenceOwnership(
 export interface ReferenceIndex {
   ai: Map<string, AiCandidate>;
   manual: Map<string, ManualCandidate[]>;
+  credits: Map<string, ReferenceCredit>;
   /** The schema predates manual references: every manual entry is unreferenced. */
   manualReferencesUnavailable: boolean;
 }
@@ -133,13 +135,47 @@ export function isMissingSchemaObject(error: { code?: string }): boolean {
 /**
  * The one reference normalizer for ownership: every whitespace character is
  * removed (as parseSlipExtraction does for AI reads), including no-break and
- * zero-width spaces an operator may paste. Matching is exact after this.
+ * zero-width spaces an operator may paste. Matching is exact after this. The
+ * SQL normalize_slip_reference (20261102160000) removes the same characters.
  */
 export const normalizeSlipReference = (raw: string | null | undefined): string | null => {
-  const t = typeof raw === "string" ? raw.replace(/[\s\u200B-\u200D\uFEFF]+/g, "") : "";
+  const t = typeof raw === "string" ? raw.replace(/[\s​-‍﻿]+/g, "") : "";
   return t.length > 0 ? t : null;
 };
 const norm = normalizeSlipReference;
+
+/** Persisted credits of these references; none before migration 20261103100000. */
+export async function loadReferenceCredits(supabase: Supabase, refs: readonly string[]): Promise<Map<string, ReferenceCredit>> {
+  const credits = new Map<string, ReferenceCredit>();
+  if (refs.length === 0) return credits;
+  // slip_reference_claims (20261103100000) is not in the generated types.
+  const { data, error } = await (supabase.from("slip_reference_claims" as never) as unknown as ReturnType<Supabase["from"]>)
+    .select("reference_id, finalization_id, slip_check_id, manual_entry_id, amount" as never)
+    .in("reference_id" as never, refs as never);
+  if (error) {
+    if (isMissingSchemaObject(error)) return credits;
+    throw new Error(`slip reference credit lookup failed: ${error.message}`);
+  }
+  const rows = (data ?? []) as unknown as Array<{ reference_id: string; finalization_id: string; slip_check_id: string | null; manual_entry_id: string | null; amount: number | string }>;
+  const scopes = new Map<string, NonNullable<ReferenceCredit["scope"]>>();
+  const finalizationIds = [...new Set(rows.map((row) => row.finalization_id))];
+  if (finalizationIds.length > 0) {
+    const { data: finals, error: finalError } = await supabase.from("settlement_finalizations")
+      .select("id, source_id, business_date, accountability_round_id")
+      .in("id", finalizationIds);
+    if (finalError) throw new Error(`slip reference credit scope lookup failed: ${finalError.message}`);
+    for (const f of finals ?? []) {
+      scopes.set(f.id, { sourceId: f.source_id, businessDate: f.business_date, round: f.accountability_round_id ?? null });
+    }
+  }
+  for (const row of rows) {
+    credits.set(row.reference_id, {
+      finalizationId: row.finalization_id, scope: scopes.get(row.finalization_id),
+      slipCheckId: row.slip_check_id, manualEntryId: row.manual_entry_id, amount: Number(row.amount),
+    });
+  }
+  return credits;
+}
 
 /**
  * Everything that can claim the money of these references, from every source,
@@ -147,12 +183,13 @@ const norm = normalizeSlipReference;
  */
 export async function loadReferenceIndex(supabase: Supabase, references: readonly string[]): Promise<ReferenceIndex> {
   const refs = [...new Set(references.map(norm).filter((r): r is string => r !== null))];
-  const index: ReferenceIndex = { ai: new Map(), manual: new Map(), manualReferencesUnavailable: false };
+  const index: ReferenceIndex = { ai: new Map(), manual: new Map(), credits: new Map(), manualReferencesUnavailable: false };
   if (refs.length === 0) return index;
+  index.credits = await loadReferenceCredits(supabase, refs);
 
   const { data: checks, error: checkError } = await supabase
     .from("slip_checks")
-    .select("id, reference_id, transfer_amount, created_at, evidence_id")
+    .select("id, reference_id, transfer_amount, created_at")
     .in("reference_id", refs)
     .in("status", ["EXTRACTED", "PARTIAL_EXTRACTED"])
     .order("created_at", { ascending: true })
@@ -161,10 +198,7 @@ export async function loadReferenceIndex(supabase: Supabase, references: readonl
   for (const c of checks ?? []) {
     const ref = norm(c.reference_id);
     if (ref && !index.ai.has(ref)) {
-      index.ai.set(ref, {
-        id: c.id, createdAt: c.created_at, evidenceId: c.evidence_id,
-        amount: c.transfer_amount === null ? null : Number(c.transfer_amount),
-      });
+      index.ai.set(ref, { id: c.id, createdAt: c.created_at, amount: c.transfer_amount === null ? null : Number(c.transfer_amount) });
     }
   }
 
@@ -196,120 +230,18 @@ export async function loadReferenceIndex(supabase: Supabase, references: readonl
     const list = index.manual.get(ref) ?? [];
     list.push({
       id: e.id, amount: Number(e.amount), createdAt: e.created_at,
-      requiresReview: e.requires_review === true, closed: closed.has(e.session_id), sessionId: e.session_id,
+      requiresReview: e.requires_review === true, closed: closed.has(e.session_id),
       decision: manualDecisions.get(e.id) ?? null,
     });
     index.manual.set(ref, list);
   }
-  await markFinalizedClaims(supabase, index);
   return index;
-}
-
-const FINALIZED_STATUSES = ["sending", "sent", "ambiguous"] as const;
-
-async function selectWithFallback<T>(
-  query: (columns: string) => PromiseLike<{ data: unknown; error: { code?: string; message: string } | null }>,
-  columnSets: string[],
-  what: string,
-): Promise<T[]> {
-  for (const columns of columnSets) {
-    const { data, error } = await query(columns);
-    if (!error) return (data ?? []) as T[];
-    if (!isMissingSchemaObject(error)) throw new Error(`${what} failed: ${error.message}`);
-  }
-  return [];
-}
-
-/**
- * Marks claims whose round/day settlement was handed out (sending / sent /
- * ambiguous) with WHEN it was claimed, only for references with competing claims — the only case the
- * containment rule needs. Scope = accountability round when bound, plus the
- * source's legacy day-level (NULL-round) settlement for the receipt day and
- * the round's business day.
- */
-async function markFinalizedClaims(supabase: Supabase, index: ReferenceIndex): Promise<void> {
-  const contested = [...new Set([...index.ai.keys(), ...index.manual.keys()])]
-    .filter((ref) => (index.ai.has(ref) ? 1 : 0) + (index.manual.get(ref)?.length ?? 0) >= 2);
-  if (contested.length === 0) return;
-  const ai = contested.map((r) => index.ai.get(r)).filter((a): a is AiCandidate => a !== undefined && !!a.evidenceId);
-  const manual = contested.flatMap((r) => index.manual.get(r) ?? []).filter((m) => !!m.sessionId);
-
-  type Scope = { source: string; round: string | null; days: string[] };
-  const evidences = ai.length === 0 ? [] : await selectWithFallback<{ id: string; source_id: string; accountability_round_id?: string | null; received_at: string }>(
-    (cols) => supabase.from("slip_evidences").select(cols as "id").in("id", ai.map((a) => a.evidenceId!)),
-    ["id, source_id, accountability_round_id, received_at", "id, source_id, received_at"], "claim evidence lookup");
-  const sessions = manual.length === 0 ? [] : await selectWithFallback<{ id: string; source_id: string; business_date: string; accountability_round_id?: string | null }>(
-    (cols) => supabase.from("manual_slip_sessions").select(cols as "id").in("id", manual.map((m) => m.sessionId!)),
-    ["id, source_id, business_date, accountability_round_id", "id, source_id, business_date"], "claim session lookup");
-  const roundIds = [...new Set(evidences.map((e) => e.accountability_round_id).filter((r): r is string => !!r))];
-  const rounds = roundIds.length === 0 ? [] : await selectWithFallback<{ id: string; business_date: string }>(
-    // accountability_rounds (P2E) is not in the generated types.
-    (cols) => (supabase.from("accountability_rounds" as never) as unknown as ReturnType<Supabase["from"]>).select(cols as never).in("id" as never, roundIds as never),
-    ["id, business_date"], "claim round lookup");
-  const roundDay = new Map(rounds.map((r) => [r.id, r.business_date]));
-
-  const scopeOfEvidence = new Map<string, Scope>(evidences.map((e) => {
-    const receiptDay = bangkokBusinessDateFromTimestamp(Date.parse(e.received_at));
-    const round = e.accountability_round_id ?? null;
-    const days = [receiptDay, round ? roundDay.get(round) : undefined].filter((d): d is string => !!d);
-    return [e.id, { source: e.source_id, round, days }];
-  }));
-  const scopeOfSession = new Map<string, Scope>(sessions.map((s) =>
-    [s.id, { source: s.source_id, round: s.accountability_round_id ?? null, days: [s.business_date] }]));
-
-  // Only the claims' own rounds and (source, day) pairs: an unbounded history
-  // would be cut by PostgREST max_rows and silently drop a finalization.
-  type Final = {
-    source_id: string; business_date: string; accountability_round_id?: string | null;
-    money_claimed_at?: string | null; claimed_at?: string | null; finalized_at?: string | null;
-  };
-  const scopes = [...scopeOfEvidence.values(), ...scopeOfSession.values()];
-  const claimRounds = [...new Set(scopes.map((s) => s.round).filter((r): r is string => r !== null))];
-  const sources = [...new Set(scopes.map((s) => s.source))];
-  const days = [...new Set(scopes.flatMap((s) => s.days))];
-  // money_claimed_at comes with 20261102160000; before it, the app-side claim time.
-  const columns = [
-    "source_id, business_date, accountability_round_id, money_claimed_at, claimed_at, finalized_at",
-    "source_id, business_date, accountability_round_id, claimed_at, finalized_at",
-    "source_id, business_date, claimed_at, finalized_at",
-  ];
-  const byRound = claimRounds.length === 0 ? [] : await selectWithFallback<Final>(
-    (cols) => supabase.from("settlement_finalizations").select(cols as "source_id")
-      .in("accountability_round_id", claimRounds).in("status", FINALIZED_STATUSES),
-    columns.slice(0, 2), "claim round finalization lookup");
-  const byDay = sources.length === 0 ? [] : await selectWithFallback<Final>((cols) => {
-    const q = supabase.from("settlement_finalizations").select(cols as "source_id")
-      .in("source_id", sources).in("business_date", days).in("status", FINALIZED_STATUSES);
-    return cols.includes("accountability_round_id") ? q.is("accountability_round_id", null) : q;
-  }, columns, "claim day finalization lookup");
-  const finals = [...byRound, ...byDay];
-  /** When the earliest finalization covering the scope claimed it; null = not finalized. */
-  const finalizedAt = (scope: Scope | undefined): string | null => {
-    if (!scope) return null;
-    let first: string | null = null;
-    for (const f of finals) {
-      const covers = (scope.round !== null && f.accountability_round_id === scope.round)
-        || ((f.accountability_round_id ?? null) === null && f.source_id === scope.source && scope.days.includes(f.business_date));
-      const at = f.money_claimed_at ?? f.claimed_at ?? f.finalized_at ?? null;
-      if (covers && at && (first === null || Date.parse(at) < Date.parse(first))) first = at;
-    }
-    return first;
-  };
-
-  for (const a of ai) {
-    a.finalizedAt = finalizedAt(scopeOfEvidence.get(a.evidenceId!));
-    a.finalized = a.finalizedAt !== null;
-  }
-  for (const m of manual) {
-    m.finalizedAt = finalizedAt(scopeOfSession.get(m.sessionId!));
-    m.finalized = m.finalizedAt !== null;
-  }
 }
 
 export function ownershipFor(index: ReferenceIndex, reference: string | null | undefined): ReferenceOwnership | null {
   const ref = norm(reference);
   if (!ref) return null;
-  return resolveReferenceOwnership(index.ai.get(ref) ?? null, index.manual.get(ref) ?? []);
+  return resolveReferenceOwnership(index.ai.get(ref) ?? null, index.manual.get(ref) ?? [], index.credits.get(ref));
 }
 
 /**

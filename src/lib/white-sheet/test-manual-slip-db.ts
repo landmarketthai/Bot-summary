@@ -85,16 +85,20 @@ export function stubManualSlipTables(options?: {
       };
     }
     if (table === "slip_check_approvals") return emptyApprovalTable();
+    // No persisted credits and no settled scope (slip_reference_claims, 20261103100000).
+    if (table === "slip_reference_claims" || table === "settlement_finalizations") return emptyApprovalTable();
     return null;
   };
 }
 
-/** No operator decisions: .select().in().eq() resolves to zero rows. */
+/** No rows (operator decisions, credits, finalizations): any read chain resolves to zero rows. */
 export function emptyApprovalTable() {
   const builder = {
     select: () => builder,
     in: () => builder,
     eq: () => builder,
+    is: () => builder,
+    order: () => builder,
     then: (resolve: (value: unknown) => unknown, reject?: (reason: unknown) => unknown) =>
       Promise.resolve({ data: [], error: null }).then(resolve, reject),
   };

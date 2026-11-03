@@ -127,13 +127,16 @@ Full procedure, limits and triggers: `docs/release/slip-money-release-runbook.md
 7. **`ambiguous` counts as finalized** (as for reviews). An ambiguous scope can hold a reference it never paid out; the transfer is then counted nowhere until the scope is resolved.
 8. **Rollback with new code:** revert the app code before running the M5/M4 down files. Without a code revert the down files still work, but the exact claim order (M5) and the normalization of new manual references (M4) are lost.
 
-## Round-4 review: OPEN BLOCKER (gates LINE grammar phase 1)
-Deriving ownership from the current state of claims cannot prove that one transfer is counted once across scopes. Each review round found a new path, so a targeted patch is not enough.
-- **P1-3, confirmed on PostgreSQL 17:** pinned as `test.failing` "OPEN BLOCKER P1-3" in `slip-check-approval.pg.test.ts`.
-  - M1 (CA) is counted and sent.
-  - An admin rejects the AI read of the same reference in open scope Z.
-  - M2 (CC) is approved and finalized, and ฿70 is counted again.
-- **P1-1, from the review, not reproduced:** a claim that appears after its scope's legacy day-level finalization inherits that early stamp. It can take a reference that another scope already counted.
-- **P1-2, from the review, not reproduced:** a push timeout that LINE actually delivered marks the row `failed` and clears its stamp. A second scope can then count the same transfer. This is limit 3, now known to cause a double count.
-- Limit 6 above ("never doubled") is wrong because of P1-1.
-- **Containment:** every path needs `manual_slip_entries.reference_id`, and no Production code writes it (`appendEntries` sends only raw_line/amount). AI-only references are unaffected. **Do not enable LINE grammar phase 1 (manual references)** until claims are persisted per finalization: the references each sent settlement counted, unique per reference, written under the claim lock. That is a new design and needs approval.
+## Round-4 review: resolved by persisted credits (`20261103100000_slip_reference_claims.sql`, M6)
+Derived ownership (round 2 containment, round 3 claim-order ranking) is **removed**. The settlement finalizer now credits every referenced money row of its scope to its finalization in `slip_reference_claims`, before it reconciles. The table's primary key allows one credit per canonical reference, and a credit is final. Design contract: `docs/slip-reference-claims.md`.
+- **P1-1** (late claim inherits an early stamp), **P1-2** (push timeout clears the stamp) and **P1-3** (rejecting the AI read lets a second entry count) are reproduced with the real `tryFinalizeSettlement` on PostgreSQL (`reference-claims.pg.test.ts`, `CLAIMS_BASELINE=1`): ฿140 handed out for one ฿70 transfer. With M6 each is handed out once (฿70), and the finalized totals do not move.
+- Limits 1, 3, 5, 6 and 7 above no longer apply to credited references:
+  - A credit does not depend on review state or on LINE delivery.
+  - A late row in a settled scope is pending.
+  - `ambiguous` never credits, because it never reconciles.
+- **Still open, by design:**
+  - Unreferenced manual entries have no identity, so they are never matched (limit 4).
+  - AI-vs-AI duplicates follow the global earliest-read rule until one of them is credited (limit 2). After that, the credit decides.
+  - Finalizations before M6 recorded no credits, so their scopes are not frozen. This is unchanged history.
+  - A pending late row is shown only through totals (`pendingLateCount`). The White Sheet does not yet warn about it.
+- M5's claim stamp and global lock are no longer read by the app. They are harmless and are kept: M5 is committed and its down file restores the previous trigger function.

@@ -58,6 +58,7 @@ function makeFinStub(fin: StubFin) {
     select: (): unknown => {
       const s: Record<string, unknown> = {};
       s["eq"]          = () => s;
+      s["is"]          = () => s;
       s["maybeSingle"] = async () => ({ data: fin.existing ?? null, error: null });
       return s;
     },
@@ -109,6 +110,11 @@ function makeDb(cfg: DbCfg = {}) {
   const procChecks = cfg.processingChecks ?? false;
 
   return {
+    // Reference credits (20261103100000): this scope has no referenced rows.
+    rpc: async (name: string) => {
+      if (name !== "claim_slip_references") throw new Error(`unexpected rpc in stub: ${name}`);
+      return { data: [], error: null };
+    },
     from(table: string) {
       if (table === "settlement_finalizations") return finStub;
 

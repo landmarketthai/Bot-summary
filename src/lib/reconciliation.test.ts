@@ -180,7 +180,7 @@ function makeFullSupabase(cfg: {
         };
       }
 
-      if (table === "slip_check_approvals") return emptyApprovalTable();
+      if (table === "slip_check_approvals" || table === "slip_reference_claims" || table === "settlement_finalizations") return emptyApprovalTable();
       throw new Error(`unexpected table: ${table}`);
     },
   };

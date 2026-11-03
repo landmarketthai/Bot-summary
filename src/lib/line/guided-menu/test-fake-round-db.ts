@@ -226,6 +226,19 @@ export class RoundFakeDatabase {
     return new QueryBuilder(this.tables[table]!, this.uniqueKeys[table] ?? []);
   };
 
+  /** claim_slip_references (20261103100000): first finalization per reference wins; marks the scope settled. */
+  rpc = async (name: string, args: { p_finalization_id: string; p_claims: Row[] }) => {
+    if (name !== "claim_slip_references") throw new Error(`unexpected rpc: ${name}`);
+    const credits = (this.tables.slip_reference_claims ??= []);
+    for (const claim of args.p_claims) {
+      if (!credits.some((c) => c.reference_id === claim.reference_id)) credits.push({ ...claim, finalization_id: args.p_finalization_id });
+    }
+    const finalization = this.tables.settlement_finalizations.find((f) => f.id === args.p_finalization_id);
+    if (finalization) finalization.claims_recorded_at ??= new Date().toISOString();
+    const refs = new Set(args.p_claims.map((c) => c.reference_id));
+    return { data: credits.filter((c) => refs.has(c.reference_id)), error: null };
+  };
+
   asClient(): SupabaseClient {
     return this as unknown as SupabaseClient;
   }

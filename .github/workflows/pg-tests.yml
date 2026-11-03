@@ -45,6 +45,7 @@ jobs:
           src/lib/slips/financial-eligibility.pg.test.ts
           src/lib/slips/slip-check-approval.pg.test.ts
           src/lib/slips/uat-manual-approval.pg.test.ts
+          src/lib/slips/reference-claims.pg.test.ts
           src/lib/slips/image-ingestion-ordering.pg.test.ts
           src/lib/slips/incident-baseline.pg.test.ts
           src/lib/slips/finalizer-accounting.pg.test.ts

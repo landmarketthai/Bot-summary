@@ -8,7 +8,9 @@ import {
   isMissingSchemaObject,
   loadActiveDecisions,
   loadReferenceIndex,
+  normalizeSlipReference,
   ownershipFor,
+  type ReferenceCredit,
 } from "@/lib/slips/reference-ownership";
 import type { Database, SlipCheckStatus, SlipType, TransferReconciliationRow } from "@/types/database";
 
@@ -48,6 +50,20 @@ export interface VerifiedTransferCheckRow {
   approval?: { decision: "approved"; amount: number } | { decision: "rejected" } | null;
   /** An earlier counted manual entry owns this reference (slips/reference-ownership.ts). */
   superseded_by_manual?: boolean;
+  /**
+   * Persisted credit of this row's reference (slip_reference_claims): owner =
+   * this check is the credited money row, at `amount`, final; elsewhere =
+   * another row is; late = this row's own scope already settled without it.
+   */
+  credit?: { kind: "owner"; amount: number } | { kind: "elsewhere" } | { kind: "late" } | null;
+}
+
+/** A money row a finalization credits to its reference (claimFinalizationReferences). */
+export interface CreditedReference {
+  reference: string;
+  slipCheckId?: string;
+  manualEntryId?: string;
+  amount: number;
 }
 
 export interface MarketScopedVerifiedTransferResult {
@@ -75,6 +91,11 @@ export interface MarketScopedVerifiedTransferResult {
   /** Live AI reads whose reference an earlier counted manual entry already owns. */
   supersededByManualCount?:  number;
   supersededByManualAmount?: number;
+  /** Referenced reads that arrived after this scope settled without them: pending, never counted. */
+  pendingLateCount?:         number;
+  pendingLateAmount?:        number;
+  /** Referenced money rows counted here (what a finalization credits). */
+  credited?:                 CreditedReference[];
 }
 
 export interface MarketScopedAggregationOptions {
@@ -137,13 +158,35 @@ export function aggregateGloballyAcceptedVerifiedTransfers(
   let rejectedAmount = 0;
   let supersededByManualCount = 0;
   let supersededByManualAmount = 0;
+  let pendingLateCount = 0;
+  let pendingLateAmount = 0;
+  const credited: CreditedReference[] = [];
+  const creditedReferences = new Set<string>();
   // The global winner is chosen exactly as before (earliest verified check).
   // A winner that is suspended (outlier) or has a bad date is pending — it
   // never falls through to a later duplicate, so one reference can never be
   // counted twice or re-assigned to a different read without evidence. An
   // operator decision on the winner replaces the automatic rules for it: the
   // check is still ONE money row, counted at most once.
-  const attribute = (check: VerifiedTransferCheckRow) => {
+  // A credited reference (slip_reference_claims) is final: its owner row counts
+  // the credited amount, every other row of it is superseded, and a referenced
+  // row its own settled scope did not credit is late (pending).
+  const attribute = (check: VerifiedTransferCheckRow, ref: string) => {
+    if (check.credit?.kind === "owner") {
+      attributedTotal += check.credit.amount;
+      credited.push({ reference: ref, slipCheckId: check.id, amount: check.credit.amount });
+      return;
+    }
+    if (check.credit?.kind === "elsewhere") {
+      supersededByManualCount += 1;
+      supersededByManualAmount += Number(check.transfer_amount);
+      return;
+    }
+    if (check.credit?.kind === "late") {
+      pendingLateCount += 1;
+      pendingLateAmount += Number(check.transfer_amount);
+      return;
+    }
     if (check.superseded_by_manual) {
       supersededByManualCount += 1;
       supersededByManualAmount += Number(check.transfer_amount);
@@ -157,6 +200,7 @@ export function aggregateGloballyAcceptedVerifiedTransfers(
     if (check.approval?.decision === "approved") {
       approvedCount += 1;
       attributedTotal += check.approval.amount;
+      credited.push({ reference: ref, slipCheckId: check.id, amount: check.approval.amount });
       return;
     }
     if (check.amount_outlier) {
@@ -170,6 +214,7 @@ export function aggregateGloballyAcceptedVerifiedTransfers(
       return;
     }
     attributedTotal += Number(check.transfer_amount);
+    credited.push({ reference: ref, slipCheckId: check.id, amount: Number(check.transfer_amount) });
   };
 
   for (const check of checks) {
@@ -180,11 +225,17 @@ export function aggregateGloballyAcceptedVerifiedTransfers(
       pendingReferenceAmount += Number(check.transfer_amount);
       continue;
     }
-    if (!globalWinners.has(check.id) || countedWinnerReferences.has(ref)) continue;
-    countedWinnerReferences.add(ref);
+    if (check.credit?.kind === "owner") {
+      // The credited row counts even when it is not the earliest read.
+      if (creditedReferences.has(ref)) continue;
+      creditedReferences.add(ref);
+    } else {
+      if (!globalWinners.has(check.id) || countedWinnerReferences.has(ref)) continue;
+      countedWinnerReferences.add(ref);
+    }
 
     if (targetMarket === undefined || !knownMarkets) {
-      attribute(check);
+      attribute(check, ref);
       continue;
     }
 
@@ -200,7 +251,7 @@ export function aggregateGloballyAcceptedVerifiedTransfers(
       unresolvedAcceptedAmount += Number(check.transfer_amount);
       continue;
     }
-    if (evidenceMarket === targetMarket) attribute(check);
+    if (evidenceMarket === targetMarket) attribute(check, ref);
   }
 
   return {
@@ -218,6 +269,9 @@ export function aggregateGloballyAcceptedVerifiedTransfers(
     rejectedAmount,
     supersededByManualCount,
     supersededByManualAmount,
+    pendingLateCount,
+    pendingLateAmount,
+    credited,
   };
 }
 
@@ -288,20 +342,71 @@ async function loadVerifiedTransferChecksForSourceDate(
   const outliers = await loadBatchOutlierCheckIds(supabase, batchIds);
   const approvals = await loadActiveApprovals(supabase, (checks ?? []).map((c) => c.id));
   const owners = await loadReferenceIndex(supabase, (checks ?? []).map((c) => c.reference_id ?? ""));
+  const scope = await loadCreditScope(supabase, sourceId, businessDate, accountabilityRoundId);
 
   return {
-    checks: (checks ?? []).map(({ transaction_time, ...row }) => ({
-      ...row,
-      transfer_amount: Number(row.transfer_amount),
-      date_ineligibility: slipDateIneligibility(transaction_time, businessDate),
-      amount_outlier: outliers.has(row.id),
-      approval: approvals.get(row.id) ?? null,
-      superseded_by_manual: row.reference_id !== null
-        && owners.ai.get(row.reference_id.trim())?.id === row.id
-        && ownershipFor(owners, row.reference_id)?.aiSupersededByManual === true,
-    })),
+    checks: (checks ?? []).map(({ transaction_time, ...row }) => {
+      const ref = normalizeSlipReference(row.reference_id);
+      const credit = ref ? owners.credits.get(ref) : undefined;
+      const owned = credit !== undefined && credit.slipCheckId === row.id && creditInScope(credit, scope);
+      return {
+        ...row,
+        transfer_amount: Number(row.transfer_amount),
+        date_ineligibility: slipDateIneligibility(transaction_time, businessDate),
+        amount_outlier: outliers.has(row.id),
+        approval: approvals.get(row.id) ?? null,
+        superseded_by_manual: ref !== null
+          && owners.ai.get(ref)?.id === row.id
+          && ownershipFor(owners, ref)?.aiSupersededByManual === true,
+        credit: credit
+          ? (owned ? { kind: "owner" as const, amount: credit!.amount } : { kind: "elsewhere" as const })
+          : scope.frozen && ref ? { kind: "late" as const } : null,
+      };
+    }),
     evidenceMarketById,
   };
+}
+
+/** The settlement scope a loader computes: one finalization key (source, day, round; no round = the legacy day). */
+interface CreditScope {
+  sourceId: string;
+  businessDate: string;
+  round: string | null;
+  /**
+   * Its finalization already recorded credits (20261103100000), in ANY status
+   * (a failed row whose push LINE delivered included): from then on its
+   * referenced rows count only through a credit, so a late image, entry or
+   * retry never moves the settled total.
+   */
+  frozen: boolean;
+}
+
+/** A credit counts only in the scope of the finalization that wrote it; any overlapping view sees it as elsewhere. */
+const creditInScope = (credit: ReferenceCredit, scope: CreditScope) =>
+  credit.scope !== undefined
+  && credit.scope.sourceId === scope.sourceId
+  && credit.scope.businessDate === scope.businessDate
+  && credit.scope.round === scope.round;
+
+async function loadCreditScope(
+  supabase: Supabase,
+  sourceId: string,
+  businessDate: string,
+  accountabilityRoundId?: string | null,
+): Promise<CreditScope> {
+  const scope: CreditScope = { sourceId, businessDate, round: accountabilityRoundId ?? null, frozen: false };
+  let query = supabase.from("settlement_finalizations")
+    .select("claims_recorded_at" as "id")
+    .eq("source_id", sourceId)
+    .eq("business_date", businessDate);
+  query = accountabilityRoundId ? query.eq("accountability_round_id", accountabilityRoundId) : query.is("accountability_round_id", null);
+  const { data, error } = await query;
+  if (error) {
+    if (isMissingSchemaObject(error)) return scope;
+    throw new Error(`settlement finalization credit lookup failed: ${error.message}`);
+  }
+  scope.frozen = ((data ?? []) as unknown as Array<{ claims_recorded_at: string | null }>).some((row) => Boolean(row.claims_recorded_at));
+  return scope;
 }
 
 /**
@@ -449,6 +554,16 @@ async function computeManualSlipTotal(
   businessDate: string,
   accountabilityRoundId?: string | null,
 ): Promise<number> {
+  return (await scopeManualBreakdown(supabase, sourceId, businessDate, accountabilityRoundId)).total;
+}
+
+/** Closed manual sessions of the scope (every market), as reconcile counts them. */
+async function scopeManualBreakdown(
+  supabase:     Supabase,
+  sourceId:     string,
+  businessDate: string,
+  accountabilityRoundId?: string | null,
+): Promise<ManualSlipBreakdown> {
   let sessionQuery = supabase
     .from("manual_slip_sessions")
     .select("id")
@@ -466,8 +581,9 @@ async function computeManualSlipTotal(
   }
 
   const sessionIds = (sessions ?? []).map(s => s.id);
-  if (sessionIds.length === 0) return 0;
-  return countableManualEntryTotal(supabase, sessionIds);
+  if (sessionIds.length === 0) return { total: 0, pendingCount: 0, pendingAmount: 0, supersededCount: 0, credited: [] };
+  return loadManualEntryBreakdown(supabase, sessionIds,
+    await loadCreditScope(supabase, sourceId, businessDate, accountabilityRoundId));
 }
 
 /**
@@ -497,7 +613,8 @@ export async function loadMarketScopedManualSlipTotal(
   if (sessionIds.length === 0) return 0;
 
   const round2 = (n: number) => Math.round(n * 100) / 100;
-  return round2(await countableManualEntryTotal(supabase, sessionIds));
+  const scope = await loadCreditScope(supabase, sourceId, businessDate, accountabilityRoundId);
+  return round2((await loadManualEntryBreakdown(supabase, sessionIds, scope)).total);
 }
 
 async function marketScopedClosedManualSessionIds(
@@ -693,10 +810,8 @@ export interface ManualSlipBreakdown {
   pendingAmount:   number;
   /** Not counted because the AI check with the same reference is that money row. */
   supersededCount: number;
-}
-
-async function countableManualEntryTotal(supabase: Supabase, sessionIds: string[]): Promise<number> {
-  return (await loadManualEntryBreakdown(supabase, sessionIds)).total;
+  /** Referenced entries counted here (what a finalization credits). */
+  credited?:       CreditedReference[];
 }
 
 type ManualEntryRow = { id: string; amount: number | string; reference_id?: string | null; requires_review?: boolean };
@@ -711,24 +826,34 @@ type ManualEntryRow = { id: string; amount: number | string; reference_id?: stri
  *     → pending until an authorized override; otherwise counted — every
  *     legacy row and today's grammar, unchanged (known limitation: such an
  *     entry cannot be matched to an AI read, see docs/manual-slip-ai-approval.md).
+ * A credited reference counts only for its credited entry, at the credited
+ * amount. In a frozen scope (its settlement recorded credits) a referenced
+ * entry without a credit is late: pending, never counted.
  * Nothing is linked by amount, date or a partial reference.
  */
-async function loadManualEntryBreakdown(supabase: Supabase, sessionIds: string[]): Promise<ManualSlipBreakdown> {
+async function loadManualEntryBreakdown(supabase: Supabase, sessionIds: string[], scope: CreditScope): Promise<ManualSlipBreakdown> {
   const entries = await loadManualEntries(supabase, sessionIds);
   const decisions = await loadActiveDecisions(supabase, "manual_entry_id", entries.map((e) => e.id));
   const index = await loadReferenceIndex(supabase, entries.map((e) => e.reference_id ?? ""));
 
-  const breakdown: ManualSlipBreakdown = { total: 0, pendingCount: 0, pendingAmount: 0, supersededCount: 0 };
+  const breakdown: ManualSlipBreakdown = { total: 0, pendingCount: 0, pendingAmount: 0, supersededCount: 0, credited: [] };
   for (const e of entries) {
     const amount = Number(e.amount);
     const decision = decisions.get(e.id);
-    const counted = decision?.decision === "approved" ? decision.amount : amount;
-    const ownership = ownershipFor(index, e.reference_id)?.manual.get(e.id);
-    const state = ownership
+    const reference = normalizeSlipReference(e.reference_id);
+    const owner = ownershipFor(index, reference);
+    const credit = owner?.credit && owner.credit.manualEntryId === e.id ? owner.credit : null;
+    const creditedElsewhere = credit !== null && !creditInScope(credit, scope);
+    const counted = credit ? credit.amount : decision?.decision === "approved" ? decision.amount : amount;
+    let state = owner?.manual.get(e.id)
       ?? (decision?.decision === "rejected" ? "rejected"
         : e.requires_review === true && decision?.decision !== "approved" ? "pending" : "counted");
-    if (state === "counted") breakdown.total += counted;
-    else if (state === "pending") { breakdown.pendingCount += 1; breakdown.pendingAmount += amount; }
+    if (creditedElsewhere) state = "superseded";                     // counted in its credited scope only
+    if (scope.frozen && reference && !owner?.credit && state === "counted") state = "pending"; // late after settlement
+    if (state === "counted") {
+      breakdown.total += counted;
+      if (reference) breakdown.credited!.push({ reference, manualEntryId: e.id, amount: counted });
+    } else if (state === "pending") { breakdown.pendingCount += 1; breakdown.pendingAmount += amount; }
     else if (state === "superseded") breakdown.supersededCount += 1;
   }
   return breakdown;
@@ -755,8 +880,37 @@ export async function loadMarketScopedManualSlipBreakdown(
   const sessionIds = await marketScopedClosedManualSessionIds(
     supabase, sourceId, businessDate, marketLabelNormalized, accountabilityRoundId,
   );
-  if (sessionIds.length === 0) return { total: 0, pendingCount: 0, pendingAmount: 0, supersededCount: 0 };
-  return loadManualEntryBreakdown(supabase, sessionIds);
+  if (sessionIds.length === 0) return { total: 0, pendingCount: 0, pendingAmount: 0, supersededCount: 0, credited: [] };
+  return loadManualEntryBreakdown(supabase, sessionIds,
+    await loadCreditScope(supabase, sourceId, businessDate, accountabilityRoundId));
+}
+
+/**
+ * Credits the scope's referenced money rows to this finalization BEFORE it
+ * reconciles (docs/slip-reference-claims.md). The same loaders reconcile uses
+ * decide what the scope would count; the primary key of slip_reference_claims
+ * lets only the first finalization credit a reference, and the reconcile that
+ * follows counts what was credited. Before migration 20261103100000 (no RPC)
+ * nothing is credited and money follows the preview rule, as before.
+ */
+export async function claimFinalizationReferences(
+  supabase:       Supabase,
+  finalizationId: string,
+  sourceId:       string,
+  businessDate:   string,
+  accountabilityRoundId?: string | null,
+): Promise<void> {
+  const { checks, evidenceMarketById } = await loadVerifiedTransferChecksForSourceDate(supabase, sourceId, businessDate, accountabilityRoundId);
+  const winners = checks.length === 0 ? new Set<string>() : await resolveGlobalWinnersForChecks(supabase, checks);
+  const ai = aggregateGloballyAcceptedVerifiedTransfers(checks, evidenceMarketById, winners).credited ?? [];
+  const manual = (await scopeManualBreakdown(supabase, sourceId, businessDate, accountabilityRoundId)).credited ?? [];
+  const claims = [...ai, ...manual].map((c) => ({
+    reference_id: c.reference, slip_check_id: c.slipCheckId ?? null, manual_entry_id: c.manualEntryId ?? null, amount: c.amount,
+  }));
+  const { error } = await supabase.rpc("claim_slip_references" as never, { p_finalization_id: finalizationId, p_claims: claims } as never);
+  if (error && error.code !== "42883" && error.code !== "PGRST202") {
+    throw new Error(`slip reference credit failed: ${error.message}`);
+  }
 }
 
 const loadActiveApprovals = (supabase: Supabase, checkIds: string[]) =>

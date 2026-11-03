@@ -1,6 +1,6 @@
-# Isolated UAT — slip money end to end (2026-11-02T11:31:36.345Z)
+# Isolated UAT — slip money end to end (2026-11-03T03:59:54.683Z)
 
-Local PostgreSQL 17, business date 2026-11-02 (slip date 2/11/2569). Real webhook, ledger, recovery, LINE summary builder, money loaders, round-close rows, admin route and review RPCs; simulated LINE download/Storage/OCR provider only.
+Local PostgreSQL 17, business date 2026-11-03 (slip date 3/11/2569). Real webhook, ledger, recovery, LINE summary builder, money loaders, round-close rows, admin route and review RPCs; simulated LINE download/Storage/OCR provider only.
 
 | # | Scenario | Input | Expected | Actual | Result | Evidence |
 |---|---|---|---|---|---|---|
@@ -19,6 +19,34 @@ Local PostgreSQL 17, business date 2026-11-02 (slip date 2/11/2569). Real webhoo
 
 **12/12 PASS**
 
+## Credit scenarios: real `tryFinalizeSettlement`, mock LINE (`reference-claims.pg.test.ts`)
+
+"Handed out" means the checked totals of the messages LINE actually delivered. A retry with the same retry key is not re-delivered.
+
+| Scenario | Before | Expected handed out | Actual handed out | Reference | Credited owner | Finalized totals unchanged | Result |
+|---|---|---|---|---|---|---|---|
+| P1-1 late claim vs legacy day stamp | 0 | 70 | 70 | P11-R | P11-CA | yes | PASS |
+| P1-2 push timeout then retry | 0 | 70 | 70 | P12-R | P12-CA | yes | PASS |
+| P1-2b owner push timeout, credit kept | 0 | 70 | 70 | P2B-R | P2B-CB | yes | PASS |
+| P1-3 reject AI then approve M2 (approval: manual_entry_is_duplicate) | 0 | 70 | 70 | P13-R | P13-CA | yes | PASS |
+| cross-market AI vs manual (AI earlier) | 0 | 55 | 55 | XA-R | XA-B | yes | PASS |
+| concurrent credit of one reference | 0 | 1 | 1 | CC-R | CC-1 | yes | PASS |
+| manual session closed after settlement | 0 | 61 | 61 | SC-R | SC-A | yes | PASS |
+| late image after settlement | 20 | 20 | 20 | LT-R2 | — | yes | PASS |
+| round 5 A: day view vs round view overlap | 0 | 70 | 70 | OV-R | OV-S | yes | PASS |
+| round 5 B: retry after delivered push | 70 | 70 | 70 | RT-Y | — | yes | PASS |
+| round 6: no-round retry vs another round's failed row | 70 | 70 | 70 | XR-R | XR-S | yes | PASS |
+
+**Before the fix:**
+- **HEAD 0788766** (derived ownership, the same real-finalizer scenarios): P1-1, P1-2 and P1-3 each hand out ฿140 for one ฿70 transfer, and the finalized totals change.
+- **New code without the credits table** (baseline run): 6 of 8 scenarios still fail:
+  - P1-3: ฿140.
+  - Session closed after settlement: ฿122.
+  - Late image: ฿45 instead of ฿20.
+  - Day/round overlap: ฿140.
+  - Retry after a delivered push: the snapshot moved.
+
+
 ## Coverage of the required UAT flows
 
 | Flow | Evidence (all real PostgreSQL 17 unless noted) |
@@ -36,5 +64,5 @@ Local PostgreSQL 17, business date 2026-11-02 (slip date 2/11/2569). Real webhoo
 | 11 Failed image ingestion followed by recovery | row 1; `image-ingestion.pg.test.ts` bounded-pass test (15 then 10, never finalized early) |
 | 12 Legacy unreferenced manual entry | row 5 (counted, known limitation); `slip-check-approval.pg.test.ts` |
 | 13 Repeated webhooks / API requests | rows 1, 8 |
-| 14 Code/schema version mismatch | `slip-check-approval.pg.test.ts` (new code on no migration / M1 only); old-code probe (#193 code on M1, M1+M2, M1+M2+M3: 3/3); M4 forward + rollback chain M4 → M3 → M2 → M1 in `slip-check-approval.pg.test.ts` |
+| 14 Code/schema version mismatch | `slip-check-approval.pg.test.ts` (new code on no migration / M1 only); old-code probe (#193 code on M1, M1+M2, M1+M2+M3: 3/3); M6 forward + rollback chain M6 → M5 → M4 → M3 → M2 → M1 in `slip-check-approval.pg.test.ts` |
 | 15 Settlement and White Sheet totals compared with LINE | rows 2, 9, 10. LINE "ยอดยืนยัน" (270) = bank money (170 before review) + the ไทยช่วยไทย gross (100): wallet amounts are confirmed in LINE but never bank-transfer money, pending the wallet accounting decision |

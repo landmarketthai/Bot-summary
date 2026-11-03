@@ -88,4 +88,33 @@ SELECT count(*) FROM public.settlement_finalizations WHERE status = 'sending';  
 - **Rollback order:** revert the app code first, then M5 → M4 → M3 → M2 → M1. Every row is kept, including `money_claimed_at`.
 - **🔒 Sign off the rule:** a cross-scope duplicate (an AI read and a manual entry with the same full reference) goes to the scope that finalizes first. See `docs/manual-slip-ai-approval.md`, third review.
 - **Still gated:** the AI-vs-manual path stays dormant until LINE grammar phase 1 writes `manual_slip_entries.reference_id`. Nothing in Production writes it today.
-- **🔒 BLOCKER for grammar phase 1:** round-4 review P1-1, P1-2 and P1-3 (P1-3 confirmed and pinned as `test.failing`). Manual references must stay unwritten until persisted per-finalization claims are designed and approved. See `docs/manual-slip-ai-approval.md`, round-4 section.
+
+## Addendum: M6 persisted credits (supersedes the round-4 blocker)
+- **Migrations are now six:** add `20261103100000_slip_reference_claims.sql` (M6) after M5. It creates `slip_reference_claims` (append-only, RLS on, SELECT only for service_role), adds `settlement_finalizations.claims_recorded_at` and the `claim_slip_references` RPC, and makes reviews refuse targets whose reference is credited (`slip_reference_credited`, HTTP 409).
+- **Order: schema first.** Apply M1–M6 in one window with no settlement in `sending`, then deploy the code.
+  - New code without M6: the RPC is missing, so nothing is credited and the preview rule applies (proven: the `CLAIMS_BASELINE=1` run finalizes normally).
+  - Old code with M6: credits are ignored.
+- **Preflight (read-only):**
+  - `SELECT to_regclass('public.slip_reference_claims')` → NULL before applying.
+  - `SELECT count(*) FROM settlement_finalizations WHERE status = 'sending'` → 0.
+  - `SELECT count(*) FROM manual_slip_entries WHERE reference_id IS NOT NULL` → 0 (no manual references exist yet).
+- **Accounting impact:**
+  - **History:** no history is recalculated. Finalizations before M6 have no credits.
+  - **From the first settlement after deploy:**
+    - Each referenced AI or manual money row is credited once.
+    - A late image or entry with a reference, arriving in an already-settled scope, is pending instead of silently changing that day's live total.
+    - A duplicate in another market is superseded.
+  - **Unreferenced manual entries** are unchanged.
+- **Rollback:** revert the code first, then M6 → M5 → M4 → M3 → M2 → M1.
+  - The M6 down file keeps `slip_reference_claims` and every row (the audit record of what was credited). It drops only the RPC, the canonical-form check and the review guards.
+- **Monitor:**
+  - `SELECT count(*) FROM slip_reference_claims` grows with settlements.
+  - `slip_reference_credited` refusals in the admin route logs.
+  - Finalizations stuck in `failed` that hold credits (`claims_recorded_at IS NOT NULL`). Their retry re-sends the credited total.
+- **🔒 Still to approve:**
+  - BR-02 (an existing reference cannot be given to another check).
+  - The full-reference format for LINE grammar phase 1. Grammar phase 1 is no longer blocked by the round-4 P1s.
+  - Wallet policy.
+  - Commit 3a in #193.
+- **Finalizer row key (round 6):** the re-claim and re-fetch queries now always filter `(source, date, round ?? null)`. A no-round finalization can no longer take another round's `failed` row. This code-only fix also applies without M6.
+- **Evidence:** `docs/uat/slip-money-uat.md` has the 12 UAT scenarios plus the credit scenarios through the real finalizer, all PASS.
