@@ -114,7 +114,7 @@ describe.skipIf(!pgAvailable)("durable slip ledger health alert on PostgreSQL 17
     )).text();
     // A local re-apply must be harmless: rollout tooling may retry after an
     // uncertain client result, and CREATE OR REPLACE must preserve lockdown.
-    await db.query(migration);
+    await db.exec(migration);
     expect(await db.scalar(`SELECT to_regclass('public.slip_ingest_alert_states') IS NOT NULL`)).toBe("true");
     for (const signature of [
       "public.slip_ingest_alert_health(integer,integer)",
@@ -140,7 +140,7 @@ describe.skipIf(!pgAvailable)("durable slip ledger health alert on PostgreSQL 17
 
     const rollbackDb = await createSlipTestDb("slip_alert_rollback");
     try {
-      await rollbackDb.query(rollback);
+      await rollbackDb.exec(rollback);
       expect(await rollbackDb.scalar(`SELECT to_regclass('public.slip_ingest_alert_states') IS NULL`)).toBe("true");
       expect(await rollbackDb.scalar(`SELECT to_regclass('public.slip_image_events') IS NOT NULL`)).toBe("true");
     } finally {
