@@ -5,6 +5,7 @@ import {
   buildBatchSummaryMessage,
   parseAbandonedMinutes,
   SlipAccountingUnavailableError,
+  type EvidenceWithCheck,
 } from "./batch-finalizer";
 import type { Database } from "@/types/database";
 
@@ -265,19 +266,26 @@ describe("finalizeSlipBatch delivery state", () => {
 
 describe("finalizeSlipBatch: success_count and failed_count use validation-guard results", () => {
   function makeFinalizerWithEvidences(
-    items: Array<{ transferAmount: number; transactionTime?: string | null }>,
+    items: Array<{
+      transferAmount: number;
+      transactionTime?: string | null;
+      status?: "EXTRACTED" | "NEED_REVIEW";
+      verificationJson?: Record<string, unknown> | null;
+    }>,
     capturedUpdates: Array<Record<string, unknown>>,
     rpc: () => Promise<{ data: unknown; error: { code?: string; message: string } | null }> = LEGACY_SCHEMA_RPC,
     migratedSchema = false,
+    slipDate: string | null = null,
   ): SupabaseClient<Database> {
     const evidenceRows = items.map((_, i) => ({ id: `ev-${i + 1}`, batch_index: i + 1 }));
     const checkRows = items.map((item, i) => ({
       evidence_id:      `ev-${i + 1}`,
-      status:           "EXTRACTED" as const,
+      status:           item.status ?? "EXTRACTED",
       slip_type:        "BANK_SLIP_QR" as const,
       transfer_amount:  item.transferAmount,
       paid_amount:      null,
       transaction_time: item.transactionTime ?? null,
+      extracted_json:   item.verificationJson ? { verification: item.verificationJson } : null,
       failure_reason:   null,
     }));
 
@@ -291,7 +299,7 @@ describe("finalizeSlipBatch: success_count and failed_count use validation-guard
                 eq(_c: string, _v: unknown) {
                   return {
                     async maybeSingle() {
-                      return { data: { id: "batch-1", summary_sent_at: null, slip_date: null, ...(migratedSchema ? { open_event_ts_ms: null } : {}) }, error: null };
+                      return { data: { id: "batch-1", summary_sent_at: null, slip_date: slipDate, ...(migratedSchema ? { open_event_ts_ms: null } : {}) }, error: null };
                     },
                   };
                 },
@@ -359,6 +367,28 @@ describe("finalizeSlipBatch: success_count and failed_count use validation-guard
     expect(dbUpdate?.success_count).toBe(5);
     expect(dbUpdate?.failed_count).toBe(1);
     expect(dbUpdate?.status).toBe("review_needed");
+  });
+
+  it("loads EasySlip provenance from DB JSON and reports combined total without changing approved counts", async () => {
+    const updates: Array<Record<string, unknown>> = [];
+    const messages: string[] = [];
+    const supabase = makeFinalizerWithEvidences(
+      [
+        { transferAmount: 40, transactionTime: "2026-10-30T08:41:00Z" },
+        {
+          transferAmount: 100, status: "NEED_REVIEW",
+          transactionTime: "2026-10-30T08:41:00Z",
+          verificationJson: { provider: "easyslip", bank_verified: false, reason: "provider_error" },
+        },
+      ],
+      updates, LEGACY_SCHEMA_RPC, false, "30/10/2569",
+    );
+    await finalizeSlipBatch(supabase, "batch-1", async (message) => { messages.push(message); });
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toContain("ยอดรวมที่อ่านได้: 140 บาท (รวมยอด OCR ที่ยังไม่ยืนยัน)");
+    expect(messages[0]).toContain("#2 100 บาท — EasySlip ตรวจ QR ไม่สำเร็จ");
+    const updated = updates.find((u) => "success_count" in u);
+    expect(updated).toMatchObject({ success_count: 1, failed_count: 1, status: "review_needed" });
   });
 
   // ── Fail-closed ledger accounting (PR182 P0 #1) ──────────────────────────
@@ -589,7 +619,7 @@ describe("buildBatchSummaryMessage trusted slip lines", () => {
   const makeEvidence = (
     status: import("@/types/database").SlipCheckStatus | null,
     idx: number,
-    options?: { transactionTime?: string | null; transferAmount?: number },
+    options?: { transactionTime?: string | null; transferAmount?: number; referenceId?: string | null; verification?: EvidenceWithCheck["verification"] },
   ) => ({
     id:              `ev-${idx}`,
     batchIndex:      idx,
@@ -600,6 +630,8 @@ describe("buildBatchSummaryMessage trusted slip lines", () => {
     ),
     paidAmount:      null,
     transactionTime: options?.transactionTime ?? "2026-06-10T10:00:00Z",
+    referenceId:     options?.referenceId ?? null,
+    verification:    options?.verification ?? null,
     failureReason:   null,
   });
 
@@ -639,6 +671,116 @@ describe("buildBatchSummaryMessage trusted slip lines", () => {
     const msg = buildBatchSummaryMessage(evidences, { isTimeout: true, slipDate: "10/6/2569" });
     expect(msg).toContain("#1 อ่านยอดเบื้องต้น 50 บาท (ยังไม่ยืนยันเงินโอน)");
     expect(msg).not.toContain("ยอดรวมที่อ่านได้: 50 บาท");
+  });
+
+  const ocrUnverified: NonNullable<EvidenceWithCheck["verification"]> = {
+    provider: "easyslip", bankVerified: false, reason: "provider_error",
+  };
+
+  it("includes readable OCR in the LINE total with a note: 290 confirmed + 100 OCR = 390", () => {
+    const date = "2026-10-30T08:41:00Z";
+    const evidences = [
+      makeEvidence("EXTRACTED", 1, { transferAmount: 40, transactionTime: date, referenceId: "ref-1" }),
+      makeEvidence("NEED_REVIEW", 2, { transferAmount: 100, transactionTime: date, referenceId: "ref-2", verification: ocrUnverified }),
+      makeEvidence("EXTRACTED", 3, { transferAmount: 80, transactionTime: date, referenceId: "ref-3" }),
+      makeEvidence("EXTRACTED", 4, { transferAmount: 20, transactionTime: date, referenceId: "ref-4" }),
+      makeEvidence("EXTRACTED", 5, { transferAmount: 70, transactionTime: date, referenceId: "ref-5" }),
+      makeEvidence("EXTRACTED", 6, { transferAmount: 80, transactionTime: date, referenceId: "ref-6" }),
+    ];
+    const msg = buildBatchSummaryMessage(evidences, {
+      title: "สรุปชุดสลิปเงินโอน จ๋า — ทรัพย์พันธ์ — 30/10/2569",
+      slipDate: "30/10/2569",
+    });
+    expect(msg).toContain("ยอดรวมที่อ่านได้: 390 บาท (รวมยอด OCR ที่ยังไม่ยืนยัน)");
+    expect(msg).toContain("อ่านครบ: 5 รูป");
+    expect(msg).toContain("อ่านยอดได้: 6 รูป");
+    expect(msg).toContain("มีหมายเหตุ: 1 รูป");
+    expect(msg).toContain("#2 100 บาท — EasySlip ตรวจ QR ไม่สำเร็จ; OCR อ่านยอดและวันที่ได้");
+    expect(msg).not.toContain("รูปที่ต้องตรวจมือ:");
+    expect(msg).not.toContain("ยอดรวมที่อ่านได้: 290 บาท");
+    expect(evidences[1].checkStatus).toBe("NEED_REVIEW"); // display-only, not bank-verified
+  });
+
+  it("counts OCR-only batch when amount and date are readable, with no bank confirmation claim", () => {
+    const evidences = [makeEvidence("NEED_REVIEW", 1, {
+      transferAmount: 100, verification: { ...ocrUnverified, reason: "slip_not_found" },
+    })];
+    const msg = buildBatchSummaryMessage(evidences, { slipDate: "10/6/2569" });
+    expect(msg).toContain("ยอดรวมที่อ่านได้: 100 บาท (รวมยอด OCR ที่ยังไม่ยืนยัน)");
+    expect(msg).toContain("อ่านยอดได้: 1 รูป");
+    expect(msg).not.toContain("เช็คได้ 100 บาท");
+  });
+
+  it("never includes EasySlip duplicate or receiver mismatch amounts in the combined total", () => {
+    const good = makeEvidence("EXTRACTED", 1, { transferAmount: 40, referenceId: "ref-good" });
+    for (const violation of [
+      { provider: "easyslip", bankVerified: false, duplicate: true, reason: "provider_error" },
+      { provider: "easyslip", bankVerified: false, recipientMatched: false, reason: "provider_error" },
+      { provider: "easyslip", bankVerified: false }, // verified provider response held for review
+      null, // legacy NEED_REVIEW does not prove this was OCR fallback
+    ]) {
+      const msg = buildBatchSummaryMessage([
+        good, makeEvidence("NEED_REVIEW", 2, { transferAmount: 100, verification: violation }),
+      ], { slipDate: "10/6/2569" });
+      expect(msg).toContain("ยอดรวมที่อ่านได้: 40 บาท");
+      expect(msg).not.toContain("ยอดรวมที่อ่านได้: 140 บาท");
+      expect(msg).not.toContain("มีหมายเหตุ: 1 รูป");
+    }
+  });
+
+  it("excludes OCR with wrong/missing date or repeated reference from the visible total", () => {
+    const trusted = makeEvidence("EXTRACTED", 1, { transferAmount: 40, referenceId: "same-ref" });
+    const cases = [
+      { problem: { transactionTime: "2026-06-08T10:00:00Z" }, expected: "วันที่รายการไม่ตรงกับรอบ" },
+      { problem: { transactionTime: "" }, expected: "ไม่พบวันที่รายการ" },
+      { problem: { referenceId: "same-ref" }, expected: "เลขอ้างอิงซ้ำกับรูปอื่น" },
+    ];
+    for (const { problem, expected } of cases) {
+      const candidate = { ...makeEvidence("NEED_REVIEW", 2, { transferAmount: 100, verification: ocrUnverified }), ...problem };
+      const msg = buildBatchSummaryMessage([trusted, candidate], { slipDate: "10/6/2569" });
+      expect(msg).toContain("ยอดรวมที่อ่านได้: 40 บาท");
+      expect(msg).not.toContain("ยอดรวมที่อ่านได้: 140 บาท");
+      expect(msg).toContain(`#2 ${expected}`);
+    }
+  });
+
+  it("still includes a provisional OCR amount in timeout summaries, while failed images stay out", () => {
+    const evidences = [
+      makeEvidence("NEED_REVIEW", 1, { transferAmount: 50, verification: ocrUnverified }),
+      makeEvidence("FAILED", 2),
+    ];
+    const msg = buildBatchSummaryMessage(evidences, { isTimeout: true, slipDate: "10/6/2569" });
+    expect(msg).toContain("ยอดรวมที่อ่านได้: 50 บาท (รวมยอด OCR ที่ยังไม่ยืนยัน)");
+    expect(msg).toContain("หมายเหตุ (ยอด OCR รวมในยอดข้างบนแล้ว");
+    expect(msg).toContain("อ่านไม่สำเร็จ: 1 รูป");
+  });
+
+  it("counts a readable OCR slip without a bank reference but notes the missing reference", () => {
+    const msg = buildBatchSummaryMessage([
+      makeEvidence("NEED_REVIEW", 1, { transferAmount: 150, verification: ocrUnverified }),
+    ], { slipDate: "10/6/2569" });
+    expect(msg).toContain("ยอดรวมที่อ่านได้: 150 บาท (รวมยอด OCR ที่ยังไม่ยืนยัน)");
+    expect(msg).toContain("เลขอ้างอิงไม่ชัด");
+  });
+
+  it("counts only one of two OCR slips sharing a reference, never a double amount", () => {
+    const msg = buildBatchSummaryMessage([
+      makeEvidence("NEED_REVIEW", 1, { transferAmount: 100, referenceId: "same-ref", verification: ocrUnverified }),
+      makeEvidence("NEED_REVIEW", 2, { transferAmount: 100, referenceId: "same-ref", verification: ocrUnverified }),
+    ], { slipDate: "10/6/2569" });
+    expect(msg).toContain("ยอดรวมที่อ่านได้: 100 บาท (รวมยอด OCR ที่ยังไม่ยืนยัน)");
+    expect(msg).toContain("#2 เลขอ้างอิงซ้ำกับรูปอื่น");
+  });
+
+  it("does not inflate the provisional total with an obvious 50,000 baht OCR outlier", () => {
+    const evidences = [100, 100, 100, 100, 50000].map((amount, i) =>
+      makeEvidence("NEED_REVIEW", i + 1, {
+        transferAmount: amount, referenceId: `ref-${i + 1}`, verification: ocrUnverified,
+      }),
+    );
+    const msg = buildBatchSummaryMessage(evidences, { slipDate: "10/6/2569" });
+    expect(msg).toContain("ยอดรวมที่อ่านได้: 400 บาท (รวมยอด OCR ที่ยังไม่ยืนยัน)");
+    expect(msg).toContain("#5 ยอดเงินสูงผิดปกติ");
   });
 
   it("omits trusted section when no slips pass validation", () => {
