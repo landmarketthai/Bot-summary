@@ -19,6 +19,7 @@ const MIGRATION_0052 = join(REPO_ROOT, "supabase", "migrations", "20260729084558
 const MIGRATION_A = join(REPO_ROOT, "supabase", "migrations", "20260805130000_purchase_capture_sessions.sql");
 const MIGRATION_B = join(REPO_ROOT, "supabase", "migrations", "20260805140000_purchase_capture_draft_finalization.sql");
 const MIGRATION_HARDENING = join(REPO_ROOT, "supabase", "migrations", "20260805150000_purchase_capture_slice_b_contract_hardening.sql");
+const OPEN_REPLAY_FIX = join(REPO_ROOT, "supabase", "migrations", "20261104090000_purchase_capture_open_replay_race.sql");
 const HARDENING = join(REPO_ROOT, "supabase", "tests", "purchase_capture_slice_b_hardening.sql");
 const CONTRACT_HARDENING = join(REPO_ROOT, "supabase", "tests", "purchase_capture_slice_b_contract_hardening.sql");
 
@@ -93,7 +94,7 @@ describe.skipIf(!pgAvailable)("Purchase capture Slice B migration PostgreSQL har
   test(
     "bootstrap + 0052 + Slice A + Slice B + hardening PASS on disposable DB",
     async () => {
-      for (const file of [BOOTSTRAP, MIGRATION_0052, MIGRATION_A, MIGRATION_B, MIGRATION_HARDENING, HARDENING, CONTRACT_HARDENING]) {
+      for (const file of [BOOTSTRAP, MIGRATION_0052, MIGRATION_A, MIGRATION_B, MIGRATION_HARDENING, OPEN_REPLAY_FIX, HARDENING, CONTRACT_HARDENING]) {
         expect(existsSync(file), `missing ${file}`).toBe(true);
       }
 
@@ -101,7 +102,7 @@ describe.skipIf(!pgAvailable)("Purchase capture Slice B migration PostgreSQL har
       expect(create.code, `CREATE DATABASE failed: ${create.stderr}`).toBe(0);
       dbCreated = true;
 
-      for (const file of [BOOTSTRAP, MIGRATION_0052, MIGRATION_A, MIGRATION_B, MIGRATION_HARDENING]) {
+      for (const file of [BOOTSTRAP, MIGRATION_0052, MIGRATION_A, MIGRATION_B, MIGRATION_HARDENING, OPEN_REPLAY_FIX]) {
         const result = await runPsql(psqlPath, ["-v", "ON_ERROR_STOP=1", "-d", dbName, "-f", file], { database: dbName });
         expect(result.code, `${file} failed:\n${result.stderr}\n${result.stdout}`).toBe(0);
       }

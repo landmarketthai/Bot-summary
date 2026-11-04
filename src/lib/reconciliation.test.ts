@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { RoundFakeDatabase } from "@/lib/line/guided-menu/test-fake-round-db";
+import { emptyApprovalTable } from "@/lib/white-sheet/test-manual-slip-db";
 import { loadAiVerifiedTransferTotal, reconcile } from "./reconciliation";
 
 type UpsertCapture = {
@@ -179,6 +180,7 @@ function makeFullSupabase(cfg: {
         };
       }
 
+      if (table === "slip_check_approvals" || table === "slip_reference_claims" || table === "settlement_finalizations") return emptyApprovalTable();
       throw new Error(`unexpected table: ${table}`);
     },
   };
@@ -348,13 +350,13 @@ describe("reconcile", () => {
     expect(result.blocked).toBe(false);
   });
 
-  // KNOWN BLOCKER (pre-existing, not from this PR): a manual-slip entry stores
-  // only an amount — no reference, no link to the slip_checks row — so when
-  // the operator re-enters a slip the AI ALREADY counted, nothing can tell it
-  // is the same transfer and checked_slip_total counts it twice. This states
-  // the required behaviour and is expected to fail until a link exists
-  // (needs an approved schema change). bun reports a pass while it still fails.
-  it.failing("BLOCKER: the same slip as an eligible AI check AND a manual entry is counted once", async () => {
+  // REMAINING LIMIT (pre-existing): a manual entry WITHOUT a reference — every
+  // legacy row and today's LINE grammar — has nothing that ties it to an AI
+  // check, so if it re-keys a slip the AI already counted it is counted twice.
+  // Linked approvals (slip_check_approvals) and entries that carry a reference
+  // are protected (slip-check-approval.pg.test.ts); this one cannot be without
+  // guessing. Expected to fail until the LINE grammar requires a reference.
+  it.failing("LIMIT: an unreferenced manual entry for a slip the AI already counted is counted once", async () => {
     const db = makeFullSupabase({
       openSession:     false,
       transferAmounts: [50],

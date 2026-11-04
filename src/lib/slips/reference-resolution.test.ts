@@ -11,6 +11,16 @@ interface FakeCheck {
   reference_id: string | null;
 }
 
+/** Thenable query that resolves to zero rows whatever filters follow. */
+function emptyRows() {
+  const q: Record<string, unknown> = {};
+  q.in = () => q;
+  q.order = () => q;
+  q.eq = () => q;
+  q.then = (resolve: (v: unknown) => unknown) => Promise.resolve({ data: [], error: null }).then(resolve);
+  return q;
+}
+
 function makeFakeSupabase(checks: FakeCheck[]) {
   const auditRows: Array<{ check_id: string; reference_id: string; actor: string }> = [];
 
@@ -19,6 +29,8 @@ function makeFakeSupabase(checks: FakeCheck[]) {
       if (table === "slip_checks") {
         return {
           select: () => ({
+            // Reference-ownership lookup (no other reviewed slip in these fixtures).
+            in: () => emptyRows(),
             eq: (column: string, value: string) => ({
               maybeSingle: async () => ({
                 data: checks.find((c) => (c as unknown as Record<string, unknown>)[column] === value) ?? null,
@@ -51,6 +63,8 @@ function makeFakeSupabase(checks: FakeCheck[]) {
           },
         };
       }
+      if (table === "manual_slip_entries") return { select: () => ({ in: () => emptyRows() }) };
+      if (table === "slip_reference_claims") return { select: () => emptyRows() };
       if (table === "slip_check_reference_resolutions") {
         return {
           insert: (values: { check_id: string; reference_id: string; actor: string }) => {

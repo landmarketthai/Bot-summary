@@ -1,6 +1,7 @@
+import { loadReferenceIndex, normalizeSlipReference } from "@/lib/slips/reference-ownership";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
-import { isVerifiedSlipCheckStatus, normalizeTransactionId } from "./transaction-dedupe";
+import { isVerifiedSlipCheckStatus } from "./transaction-dedupe";
 
 type Supabase = SupabaseClient<Database>;
 
@@ -46,7 +47,7 @@ export async function resolveSlipCheckReference(
   if (!checkId) {
     throw new ReferenceResolutionError("checkId must not be empty");
   }
-  const referenceId = normalizeTransactionId(input.referenceId);
+  const referenceId = normalizeSlipReference(input.referenceId);
   if (!referenceId) {
     throw new ReferenceResolutionError("referenceId must not be empty");
   }
@@ -75,6 +76,19 @@ export async function resolveSlipCheckReference(
   if (existing.reference_id !== null) {
     throw new ReferenceResolutionError(
       `slip check ${checkId} already has a reference id — resolution only applies to pending checks`,
+    );
+  }
+
+  const index = await loadReferenceIndex(supabase, [referenceId]);
+  const ai = index.ai.get(referenceId);
+  const manuals = index.manual.get(referenceId) ?? [];
+  // The reference already belongs to another AI read or manual entry: this
+  // check is its duplicate. Giving it the reference could make it the new
+  // (earlier) owner and take money from a row that was already counted —
+  // possibly in a finalized round. Refuse; a reviewer decides on the slips.
+  if (ai || manuals.length > 0) {
+    throw new ReferenceResolutionError(
+      `reference ${referenceId} already belongs to another slip — this check is its duplicate`,
     );
   }
 

@@ -41,10 +41,22 @@ let backgroundTasks: Array<() => Promise<void>>;
 let ocrCalls: number;
 let activeDownloads: number;
 let maxActiveDownloads: number;
-let downloadDelayMs: number;
+let downloadLatch: ReturnType<typeof concurrencyLatch> | null;
 let activeOcr: number;
 let maxActiveOcr: number;
 let ocrDelayMs: number;
+
+/**
+ * Holds every caller until `target` of them are inside at the same time, then
+ * lets all through. Proves the lanes overlap without relying on a sleep being
+ * long enough under CPU load. If the code never reaches `target` concurrent
+ * calls the test times out (fails) instead of passing on a lucky schedule.
+ */
+function concurrencyLatch(target: number) {
+  let open!: () => void;
+  const opened = new Promise<void>((resolve) => { open = resolve; });
+  return { arrive(active: number) { if (active >= target) open(); return opened; } };
+}
 
 const T0 = 1_760_000_000_000;
 const G = "G-cohort";
@@ -56,7 +68,7 @@ async function download(messageId: string) {
   activeDownloads += 1;
   maxActiveDownloads = Math.max(maxActiveDownloads, activeDownloads);
   try {
-    if (downloadDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, downloadDelayMs));
+    if (downloadLatch) await downloadLatch.arrive(activeDownloads);
     if (n <= (failFirst.get(messageId) ?? 0)) throw new Error("simulated LINE content 500");
     return { bytes: new TextEncoder().encode(`img:${messageId}`), mimeType: "image/jpeg" };
   } finally {
@@ -194,7 +206,7 @@ describe.skipIf(!pgAvailable)("P1 cron-only cohort recovery on PostgreSQL 17", (
     ocrCalls = 0;
     activeDownloads = 0;
     maxActiveDownloads = 0;
-    downloadDelayMs = 0;
+    downloadLatch = null;
     activeOcr = 0;
     maxActiveOcr = 0;
     ocrDelayMs = 0;
@@ -276,7 +288,7 @@ describe.skipIf(!pgAvailable)("P1 cron-only cohort recovery on PostgreSQL 17", (
 
     // Mocked LINE download + local Storage/PG. The 25-lane cron sweep should
     // have all 25 provider calls in flight, but never more.
-    downloadDelayMs = 15;
+    downloadLatch = concurrencyLatch(SLIP_INGEST_POLICY.cron.ingestLanes);
     await advance(300);
     const ingestRun = await makeWebhook(crashedOcr).recoverSlipIngest();
     peakHeap = Math.max(peakHeap, process.memoryUsage().heapUsed);
@@ -291,6 +303,7 @@ describe.skipIf(!pgAvailable)("P1 cron-only cohort recovery on PostgreSQL 17", (
     // Real OpenAiSlipExtractor control flow, but a fully local fake fetch:
     // every image receives one 429 with Retry-After: 3, then succeeds. Sleep
     // records the requested backpressure but waits only 2 ms in this test.
+    const providerLatch = concurrencyLatch(SLIP_INGEST_POLICY.cron.ocrLanes);
     const providerAttempts = new Map<string, number>();
     const requestedSleeps: number[] = [];
     let activeProviderCalls = 0;
@@ -308,7 +321,7 @@ describe.skipIf(!pgAvailable)("P1 cron-only cohort recovery on PostgreSQL 17", (
       maxActiveProviderCalls = Math.max(maxActiveProviderCalls, activeProviderCalls);
       peakHeap = Math.max(peakHeap, process.memoryUsage().heapUsed);
       try {
-        await new Promise((resolve) => setTimeout(resolve, 8));
+        await providerLatch.arrive(activeProviderCalls);
         if (attempt === 1) {
           return new Response("simulated quota", {
             status: 429,

@@ -70,6 +70,8 @@ export function stubManualSlipTables(options?: {
       return {
         select: () => ({
           in: async (column: string, ids: string[]) => {
+            // Reference-ownership lookup: stub entries carry no reference.
+            if (column === "reference_id") return { data: [], error: null };
             if (column !== "session_id") {
               throw new Error(`unexpected manual_slip_entries filter: ${column}`);
             }
@@ -82,6 +84,23 @@ export function stubManualSlipTables(options?: {
         }),
       };
     }
+    if (table === "slip_check_approvals") return emptyApprovalTable();
+    // No persisted credits and no settled scope (slip_reference_claims, 20261103100000).
+    if (table === "slip_reference_claims" || table === "settlement_finalizations") return emptyApprovalTable();
     return null;
   };
+}
+
+/** No rows (operator decisions, credits, finalizations): any read chain resolves to zero rows. */
+export function emptyApprovalTable() {
+  const builder = {
+    select: () => builder,
+    in: () => builder,
+    eq: () => builder,
+    is: () => builder,
+    order: () => builder,
+    then: (resolve: (value: unknown) => unknown, reject?: (reason: unknown) => unknown) =>
+      Promise.resolve({ data: [], error: null }).then(resolve, reject),
+  };
+  return builder;
 }

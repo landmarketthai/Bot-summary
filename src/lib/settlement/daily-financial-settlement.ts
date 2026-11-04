@@ -47,7 +47,7 @@ import {
 } from "@/lib/white-sheet/persist";
 import {
   loadMarketScopedAiVerifiedTransfers,
-  loadMarketScopedManualSlipTotal,
+  loadMarketScopedManualSlipBreakdown,
 } from "@/lib/reconciliation";
 
 type Supabase = SupabaseClient<Database>;
@@ -267,13 +267,20 @@ export async function loadTransferInputs(
     knownMarkets,
     identity.accountabilityRoundId,
   );
-  const manualTotal = await loadMarketScopedManualSlipTotal(
+  const manual = await loadMarketScopedManualSlipBreakdown(
     supabase,
     identity.sourceId,
     identity.businessDate,
     identity.marketLabelNormalized,
     identity.accountabilityRoundId,
   );
+  const manualTotal = Math.round(manual.total * 100) / 100;
+  if (manual.pendingCount > 0) {
+    uncertainty.push(
+      `มีสลิปมือที่รออนุมัติ ${manual.pendingCount} รายการ `
+        + `(${manual.pendingAmount.toFixed(2)} บาท) — ไม่รวมในยอดโอนด้านบน`,
+    );
+  }
 
   if (ai.unresolvedAcceptedCount > 0) {
     uncertainty.push(

@@ -196,6 +196,31 @@ describe("every verified row is inside the authoritative total", () => {
   const sum = (slips: Array<{ status: string; amount: number | null }>) =>
     slips.filter((s) => s.status === "verified").reduce((t, s) => t + (s.amount ?? 0), 0);
 
+  it("a check credited by the day settlement is duplicate in the overlapping round", async () => {
+    const db = baseDb();
+    seedSlip(db, { id: "day-credit", amount: 70, accountabilityRoundId: ROUND });
+    db.seed("settlement_finalizations", [{ id: "fin-day", source_id: SOURCE, business_date: DATE, accountability_round_id: null, status: "failed", claims_recorded_at: MID_WINDOW }]);
+    db.seed("slip_reference_claims", [{ reference_id: "ref-day-credit", finalization_id: "fin-day", slip_check_id: "day-credit", manual_entry_id: null, amount: 65 }]);
+    const report = await buildGuidedRoundReport(db.asClient(), { ...CONTEXT, accountabilityRoundId: ROUND }, true);
+    expect(report.slips).toEqual([{ checkId: "day-credit", referenceId: "ref-day-credit", amount: 70, status: "duplicate" }]);
+    expect(report.totals.aiVerifiedTotal).toBe(0);
+    const owner = await buildGuidedRoundReport(db.asClient(), CONTEXT, true);
+    expect(owner.slips[0]).toMatchObject({ status: "verified", amount: 65 });
+    expect(sum(owner.slips)).toBe(owner.totals.aiVerifiedTotal);
+  });
+
+  it("a late reference in a failed frozen scope is excluded even with an approval", async () => {
+    const db = baseDb();
+    seedSlip(db, { id: "late-credit", amount: 70, accountabilityRoundId: ROUND });
+    db.seed("settlement_finalizations", [{ id: "fin-round", source_id: SOURCE, business_date: DATE, accountability_round_id: ROUND, status: "failed", claims_recorded_at: MID_WINDOW }]);
+    db.seed("slip_check_approvals", [{ slip_check_id: "late-credit", decision: "approved", approved_amount: 60, status: "active" }]);
+    const report = await buildGuidedRoundReport(db.asClient(), { ...CONTEXT, accountabilityRoundId: ROUND }, true);
+    expect(report.slips[0]).toMatchObject({ status: "excluded" });
+    expect(report.totals.aiVerifiedTotal).toBe(0);
+    expect(sum(report.slips)).toBe(report.totals.aiVerifiedTotal);
+    expect(report.blockers).not.toContain("ocr_pending");
+  });
+
   it("a late image bound to the round is listed AND counted (rows == money)", async () => {
     const db = baseDb();
     seedSlip(db, { id: "on-time", amount: 400, accountabilityRoundId: ROUND });
@@ -214,20 +239,23 @@ describe("every verified row is inside the authoritative total", () => {
       seedSlip(db, { id, amount, batchId: "batch-1" });
     }
     const report = await buildGuidedRoundReport(db.asClient(), CONTEXT, true);
-    expect(report.slips.find((s) => s.checkId === "big")?.status).toBe("manual_review");
+    expect(report.slips.find((s) => s.checkId === "big")?.status).toBe("excluded");
+    expect(report.blockers).not.toContain("ocr_pending"); // #193 regression: an outlier must not deadlock the close
     expect(report.totals.aiVerifiedTotal).toBe(400);
     expect(sum(report.slips)).toBe(report.totals.aiVerifiedTotal);
   });
 
-  it("a verified slip with no transfer amount (wallet) is listed as manual review, matching the total", async () => {
+  it("a verified slip with no transfer amount (wallet) is listed as excluded (not counted, not blocking)", async () => {
     const db = baseDb();
     seedSlip(db, { id: "bank", amount: 300 });
     seedSlip(db, { id: "wallet", amount: null });
     const report = await buildGuidedRoundReport(db.asClient(), CONTEXT, true);
-    expect(report.slips.find((s) => s.checkId === "wallet")?.status).toBe("manual_review");
+    expect(report.slips.find((s) => s.checkId === "wallet")?.status).toBe("excluded");
+    expect(report.blockers).not.toContain("ocr_pending"); // #193 regression: a wallet slip must not deadlock the close
     expect(report.totals.aiVerifiedTotal).toBe(300);
   });
 
+it("approved AI slip is verified at the approved amount; rejected is excluded; rows equal the money total", async () => {    const db = baseDb();    for (const [id, amount] of [["a", 100], ["b", 100], ["c", 100], ["d", 100], ["big", 50000]] as const) {      seedSlip(db, { id, amount, batchId: "batch-1" });    }    seedSlip(db, { id: "wrong", amount: 70 });    db.seed("slip_check_approvals", [      { id: "ap-1", slip_check_id: "big", decision: "approved", approved_amount: 500, status: "active" },      { id: "ap-2", slip_check_id: "wrong", decision: "rejected", approved_amount: null, status: "active" },    ]);    const report = await buildGuidedRoundReport(db.asClient(), CONTEXT, true);    const byId = Object.fromEntries(report.slips.map((s) => [s.checkId, [s.status, s.amount]]));    expect(byId.big).toEqual(["verified", 500]);    expect(byId.wrong).toEqual(["excluded", 70]);    expect(report.totals.aiVerifiedTotal).toBe(900);    expect(sum(report.slips)).toBe(report.totals.aiVerifiedTotal);    expect(report.blockers).not.toContain("ocr_pending");  });
   it("sums exactly the amounts of the verified rows", async () => {
     const db = baseDb([MARKET, OTHER_MARKET]);
     seedSlip(db, { id: "a", amount: 8000 });
@@ -271,7 +299,8 @@ describe("every verified row is inside the authoritative total", () => {
 
     const report = await buildGuidedRoundReport(db.asClient(), CONTEXT, true);
     const byId = Object.fromEntries(report.slips.map((s) => [s.checkId, s.status]));
-    expect(byId).toEqual({ ok: "verified", "wrong-month": "date_mismatch", "no-date": "manual_review" });
+    expect(byId).toEqual({ ok: "verified", "wrong-month": "date_mismatch", "no-date": "excluded" });
+    expect(report.blockers).not.toContain("ocr_pending");
     // Shared rule (slips/financial-eligibility.ts): only the verified row is money.
     expect(report.totals.aiVerifiedTotal).toBe(700);
   });

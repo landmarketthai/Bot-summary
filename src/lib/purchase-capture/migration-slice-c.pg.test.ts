@@ -23,6 +23,7 @@ const MIGRATION_A = join(REPO_ROOT, "supabase", "migrations", "20260805130000_pu
 const MIGRATION_B = join(REPO_ROOT, "supabase", "migrations", "20260805140000_purchase_capture_draft_finalization.sql");
 const MIGRATION_HARDENING = join(REPO_ROOT, "supabase", "migrations", "20260805150000_purchase_capture_slice_b_contract_hardening.sql");
 const MIGRATION_C = join(REPO_ROOT, "supabase", "migrations", "20260805160000_purchase_capture_confirm_post.sql");
+const OPEN_REPLAY_FIX = join(REPO_ROOT, "supabase", "migrations", "20261104090000_purchase_capture_open_replay_race.sql");
 const HARDENING_C = join(REPO_ROOT, "supabase", "tests", "purchase_capture_slice_c_hardening.sql");
 
 const ALL_FIXTURES = [
@@ -35,6 +36,7 @@ const ALL_FIXTURES = [
   MIGRATION_HARDENING,
   MIGRATION_0053,
   MIGRATION_C,
+  OPEN_REPLAY_FIX,
   HARDENING_C,
 ];
 
@@ -420,7 +422,7 @@ describe.skipIf(!pgAvailable)("Purchase capture Slice C1 migration PostgreSQL ha
       expect(create.code, `CREATE DATABASE failed: ${create.stderr}`).toBe(0);
       dbCreated = true;
 
-      for (const file of [BOOTSTRAP, MIGRATION_0052, MIGRATION_A, MIGRATION_B, MIGRATION_HARDENING, PRE_0053, MIGRATION_0053, POST_0053, MIGRATION_C]) {
+      for (const file of [BOOTSTRAP, MIGRATION_0052, MIGRATION_A, MIGRATION_B, MIGRATION_HARDENING, PRE_0053, MIGRATION_0053, POST_0053, MIGRATION_C, OPEN_REPLAY_FIX]) {
         const result = await runPsql(psqlPath, ["-v", "ON_ERROR_STOP=1", "-d", dbName, "-f", file], { database: dbName });
         expect(result.code, `${file} failed:\n${result.stderr}\n${result.stdout}`).toBe(0);
       }

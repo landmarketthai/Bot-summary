@@ -5,6 +5,21 @@ type Supabase = SupabaseClient<Database>;
 
 export type { ManualSlipSessionRow };
 
+/**
+ * LINE reply for a manual-slip write the database refused on purpose
+ * (20261103120000): the round/day is already settled, or financial writes
+ * are paused for maintenance. null = some other failure.
+ */
+export function manualSlipRefusalReply(errorMessage: string): string | null {
+  if (errorMessage.includes("manual_slip_scope_settled")) {
+    return "ส่งยอดวันนี้/รอบนี้แล้ว ไม่รับสลิปมือเพิ่ม กรุณาแจ้งผู้ดูแลเพื่อตรวจสอบ";
+  }
+  if (errorMessage.includes("financial_maintenance")) {
+    return "ระบบการเงินปิดปรับปรุงชั่วคราว ยังไม่รับสลิปมือ กรุณาส่งใหม่ภายหลัง";
+  }
+  return null;
+}
+
 export class ManualSlipSessionService {
   constructor(private readonly supabase: Supabase) {}
 

@@ -19,7 +19,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, SlipCheckStatus } from "@/types/database";
 import {
   businessDateToUtcRange,
-  loadBatchOutlierCheckIds,
+  loadVerifiedTransferChecksForSourceDate,
   loadMarketScopedAiVerifiedTransfers,
   loadMarketScopedManualSlipTotal,
 } from "@/lib/reconciliation";
@@ -46,7 +46,11 @@ export type GuidedSlipStatus =
   | "manual_review"
   | "date_mismatch"
   | "market_unclear"
-  | "duplicate";
+  | "duplicate"
+  /** Not in ai_verified_total and not blocking the close: wallet read, outlier,
+   *  unreadable date or a rejected read. The operator settles it by approval or
+   *  a manual slip; the money difference stays visible until then. */
+  | "excluded";
 
 export const GUIDED_SLIP_STATUS_LABEL: Record<GuidedSlipStatus, string> = {
   verified: "อ่านสำเร็จ",
@@ -54,6 +58,7 @@ export const GUIDED_SLIP_STATUS_LABEL: Record<GuidedSlipStatus, string> = {
   date_mismatch: "วันที่ไม่ตรง",
   market_unclear: "ตลาดไม่ชัด",
   duplicate: "สลิปซ้ำ",
+  excluded: "ไม่นับเป็นยอดโอน (รอตรวจ)",
 };
 
 export type GuidedSlipRow = {
@@ -203,9 +208,10 @@ export async function loadGuidedSlipRows(
     winners = new Set();
   }
 
-  const outliers = await loadBatchOutlierCheckIds(supabase, [...new Set(evidenceRows
-    .map((row) => (row as { batch_id?: string | null }).batch_id)
-    .filter((id): id is string => typeof id === "string"))]);
+  const verified = await loadVerifiedTransferChecksForSourceDate(
+    supabase, context.sourceId, context.businessDate, context.accountabilityRoundId,
+  );
+  const verifiedById = new Map(verified.checks.map((check) => [check.id, check]));
 
   return checkRows.flatMap((row): GuidedSlipRow[] => {
     const checkId = String(row.id);
@@ -220,7 +226,8 @@ export async function loadGuidedSlipRows(
     if (!referenceId) {
       return [{ ...base, status: "manual_review" as const }];
     }
-    if (!winners.has(checkId)) {
+    const financial = verifiedById.get(checkId);
+    if (!winners.has(checkId) && financial?.credit?.kind !== "owner") {
       return [{ ...base, status: "duplicate" as const }];
     }
     const market = evidenceMarket.get(String(row.evidence_id)) ?? null;
@@ -232,16 +239,30 @@ export async function loadGuidedSlipRows(
       // treating it as unresolved, so this round does not list it at all.
       return [];
     }
-    // The money loader counts only a transfer_amount (wallet slips are not in
-    // ai_verified_total) and suspends the LINE summary's outliers.
-    if (amount === null || outliers.has(checkId)) {
-      return [{ ...base, status: "manual_review" as const }];
+    // Same order as aggregateGloballyAcceptedVerifiedTransfers, so every
+    // `verified` row (at the amount shown) is in ai_verified_total and nothing
+    // else is. Reasons the money loader excludes are `excluded`/`date_mismatch`,
+    // which do not block the close: the money difference does, until the slip
+    // is approved or keyed as a manual slip.
+    if (financial?.credit?.kind === "owner") {
+      return [{ ...base, amount: financial.credit.amount, status: "verified" as const }];
+    }
+    if (financial?.credit?.kind === "elsewhere") return [{ ...base, status: "duplicate" as const }];
+    if (financial?.credit?.kind === "late") return [{ ...base, status: "excluded" as const }];
+    if (financial?.superseded_by_manual) {
+      return [{ ...base, status: "duplicate" as const }]; // an earlier manual entry owns it
+    }
+    const decision = financial?.approval;
+    if (decision?.decision === "rejected") return [{ ...base, status: "excluded" as const }];
+    if (decision?.decision === "approved") return [{ ...base, amount: decision.amount, status: "verified" as const }];
+    if (amount === null || financial?.amount_outlier) {
+      return [{ ...base, status: "excluded" as const }]; // wallet read or LINE outlier
     }
     const dateProblem = slipDateIneligibility(row.transaction_time as string | null, context.businessDate);
     if (dateProblem === "date_out_of_round") {
       return [{ ...base, status: "date_mismatch" as const }];
     }
-    if (dateProblem) return [{ ...base, status: "manual_review" as const }];
+    if (dateProblem) return [{ ...base, status: "excluded" as const }];
     return [{ ...base, status: "verified" as const }];
   });
 }

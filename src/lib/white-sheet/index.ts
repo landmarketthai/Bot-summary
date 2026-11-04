@@ -75,6 +75,8 @@ export {
   MISSING_CENTRAL_PRICE_WARNING_PREFIX,
   pendingDateVerifiedTransferWarning,
   pendingOutlierVerifiedTransferWarning,
+  pendingManualSlipWarning,
+  PENDING_MANUAL_SLIP_WARNING,
   PENDING_DATE_VERIFIED_TRANSFER_WARNING,
   PENDING_OUTLIER_VERIFIED_TRANSFER_WARNING,
   pendingReferenceVerifiedTransferWarning,

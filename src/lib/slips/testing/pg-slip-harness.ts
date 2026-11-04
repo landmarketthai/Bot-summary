@@ -13,7 +13,7 @@ import { randomBytes } from "node:crypto";
 
 export const ROOT = join(import.meta.dir, "..", "..", "..", "..");
 const WIN_PSQL = "C:\\Program Files\\PostgreSQL\\17\\bin\\psql.exe";
-const PSQL = existsSync(WIN_PSQL) ? WIN_PSQL : "psql";
+export const PSQL = existsSync(WIN_PSQL) ? WIN_PSQL : "psql";
 export const PGHOST = process.env.PGHOST ?? "localhost";
 export const PGUSER = process.env.PGUSER ?? "postgres";
 export const PGPASSWORD = process.env.PGPASSWORD ?? "postgres";
@@ -275,9 +275,10 @@ class Builder implements PromiseLike<Result> {
       const tuples = rows.map((r) => `(${keys.map((k) => lit(r[k])).join(", ")})`).join(", ");
       stmt = `INSERT INTO ${t} (${keys.map(ident).join(", ")}) VALUES ${tuples}`;
       if (this.op === "upsert" && this.onConflict) {
-        const sets = keys.filter((k) => k !== this.onConflict)
+        const target = this.onConflict.split(",").map((c) => c.trim());
+        const sets = keys.filter((k) => !target.includes(k))
           .map((k) => `${ident(k)} = EXCLUDED.${ident(k)}`).join(", ");
-        stmt += ` ON CONFLICT (${ident(this.onConflict)}) DO UPDATE SET ${sets}`;
+        stmt += ` ON CONFLICT (${target.map(ident).join(", ")}) DO UPDATE SET ${sets}`;
       }
     } else if (this.op === "update") {
       const sets = Object.entries(rows[0] ?? {}).map(([k, v]) => `${ident(k)} = ${lit(v)}`).join(", ");
