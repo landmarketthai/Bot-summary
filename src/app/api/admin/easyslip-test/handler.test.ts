@@ -20,7 +20,10 @@ const anonymous = {
 
 function request(override: { type?: string; origin?: string; size?: number; contentLength?: string } = {}) {
   const form = new FormData();
-  form.append("image", new File([new Uint8Array(override.size ?? 10)], "slip.jpg", { type: override.type ?? "image/jpeg" }));
+  // Give invalid MIME test cases a matching extension: multipart parsers can
+  // infer a MIME from filename rather than preserving the supplied File.type.
+  const filename = override.type === "application/pdf" ? "slip.pdf" : "slip.jpg";
+  form.append("image", new File([new Uint8Array(override.size ?? 10)], filename, { type: override.type ?? "image/jpeg" }));
   return new NextRequest(`${origin}/api/admin/easyslip-test`, {
     method: "POST", body: form,
     headers: {

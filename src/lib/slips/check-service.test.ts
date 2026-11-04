@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { SlipCheckService } from "@/lib/slips/check-service";
+import { EasySlipVerificationError } from "@/lib/slips/easyslip-bank";
 import type { SlipExtraction } from "@/lib/slips/extraction-schema";
 import type { Database } from "@/types/database";
 
@@ -332,7 +333,7 @@ describe("SlipCheckService", () => {
       });
     }));
 
-  it("EasySlip provider error never uses AI to approve a bank payment", () =>
+  it("EasySlip provider error runs AI OCR but quarantines the bank amount as unverified", () =>
     inEasySlipTest(async () => {
       const fake = createFakeSupabase();
       let aiCalls = 0;
@@ -342,9 +343,82 @@ describe("SlipCheckService", () => {
           async verifyImage() { throw new Error("EasySlip API unavailable"); },
         });
       await service.processEvidence("evidence-1");
-      expect(aiCalls).toBe(0);
-      expect(fake.updatedChecks[0]).toMatchObject({ status: "FAILED" });
+      expect(aiCalls).toBe(1);
+      expect(fake.updatedChecks[0]).toMatchObject({
+        status: "NEED_REVIEW",
+        transfer_amount: 315,
+        extracted_json: { verification: { provider: "easyslip", bank_verified: false, reason: "provider_error" } },
+      });
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toContain("ยังไม่รวมยอดเงินอัตโนมัติ");
+      expect(messages[0]).not.toContain("🟢");
+    }));
+
+  it.each(["provider_error", "invalid_response", "not_configured", "invalid_image"] as const)(
+    "EasySlip %s still reads bank amount with OCR but never bank-verifies it",
+    (reason) => inEasySlipTest(async () => {
+      const fake = createFakeSupabase();
+      let aiCalls = 0;
+      const service = new SlipCheckService(fake.client, {
+        async extract() { aiCalls++; return { ...extraction, slipType: "BANK_SLIP_QR" }; },
+      }, async () => {}, 300, {
+        async verifyImage() { throw new EasySlipVerificationError(reason); },
+      });
+      await service.processEvidence("evidence-1");
+      expect(aiCalls).toBe(1);
+      expect(fake.updatedChecks[0]).toMatchObject({
+        status: "NEED_REVIEW",
+        slip_type: "BANK_SLIP_QR",
+        transfer_amount: 315,
+        extracted_json: { verification: { provider: "easyslip", bank_verified: false, reason } },
+      });
+    }),
+  );
+
+  it("EasySlip outage preserves OCR for non-bank government receipts", () =>
+    inEasySlipTest(async () => {
+      const fake = createFakeSupabase();
+      const government: SlipExtraction = { ...extraction, slipType: "THAI_HELP_THAI",
+        grossAmount: 50, paidAmount: 20, discountAmount: 30, transferAmount: null };
+      let aiCalls = 0;
+      const service = new SlipCheckService(fake.client, {
+        async extract() { aiCalls++; return government; },
+      }, async () => {}, 300, {
+        async verifyImage() { throw new EasySlipVerificationError("provider_error"); },
+      });
+      await service.processEvidence("evidence-1");
+      expect(aiCalls).toBe(1);
+      expect(fake.updatedChecks[0]).toMatchObject({ status: "EXTRACTED", slip_type: "THAI_HELP_THAI" });
+    }));
+
+  it("EasySlip plus OCR both failing stays FAILED; never invents a bank amount", () =>
+    inEasySlipTest(async () => {
+      const fake = createFakeSupabase();
+      const messages: string[] = [];
+      const service = new SlipCheckService(fake.client, {
+        async extract() { throw new Error("Image extraction provider returned HTTP 500"); },
+      }, async (_to, message) => { messages.push(message); }, 300, {
+        async verifyImage() { throw new EasySlipVerificationError("provider_error"); },
+      });
+      await service.processEvidence("evidence-1");
+      expect(fake.updatedChecks[0]).toMatchObject({ status: "FAILED", failure_reason: "extractor_http_error" });
       expect(messages).toHaveLength(1);
       expect(messages[0]).not.toContain("🟢");
+    }));
+
+  it("EasySlip stays off for unallowlisted groups; legacy OCR flow is unchanged", () =>
+    inEasySlipTest(async () => {
+      process.env.EASYSLIP_LINE_SOURCE_IDS = "another-group";
+      const fake = createFakeSupabase();
+      let aiCalls = 0;
+      const service = new SlipCheckService(fake.client, {
+        async extract() { aiCalls++; return extraction; },
+      }, async () => {}, 300, {
+        async verifyImage() { throw new Error("EasySlip must not run outside allowlist"); },
+      });
+      await service.processEvidence("evidence-1");
+      expect(aiCalls).toBe(1);
+      expect(fake.updatedChecks[0]).toMatchObject({ status: "EXTRACTED", slip_type: "BANK_SLIP_NO_QR" });
+      expect((fake.updatedChecks[0].extracted_json as Record<string, unknown>).verification).toBeUndefined();
     }));
 });

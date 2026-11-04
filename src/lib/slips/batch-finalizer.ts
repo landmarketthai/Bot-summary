@@ -1109,6 +1109,14 @@ function describeReviewReason(e: EvidenceWithCheck): string {
     if (e.failureReason === "extractor_not_configured") return "ระบบอ่านรูปไม่พร้อม";
     return "อ่านข้อมูลไม่ครบ";
   }
-  if (e.checkStatus === "NEED_REVIEW") return "ไม่พบข้อมูลครบถ้วน";
+  if (e.checkStatus === "NEED_REVIEW") {
+    // Preserve a useful OCR-read amount without presenting it as confirmed
+    // money. This field is deliberately excluded from the trusted total.
+    if ((e.slipType === "BANK_SLIP_QR" || e.slipType === "BANK_SLIP_NO_QR")
+      && e.transferAmount !== null && Number.isFinite(e.transferAmount) && e.transferAmount > 0) {
+      return `อ่านยอดเบื้องต้น ${e.transferAmount.toLocaleString("th-TH", { maximumFractionDigits: 2 })} บาท (ยังไม่ยืนยันเงินโอน)`;
+    }
+    return "ไม่พบข้อมูลครบถ้วน";
+  }
   return "ยังไม่ได้ตรวจสอบ";
 }
