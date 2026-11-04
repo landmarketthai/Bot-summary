@@ -1,8 +1,8 @@
 name: slip-ledger-alert
 
+# Alert route is inert until SLIP_LEDGER_ALERT_ENABLED and a recipient are configured.
+# Keep manual-only while disabled; restore a schedule when the alert is activated.
 on:
-  schedule:
-    - cron: "4,14,24,34,44,54 * * * *"
   workflow_dispatch:
 
 permissions:
