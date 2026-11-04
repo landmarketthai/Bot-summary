@@ -83,9 +83,21 @@ export class SlipCheckService implements SlipCheckProcessor {
       );
       imageSizeBytes = bytes.length;
       const input = { bytes, mimeType: evidence.mime_type ?? "image/jpeg" };
-      // Explicit opt-in LINE sources only. EasySlip handles bank QR before AI OCR.
+      // Explicit opt-in LINE sources only. EasySlip checks QR before AI OCR.
+      // A provider outage/malformed response must not discard an otherwise
+      // readable image. OCR is a transcription fallback, NEVER bank verification.
       const easySlipEnabled = isEasySlipEnabledForSource(evidence.source_id);
-      const bankResult = easySlipEnabled ? await this.bankVerifier.verifyImage(input) : null;
+      let bankResult: Awaited<ReturnType<BankSlipVerifier["verifyImage"]>> | null = null;
+      let fallbackReason: string | null = null;
+      if (easySlipEnabled) {
+        try {
+          bankResult = await this.bankVerifier.verifyImage(input);
+          if (bankResult.kind === "not_found") fallbackReason = "slip_not_found";
+        } catch (error) {
+          fallbackReason = error instanceof EasySlipVerificationError ? error.reason : "provider_error";
+          log.warn("EasySlip verification unavailable; trying unverified OCR", { checkId, reason: fallbackReason });
+        }
+      }
       const extraction = bankResult?.kind === "verified"
         ? bankResult.extraction
         : await this.extractor.extract(input);
@@ -99,7 +111,7 @@ export class SlipCheckService implements SlipCheckProcessor {
         ? { provider: "easyslip", duplicate: bankResult.isDuplicate, receiver_account_matched: bankResult.accountMatched,
             bank_verified: !manualBankReview }
         : easySlipEnabled && isBank
-          ? { provider: "easyslip", bank_verified: false, reason: "slip_not_found" }
+          ? { provider: "easyslip", bank_verified: false, reason: fallbackReason ?? "provider_error" }
           : null;
 
       const fields = {

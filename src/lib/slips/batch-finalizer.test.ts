@@ -619,6 +619,28 @@ describe("buildBatchSummaryMessage trusted slip lines", () => {
     expect(msg.indexOf("รูปที่ตรวจผ่าน:")).toBeLessThan(msg.indexOf("รูปที่ต้องตรวจมือ:"));
   });
 
+  it("shows OCR-read bank amount only in manual review, never in trusted total", () => {
+    const evidences = [
+      makeEvidence("EXTRACTED", 1, { transferAmount: 1000 }),
+      makeEvidence("NEED_REVIEW", 2, { transferAmount: 315 }),
+    ];
+    const msg = buildBatchSummaryMessage(evidences, { slipDate: "10/6/2569" });
+    expect(msg).toContain("ยอดรวมที่อ่านได้: 1,000 บาท");
+    expect(msg).not.toContain("ยอดรวมที่อ่านได้: 1,315 บาท");
+    expect(msg).toContain("#2 อ่านยอดเบื้องต้น 315 บาท (ยังไม่ยืนยันเงินโอน)");
+    expect(msg).toContain("รอตรวจมือ: 1 รูป");
+  });
+
+  it("shows unverified OCR bank amounts in timeout report without counting them", () => {
+    const evidences = [
+      makeEvidence("NEED_REVIEW", 1, { transferAmount: 50 }),
+      makeEvidence("FAILED", 2),
+    ];
+    const msg = buildBatchSummaryMessage(evidences, { isTimeout: true, slipDate: "10/6/2569" });
+    expect(msg).toContain("#1 อ่านยอดเบื้องต้น 50 บาท (ยังไม่ยืนยันเงินโอน)");
+    expect(msg).not.toContain("ยอดรวมที่อ่านได้: 50 บาท");
+  });
+
   it("omits trusted section when no slips pass validation", () => {
     const evidences = [
       makeEvidence("NEED_REVIEW", 1),
