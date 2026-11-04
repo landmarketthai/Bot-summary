@@ -43,6 +43,7 @@ const HARDENING = join(
   "tests",
   "purchase_capture_slice_a_hardening.sql",
 );
+const OPEN_REPLAY_FIX = join(REPO_ROOT, "supabase", "migrations", "20261104090000_purchase_capture_open_replay_race.sql");
 
 type PsqlResult = { code: number; stdout: string; stderr: string };
 
@@ -116,6 +117,68 @@ async function concurrentPsql(
   ]);
 }
 
+/** Gate inside the first SELECT so it misses a winner committed during its snapshot. */
+async function snapshotGapPsql(
+  psql: string,
+  database: string,
+  winnerSql: string,
+  replaySql: string,
+): Promise<[PsqlResult, PsqlResult]> {
+  const definition = await psqlScalar(psql, database,
+    "SELECT pg_get_functiondef('public.open_purchase_capture_session(text,text,text,text,bigint,text,text,uuid)'::regprocedure)");
+  const gate = randomBytes(3).readUIntBE(0, 3);
+  // Temporarily remove the event-level lock only inside this disposable DB to
+  // force the snapshot race and verify the independent full-fingerprint fallback.
+  const unlocked = definition.replace(
+    /PERFORM pg_advisory_xact_lock\(\s*hashtextextended\('purchase-capture-open:' \|\| v_event,\s*0\)\s*\);/,
+    "",
+  );
+  expect(unlocked).not.toBe(definition);
+  const gated = unlocked.replace("WHERE line_event_id = v_event;",
+    `WHERE line_event_id = v_event AND (SELECT true FROM pg_advisory_xact_lock(195, ${gate}));`);
+  expect(gated).not.toBe(unlocked);
+  await psqlScalar(psql, database, gated);
+
+  const holder = Bun.spawn([psql, "-XqAt", "-v", "ON_ERROR_STOP=1", "-d", database], {
+    env: { ...process.env, PGHOST, PGUSER, PGPASSWORD, PGPORT, PGDATABASE: database },
+    stdin: "pipe", stdout: "pipe", stderr: "pipe",
+  });
+  const holderResult = Promise.all([
+    new Response(holder.stdout).text(), new Response(holder.stderr).text(), holder.exited,
+  ]).then(([stdout, stderr, code]) => ({ stdout, stderr, code }));
+  let replay: Promise<PsqlResult> | undefined;
+  async function waitForGate(granted: boolean) {
+    const until = Date.now() + 10_000;
+    while (Date.now() < until) {
+      const found = await psqlScalar(psql, database, `SELECT EXISTS (
+        SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND classid = 195 AND objid = ${gate}
+          AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+          AND granted = ${granted})`);
+      if (found === "t") return;
+      await Bun.sleep(20);
+    }
+    throw new Error(`snapshot gap gate timed out (granted=${granted})`);
+  }
+  try {
+    holder.stdin.write(`BEGIN; SELECT pg_advisory_xact_lock(195, ${gate}); ${winnerSql};\n`);
+    await holder.stdin.flush();
+    await waitForGate(true);
+    replay = runPsql(psql, ["-v", "ON_ERROR_STOP=1", "-d", database, "-tAc", replaySql], { database });
+    await waitForGate(false);
+  } finally {
+    try {
+      holder.stdin.write("COMMIT;\n");
+      holder.stdin.end();
+      await holderResult;
+      await replay;
+    } finally {
+      // Restore the protected RPC even if the test harness or replay fails.
+      await psqlScalar(psql, database, definition);
+    }
+  }
+  return [await holderResult, await replay!];
+}
+
 const resolvedPsql = resolvePsql();
 const probe = resolvedPsql
   ? await probeConnection(resolvedPsql)
@@ -147,6 +210,7 @@ describe.skipIf(!pgAvailable)("Purchase capture Slice A migration PostgreSQL har
     async () => {
       expect(existsSync(BOOTSTRAP)).toBe(true);
       expect(existsSync(MIGRATION)).toBe(true);
+      expect(existsSync(OPEN_REPLAY_FIX)).toBe(true);
       expect(existsSync(HARDENING)).toBe(true);
 
       const create = await runPsql(psqlPath, ["-v", "ON_ERROR_STOP=1", "-d", "postgres", "-c", `CREATE DATABASE ${dbName}`]);
@@ -158,6 +222,22 @@ describe.skipIf(!pgAvailable)("Purchase capture Slice A migration PostgreSQL har
 
       const mig = await runPsql(psqlPath, ["-v", "ON_ERROR_STOP=1", "-d", dbName, "-f", MIGRATION], { database: dbName });
       expect(mig.code, `Slice A migration failed:\n${mig.stderr}\n${mig.stdout}`).toBe(0);
+
+      const originalDefinition = await psqlScalar(psqlPath, dbName,
+        "SELECT pg_get_functiondef('public.open_purchase_capture_session(text,text,text,text,bigint,text,text,uuid)'::regprocedure)");
+      const fix = await runPsql(psqlPath, ["-v", "ON_ERROR_STOP=1", "-d", dbName, "-f", OPEN_REPLAY_FIX], { database: dbName });
+      expect(fix.code, `open replay fix failed: ${fix.stderr}`).toBe(0);
+      expect(await psqlScalar(psqlPath, dbName,
+        "SELECT pg_get_functiondef('public.open_purchase_capture_session(text,text,text,text,bigint,text,text,uuid)'::regprocedure)"),
+      ).not.toBe(originalDefinition);
+      for (const role of ["anon", "authenticated"]) {
+        expect(await psqlScalar(psqlPath, dbName,
+          `SELECT has_function_privilege('${role}', 'public.open_purchase_capture_session(text,text,text,text,bigint,text,text,uuid)', 'EXECUTE')::text`))
+          .toBe("false");
+      }
+      expect(await psqlScalar(psqlPath, dbName,
+        "SELECT has_function_privilege('service_role', 'public.open_purchase_capture_session(text,text,text,text,bigint,text,text,uuid)', 'EXECUTE')::text"))
+        .toBe("true");
 
       expect(
         await psqlScalar(
@@ -614,6 +694,38 @@ describe.skipIf(!pgAvailable)("Purchase capture Slice A migration PostgreSQL har
     },
     { timeout: 60_000 },
   );
+
+  for (const identical of [false, true]) {
+    test(`snapshot gap: ${identical ? "identical" : "conflicting"} open committed after first ingest snapshot`, async () => {
+      expect(ready).toBe(true);
+      const tag = randomBytes(3).toString("hex");
+      const evt = `evt-snapshot-${tag}`;
+      const openSql = (text: string) => `SELECT public.open_purchase_capture_session(
+        'group', 'G-snapshot-${tag}', 'U-snapshot-${tag}', ${sqlLiteral(evt)}, 1000, ${sqlLiteral(text)}
+      )::text`;
+      const [winner, replay] = await snapshotGapPsql(psqlPath, dbName, openSql("text A"),
+        openSql(identical ? "text A" : "text B"));
+      expect(winner.code, winner.stderr).toBe(0);
+      const opened = JSON.parse(winner.stdout.trim()) as Record<string, unknown>;
+      expect(opened.opened).toBe(true);
+      if (identical) {
+        expect(replay.code, replay.stderr).toBe(0);
+        const duplicate = JSON.parse(replay.stdout.trim()) as Record<string, unknown>;
+        expect(duplicate.reason).toBe("duplicate_open_event");
+        expect(duplicate.idempotent).toBe(true);
+        expect(duplicate.session_id).toBe(opened.session_id);
+      } else {
+        expect(replay.code).not.toBe(0);
+        expect(replay.stderr + replay.stdout).toContain("line_event_conflict");
+      }
+      expect(await psqlScalar(psqlPath, dbName,
+        `SELECT count(*)::text FROM public.purchase_capture_session_ingests WHERE line_event_id = ${sqlLiteral(evt)}`)).toBe("1");
+      expect(await psqlScalar(psqlPath, dbName,
+        `SELECT raw_text FROM public.purchase_capture_session_ingests WHERE line_event_id = ${sqlLiteral(evt)}`)).toBe("text A");
+      expect(await psqlScalar(psqlPath, dbName,
+        `SELECT ingest_revision::text FROM public.purchase_capture_sessions WHERE id = ${sqlLiteral(String(opened.session_id))}::uuid`)).toBe("1");
+    }, { timeout: 60_000 });
+  }
 
   afterAll(async () => {
     if (dbCreated && psqlPath) {

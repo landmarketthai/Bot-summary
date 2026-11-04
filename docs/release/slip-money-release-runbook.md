@@ -8,7 +8,7 @@
 | 1 | PR #192 `fix/p0-slip-image-ordering-20261031` | LINE `#N` follows LINE send order | none |
 | 2 | PR #194 `fix/p0-slip-pending-amounts-20261102` (on #192) | AI-read / confirmed / pending in the LINE summary | none |
 | 3 | PR #193 `feat/slip-ocr-gemini-eval` (on #194) | shared eligibility (date / outlier / reference) in every money path; Gemini evaluation tooling only. | none |
-| 4 | PR #195 `feat/manual-slip-ai-approval-20261102` | **3a** (round-close `excluded` status and ingestion race test, shipped in #195); AI and manual reviews; persisted per-reference credits; finalizer fail-closed; settled-scope manual guard; immutable manual slips and credit stamps; M0 write stop including finalization DELETE, with pilot allowlist | **M0–M8** |
+| 4 | PR #195 `feat/manual-slip-ai-approval-20261102` | **3a** (round-close `excluded` status and ingestion race test, shipped in #195); AI and manual reviews; persisted per-reference credits; finalizer fail-closed; settled-scope manual guard; immutable manual slips and credit stamps; M0 write stop including finalization DELETE, with pilot allowlist | **M0–M9** |
 
 Migrations of step 4, in order (all additive; M0 inserts only its paused control row, with no financial-row changes):
 - **M0 `20261102110000_financial_write_stop`: applied FIRST. Installs the stop already paused.** It guards `settlement_entries`, `transfer_reconciliations`, `manual_slip_sessions`, `manual_slip_entries`, finalizations entering `sending`/`sent`/`ambiguous`, and finalization DELETE, for code of every version.
@@ -20,6 +20,8 @@ Migrations of step 4, in order (all additive; M0 inserts only its paused control
 - M6 `20261103100000_slip_reference_claims`
 - M7 `20261103120000_financial_write_guards` (settled-scope/manual guards, immutable credit stamp, rollback gate)
 - M8 `20261103130000_financial_release_blockers` (recorded credits freeze failed-scope reviews; positive non-NULL approval validation; refuse uncredited `sent`/`message_sent_at` writes). Apply after M7, never with M0: M0 must install before the credit column exists. Existing invalid approval amounts refuse installation for operator review; no financial rows are repaired automatically.
+
+- M9 `20261104090000_purchase_capture_open_replay_race` (purchase-capture concurrency guard for conflicting duplicate LINE open events; forward-only `CREATE OR REPLACE`, no data rewrite). It includes both the event-id advisory lock from unmerged PR #158 and a full-fingerprint recheck in the unique-conflict path. Apply after M8; no old purchase-capture migration file is rewritten. Coordinate with #158 so no older body overwrites this final definition.
 
 ## 2. Compatibility rules (why the order matters)
 - **Step-4 code fails closed without M6.** A settlement is never sent on the uncredited preview rule; that rule paid one ฿70 transfer as ฿140. Without the RPC every finalization ends `failed` and nothing is pushed. After M6 the retry credits and sends normally (test P0-A).
@@ -61,7 +63,7 @@ Migrations of step 4, in order (all additive; M0 inserts only its paused control
      ```
      A `sending` row left by an old worker is not credited (the credit RPC is absent), but that worker may already be between its claim and LINE. Let the known attempt finish, or stop that worker and wait for its claim to become stale; **do not apply M1 until the count is 0**. Record the outcome; failed/stale rows are retried by the new code after resume;
    - **BLOCKING GATE, operator action:** confirm in the hosting dashboard that no deployment other than the one being replaced serves traffic, and that the replaced deployment is the only old version. This cannot be proven from the repository. Until an operator records it, the release stays NO-GO.
-3. **Apply M1 → M8 in order**, in one session, while paused. They are DDL only and idempotent.
+3. **Apply M1 → M8 in order**, then M9 while paused. M9 replaces only `open_purchase_capture_session` (no financial data changes); verify the final function body still includes the event-id advisory lock and full-fingerprint comparison. These migrations are re-runnable.
 4. **Verify the schema:**
    ```sql
    SELECT proname, prosecdef FROM pg_proc WHERE proname IN ('claim_slip_references','review_slip_check','review_manual_slip_entry','revoke_slip_check_review','assert_financial_writes_open');  -- 5 rows, all SECURITY DEFINER
@@ -72,6 +74,9 @@ Migrations of step 4, in order (all additive; M0 inserts only its paused control
           has_table_privilege('service_role', 'public.manual_slip_sessions', 'UPDATE'),
           has_table_privilege('service_role', 'public.manual_slip_entries', 'INSERT');                       -- true, false, false
    SELECT tgname FROM pg_trigger WHERE tgname IN ('manual_slip_sessions_scope_guard','manual_slip_entries_scope_guard','slip_check_approvals_maintenance_guard','settlement_finalizations_money_close_lock','slip_reference_claims_append_only','manual_slip_sessions_no_truncate','manual_slip_entries_no_truncate','settlement_finalizations_record_guard','settlement_finalizations_credit_guard'); -- 9 rows
+   -- Verify M9's final RPC body after any PR #158 migration is applied.
+   SELECT position('pg_advisory_xact_lock' IN pg_get_functiondef('public.open_purchase_capture_session(text,text,text,text,bigint,text,text,uuid)'::regprocedure)) > 0 AS open_event_lock_present,
+          position('purchase_capture_open_fingerprint_matches' IN pg_get_functiondef('public.open_purchase_capture_session(text,text,text,text,bigint,text,text,uuid)'::regprocedure)) > 0 AS full_fingerprint_guard_present; -- both true
    SELECT paused FROM public.financial_maintenance;   -- true
    ```
 5. **Deploy the code** in this order: #192 → #194 → #193 → #195 (includes 3a). Check that the deployed SHA is the approved head. Still paused: the new code's money writes are refused too, so a bad deploy cannot send.
@@ -117,6 +122,7 @@ Run `docs/sql/slip-money-exception-register.sql` (`SET register.from_day = '…'
 | E7 live_vs_stored | stored total ≠ credited + unreferenced manual | Explain (rejected or requires-review unreferenced entries), otherwise **stop**. |
 
 ## 7. Rollback 🔒
+**M9 is independent of the slip-money rollback.** Leave the corrected purchase-capture open RPC installed when rolling back M8 → M0; reverting M9 would reintroduce the known conflicting-duplicate LINE event race. A fault in M9 requires a separately reviewed forward fix. If PR #158 is released separately, confirm the deployed `open_purchase_capture_session` definition retains both protections.
 **Rule: never run the old code on a schema that holds credits.** Old code ignores persisted credits and recounts derived ownership (one ฿70 transfer paid as ฿140). Both rollback paths below keep the stop installed and paused until a forward fix ships.
 
 | Situation | Action | Limits |
