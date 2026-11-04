@@ -176,9 +176,10 @@ describe("buildBatchSummaryMessage", () => {
       { id: "e1", batchIndex: 1, checkStatus: "NEED_REVIEW", slipType: null, transferAmount: null, paidAmount: null, transactionTime: null, failureReason: null },
       { id: "e2", batchIndex: 2, checkStatus: "FAILED",      slipType: null, transferAmount: null, paidAmount: null, transactionTime: null, failureReason: null },
     ]);
-    expect(msg).toBe(
-      "รับรูปหลักฐานแล้วทั้งหมด 2 รูป แต่ระบบอ่านข้อมูลไม่ครบ กรุณาให้แอดมินตรวจมือ",
-    );
+    expect(msg).toContain("ส่งสลิปมาทั้งหมด: 2 รูป");
+    expect(msg).toContain("อ่านยอดได้: 0 รูป");
+    expect(msg).toContain("ยังรวมยอดไม่ได้");
+    expect(msg).toContain("⚠️ หมายเหตุ");
   });
 
   it("includes totals and review list for partial success", () => {
@@ -187,12 +188,12 @@ describe("buildBatchSummaryMessage", () => {
       { id: "e2", batchIndex: 2, checkStatus: "NEED_REVIEW", slipType: null,           transferAmount: null, paidAmount: null, transactionTime: null, failureReason: null },
       { id: "e3", batchIndex: 3, checkStatus: "EXTRACTED",   slipType: "BANK_SLIP_QR", transferAmount: 500,  paidAmount: null, transactionTime: null, failureReason: null },
     ]);
-    expect(msg).toContain("สรุปรูปหลักฐานรอบนี้");
-    expect(msg).toContain("รับทั้งหมด: 3 รูป");
-    expect(msg).toContain("อ่านครบ: 2 รูป");
-    expect(msg).toContain("รอตรวจมือ: 1 รูป");
+    expect(msg).toContain("สรุปสลิปเงินโอน");
+    expect(msg).toContain("ส่งสลิปมาทั้งหมด: 3 รูป");
+    expect(msg).toContain("อ่านยอดได้: 2 รูป");
+    expect(msg).toContain("มีรูปที่ต้องตรวจทาน: 1 รูป");
     expect(msg).toContain("1,500");
-    expect(msg).toContain("#2 ไม่พบข้อมูลครบถ้วน");
+    expect(msg).toContain("รูปที่ 2: อ่านวันที่โอนเงินไม่ชัด");
   });
 
   it("GWALLET slip uses paid_amount as the effective amount", () => {
@@ -214,8 +215,8 @@ describe("buildBatchSummaryMessage", () => {
       { id: "e1", batchIndex: 1, checkStatus: "EXTRACTED",         slipType: "BANK_SLIP_QR", transferAmount: 300, paidAmount: null, transactionTime: null, failureReason: null },
       { id: "e2", batchIndex: 2, checkStatus: "PARTIAL_EXTRACTED", slipType: "BANK_SLIP_QR", transferAmount: 200, paidAmount: null, transactionTime: null, failureReason: null },
     ]);
-    expect(msg).toContain("รอตรวจมือ: 0 รูป");
-    expect(msg).not.toContain("รูปที่ต้องตรวจมือ");
+    expect(msg).toContain("อ่านยอดได้: 2 รูป");
+    expect(msg).not.toContain("⚠️ หมายเหตุ");
   });
 
   it("returns empty string for empty evidence list", () => {
@@ -227,7 +228,7 @@ describe("buildBatchSummaryMessage", () => {
       { id: "e1", batchIndex: 1, checkStatus: "EXTRACTED", slipType: "BANK_SLIP_QR", transferAmount: 100, paidAmount: null, transactionTime: null, failureReason: null },
       { id: "e2", batchIndex: 2, checkStatus: "FAILED",    slipType: null,           transferAmount: null, paidAmount: null, transactionTime: null, failureReason: "evidence_download_failed" },
     ]);
-    expect(msg).toContain("#2 ดาวน์โหลดรูปไม่สำเร็จ");
+    expect(msg).toContain("รูปที่ 2: ดาวน์โหลดรูปไม่สำเร็จ");
   });
 
   it("treats PROCESSING status as needing manual review", () => {
@@ -235,7 +236,7 @@ describe("buildBatchSummaryMessage", () => {
       { id: "e1", batchIndex: 1, checkStatus: "EXTRACTED",  slipType: "BANK_SLIP_QR", transferAmount: 500, paidAmount: null, transactionTime: null, failureReason: null },
       { id: "e2", batchIndex: 2, checkStatus: "PROCESSING", slipType: null,           transferAmount: null, paidAmount: null, transactionTime: null, failureReason: null },
     ]);
-    expect(msg).toContain("#2 รอผลการตรวจสอบ");
+    expect(msg).toContain("รูปที่ 2: รอผลการตรวจสอบ");
   });
 });
 
