@@ -1,3 +1,4 @@
+import { enterCategoryPolicy, loadApprovedCategoryPolicy } from "@/lib/produce/category-learning/rules";
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
 import { pushLineMessage } from "@/lib/line/reply";
@@ -89,7 +90,6 @@ export async function GET(req: NextRequest) {
 
   const businessDate = resolveStockSummaryDate(dateParam);
   const supabase = createServiceClient();
-
   let targets: string[];
   if (targetOverride) {
     targets = [targetOverride];
@@ -116,6 +116,10 @@ export async function GET(req: NextRequest) {
     targetMarker: Boolean(targetMarker),
     targetCount: targets.length,
   });
+
+  // One complete category snapshot for the report, its PDF and its messages
+  // (see category-learning/rules.ts).
+  enterCategoryPolicy(await loadApprovedCategoryPolicy(supabase));
 
   let messages: string[];
   let report: Awaited<ReturnType<typeof loadMorningBriefReport>>;
