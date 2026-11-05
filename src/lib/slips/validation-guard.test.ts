@@ -726,6 +726,24 @@ describe("Production batch fixture: n0i — wat takl0m — 10/6/2569", () => {
     expect(status).toBe("review_needed");
   });
 
+  it("legacy 25-image incident fixture keeps verified 2,781.40 while displayed amount includes only the readable undated 50", () => {
+    const msg = buildBatchSummaryMessage(productionFixture, { slipDate: BATCH_DATE_BUDDHIST });
+    expect(msg).toContain("ส่งสลิปมาทั้งหมด: 25 รูป");
+    expect(msg).toContain("อ่านยอดได้: 20 รูป");
+    expect(msg).toContain("ยอดรวมที่อ่านได้: 2,831.4 บาท");
+    expect(msg).toContain("มีรูปที่ต้องตรวจทาน: 6 รูป (อาจซ้ำกับรูปที่อ่านยอดได้)");
+    expect(msg).toContain("รูปที่ 11 = 50 บาท");
+    expect(msg).toContain("รูปที่ 11 — 50 บาท: รอยืนยันวันที่รายการ อ่านวันที่โอนเงินไม่ชัด");
+    expect(msg).toContain("รูปที่ 9 — 50,000 บาท: ยอดเงินสูงผิดปกติ");
+    expect(msg).toContain("วันที่รายการไม่ตรงกับรอบ");
+    expect(msg).not.toContain("ยอดรวมที่อ่านได้: 53,553.4 บาท");
+    expect(msg).not.toContain("ยอดรวมที่อ่านได้: 3,553.4 บาท");
+    const strictFlags = computeValidationFlags(productionFixture, BATCH_DATE_ISO);
+    const verifiedAmount = productionFixture.reduce((sum, e, i) =>
+      !strictFlags[i].flagged ? sum + (strictFlags[i].effectiveAmount ?? 0) : sum, 0);
+    expect(verifiedAmount).toBeCloseTo(2781.40, 2);
+    expect(strictFlags[10].flagged).toBe(true);
+  });
 });
 
 describe("synthetic summary amount and date guards", () => {
