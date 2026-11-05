@@ -274,7 +274,7 @@ describe("duplicate guard", () => {
     const message = buildBatchSummaryMessage(evidences, { slipDate: null });
     expect(message).toContain("ยอดรวมที่อ่านได้: 800 บาท");
     expect(message).toContain("สลิปซ้ำ");
-    expect(message).toContain("ยอดที่ถูกระงับ: 1 รายการ");
+    expect(message).toContain("รูปที่ 2 — 500 บาท: สลิปซ้ำ");
   });
 });
 
@@ -535,8 +535,8 @@ describe("NEED_REVIEW items remain excluded from trusted total", () => {
       },
     ];
     const msg = buildBatchSummaryMessage(evidences, { slipDate: null });
-    expect(msg).toContain("อ่านครบ: 1 รูป");   // only the EXTRACTED slip
-    expect(msg).toContain("รอตรวจมือ: 1 รูป"); // the NEED_REVIEW slip
+    expect(msg).toContain("อ่านยอดได้: 1 รูป");   // only the EXTRACTED slip
+    expect(msg).toContain("มีรูปที่ต้องตรวจทาน: 1 รูป"); // the NEED_REVIEW slip
   });
 });
 
@@ -728,10 +728,10 @@ describe("Production batch fixture: n0i — wat takl0m — 10/6/2569", () => {
 
   it("summary with Buddhist date shows 2,781.40 trusted total and 1 amount-suspended item", () => {
     const msg = buildBatchSummaryMessage(productionFixture, { slipDate: BATCH_DATE_BUDDHIST });
-    expect(msg).toContain("อ่านครบ: 19 รูป");
-    expect(msg).toContain("รอตรวจมือ: 6 รูป");
+    expect(msg).toContain("อ่านยอดได้: 19 รูป");
+    expect(msg).toContain("มีรูปที่ต้องตรวจทาน: 6 รูป");
     // Only #9 has an amount flag — date-only and missing-date items do not count
-    expect(msg).toContain("ยอดที่ถูกระงับ: 1 รายการ");
+    expect(msg).toContain("รูปที่ 9 — 50,000 บาท: ยอดเงินสูงผิดปกติ");
     // Trusted total is 2,781.40
     expect(msg).toMatch(/2[,.]781/);
     expect(msg).not.toMatch(/53[,.]553/);
