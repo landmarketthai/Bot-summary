@@ -41,6 +41,7 @@ jobs:
       - name: P0 slip ingestion and incident baseline (real PostgreSQL)
         run: >-
           SLIP_INGEST_REQUIRE=1 bun test
+          src/lib/slips/slip-cancel.pg.test.ts
           src/lib/slips/image-ingestion.pg.test.ts
           src/lib/slips/image-ingestion-ordering.pg.test.ts
           src/lib/slips/incident-baseline.pg.test.ts
