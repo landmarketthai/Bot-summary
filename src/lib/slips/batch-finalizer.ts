@@ -969,6 +969,7 @@ const OCR_FALLBACK_REASONS = new Set([
   "slip_not_found", "provider_error", "invalid_response",
   "invalid_image", "not_configured",
 ]);
+const UNCLEAR_DATE_REASONS = new Set(["ไม่พบวันที่รายการ", "วันที่รายการไม่ถูกต้อง"]);
 
 function formatBaht(value: number): string {
   return value.toLocaleString("th-TH", { maximumFractionDigits: 2 });
@@ -997,10 +998,11 @@ function isBankOcrFallback(e: EnrichedEvidence): boolean {
  * LINE summary for people checking transfers, not developers.
  *
  * The displayed amount includes readable OCR-only bank slips when an EasySlip
- * provider failure prevented verification and amount/date passed review guards.
+ * provider failure prevented verification and amount passed review guards.
  * Such amounts remain NEED_REVIEW in the database; they never become trusted
- * transfers or affect settlement. Duplicate/receiver-mismatch, invalid dates,
- * unreadable amounts and guarded outliers are not added.
+ * transfers or affect settlement. Unclear dates are review notes only here.
+ * Duplicate/receiver-mismatch, known date mismatches, unreadable amounts and
+ * guarded outliers are not added.
  */
 export function buildBatchSummaryMessage(
   evidences: EvidenceWithCheck[],
@@ -1012,7 +1014,9 @@ export function buildBatchSummaryMessage(
   const ordinaryFlags = computeValidationFlags(evidences, batchDate);
   const all: EnrichedEvidence[] = evidences.map((e, i) => ({ ...e, flags: ordinaryFlags[i] }));
   const alreadyChecked = all.filter((e) => isVerifiedSlipCheckStatus(e.checkStatus));
-  const countedNormally = alreadyChecked.filter((e) => !e.flags.flagged);
+  const readableChecked = alreadyChecked.filter((e) =>
+    e.flags.flagReasons.every((reason) => UNCLEAR_DATE_REASONS.has(reason)),
+  );
   const fallbackCandidates = all.filter(isBankOcrFallback);
 
   // Reapply guards to OCR candidates for report inclusion only. Placing every
@@ -1029,26 +1033,27 @@ export function buildBatchSummaryMessage(
     const reviewFlags = guardedWithOcr[alreadyChecked.length + i];
     const amount = reviewFlags.effectiveAmount;
     const readDate = bangkokDateOf(e.transactionTime);
-    // OCR-only transfers must match the sales date exactly; the older +/-1 day
-    // tolerance is deliberately not used for unverified money.
+    const blockingReasons = reviewFlags.flagReasons.filter((reason) => !UNCLEAR_DATE_REASONS.has(reason));
+    // Known OCR dates must match exactly; unclear dates only need a display note.
     const reason = amount === null ? "อ่านยอดเงินไม่ชัด"
-      : !batchDate ? "ยังไม่ทราบวันที่ของชุดสลิป"
-      : !readDate ? "อ่านวันที่โอนเงินไม่ชัด"
-      : readDate !== batchDate ? "วันที่โอนเงินไม่ตรงกับวันที่ขาย"
-      : reviewFlags.flagged ? reviewFlags.flagReasons.join(", ")
+      : blockingReasons.length > 0 ? blockingReasons.join(", ")
+      : batchDate && readDate && readDate !== batchDate ? "วันที่โอนเงินไม่ตรงกับวันที่ขาย"
       : null;
     if (reason) rejectedOcrReasons.set(e.id, reason);
     else provisional.push({ ...e, flags: reviewFlags });
   });
 
-  const included = [...countedNormally, ...provisional].sort(
+  const included = [...readableChecked, ...provisional].sort(
     (a, b) => (a.batchIndex ?? Number.MAX_SAFE_INTEGER) - (b.batchIndex ?? Number.MAX_SAFE_INTEGER),
   );
   const includedIds = new Set(included.map((e) => e.id));
   const uncounted = all.filter((e) => !includedIds.has(e.id));
   const amountRead = included.reduce((sum, e) => sum + (e.flags.effectiveAmount ?? 0), 0);
   const roundedTotal = Math.round(amountRead * 100) / 100;
-  const reviewCount = provisional.length + uncounted.length;
+  const includedForReview = included.filter((e) =>
+    isBankOcrFallback(e) || !batchDate || !bangkokDateOf(e.transactionTime),
+  );
+  const reviewCount = includedForReview.length + uncounted.length;
   const pendingCount = all.filter((e) => e.checkStatus === null || e.checkStatus === "PROCESSING").length;
   const failedCount = all.filter((e) => e.checkStatus === "FAILED").length;
 
@@ -1067,8 +1072,8 @@ export function buildBatchSummaryMessage(
   }
   if (failedCount) lines.push("อ่านไม่สำเร็จ: " + failedCount + " รูป");
   if (pendingCount) lines.push("ยังรอผล: " + pendingCount + " รูป");
-  if (reviewCount) lines.push("มีรูปที่ต้องตรวจทาน: " + reviewCount + " รูป");
-  if (included.length > 0) lines.push("", "ยอดรวมที่อ่านได้: " + formatBaht(roundedTotal) + " บาท");
+  if (reviewCount) lines.push("มีรูปที่ต้องตรวจทาน: " + reviewCount + " รูป (อาจซ้ำกับรูปที่อ่านยอดได้)");
+  if (included.length > 0) lines.push("", "ยอดรวมที่อ่านได้: " + formatBaht(roundedTotal) + " บาท", "ยอดอ่านจากภาพ ยังไม่ใช่ยอดยืนยันทางบัญชี");
   else lines.push("", "ยังรวมยอดไม่ได้ เพราะไม่มีรูปที่อ่านยอดได้ครบ");
 
   if (included.length > 0) {
@@ -1080,16 +1085,19 @@ export function buildBatchSummaryMessage(
 
   if (reviewCount > 0) {
     lines.push("", "⚠️ หมายเหตุ");
-    for (const e of [...provisional, ...uncounted].sort(
+    for (const e of [...includedForReview, ...uncounted].sort(
       (a, b) => (a.batchIndex ?? Number.MAX_SAFE_INTEGER) - (b.batchIndex ?? Number.MAX_SAFE_INTEGER),
     )) {
       const image = "รูปที่ " + (e.batchIndex ?? "?");
       const amount = e.flags.effectiveAmount;
       if (includedIds.has(e.id)) {
-        // OCR amount already included; explicit instruction prevents double-add.
+        // Readable amount already included; explicit instruction prevents double-add.
         const missingRef = !e.referenceId ? " เลขอ้างอิงยังไม่ชัด" : "";
+        const dateNote = !bangkokDateOf(e.transactionTime) ? " อ่านวันที่โอนเงินไม่ชัด" : "";
+        const batchDateNote = !batchDate ? " ยังไม่ทราบวันที่ของชุดสลิป" : "";
+        const reviewNote = isBankOcrFallback(e) ? "ยังตรวจสอบเงินเข้าไม่ได้" : "รอยืนยันวันที่รายการ";
         lines.push(image + " — " + formatBaht(amount!) +
-          " บาท: ยังตรวจสอบเงินเข้าไม่ได้" +
+          " บาท: " + reviewNote + dateNote + batchDateNote +
           missingRef + " (รวมยอดแล้ว)");
       } else {
         const reason = rejectedOcrReasons.get(e.id) ?? (
@@ -1101,8 +1109,8 @@ export function buildBatchSummaryMessage(
           ": " + reason + " (ยังไม่รวมยอด)");
       }
     }
-    if (provisional.length > 0) {
-      lines.push("อ่านยอดและวันที่ได้แล้ว แต่ต้องตรวจว่าเงินเข้าบัญชีจริงหรือไม่ ยอดที่เขียนว่า “รวมยอดแล้ว” อยู่ในยอดรวมด้านบน ไม่ต้องบวกเพิ่ม");
+    if (includedForReview.length > 0) {
+      lines.push("ยอดที่เขียนว่า “รวมยอดแล้ว” อยู่ในยอดรวมด้านบน ไม่ต้องบวกเพิ่ม ยังต้องตรวจวันที่และยืนยันเงินเข้าบัญชี");
     }
   }
   return lines.join("\n");

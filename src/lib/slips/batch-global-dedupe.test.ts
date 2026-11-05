@@ -21,6 +21,9 @@ interface CheckRow {
   transaction_time: string | null;
   reference_id: string | null;
   failure_reason: string | null;
+  extracted_json?: {
+    verification: { provider: string; bank_verified: boolean; reason: string };
+  };
 }
 
 interface GlobalRow {
@@ -79,6 +82,7 @@ function globalRow(id: string, referenceId: string, createdAt: string): GlobalRo
 function makeFinalizationDatabase(
   checks: readonly CheckRow[],
   globalRows: readonly GlobalRow[],
+  slipDate: string | null = null,
 ) {
   const referenceQueries: string[][] = [];
   const statusQueries: string[][] = [];
@@ -101,7 +105,7 @@ function makeFinalizationDatabase(
                   id: "batch-1",
                   source_id: "source-1",
                   summary_sent_at: null,
-                  slip_date: null,
+                  slip_date: slipDate,
                   closing_at: null,
                   last_image_at: null,
                   seller_name: null,
@@ -180,6 +184,46 @@ function finalStatusUpdate(updates: Array<Record<string, unknown>>) {
 }
 
 describe("batch finalizer global slip dedupe", () => {
+  test("11 readable image amounts total 675 without promoting pending checks or undated accounting", async () => {
+    for (const allUndated of [false, true]) {
+      const unclearDates = new Set([1, 2, 5, 6]);
+      const checks = [50, 30, 50, 70, 110, 40, 33, 90, 62, 100, 40].map((amount, i) => {
+        const needsReview = unclearDates.has(i + 1) || i === 10;
+        const row = check(`synthetic-check-${i + 1}`, needsReview ? "NEED_REVIEW" : "EXTRACTED", `SYNTHETIC-REF-${i + 1}`, amount);
+        row.transaction_time = allUndated || unclearDates.has(i + 1) ? null : "2026-10-30T08:41:00.000Z";
+        if (needsReview) {
+          row.extracted_json = {
+            verification: { provider: "easyslip", bank_verified: false, reason: "provider_error" },
+          };
+        }
+        return row;
+      });
+      const before = structuredClone(checks);
+      const verifiedRows = checks.filter((row) => row.status === "EXTRACTED");
+      const { database, referenceQueries, statusUpdates } = makeFinalizationDatabase(
+        checks,
+        verifiedRows.map((row) => globalRow(row.id, row.reference_id!, "2026-10-30T09:00:00.000Z")),
+        "30/10/2569",
+      );
+      const messages: string[] = [];
+      await finalizeSlipBatch(database, "batch-1", async (message) => { messages.push(message); });
+
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toContain("ยอดรวมที่อ่านได้: 675 บาท");
+      expect(messages[0]).toContain("อ่านยอดได้: 11 รูป");
+      expect(messages[0]).toContain(`มีรูปที่ต้องตรวจทาน: ${allUndated ? 11 : 5} รูป (อาจซ้ำกับรูปที่อ่านยอดได้)`);
+      expect(messages[0]).toContain("รูปที่ 11 — 40 บาท: ยังตรวจสอบเงินเข้าไม่ได้");
+      expect(finalStatusUpdate(statusUpdates)).toMatchObject({
+        status: allUndated ? "failed" : "review_needed",
+        success_count: allUndated ? 0 : 6,
+        failed_count: allUndated ? 11 : 5,
+      });
+      expect(referenceQueries).toEqual([verifiedRows.map((row) => row.reference_id!)]);
+      expect(statusUpdates).toHaveLength(1);
+      expect(checks).toEqual(before);
+    }
+  });
+
   test("finalizes EXTRACTED plus NEED_REVIEW while resolving only the verified check", async () => {
     const extracted = check("check-extracted", "EXTRACTED", "REF-EXTRACTED", 500);
     const needsReview = check("check-review", "NEED_REVIEW", "REF-REVIEW", null);
@@ -200,7 +244,7 @@ describe("batch finalizer global slip dedupe", () => {
     expect(referenceQueries).toEqual([["REF-EXTRACTED"]]);
     expect(statusQueries).toEqual([[...VERIFIED_SLIP_CHECK_STATUSES]]);
     expect(messages).toHaveLength(1);
-    expect(messages[0]).toContain("มีรูปที่ต้องตรวจทาน: 1 รูป");
+    expect(messages[0]).toContain("มีรูปที่ต้องตรวจทาน: 2 รูป (อาจซ้ำกับรูปที่อ่านยอดได้)");
     expect(messages[0]).toContain("รูปที่ 2: อ่านวันที่โอนเงินไม่ชัด");
     expect(finalStatusUpdate(statusUpdates)).toMatchObject({
       status: "review_needed",

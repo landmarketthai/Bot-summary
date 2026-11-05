@@ -191,7 +191,7 @@ describe("buildBatchSummaryMessage", () => {
     expect(msg).toContain("สรุปสลิปเงินโอน");
     expect(msg).toContain("ส่งสลิปมาทั้งหมด: 3 รูป");
     expect(msg).toContain("อ่านยอดได้: 2 รูป");
-    expect(msg).toContain("มีรูปที่ต้องตรวจทาน: 1 รูป");
+    expect(msg).toContain("มีรูปที่ต้องตรวจทาน: 3 รูป (อาจซ้ำกับรูปที่อ่านยอดได้)");
     expect(msg).toContain("1,500");
     expect(msg).toContain("รูปที่ 2: อ่านวันที่โอนเงินไม่ชัด");
   });
@@ -212,9 +212,9 @@ describe("buildBatchSummaryMessage", () => {
 
   it("all successful — no review section", () => {
     const msg = buildBatchSummaryMessage([
-      { id: "e1", batchIndex: 1, checkStatus: "EXTRACTED",         slipType: "BANK_SLIP_QR", transferAmount: 300, paidAmount: null, transactionTime: null, failureReason: null },
-      { id: "e2", batchIndex: 2, checkStatus: "PARTIAL_EXTRACTED", slipType: "BANK_SLIP_QR", transferAmount: 200, paidAmount: null, transactionTime: null, failureReason: null },
-    ]);
+      { id: "e1", batchIndex: 1, checkStatus: "EXTRACTED",         slipType: "BANK_SLIP_QR", transferAmount: 300, paidAmount: null, transactionTime: "2026-10-30T08:41:00.000Z", failureReason: null },
+      { id: "e2", batchIndex: 2, checkStatus: "PARTIAL_EXTRACTED", slipType: "BANK_SLIP_QR", transferAmount: 200, paidAmount: null, transactionTime: "2026-10-30T08:42:00.000Z", failureReason: null },
+    ], { slipDate: "30/10/2569" });
     expect(msg).toContain("อ่านยอดได้: 2 รูป");
     expect(msg).not.toContain("⚠️ หมายเหตุ");
   });

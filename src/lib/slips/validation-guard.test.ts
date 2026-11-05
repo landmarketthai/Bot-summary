@@ -536,7 +536,7 @@ describe("NEED_REVIEW items remain excluded from trusted total", () => {
     ];
     const msg = buildBatchSummaryMessage(evidences, { slipDate: null });
     expect(msg).toContain("อ่านยอดได้: 1 รูป");   // only the EXTRACTED slip
-    expect(msg).toContain("มีรูปที่ต้องตรวจทาน: 1 รูป"); // the NEED_REVIEW slip
+    expect(msg).toContain("มีรูปที่ต้องตรวจทาน: 2 รูป (อาจซ้ำกับรูปที่อ่านยอดได้)"); // includes the undated readable slip
   });
 });
 
@@ -726,20 +726,29 @@ describe("Production batch fixture: n0i — wat takl0m — 10/6/2569", () => {
     expect(status).toBe("review_needed");
   });
 
-  it("summary with Buddhist date shows 2,781.40 trusted total and 1 amount-suspended item", () => {
-    const msg = buildBatchSummaryMessage(productionFixture, { slipDate: BATCH_DATE_BUDDHIST });
-    expect(msg).toContain("อ่านยอดได้: 19 รูป");
-    expect(msg).toContain("มีรูปที่ต้องตรวจทาน: 6 รูป");
-    // Only #9 has an amount flag — date-only and missing-date items do not count
-    expect(msg).toContain("รูปที่ 9 — 50,000 บาท: ยอดเงินสูงผิดปกติ");
-    // Trusted total is 2,781.40
-    expect(msg).toMatch(/2[,.]781/);
-    expect(msg).not.toMatch(/53[,.]553/);
-    expect(msg).not.toMatch(/3[,.]553/);
-    // Review section shows both reasons for #9
-    expect(msg).toContain("ยอดเงินสูงผิดปกติ");
-    expect(msg).toContain("วันที่รายการไม่ตรงกับรอบ");
-    // #11 flagged for missing date
-    expect(msg).toContain("ไม่พบวันที่รายการ");
+});
+
+describe("synthetic summary amount and date guards", () => {
+  it("counts an undated readable amount while keeping outliers and known date mismatches excluded", () => {
+    const evidences = [
+      ...Array.from({ length: 5 }, (_, i) => ({
+        id: `synthetic-${i + 1}`, batchIndex: i + 1, failureReason: null,
+        ...makeExtractedWithTime(100, "2026-10-30T08:41:00.000Z"),
+      })),
+      { id: "synthetic-6", batchIndex: 6, failureReason: null, ...makeExtractedWithTime(100, null) },
+      { id: "synthetic-7", batchIndex: 7, failureReason: null, ...makeExtractedWithTime(50_000, "2026-10-20T08:41:00.000Z") },
+      { id: "synthetic-8", batchIndex: 8, failureReason: null, ...makeExtractedWithTime(80, "2026-10-20T08:41:00.000Z") },
+    ];
+    const flags = computeValidationFlags(evidences, "2026-10-30");
+    const msg = buildBatchSummaryMessage(evidences, { slipDate: "30/10/2569" });
+
+    expect(msg).toContain("ยอดรวมที่อ่านได้: 600 บาท");
+    expect(msg).toContain("อ่านยอดได้: 6 รูป");
+    expect(msg).toContain("มีรูปที่ต้องตรวจทาน: 3 รูป (อาจซ้ำกับรูปที่อ่านยอดได้)");
+    expect(msg).toContain("รูปที่ 6 = 100 บาท");
+    expect(msg).toContain("รูปที่ 6 — 100 บาท: รอยืนยันวันที่รายการ อ่านวันที่โอนเงินไม่ชัด");
+    expect(msg).toContain("รูปที่ 7 — 50,000 บาท: ยอดเงินสูงผิดปกติ, วันที่รายการไม่ตรงกับรอบ (ยังไม่รวมยอด)");
+    expect(msg).toContain("รูปที่ 8 — 80 บาท: วันที่รายการไม่ตรงกับรอบ (ยังไม่รวมยอด)");
+    expect(flags.filter((flag) => !flag.flagged)).toHaveLength(5);
   });
 });
