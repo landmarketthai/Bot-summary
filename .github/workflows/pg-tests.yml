@@ -64,6 +64,7 @@ jobs:
           src/lib/slips/batch-finalizer.test.ts
           src/lib/slips/human-slip-summary.test.ts
           src/lib/slips/batch-global-dedupe.test.ts
+          src/lib/line/webhook-slip-cancel.test.ts
           src/lib/line/webhook-slip-session.test.ts
           src/lib/line/webhook-slip-close-v2.test.ts
           src/lib/line/webhook-guided-slip-open.test.ts
