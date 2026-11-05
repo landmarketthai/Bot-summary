@@ -52,6 +52,7 @@ jobs:
           src/lib/slips/cron-cohort-recovery.pg.test.ts
           src/lib/slips/slip-ledger-alert.pg.test.ts
           src/lib/slips/full-rollback-sequence.pg.test.ts
+          src/lib/slips/image-sequence.pg.test.ts
       - name: P0 slip finalizer, retry and webhook regressions
         run: >-
           bun test
@@ -65,6 +66,7 @@ jobs:
           src/lib/slips/batch-finalizer.test.ts
           src/lib/slips/human-slip-summary.test.ts
           src/lib/slips/batch-global-dedupe.test.ts
+          src/lib/slips/image-sequence.test.ts
           src/lib/line/webhook-slip-cancel.test.ts
           src/lib/line/webhook-slip-session.test.ts
           src/lib/line/webhook-slip-close-v2.test.ts

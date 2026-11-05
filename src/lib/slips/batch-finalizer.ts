@@ -10,6 +10,7 @@ import {
   resolveGloballyAcceptedCheckIds,
 } from "@/lib/slips/transaction-dedupe";
 import type { SlipImageAccounting } from "@/lib/slips/image-ingestion";
+import { loadImageSequence, type ImageSequence, type MissingImage } from "@/lib/slips/image-sequence";
 import { DEFAULT_INGEST_MAX_SECONDS, SLIP_INGEST_POLICY } from "@/lib/slips/ingest-policy";
 import {
   computeValidationFlags,
@@ -116,7 +117,16 @@ export type FinalizeResult =
 export interface EvidenceWithCheck {
   id:              string;
   checkId?:         string | null;
+  lineMessageId?:  string | null;
+  /** Attach-completion counter; NOT the LINE send order. */
   batchIndex:      number | null;
+  /**
+   * Position in LINE send order (image-sequence.ts); null when the ledger has
+   * no verified place for it. Undefined = no ledger, #N falls back to batchIndex.
+   */
+  sequence?:       number | null;
+  /** False when LINE's own data does not confirm `sequence` (printed "#N?"). */
+  sequenceVerified?: boolean;
   checkStatus:     SlipCheckStatus | null;
   slipType:        SlipType | null;
   transferAmount:  number | null;
@@ -631,7 +641,7 @@ export async function finalizeSlipBatch(
       loadBatchRow(supabase, batchId),
       loadBatchEvidences(supabase, batchId),
     ]);
-    const evidences = await applyGlobalDuplicateExclusions(supabase, loadedEvidences);
+    let evidences = await applyGlobalDuplicateExclusions(supabase, loadedEvidences);
 
     // Idempotency guard: if summary_sent_at is already set, another worker
     // (or a previous retry) already delivered the summary — skip silently.
@@ -646,6 +656,24 @@ export async function finalizeSlipBatch(
     // and the batch stays in processing for the next recovery sweep.
     const imageAccounting = await loadImageAccounting(supabase, batchId, batchRow);
 
+    // #N must be the LINE send position, and the validation guard (first
+    // occurrence of a duplicate stays trusted) must see images in that order.
+    let sequence: ImageSequence | null = null;
+    if (imageAccounting) {
+      try {
+        sequence = await loadImageSequence(
+          supabase,
+          batchId,
+          new Set(evidences.flatMap((e) => (e.lineMessageId ? [e.lineMessageId] : []))),
+        );
+      } catch (thrown) {
+        throw new SlipAccountingUnavailableError(
+          `slip image sequence unavailable: ${thrown instanceof Error ? thrown.message : String(thrown)}`,
+        );
+      }
+      evidences = orderByLineSequence(evidences, sequence);
+    }
+
     log.info("finalizing active slip batch", {
       evidenceCount: evidences.length,
       isTimeoutForced,
@@ -655,9 +683,14 @@ export async function finalizeSlipBatch(
     if (evidences.length === 0) {
       log.warn("finalizeSlipBatch: no evidences — marking failed");
       const lostNotice = buildImageAccountingNotice(imageAccounting);
+      // Every received image failed: still list each one at its #N, so the
+      // failure is auditable image by image, not just as a count.
+      const lostLines: string[] = [];
+      if (sequence?.uncertain) appendSequenceNote(lostLines, true);
+      appendIncompleteLines(lostLines, "รูปที่ยังไม่เข้าระบบ:", [], sequence?.missing ?? []);
       await sendMessage(
         lostNotice
-          ? `สรุปชุดสลิป: รับรูปจาก LINE แต่บันทึกเข้าชุดไม่สำเร็จ\n\n${lostNotice}`
+          ? `สรุปชุดสลิป: รับรูปจาก LINE แต่บันทึกเข้าชุดไม่สำเร็จ\n\n${lostNotice}${lostLines.length ? `\n${lostLines.join("\n")}` : ""}`
           : "ยังไม่มีรูปในชุดสลิปนี้",
       );
       messageSent = true;
@@ -681,6 +714,8 @@ export async function finalizeSlipBatch(
       title,
       isTimeout: isTimeoutForced,
       slipDate,
+      missingImages: sequence?.missing,
+      sequenceUncertain: sequence === null || sequence.uncertain,
     });
     // Images received from LINE but missing from the batch are reported
     // explicitly; the partial total is never presented as the complete amount.
@@ -861,7 +896,7 @@ async function loadBatchEvidences(
 ): Promise<EvidenceWithCheck[]> {
   const { data: evidenceData, error: evidenceError } = await supabase
     .from("slip_evidences")
-    .select("id, batch_index")
+    .select("id, batch_index, line_message_id")
     .eq("batch_id", batchId)
     .order("batch_index", { ascending: true });
 
@@ -902,6 +937,7 @@ async function loadBatchEvidences(
     return {
       id:              ev.id,
       checkId:         check?.id ?? null,
+      lineMessageId:   ev.line_message_id ?? null,
       batchIndex:      ev.batch_index,
       checkStatus:     (check?.status ?? null) as SlipCheckStatus | null,
       slipType:        (check?.slip_type ?? null) as SlipType | null,
@@ -954,6 +990,46 @@ export async function applyGlobalDuplicateExclusions(
   });
 }
 
+/**
+ * Puts evidences in LINE send order and stamps each with its #N. An evidence
+ * the ledger cannot place gets sequence null (rendered "#?"), never a guess.
+ */
+export function orderByLineSequence(
+  evidences: readonly EvidenceWithCheck[],
+  sequence: ImageSequence,
+): EvidenceWithCheck[] {
+  return evidences
+    .map((e) => ({
+      ...e,
+      sequence: (e.lineMessageId && sequence.positions.get(e.lineMessageId)) || null,
+      sequenceVerified: !!e.lineMessageId && sequence.positions.has(e.lineMessageId)
+        && !sequence.unverified.has(e.lineMessageId),
+    }))
+    .sort((a, b) =>
+      (a.sequence ?? Infinity) - (b.sequence ?? Infinity)
+      || (a.batchIndex ?? Infinity) - (b.batchIndex ?? Infinity));
+}
+
+/** "#N" confirmed by LINE data, "#N?" not confirmed, "#?" no position at all. */
+const numberLabel = (no: number | null, verified: boolean): string =>
+  no === null ? "#?" : verified ? `#${no}` : `#${no}?`;
+
+/** #N for an evidence: LINE position when the ledger ordered the batch, else the legacy counter. */
+const displayNumber = (e: EvidenceWithCheck): number | null =>
+  e.sequence === undefined ? e.batchIndex : e.sequence;
+
+/**
+ * `legacyUnverified`: the caller had no ledger order at all, so the legacy
+ * attach counter is not a confirmed LINE position either.
+ */
+const evidenceLabel = (e: EvidenceWithCheck, legacyUnverified: boolean): string =>
+  numberLabel(displayNumber(e), e.sequence === undefined ? !legacyUnverified : e.sequenceVerified !== false);
+
+const MISSING_IMAGE_REASON: Record<string, string> = {
+  failed_permanent:    "รูปเข้าระบบไม่สำเร็จ",
+  late_after_finalize: "รูปมาถึงหลังสรุปชุด",
+};
+
 function buildSessionTitle(batch: SlipBatchRow | null): string | undefined {
   if (!batch) return undefined;
   if (!batch.seller_name && !batch.market_name) return undefined;
@@ -1004,9 +1080,19 @@ function isBankOcrFallback(e: EnrichedEvidence): boolean {
  */
 export function buildBatchSummaryMessage(
   evidences: EvidenceWithCheck[],
-  options?: { title?: string; isTimeout?: boolean; slipDate?: string | null },
+  options?: {
+    title?: string;
+    isTimeout?: boolean;
+    slipDate?: string | null;
+    /** Received images with no evidence in the batch; they keep their #N. */
+    missingImages?: readonly MissingImage[];
+    /** #N could not be verified against LINE order for every image. */
+    sequenceUncertain?: boolean;
+  },
 ): string {
   if (evidences.length === 0) return "";
+  const missing = options?.missingImages ?? [];
+  const uncertain = options?.sequenceUncertain === true;
 
   const batchDate = parseBatchDate(options?.slipDate ?? null);
   const ordinaryFlags = computeValidationFlags(evidences, batchDate);
@@ -1041,14 +1127,16 @@ export function buildBatchSummaryMessage(
     else provisional.push({ ...e, flags: reviewFlags });
   });
 
-  const included = [...countedNormally, ...provisional].sort(
-    (a, b) => (a.batchIndex ?? Number.MAX_SAFE_INTEGER) - (b.batchIndex ?? Number.MAX_SAFE_INTEGER),
-  );
+  // #N is the LINE send position (PR #192), not the attach counter.
+  const byNumber = (a: EvidenceWithCheck, b: EvidenceWithCheck) =>
+    (displayNumber(a) ?? Number.MAX_SAFE_INTEGER) - (displayNumber(b) ?? Number.MAX_SAFE_INTEGER);
+  const imageLabel = (e: EvidenceWithCheck) => "รูปที่ " + evidenceLabel(e, uncertain).slice(1);
+  const included = [...countedNormally, ...provisional].sort(byNumber);
   const includedIds = new Set(included.map((e) => e.id));
   const uncounted = all.filter((e) => !includedIds.has(e.id));
   const amountRead = included.reduce((sum, e) => sum + (e.flags.effectiveAmount ?? 0), 0);
   const roundedTotal = Math.round(amountRead * 100) / 100;
-  const reviewCount = provisional.length + uncounted.length;
+  const reviewCount = provisional.length + uncounted.length + missing.length;
   const pendingCount = all.filter((e) => e.checkStatus === null || e.checkStatus === "PROCESSING").length;
   const failedCount = all.filter((e) => e.checkStatus === "FAILED").length;
 
@@ -1059,53 +1147,102 @@ export function buildBatchSummaryMessage(
     lines.push("วันที่ " + humanBatchDate(batchDate));
   }
   lines.push(
-    "ส่งสลิปมาทั้งหมด: " + evidences.length + " รูป",
+    "ส่งสลิปมาทั้งหมด: " + (evidences.length + missing.length) + " รูป",
     "อ่านยอดได้: " + included.length + " รูป",
   );
-  if (options?.isTimeout && (pendingCount > 0 || failedCount > 0)) {
+  if (options?.isTimeout && (pendingCount > 0 || failedCount > 0 || missing.length > 0)) {
     lines.push("ชุดนี้ยังมีรูปที่ตรวจไม่เสร็จ");
   }
   if (failedCount) lines.push("อ่านไม่สำเร็จ: " + failedCount + " รูป");
   if (pendingCount) lines.push("ยังรอผล: " + pendingCount + " รูป");
+  if (missing.length) lines.push("ยังไม่เข้าระบบ: " + missing.length + " รูป");
   if (reviewCount) lines.push("มีรูปที่ต้องตรวจทาน: " + reviewCount + " รูป");
   if (included.length > 0) lines.push("", "ยอดรวมที่อ่านได้: " + formatBaht(roundedTotal) + " บาท");
   else lines.push("", "ยังรวมยอดไม่ได้ เพราะไม่มีรูปที่อ่านยอดได้ครบ");
 
+  // Above the per-image lists, so no "รูปที่ N?" is read as a confirmed position.
+  appendSequenceNote(lines, uncertain);
+
   if (included.length > 0) {
     lines.push("", "รายละเอียดเงินโอน");
     for (const e of included) {
-      lines.push("รูปที่ " + (e.batchIndex ?? "?") + " = " + formatBaht(e.flags.effectiveAmount!) + " บาท");
+      lines.push(imageLabel(e) + " = " + formatBaht(e.flags.effectiveAmount!) + " บาท");
     }
   }
 
   if (reviewCount > 0) {
     lines.push("", "⚠️ หมายเหตุ");
-    for (const e of [...provisional, ...uncounted].sort(
-      (a, b) => (a.batchIndex ?? Number.MAX_SAFE_INTEGER) - (b.batchIndex ?? Number.MAX_SAFE_INTEGER),
-    )) {
-      const image = "รูปที่ " + (e.batchIndex ?? "?");
+    const notes: Array<{ no: number | null; text: string }> = [];
+    for (const e of [...provisional, ...uncounted]) {
+      const image = imageLabel(e);
       const amount = e.flags.effectiveAmount;
       if (includedIds.has(e.id)) {
         // OCR amount already included; explicit instruction prevents double-add.
         const missingRef = !e.referenceId ? " เลขอ้างอิงยังไม่ชัด" : "";
-        lines.push(image + " — " + formatBaht(amount!) +
-          " บาท: ยังตรวจสอบเงินเข้าไม่ได้" +
-          missingRef + " (รวมยอดแล้ว)");
+        notes.push({ no: displayNumber(e), text: image + " — " + formatBaht(amount!) +
+          " บาท: ยังตรวจสอบเงินเข้าไม่ได้" + missingRef + " (รวมยอดแล้ว)" });
       } else {
         const reason = rejectedOcrReasons.get(e.id) ?? (
           e.flags.flagged && e.flags.flagReasons.length > 0
             ? e.flags.flagReasons.join(", ")
             : describeReviewReason(e)
         );
-        lines.push(image + (amount !== null ? " — " + formatBaht(amount) + " บาท" : "") +
-          ": " + reason + " (ยังไม่รวมยอด)");
+        notes.push({ no: displayNumber(e), text: image + (amount !== null ? " — " + formatBaht(amount) + " บาท" : "") +
+          ": " + reason + " (ยังไม่รวมยอด)" });
       }
     }
+    // Received images with no evidence keep their #N (PR #192).
+    for (const m of missing) {
+      notes.push({ no: m.sequence, text: "รูปที่ " + numberLabel(m.sequence, m.verified).slice(1) + ": " +
+        (MISSING_IMAGE_REASON[m.state] ?? "รูปยังไม่เข้าระบบ") + " (ยังไม่รวมยอด)" });
+    }
+    notes.sort((a, b) => (a.no ?? Number.MAX_SAFE_INTEGER) - (b.no ?? Number.MAX_SAFE_INTEGER));
+    for (const note of notes) lines.push(note.text);
     if (provisional.length > 0) {
       lines.push("อ่านยอดและวันที่ได้แล้ว แต่ต้องตรวจว่าเงินเข้าบัญชีจริงหรือไม่ ยอดที่เขียนว่า “รวมยอดแล้ว” อยู่ในยอดรวมด้านบน ไม่ต้องบวกเพิ่ม");
     }
   }
   return lines.join("\n");
+}
+
+/** One line per image needing review, in #N order; missing images keep their number. */
+function appendIncompleteLines(
+  lines: string[],
+  header: string,
+  incomplete: EnrichedEvidence[],
+  missing: readonly MissingImage[],
+  legacyUnverified = false,
+): void {
+  const items = [
+    ...incomplete.map((e) => ({
+      no: displayNumber(e), label: evidenceLabel(e, legacyUnverified), text: describeIncompleteReason(e),
+    })),
+    ...missing.map((m) => ({
+      no: m.sequence, label: numberLabel(m.sequence, m.verified),
+      text: MISSING_IMAGE_REASON[m.state] ?? "รูปยังไม่เข้าระบบ",
+    })),
+  ].sort((a, b) => (a.no ?? Infinity) - (b.no ?? Infinity));
+  if (items.length === 0) return;
+  lines.push("");
+  lines.push(header);
+  for (const item of items) lines.push(`${item.label} ${item.text}`);
+}
+
+/** Shown ABOVE the per-image lists so no "#N?" is read as a confirmed position. */
+export const SEQUENCE_UNVERIFIED_NOTE =
+  "⚠️ เลขที่มี ? ยืนยันลำดับจาก LINE ไม่ได้ ห้ามใช้อ้างอิงรูปจนกว่าจะเทียบเวลาในแชท";
+
+function appendSequenceNote(lines: string[], uncertain: boolean | undefined): void {
+  if (!uncertain) return;
+  lines.push("");
+  lines.push(SEQUENCE_UNVERIFIED_NOTE);
+}
+
+function describeIncompleteReason(e: EnrichedEvidence): string {
+  if (e.flags.flagged && e.flags.flagReasons.length > 0) {
+    return e.flags.flagReasons.join(", ");
+  }
+  return describeReviewReason(e);
 }
 
 function describeReviewReason(e: EvidenceWithCheck): string {
