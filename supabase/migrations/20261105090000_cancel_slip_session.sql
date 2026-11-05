@@ -14,17 +14,26 @@ ALTER TABLE public.slip_batches
 -- extracted check from that cancelled batch become financially verified again.
 CREATE OR REPLACE FUNCTION public.guard_cancelled_slip_check()
 RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $fn$
+DECLARE
+  v_batch_status text;
 BEGIN
-  IF NEW.status IN ('EXTRACTED', 'PARTIAL_EXTRACTED') AND EXISTS (
-    SELECT 1 FROM public.slip_evidences ev
-    JOIN public.slip_batches b ON b.id = ev.batch_id
-    WHERE ev.id = NEW.evidence_id AND b.status = 'cancelled'
-  ) THEN
-    NEW.extracted_json := jsonb_set(
-      COALESCE(NEW.extracted_json, '{}'::jsonb),
-      '{cancelled_batch_original_status}', to_jsonb(NEW.status), true
-    );
-    NEW.status := 'NEED_REVIEW';
+  IF NEW.status IN ('EXTRACTED', 'PARTIAL_EXTRACTED') THEN
+    -- Hold a share lock through this OCR write. Cancellation updates the
+    -- same batch row, so it must either wait then de-verify this write, or
+    -- commit first so this trigger sees 'cancelled'. No stale snapshot gap.
+    SELECT b.status INTO v_batch_status
+      FROM public.slip_evidences ev
+      JOIN public.slip_batches b ON b.id = ev.batch_id
+     WHERE ev.id = NEW.evidence_id
+     FOR SHARE OF b NOWAIT;
+
+    IF v_batch_status = 'cancelled' THEN
+      NEW.extracted_json := jsonb_set(
+        COALESCE(NEW.extracted_json, '{}'::jsonb),
+        '{cancelled_batch_original_status}', to_jsonb(NEW.status), true
+      );
+      NEW.status := 'NEED_REVIEW';
+    END IF;
   END IF;
   RETURN NEW;
 END;
