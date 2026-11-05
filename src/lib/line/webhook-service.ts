@@ -136,6 +136,7 @@ import {
   SlipSessionService,
   parseSlipSessionHeader,
   isSlipCloseCommand,
+  isSlipCancelCommand,
   type SlipSessionIngestor,
   type SlipSessionHeader,
 } from "@/lib/slips/slip-session-service";
@@ -279,7 +280,7 @@ type BotSummaryAnalystSourceAllowed = (sourceId: string) => boolean;
 const BATCH_FIRST_IMAGE_REPLY = [
   "รับรูปหลักฐานแล้วครับ",
   "ถ้ามีหลายใบ ส่งต่อได้เลย",
-  `พิมพ์ "จบสลิป" เมื่อส่งครบ`,
+  `พิมพ์ "จบสลิป" เมื่อส่งครบ หรือ "ยกเลิกสลิป" หากเปิดหัวผิด`,
 ].join("\n");
 
 const EVIDENCE_FAILED_REPLY = "รับรูปไม่สำเร็จ กรุณาส่งใหม่อีกครั้ง";
@@ -295,7 +296,8 @@ const NO_ACTIVE_BATCH_REPLY = [
 
 const SESSION_ALREADY_OPEN_REPLY = [
   "มีชุดสลิปที่เปิดอยู่แล้ว",
-  `กรุณาพิมพ์ "จบสลิป" ก่อน เพื่อปิดชุดสลิปปัจจุบัน`,
+  `หากเปิดหัวผิด พิมพ์ "ยกเลิกสลิป" แล้วเปิดหัวใหม่`,
+  `หากส่งครบแล้ว พิมพ์ "จบสลิป" เพื่อสรุปยอด`,
 ].join("\n");
 
 const SLIP_CLOSE_ACKNOWLEDGED_REPLY =
@@ -746,7 +748,7 @@ function isGroupRoutableProduceText(
 export function isSlipSessionOrderingEvent(event: LineEvent): boolean {
   if (event.type !== "message" || event.message.type !== "text") return false;
   const { text } = extractGuidedMarker(event.message.text);
-  return isSlipCloseCommand(text) || parseSlipSessionHeader(text) !== null;
+  return isSlipCloseCommand(text) || isSlipCancelCommand(text) || parseSlipSessionHeader(text) !== null;
 }
 
 /**
@@ -1477,6 +1479,9 @@ export class WebhookService {
     }
 
     // ── 3.5. Slip session commands (checked before produce session logic) ─────
+    if (isSlipCancelCommand(text)) {
+      return this.processSlipCancel(msgEvent, eventId, event.type, log);
+    }
     if (isSlipCloseCommand(text)) {
       return this.processSlipClose(msgEvent, eventId, event.type, log);
     }
@@ -4284,7 +4289,7 @@ export class WebhookService {
         `${header.sellerName} — ${header.marketName} — ${dateStr}`,
         "",
         "ส่งรูปสลิปต่อได้เลย",
-        `พิมพ์ "จบสลิป" เมื่อส่งครบ`,
+        `พิมพ์ "จบสลิป" เมื่อส่งครบ หรือ "ยกเลิกสลิป" หากเปิดหัวผิด`,
       ].join("\n");
 
       if (replyToken) await this.replyMessage(replyToken, confirmText);
@@ -4304,6 +4309,68 @@ export class WebhookService {
         }
       }
       return { eventId, eventType, status: "saved", parsed: false, error: errorMessage };
+    }
+  }
+
+  // ── Slip session: cancel ──────────────────────────────────────────────────
+  // A cancellation is not a close: no finalizer or financial summary may run.
+  // Keep the batch and every evidence row for audit. The LINE event timestamp
+  // closes the attribution window so images cannot move into the next batch.
+  private async processSlipCancel(
+    event:     LineMessageEvent,
+    eventId:   string,
+    eventType: string,
+    log:       ChildLogger,
+  ): Promise<WebhookProcessResult> {
+    const sourceId = getSourceId(event.source);
+    const senderId = getUserId(event.source);
+    const replyToken = event.replyToken;
+    try {
+      // Atomic database function protects the close/ingest race AND removes
+      // previously verified cancelled checks from every financial consumer.
+      // The SQL migration is mandatory before application deployment.
+      const { data: outcome, error } = await this.supabase.rpc(
+        "cancel_collecting_slip_batch",
+        {
+          p_source_id: sourceId,
+          p_sender_id: senderId,
+          p_event_ts_ms: Number.isFinite(event.timestamp) ? event.timestamp : null,
+        },
+      );
+      if (error) throw new Error(`slip cancel failed: ${error.message}`);
+      if (outcome === "no_active") {
+        if (replyToken) await this.replyMessage(replyToken,
+          "ไม่มีชุดสลิปที่กำลังเปิดอยู่ให้ยกเลิก สามารถพิมพ์หัวชุดใหม่ได้เลย");
+        return { eventId, eventType, status: "saved", parsed: false };
+      }
+      if (outcome === "not_owner") {
+        if (replyToken) await this.replyMessage(replyToken,
+          "ยกเลิกไม่ได้ กรุณาให้คนที่เปิดชุดสลิปเป็นผู้ยกเลิก");
+        return { eventId, eventType, status: "saved", parsed: false };
+      }
+      if (outcome === "already_closing") {
+        if (replyToken) await this.replyMessage(replyToken,
+          "ชุดสลิปเริ่มสรุปแล้ว จึงยกเลิกไม่ได้ กรุณาแจ้งผู้ดูแลหากเปิดหัวผิด");
+        return { eventId, eventType, status: "saved", parsed: false };
+      }
+      if (outcome !== "cancelled") throw new Error("unrecognized slip cancellation result");
+      log.info("slip batch cancelled", { sourceId });
+      if (replyToken) await this.replyMessage(replyToken,
+        "ยกเลิกชุดสลิปแล้ว ไม่ได้นำชุดนี้ไปสรุปยอด\nสามารถพิมพ์หัวชุดที่ถูกต้องและส่งรูปใหม่ได้เลย");
+      return { eventId, eventType, status: "saved", parsed: false };
+    } catch (error) {
+      log.error("slip cancellation failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      if (replyToken) {
+        try {
+          await this.replyMessage(replyToken,
+            "ยกเลิกสลิปไม่สำเร็จ ระบบยังเก็บชุดเดิมไว้ กรุณาลองอีกครั้ง");
+        } catch (replyError) {
+          log.error("slip cancellation reply failed", { error: String(replyError) });
+        }
+      }
+      return { eventId, eventType, status: "saved", parsed: false };
     }
   }
 

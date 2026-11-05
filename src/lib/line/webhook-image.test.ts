@@ -150,7 +150,7 @@ describe("WebhookService image messages", () => {
     expect(fake.getParseErrorInserts()).toBe(0);
     expect(replies).toEqual([{
       token: "reply-line-message-1",
-      text: "รับรูปหลักฐานแล้วครับ\nถ้ามีหลายใบ ส่งต่อได้เลย\nพิมพ์ \"จบสลิป\" เมื่อส่งครบ",
+      text: "รับรูปหลักฐานแล้วครับ\nถ้ามีหลายใบ ส่งต่อได้เลย\nพิมพ์ \"จบสลิป\" เมื่อส่งครบ หรือ \"ยกเลิกสลิป\" หากเปิดหัวผิด",
     }]);
     expect(backgroundTasks).toHaveLength(1);
     expect(processedEvidenceIds).toEqual([]);
