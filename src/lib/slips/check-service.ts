@@ -10,6 +10,7 @@ import {
   type SlipExtractor,
 } from "@/lib/slips/extractor";
 import { buildSlipLineSummary } from "@/lib/slips/line-summary";
+import { EasySlipBankVerifier, EasySlipVerificationError, buildEasySlipBankMessage, isEasySlipEnabledForSource, type BankSlipVerifier } from "@/lib/slips/easyslip-bank";
 import { CascadingSlipExtractor } from "@/lib/slips/cascade-extractor";
 import { findSlipTransactionDuplicate } from "@/lib/slips/transaction-dedupe";
 import { buildSlipTransactionDuplicateWarning } from "@/lib/slips/transaction-duplicate-warning";
@@ -56,6 +57,7 @@ export class SlipCheckService implements SlipCheckProcessor {
     private readonly extractor: SlipExtractor = new CascadingSlipExtractor(),
     private readonly pushMessage: PushMessage = defaultPushMessage,
     private readonly leaseSeconds: number = SLIP_CHECK_LEASE_SECONDS,
+    private readonly bankVerifier: BankSlipVerifier = new EasySlipBankVerifier(),
   ) {}
 
   async processEvidence(evidenceId: string): Promise<void> {
@@ -80,11 +82,37 @@ export class SlipCheckService implements SlipCheckProcessor {
         evidence.storage_path,
       );
       imageSizeBytes = bytes.length;
-      const extraction = await this.extractor.extract({
-        bytes,
-        mimeType: evidence.mime_type ?? "image/jpeg",
-      });
-      const status = determineSlipCheckStatus(extraction);
+      const input = { bytes, mimeType: evidence.mime_type ?? "image/jpeg" };
+      // Explicit opt-in LINE sources only. EasySlip checks QR before AI OCR.
+      // A provider outage/malformed response must not discard an otherwise
+      // readable image. OCR is a transcription fallback, NEVER bank verification.
+      const easySlipEnabled = isEasySlipEnabledForSource(evidence.source_id);
+      let bankResult: Awaited<ReturnType<BankSlipVerifier["verifyImage"]>> | null = null;
+      let fallbackReason: string | null = null;
+      if (easySlipEnabled) {
+        try {
+          bankResult = await this.bankVerifier.verifyImage(input);
+          if (bankResult.kind === "not_found") fallbackReason = "slip_not_found";
+        } catch (error) {
+          fallbackReason = error instanceof EasySlipVerificationError ? error.reason : "provider_error";
+          log.warn("EasySlip verification unavailable; trying unverified OCR", { checkId, reason: fallbackReason });
+        }
+      }
+      const extraction = bankResult?.kind === "verified"
+        ? bankResult.extraction
+        : await this.extractor.extract(input);
+      const isBank = extraction.slipType === "BANK_SLIP_QR" || extraction.slipType === "BANK_SLIP_NO_QR";
+      // No QR match, duplicate, or receiver mismatch must never count as verified money.
+      const manualBankReview = bankResult?.kind === "verified"
+        ? bankResult.isDuplicate || !bankResult.accountMatched
+        : easySlipEnabled && isBank;
+      const status = manualBankReview ? "NEED_REVIEW" : determineSlipCheckStatus(extraction);
+      const providerMeta = bankResult?.kind === "verified"
+        ? { provider: "easyslip", duplicate: bankResult.isDuplicate, receiver_account_matched: bankResult.accountMatched,
+            bank_verified: !manualBankReview }
+        : easySlipEnabled && isBank
+          ? { provider: "easyslip", bank_verified: false, reason: fallbackReason ?? "provider_error" }
+          : null;
 
       const fields = {
         slip_type: extraction.slipType,
@@ -98,7 +126,9 @@ export class SlipCheckService implements SlipCheckProcessor {
         receiver_name: extraction.receiverName,
         receiver_account_tail: extraction.receiverAccountTail,
         confidence: extraction.confidence,
-        extracted_json: extractionToJson(extraction),
+        extracted_json: providerMeta
+          ? { ...(extractionToJson(extraction) as Record<string, unknown>), verification: providerMeta }
+          : extractionToJson(extraction),
       };
 
       if (claimToken !== null) {
@@ -138,7 +168,9 @@ export class SlipCheckService implements SlipCheckProcessor {
         );
         await this.pushSummary(
           evidence.source_id,
-          duplicateWarning ?? buildSlipLineSummary(extraction, status),
+          duplicateWarning ?? (providerMeta && isBank
+            ? buildEasySlipBankMessage(extraction, status, providerMeta)
+            : buildSlipLineSummary(extraction, status)),
           log,
         );
       }
@@ -192,7 +224,9 @@ export class SlipCheckService implements SlipCheckProcessor {
         if (sourceId) {
           await this.pushSummary(
             sourceId,
-            buildSlipLineSummary(emptyExtraction, "FAILED"),
+            error instanceof EasySlipVerificationError
+              ? "🟠 EasySlip ตรวจสอบสลิปไม่ได้ในขณะนี้\nรายการยังไม่ถูกนับเป็นยอดที่ตรวจสอบผ่าน\nโปรดให้ผู้ดูแลตรวจสอบหรือลองส่งใหม่"
+              : buildSlipLineSummary(emptyExtraction, "FAILED"),
             log,
           );
         }
@@ -403,6 +437,7 @@ function safeFailureReason(error: unknown): string {
     return `extractor_http_${error.failureCode}`;
   }
 
+  if (error instanceof EasySlipVerificationError) return `easyslip_${error.reason}`;
   if (!(error instanceof Error)) return "unknown_extraction_failure";
 
   const knownMessages: Record<string, string> = {

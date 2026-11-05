@@ -157,21 +157,21 @@ describe("summary #N, amount and reason come from the same evidence", () => {
 
   test("every #N line carries its own image's amount and reason", () => {
     const text = render(evidences);
-    expect(text).toContain("#1 เช็คได้ 101 บาท");
-    expect(text).toContain("#2 เช็คได้ 102 บาท");
-    expect(text).toContain("#3 ไม่พบวันที่รายการ");
-    expect(text).toContain("#4 วันที่รายการไม่ตรงกับรอบ");
-    expect(text).toContain("#5 เช็คได้ 105 บาท");
-    expect(text).toContain("#6 ไม่พบข้อมูลครบถ้วน");
-    expect(text).toContain("#7 รูปเข้าระบบไม่สำเร็จ");
-    expect(text).toContain("รับทั้งหมด: 7 รูป");
-    expect(text).toContain("อ่านครบ: 3 รูป");
-    expect(text).toContain("รอตรวจมือ: 4 รูป");
+    expect(text).toContain("รูปที่ 1 = 101 บาท");
+    expect(text).toContain("รูปที่ 2 = 102 บาท");
+    expect(text).toContain("รูปที่ 3 — 103 บาท: ไม่พบวันที่รายการ");
+    expect(text).toContain("รูปที่ 4 — 104 บาท: วันที่รายการไม่ตรงกับรอบ");
+    expect(text).toContain("รูปที่ 5 = 105 บาท");
+    expect(text).toContain("รูปที่ 6: อ่านยอดเงินหรือข้อมูลสลิปไม่ครบ");
+    expect(text).toContain("รูปที่ 7: รูปเข้าระบบไม่สำเร็จ");
+    expect(text).toContain("ส่งสลิปมาทั้งหมด: 7 รูป");
+    expect(text).toContain("อ่านยอดได้: 3 รูป");
+    expect(text).toContain("มีรูปที่ต้องตรวจทาน: 4 รูป");
     expect(text).toContain("ยอดรวมที่อ่านได้: 308 บาท");
     expect(text).not.toContain("ยืนยันลำดับจาก LINE ไม่ได้");
     // Review lines are listed in #N order.
-    const review = text.split("รูปที่ต้องตรวจมือ:")[1];
-    expect(review.match(/#\d+/g)).toEqual(["#3", "#4", "#6", "#7"]);
+    const review = text.split("⚠️ หมายเหตุ")[1];
+    expect(review.match(/รูปที่ \d+/g)).toEqual(["รูปที่ 3", "รูปที่ 4", "รูปที่ 6", "รูปที่ 7"]);
   });
 
   test("rendering is identical whatever order the evidences were loaded or attached in", () => {
@@ -187,8 +187,8 @@ describe("summary #N, amount and reason come from the same evidence", () => {
     ];
     const seq = sequenceBatchImages(dupImages, new Set(dup.map((e) => e.lineMessageId!)));
     const text = buildBatchSummaryMessage(orderByLineSequence(dup, seq), { slipDate });
-    expect(text).toContain("#1 เช็คได้ 101 บาท");
-    expect(text).toContain("#2 สลิปซ้ำ");
+    expect(text).toContain("รูปที่ 1 = 101 บาท");
+    expect(text).toContain("รูปที่ 2 — 102 บาท: สลิปซ้ำ");
   });
 
   test("evidence the ledger cannot place is shown as #? with a warning, never a guessed number", () => {
@@ -198,10 +198,10 @@ describe("summary #N, amount and reason come from the same evidence", () => {
       { slipDate, missingImages: seq.missing, sequenceUncertain: seq.uncertain },
     );
     // The unplaced evidence can belong anywhere, so #1 is not confirmed either.
-    expect(text).toContain("#1? เช็คได้ 101 บาท");
-    expect(text).not.toMatch(/^#1 /m);
-    expect(text).toContain("#? เช็คได้ 109 บาท");
-    expect(text.indexOf(SEQUENCE_UNVERIFIED_NOTE)).toBeLessThan(text.indexOf("รูปที่ตรวจผ่าน:"));
+    expect(text).toContain("รูปที่ 1? = 101 บาท");
+    expect(text).not.toMatch(/^รูปที่ 1 /m);
+    expect(text).toContain("รูปที่ ? = 109 บาท");
+    expect(text.indexOf(SEQUENCE_UNVERIFIED_NOTE)).toBeLessThan(text.indexOf("รายละเอียดเงินโอน"));
   });
 
   test("ambiguous positions print #N? (amount unchanged); confirmed ones print plain #N", () => {
@@ -217,11 +217,11 @@ describe("summary #N, amount and reason come from the same evidence", () => {
     const text = buildBatchSummaryMessage(orderByLineSequence(evs, seq), {
       slipDate, missingImages: seq.missing, sequenceUncertain: seq.uncertain,
     });
-    expect(text).toContain("#1 เช็คได้ 101 บาท");
-    expect(text).toContain("#2? เช็คได้ 102 บาท");
-    expect(text).toContain("#3? เช็คได้ 103 บาท");
-    expect(text).toContain("#4? รูปเข้าระบบไม่สำเร็จ");
-    expect(text).toContain("#5? เช็คได้ 105 บาท");
+    expect(text).toContain("รูปที่ 1 = 101 บาท");
+    expect(text).toContain("รูปที่ 2? = 102 บาท");
+    expect(text).toContain("รูปที่ 3? = 103 บาท");
+    expect(text).toContain("รูปที่ 4?: รูปเข้าระบบไม่สำเร็จ");
+    expect(text).toContain("รูปที่ 5? = 105 บาท");
     expect(text).toContain(SEQUENCE_UNVERIFIED_NOTE);
     // Same money as with a fully verified order: only the labels differ.
     expect(text).toContain("ยอดรวมที่อ่านได้: 411 บาท");
@@ -247,8 +247,8 @@ describe("summary #N, amount and reason come from the same evidence", () => {
       );
       const fixed = buildBatchSummaryMessage(orderByLineSequence(batch, seq), { slipDate });
       expect(totalOf(fixed)).toBe(totalOf(legacy));
-      expect(countOf(fixed, "อ่านครบ")).toBe(countOf(legacy, "อ่านครบ"));
-      expect(countOf(fixed, "รอตรวจมือ")).toBe(countOf(legacy, "รอตรวจมือ"));
+      expect(countOf(fixed, "อ่านยอดได้")).toBe(countOf(legacy, "อ่านยอดได้"));
+      expect(countOf(fixed, "มีรูปที่ต้องตรวจทาน")).toBe(countOf(legacy, "มีรูปที่ต้องตรวจทาน"));
       expect(fixed.match(/สลิปซ้ำ/g)?.length ?? 0).toBe(legacy.match(/สลิปซ้ำ/g)?.length ?? 0);
     }
   });

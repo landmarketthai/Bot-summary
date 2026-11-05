@@ -16,7 +16,6 @@ import {
   computeValidationFlags,
   parseBatchDate,
   type EvidenceFlags,
-  type ValidationReason,
 } from "./validation-guard";
 
 /**
@@ -137,6 +136,9 @@ export interface EvidenceWithCheck {
   transactionTime: string | null;
   referenceId?:    string | null;
   globallyDuplicate?: boolean;
+  /** Reason persisted for a bank image read by OCR after EasySlip could not verify it. */
+  ocrFallbackReason?: string | null;
+  bankVerificationIssue?: "duplicate" | "receiver_mismatch" | null;
   failureReason:   string | null;
 }
 
@@ -907,7 +909,7 @@ async function loadBatchEvidences(
 
   const { data: checkData, error: checkError } = await supabase
     .from("slip_checks")
-    .select("id, evidence_id, status, slip_type, gross_amount, discount_amount, transfer_amount, paid_amount, transaction_time, reference_id, failure_reason")
+    .select("id, evidence_id, status, slip_type, gross_amount, discount_amount, transfer_amount, paid_amount, transaction_time, reference_id, failure_reason, extracted_json")
     .in("evidence_id", evidenceIds);
 
   if (checkError) throw new Error(`loadBatchEvidences checks: ${checkError.message}`);
@@ -919,6 +921,19 @@ async function loadBatchEvidences(
 
   return evidenceRows.map((ev) => {
     const check = checkByEvidenceId.get(ev.id);
+    const stored = check?.extracted_json;
+    const verification = stored && typeof stored === "object" && !Array.isArray(stored)
+      ? stored.verification : null;
+    // Only explicitly recorded OCR fallbacks are allowed into the provisional
+    // display total. Mismatch/duplicate bank-verification results never qualify.
+    const isUnverifiedEasySlip = verification && typeof verification === "object" && !Array.isArray(verification)
+      && verification.provider === "easyslip" && verification.bank_verified === false;
+    const ocrFallbackReason = isUnverifiedEasySlip && typeof verification.reason === "string"
+      ? verification.reason : null;
+    const bankVerificationIssue = isUnverifiedEasySlip && verification.duplicate === true
+      ? "duplicate"
+      : isUnverifiedEasySlip && verification.receiver_account_matched === false
+        ? "receiver_mismatch" : null;
     return {
       id:              ev.id,
       checkId:         check?.id ?? null,
@@ -932,6 +947,8 @@ async function loadBatchEvidences(
       paidAmount:      check?.paid_amount ?? null,
       transactionTime: check?.transaction_time ?? null,
       referenceId:     check?.reference_id ?? null,
+      ocrFallbackReason,
+      bankVerificationIssue,
       failureReason:   check?.failure_reason ?? null,
     };
   });
@@ -1020,28 +1037,46 @@ function buildSessionTitle(batch: SlipBatchRow | null): string | undefined {
   return `สรุปชุดสลิปเงินโอน ${parts.join(" — ")}`;
 }
 
-// Reasons that represent amount-level problems (not date-only).
-// Only these count toward "ยอดที่ถูกระงับ"; date-only exclusions are not suspicious amounts.
-const AMOUNT_FLAG_REASONS = new Set<ValidationReason>(["ยอดเงินสูงผิดปกติ", "สลิปซ้ำ", "ข้อมูลไม่ครบ"]);
+// A readable amount is not proof that the bank transfer succeeded.
+// This is DISPLAY-ONLY: the batch's success_count, settlement, reconciliation,
+// and verified bank amounts continue to use the original guarded check status.
+type EnrichedEvidence = EvidenceWithCheck & { flags: EvidenceFlags };
+const OCR_FALLBACK_REASONS = new Set([
+  "slip_not_found", "provider_error", "invalid_response",
+  "invalid_image", "not_configured",
+]);
+
+function formatBaht(value: number): string {
+  return value.toLocaleString("th-TH", { maximumFractionDigits: 2 });
+}
+
+function bangkokDateOf(timestamp: string | null): string | null {
+  if (!timestamp) return null;
+  const ms = Date.parse(timestamp);
+  if (!Number.isFinite(ms)) return null;
+  return new Date(ms + 7 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+function humanBatchDate(iso: string): string {
+  const [year, month, day] = iso.split("-").map(Number);
+  return String(day) + "/" + String(month) + "/" + String(year + 543);
+}
+
+function isBankOcrFallback(e: EnrichedEvidence): boolean {
+  return e.checkStatus === "NEED_REVIEW"
+    && (e.slipType === "BANK_SLIP_QR" || e.slipType === "BANK_SLIP_NO_QR")
+    && OCR_FALLBACK_REASONS.has(e.ocrFallbackReason ?? "")
+    && !e.bankVerificationIssue;
+}
 
 /**
- * Builds the LINE summary message for a finalized batch.
+ * LINE summary for people checking transfers, not developers.
  *
- * Applies two validation guards before computing the trusted total:
- *
- *   Outlier guard — flags an extracted amount when:
- *     • The batch has ≥ 5 valid extracted amounts, AND
- *     • The amount is ≥ 5,000 THB, AND
- *     • The amount is ≥ 10 × the batch median.
- *
- *   Date guard — flags an extracted item when its transaction date
- *     differs from slipDate by more than 1 calendar day (Bangkok time).
- *
- * Flagged items are moved to manual review and excluded from the trusted total.
- * GPT extraction data is never overwritten; the guard operates on display only.
- *
- * When isTimeout=true (max closing timeout reached), shows a detailed
- * per-category breakdown (completed / failed / manual-review / pending).
+ * The displayed amount includes readable OCR-only bank slips when an EasySlip
+ * provider failure prevented verification and amount/date passed review guards.
+ * Such amounts remain NEED_REVIEW in the database; they never become trusted
+ * transfers or affect settlement. Duplicate/receiver-mismatch, invalid dates,
+ * unreadable amounts and guarded outliers are not added.
  */
 export function buildBatchSummaryMessage(
   evidences: EvidenceWithCheck[],
@@ -1057,99 +1092,118 @@ export function buildBatchSummaryMessage(
 ): string {
   if (evidences.length === 0) return "";
   const missing = options?.missingImages ?? [];
-  const total = evidences.length + missing.length;
+  const uncertain = options?.sequenceUncertain === true;
 
-  const flags = computeValidationFlags(evidences, parseBatchDate(options?.slipDate ?? null));
+  const batchDate = parseBatchDate(options?.slipDate ?? null);
+  const ordinaryFlags = computeValidationFlags(evidences, batchDate);
+  const all: EnrichedEvidence[] = evidences.map((e, i) => ({ ...e, flags: ordinaryFlags[i] }));
+  const alreadyChecked = all.filter((e) => isVerifiedSlipCheckStatus(e.checkStatus));
+  const countedNormally = alreadyChecked.filter((e) => !e.flags.flagged);
+  const fallbackCandidates = all.filter(isBankOcrFallback);
 
-  type Enriched = EvidenceWithCheck & { flags: EvidenceFlags };
-  const enriched: Enriched[] = evidences.map((e, i) => ({ ...e, flags: flags[i] }));
+  // Reapply guards to OCR candidates for report inclusion only. Placing every
+  // already-checked slip FIRST gives its bank reference priority over an
+  // unverified OCR image of the same transaction.
+  const guardedWithOcr = computeValidationFlags([
+    ...alreadyChecked,
+    ...fallbackCandidates.map((e) => ({ ...e, checkStatus: "PARTIAL_EXTRACTED" as const })),
+  ], batchDate);
 
-  const trusted    = enriched.filter(
-    (e) => isVerifiedSlipCheckStatus(e.checkStatus) && !e.flags.flagged,
-  );
-  const flagged    = enriched.filter(
-    (e) => isVerifiedSlipCheckStatus(e.checkStatus) && e.flags.flagged,
-  );
-  const failedEvs  = enriched.filter((e) => e.checkStatus === "FAILED");
-  const needReview = enriched.filter((e) => e.checkStatus === "NEED_REVIEW");
-  const pending    = enriched.filter(
-    (e) => e.checkStatus === null || e.checkStatus === "PROCESSING",
-  );
-  // Flagged completed items are treated as manual review.
-  const incomplete = [...failedEvs, ...needReview, ...pending, ...flagged];
+  const provisional: EnrichedEvidence[] = [];
+  const rejectedOcrReasons = new Map<string, string>();
+  fallbackCandidates.forEach((e, i) => {
+    const reviewFlags = guardedWithOcr[alreadyChecked.length + i];
+    const amount = reviewFlags.effectiveAmount;
+    const readDate = bangkokDateOf(e.transactionTime);
+    // OCR-only transfers must match the sales date exactly; the older +/-1 day
+    // tolerance is deliberately not used for unverified money.
+    const reason = amount === null ? "อ่านยอดเงินไม่ชัด"
+      : !batchDate ? "ยังไม่ทราบวันที่ของชุดสลิป"
+      : !readDate ? "อ่านวันที่โอนเงินไม่ชัด"
+      : readDate !== batchDate ? "วันที่โอนเงินไม่ตรงกับวันที่ขาย"
+      : reviewFlags.flagged ? reviewFlags.flagReasons.join(", ")
+      : null;
+    if (reason) rejectedOcrReasons.set(e.id, reason);
+    else provisional.push({ ...e, flags: reviewFlags });
+  });
 
-  const trustedTotal = trusted.reduce(
-    (sum, e) => sum + (e.flags.effectiveAmount ?? 0),
-    0,
-  );
+  // #N is the LINE send position (PR #192), not the attach counter.
+  const byNumber = (a: EvidenceWithCheck, b: EvidenceWithCheck) =>
+    (displayNumber(a) ?? Number.MAX_SAFE_INTEGER) - (displayNumber(b) ?? Number.MAX_SAFE_INTEGER);
+  const imageLabel = (e: EvidenceWithCheck) => "รูปที่ " + evidenceLabel(e, uncertain).slice(1);
+  const included = [...countedNormally, ...provisional].sort(byNumber);
+  const includedIds = new Set(included.map((e) => e.id));
+  const uncounted = all.filter((e) => !includedIds.has(e.id));
+  const amountRead = included.reduce((sum, e) => sum + (e.flags.effectiveAmount ?? 0), 0);
+  const roundedTotal = Math.round(amountRead * 100) / 100;
+  const reviewCount = provisional.length + uncounted.length + missing.length;
+  const pendingCount = all.filter((e) => e.checkStatus === null || e.checkStatus === "PROCESSING").length;
+  const failedCount = all.filter((e) => e.checkStatus === "FAILED").length;
 
-  // ── Timeout forced: detailed breakdown ──────────────────────────────────────
-  if (options?.isTimeout && (pending.length > 0 || failedEvs.length > 0 || missing.length > 0)) {
-    const lines: string[] = [
-      options.title ?? "สรุปรูปหลักฐานรอบนี้ (หมดเวลา)",
-      `รับทั้งหมด: ${total} รูป`,
-      `อ่านครบ: ${trusted.length} รูป`,
-    ];
-    if (failedEvs.length > 0)
-      lines.push(`อ่านไม่สำเร็จ: ${failedEvs.length} รูป`);
-    if ((needReview.length + flagged.length) > 0)
-      lines.push(`รอตรวจมือ: ${needReview.length + flagged.length} รูป`);
-    if (pending.length > 0)
-      lines.push(`รอประมวลผล: ${pending.length} รูป`);
-    if (missing.length > 0)
-      lines.push(`ยังไม่เข้าระบบ: ${missing.length} รูป`);
-    if (trustedTotal > 0) {
-      lines.push(
-        `ยอดรวมที่อ่านได้: ${trustedTotal.toLocaleString("th-TH", { maximumFractionDigits: 2 })} บาท`,
-      );
-    }
-    const amountFlaggedCountTimeout = flagged.filter(
-      (e) => e.flags.flagReasons.some((r) => AMOUNT_FLAG_REASONS.has(r as ValidationReason)),
-    ).length;
-    if (amountFlaggedCountTimeout > 0) {
-      lines.push(`ยอดที่ถูกระงับ: ${amountFlaggedCountTimeout} รายการ`);
-    }
-    appendSequenceNote(lines, options?.sequenceUncertain);
-    appendTrustedEvidenceLines(lines, trusted, options?.sequenceUncertain);
-    appendIncompleteLines(lines, "รูปที่ยังไม่ครบ:", incomplete, missing, options?.sequenceUncertain);
-    return lines.join("\n");
-  }
-
-  // ── Normal (non-timeout) rendering ──────────────────────────────────────────
-  if (trusted.length === 0 && flagged.length === 0) {
-    if (options?.title) {
-      return `${options.title}\n\nรับทั้งหมด: ${total} รูป แต่ระบบอ่านข้อมูลไม่ครบ กรุณาให้แอดมินตรวจมือ`;
-    }
-    return `รับรูปหลักฐานแล้วทั้งหมด ${total} รูป แต่ระบบอ่านข้อมูลไม่ครบ กรุณาให้แอดมินตรวจมือ`;
-  }
-
-  const lines: string[] = [
-    options?.title ?? "สรุปรูปหลักฐานรอบนี้",
-    `รับทั้งหมด: ${total} รูป`,
-    `อ่านครบ: ${trusted.length} รูป`,
-    `รอตรวจมือ: ${incomplete.length + missing.length} รูป`,
+  const lines = [
+    options?.title ?? (options?.isTimeout ? "สรุปสลิปเงินโอน (ยังตรวจไม่ครบ)" : "สรุปสลิปเงินโอน"),
   ];
-
-  if (trustedTotal > 0) {
-    lines.push(
-      `ยอดรวมที่อ่านได้: ${trustedTotal.toLocaleString("th-TH", { maximumFractionDigits: 2 })} บาท`,
-    );
+  if (batchDate && !(options?.title ?? "").includes(humanBatchDate(batchDate))) {
+    lines.push("วันที่ " + humanBatchDate(batchDate));
   }
-  const amountFlaggedCount = flagged.filter(
-    (e) => e.flags.flagReasons.some((r) => AMOUNT_FLAG_REASONS.has(r as ValidationReason)),
-  ).length;
-  if (amountFlaggedCount > 0) {
-    lines.push(`ยอดที่ถูกระงับ: ${amountFlaggedCount} รายการ`);
+  lines.push(
+    "ส่งสลิปมาทั้งหมด: " + (evidences.length + missing.length) + " รูป",
+    "อ่านยอดได้: " + included.length + " รูป",
+  );
+  if (options?.isTimeout && (pendingCount > 0 || failedCount > 0 || missing.length > 0)) {
+    lines.push("ชุดนี้ยังมีรูปที่ตรวจไม่เสร็จ");
+  }
+  if (failedCount) lines.push("อ่านไม่สำเร็จ: " + failedCount + " รูป");
+  if (pendingCount) lines.push("ยังรอผล: " + pendingCount + " รูป");
+  if (missing.length) lines.push("ยังไม่เข้าระบบ: " + missing.length + " รูป");
+  if (reviewCount) lines.push("มีรูปที่ต้องตรวจทาน: " + reviewCount + " รูป");
+  if (included.length > 0) lines.push("", "ยอดรวมที่อ่านได้: " + formatBaht(roundedTotal) + " บาท");
+  else lines.push("", "ยังรวมยอดไม่ได้ เพราะไม่มีรูปที่อ่านยอดได้ครบ");
+
+  // Above the per-image lists, so no "รูปที่ N?" is read as a confirmed position.
+  appendSequenceNote(lines, uncertain);
+
+  if (included.length > 0) {
+    lines.push("", "รายละเอียดเงินโอน");
+    for (const e of included) {
+      lines.push(imageLabel(e) + " = " + formatBaht(e.flags.effectiveAmount!) + " บาท");
+    }
   }
 
-  appendSequenceNote(lines, options?.sequenceUncertain);
-  appendTrustedEvidenceLines(lines, trusted, options?.sequenceUncertain);
-  appendIncompleteLines(lines, "รูปที่ต้องตรวจมือ:", incomplete, missing, options?.sequenceUncertain);
-
+  if (reviewCount > 0) {
+    lines.push("", "⚠️ หมายเหตุ");
+    const notes: Array<{ no: number | null; text: string }> = [];
+    for (const e of [...provisional, ...uncounted]) {
+      const image = imageLabel(e);
+      const amount = e.flags.effectiveAmount;
+      if (includedIds.has(e.id)) {
+        // OCR amount already included; explicit instruction prevents double-add.
+        const missingRef = !e.referenceId ? " เลขอ้างอิงยังไม่ชัด" : "";
+        notes.push({ no: displayNumber(e), text: image + " — " + formatBaht(amount!) +
+          " บาท: ยังตรวจสอบเงินเข้าไม่ได้" + missingRef + " (รวมยอดแล้ว)" });
+      } else {
+        const reason = rejectedOcrReasons.get(e.id) ?? (
+          e.flags.flagged && e.flags.flagReasons.length > 0
+            ? e.flags.flagReasons.join(", ")
+            : describeReviewReason(e)
+        );
+        notes.push({ no: displayNumber(e), text: image + (amount !== null ? " — " + formatBaht(amount) + " บาท" : "") +
+          ": " + reason + " (ยังไม่รวมยอด)" });
+      }
+    }
+    // Received images with no evidence keep their #N (PR #192).
+    for (const m of missing) {
+      notes.push({ no: m.sequence, text: "รูปที่ " + numberLabel(m.sequence, m.verified).slice(1) + ": " +
+        (MISSING_IMAGE_REASON[m.state] ?? "รูปยังไม่เข้าระบบ") + " (ยังไม่รวมยอด)" });
+    }
+    notes.sort((a, b) => (a.no ?? Number.MAX_SAFE_INTEGER) - (b.no ?? Number.MAX_SAFE_INTEGER));
+    for (const note of notes) lines.push(note.text);
+    if (provisional.length > 0) {
+      lines.push("อ่านยอดและวันที่ได้แล้ว แต่ต้องตรวจว่าเงินเข้าบัญชีจริงหรือไม่ ยอดที่เขียนว่า “รวมยอดแล้ว” อยู่ในยอดรวมด้านบน ไม่ต้องบวกเพิ่ม");
+    }
+  }
   return lines.join("\n");
 }
-
-type EnrichedEvidence = EvidenceWithCheck & { flags: EvidenceFlags };
 
 /** One line per image needing review, in #N order; missing images keep their number. */
 function appendIncompleteLines(
@@ -1184,26 +1238,6 @@ function appendSequenceNote(lines: string[], uncertain: boolean | undefined): vo
   lines.push(SEQUENCE_UNVERIFIED_NOTE);
 }
 
-function appendTrustedEvidenceLines(
-  lines: string[],
-  trusted: EnrichedEvidence[],
-  legacyUnverified = false,
-): void {
-  if (trusted.length === 0) return;
-  lines.push("");
-  lines.push("รูปที่ตรวจผ่าน:");
-  for (const e of trusted) {
-    const label  = evidenceLabel(e, legacyUnverified);
-    const amount = e.flags.effectiveAmount;
-    if (amount !== null && amount > 0) {
-      const formatted = amount.toLocaleString("th-TH", { maximumFractionDigits: 2 });
-      lines.push(`${label} เช็คได้ ${formatted} บาท`);
-    } else {
-      lines.push(`${label} เช็คได้`);
-    }
-  }
-}
-
 function describeIncompleteReason(e: EnrichedEvidence): string {
   if (e.flags.flagged && e.flags.flagReasons.length > 0) {
     return e.flags.flagReasons.join(", ");
@@ -1212,6 +1246,8 @@ function describeIncompleteReason(e: EnrichedEvidence): string {
 }
 
 function describeReviewReason(e: EvidenceWithCheck): string {
+  if (e.bankVerificationIssue === "duplicate") return "พบสลิปซ้ำ กรุณาตรวจว่าเคยส่งรูปนี้แล้วหรือไม่";
+  if (e.bankVerificationIssue === "receiver_mismatch") return "บัญชีผู้รับเงินไม่ตรง กรุณาตรวจบัญชีปลายทาง";
   if (e.checkStatus === "PROCESSING") return "รอผลการตรวจสอบ";
   if (e.checkStatus === null)         return "ยังไม่ได้ตรวจสอบ";
   if (e.checkStatus === "FAILED") {
@@ -1220,6 +1256,11 @@ function describeReviewReason(e: EvidenceWithCheck): string {
     if (e.failureReason === "extractor_not_configured") return "ระบบอ่านรูปไม่พร้อม";
     return "อ่านข้อมูลไม่ครบ";
   }
-  if (e.checkStatus === "NEED_REVIEW") return "ไม่พบข้อมูลครบถ้วน";
+  if (e.checkStatus === "NEED_REVIEW") {
+    if (!e.transactionTime) return "อ่านวันที่โอนเงินไม่ชัด";
+    if (e.transferAmount !== null && Number.isFinite(e.transferAmount) && e.transferAmount > 0)
+      return "ยังตรวจข้อมูลการโอนเงินไม่ครบ";
+    return "อ่านยอดเงินหรือข้อมูลสลิปไม่ครบ";
+  }
   return "ยังไม่ได้ตรวจสอบ";
 }

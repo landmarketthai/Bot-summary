@@ -260,7 +260,7 @@ describe.skipIf(!pgAvailable)("full rollback sequence: alert off -> alert down -
     await db.query(`UPDATE slip_batches SET status='closing', closing_at=now() - interval '30 seconds', last_image_at=now() - interval '30 seconds' WHERE id='${batch}'`);
     expect(await finalize()).toBe(1);
     expect(summaries).toHaveLength(before + 1);
-    expect(summaries.at(-1)).toContain("รับทั้งหมด: 3 รูป");
+    expect(summaries.at(-1)).toContain("ส่งสลิปมาทั้งหมด: 3 รูป");
     expect(await finalize()).toBe(0); // no duplicate summary
     expect(summaries).toHaveLength(before + 1);
   }, 120_000);

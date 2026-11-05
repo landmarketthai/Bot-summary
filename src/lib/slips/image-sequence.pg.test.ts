@@ -187,16 +187,16 @@ describe.skipIf(!pgAvailable)("slip summary #N = LINE send order on PostgreSQL 1
     const text = pushes[0];
 
     for (let n = 1; n <= 30; n++) {
-      if (n === 15) expect(text).toContain("#15 รูปเข้าระบบไม่สำเร็จ");
-      else if (n === 20) expect(text).toContain("#20 ไม่พบวันที่รายการ");
-      else if (n === 25) expect(text).toContain("#25 วันที่รายการไม่ตรงกับรอบ");
-      else expect(text).toContain(`#${n} เช็คได้ ${amountOf(n).toLocaleString("th-TH")} บาท`);
+      if (n === 15) expect(text).toContain("รูปที่ 15: รูปเข้าระบบไม่สำเร็จ (ยังไม่รวมยอด)");
+      else if (n === 20) expect(text).toContain(`รูปที่ 20 — ${amountOf(20).toLocaleString("th-TH")} บาท: ไม่พบวันที่รายการ`);
+      else if (n === 25) expect(text).toContain(`รูปที่ 25 — ${amountOf(25).toLocaleString("th-TH")} บาท: วันที่รายการไม่ตรงกับรอบ`);
+      else expect(text).toContain(`รูปที่ ${n} = ${amountOf(n).toLocaleString("th-TH")} บาท`);
     }
-    expect(text.match(/^#\d+ /gm)).toHaveLength(30); // every image listed exactly once
-    expect(text).toContain("รับทั้งหมด: 30 รูป");
-    expect(text).toContain("อ่านครบ: 27 รูป");
-    // Closing exceeded its max wait here, so the timeout layout splits the 3:
-    expect(text).toContain("รอตรวจมือ: 2 รูป");
+    expect(text.match(/^รูปที่ \d+[ :]/gm)).toHaveLength(30); // every image listed exactly once
+    expect(text).toContain("ส่งสลิปมาทั้งหมด: 30 รูป");
+    expect(text).toContain("อ่านยอดได้: 27 รูป");
+    // Closing exceeded its max wait here: 2 slips to review + 1 image never attached.
+    expect(text).toContain("มีรูปที่ต้องตรวจทาน: 3 รูป");
     expect(text).toContain("ยังไม่เข้าระบบ: 1 รูป");
     expect(text).toContain("รับรูปจาก LINE: 30 รูป");
     expect(text).toContain("ยังไม่ครบ: 1 รูป");
@@ -269,8 +269,8 @@ describe.skipIf(!pgAvailable)("slip summary #N = LINE send order on PostgreSQL 1
     const pushes: string[] = [];
     expect(await finalizeNow(pushes)).toBe(1);
     const text = pushes[0];
-    for (const n of [1, 2, 3]) expect(text).toContain(`#${n}? เช็คได้ ${amountOf(n).toLocaleString("th-TH")} บาท`);
-    expect(text).not.toMatch(/^#\d+ /m);
+    for (const n of [1, 2, 3]) expect(text).toContain(`รูปที่ ${n}? = ${amountOf(n).toLocaleString("th-TH")} บาท`);
+    expect(text).not.toMatch(/^รูปที่ \d+ /m);
     expect(text).toContain("ยืนยันลำดับจาก LINE ไม่ได้");
     expect(text).toContain(`ยอดรวมที่อ่านได้: ${(amountOf(1) + amountOf(2) + amountOf(3)).toLocaleString("th-TH")} บาท`);
   }, 120_000);
@@ -303,11 +303,11 @@ describe.skipIf(!pgAvailable)("slip summary #N = LINE send order on PostgreSQL 1
     expect(await finalizeClosingSlipBatches(supa, async (to, text) => { sent.push({ to, text }); }, 10, 120)).toBe(2);
     for (const source of [A, B]) {
       const text = sent.find((s) => s.to === source)!.text;
-      expect(text).toContain("รับทั้งหมด: 5 รูป");
+      expect(text).toContain("ส่งสลิปมาทั้งหมด: 5 รูป");
       for (let n = 1; n <= 5; n++) {
-        expect(text).toContain(`#${n} เช็คได้ ${amountOf(n, source).toLocaleString("th-TH")} บาท`);
+        expect(text).toContain(`รูปที่ ${n} = ${amountOf(n, source).toLocaleString("th-TH")} บาท`);
       }
-      expect(text.match(/^#\d+ /gm)).toHaveLength(5);
+      expect(text.match(/^รูปที่ \d+ = /gm)).toHaveLength(5);
     }
   }, 120_000);
 });
