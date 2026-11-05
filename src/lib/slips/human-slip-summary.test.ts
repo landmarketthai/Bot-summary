@@ -3,7 +3,7 @@ import { buildBatchSummaryMessage, type EvidenceWithCheck } from "./batch-finali
 import { computeValidationFlags, parseBatchDate } from "./validation-guard";
 
 const correctDate = "2026-10-30T08:41:00.000Z"; // 15:41 Bangkok
-const title = "สรุปชุดสลิปเงินโอน จ๋า — ทรัพย์พันธ์ — 30/10/2569";
+const title = "สรุปชุดสลิปเงินโอน ผู้ทดสอบ — ตลาดสังเคราะห์ — 30/10/2569";
 
 function bank(
   image: number,
@@ -12,6 +12,7 @@ function bank(
   options: {
     date?: string | null;
     ref?: string | null;
+    referenceTrusted?: boolean;
     fallback?: string | null;
     issue?: EvidenceWithCheck["bankVerificationIssue"];
   } = {},
@@ -25,6 +26,7 @@ function bank(
     paidAmount: null,
     transactionTime: options.date === undefined ? correctDate : options.date,
     referenceId: options.ref === undefined ? "REF-" + image : options.ref,
+    referenceTrusted: options.referenceTrusted ?? false,
     ocrFallbackReason: options.fallback ?? null,
     bankVerificationIssue: options.issue ?? null,
     failureReason: null,
@@ -47,7 +49,7 @@ describe("human-readable LINE slip summary — amount read versus money verified
     ];
     const before = evidences.map((e) => e.checkStatus);
     const message = summarize(evidences);
-    expect(message).toContain("จ๋า");
+    expect(message).toContain("ผู้ทดสอบ");
     expect(message).toContain("30/10/2569");
     expect(message).toContain("อ่านยอดได้: 6 รูป");
     expect(message).toContain("ยอดรวมที่อ่านได้: 390 บาท");
@@ -68,7 +70,7 @@ describe("human-readable LINE slip summary — amount read versus money verified
 
   it("prefers an already verified slip to the same bank reference in an earlier unverified image", () => {
     const message = summarize([
-      bank(1, 100, "NEED_REVIEW", { fallback: "provider_error", ref: "REF-SAME" }),
+      bank(1, 100, "NEED_REVIEW", { fallback: "provider_error", ref: "REF-SAME", referenceTrusted: true }),
       bank(2, 80, "EXTRACTED", { ref: "REF-SAME" }),
     ]);
     expect(message).toContain("ยอดรวมที่อ่านได้: 80 บาท");
@@ -174,8 +176,8 @@ describe("human-readable LINE slip summary — amount read versus money verified
   it("keeps undated duplicate images excluded, including duplicates of checked and fallback images", () => {
     for (const status of ["EXTRACTED", "NEED_REVIEW"] as const) {
       const images = [
-        bank(1, 50, status, { date: null, ref: "SYNTHETIC-SAME", fallback: "provider_error" }),
-        bank(2, 50, "NEED_REVIEW", { date: null, ref: "SYNTHETIC-SAME", fallback: "provider_error" }),
+        bank(1, 50, status, { date: null, ref: "SYNTHETIC-SAME", fallback: "provider_error", referenceTrusted: true }),
+        bank(2, 50, "NEED_REVIEW", { date: null, ref: "SYNTHETIC-SAME", fallback: "provider_error", referenceTrusted: true }),
         { ...bank(3, 30, status, { date: null, fallback: "provider_error" }), globallyDuplicate: true },
         bank(4, 40, "NEED_REVIEW", { date: null, issue: "duplicate", fallback: "provider_error" }),
         bank(5, 60, "NEED_REVIEW", { date: null, issue: "receiver_mismatch", fallback: "provider_error" }),

@@ -137,7 +137,7 @@ function makeFinalizationDatabase(
       if (table === "slip_checks") {
         return {
           select: (columns: string) => {
-            if (columns.includes("evidence_id")) {
+            if (columns.startsWith("id, evidence_id, status")) {
               return {
                 in: async (_column: string, evidenceIds: string[]) => ({
                   data: checks.filter((row) => evidenceIds.includes(row.evidence_id)),

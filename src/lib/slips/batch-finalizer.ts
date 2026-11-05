@@ -7,8 +7,10 @@ import { tryFinalizeSettlement } from "@/lib/settlement-finalizer";
 import {
   isVerifiedSlipCheckStatus,
   normalizeTransactionId,
-  resolveGloballyAcceptedCheckIds,
+  resolveGloballyAcceptedChecks,
+  VERIFIED_SLIP_CHECK_STATUSES,
 } from "@/lib/slips/transaction-dedupe";
+import { DOWNLOAD_FAILED_SHA256 } from "@/lib/slips/types";
 import type { SlipImageAccounting } from "@/lib/slips/image-ingestion";
 import { DEFAULT_INGEST_MAX_SECONDS, SLIP_INGEST_POLICY } from "@/lib/slips/ingest-policy";
 import {
@@ -126,6 +128,13 @@ export interface EvidenceWithCheck {
   transactionTime: string | null;
   referenceId?:    string | null;
   globallyDuplicate?: boolean;
+  sourceId?: string | null;
+  sha256?: string | null;
+  byteSize?: number | null;
+  evidenceStatus?: string | null;
+  referenceTrusted?: boolean;
+  originalMarketName?: string | null;
+  duplicateScope?: "same_source" | "cross_source" | "unknown";
   /** Reason persisted for a bank image read by OCR after EasySlip could not verify it. */
   ocrFallbackReason?: string | null;
   bankVerificationIssue?: "duplicate" | "receiver_mismatch" | null;
@@ -861,7 +870,7 @@ async function loadBatchEvidences(
 ): Promise<EvidenceWithCheck[]> {
   const { data: evidenceData, error: evidenceError } = await supabase
     .from("slip_evidences")
-    .select("id, batch_index")
+    .select("id, batch_index, source_id, sha256, byte_size, status")
     .eq("batch_id", batchId)
     .order("batch_index", { ascending: true });
 
@@ -901,6 +910,10 @@ async function loadBatchEvidences(
         ? "receiver_mismatch" : null;
     return {
       id:              ev.id,
+      sourceId:        ev.source_id,
+      sha256:          ev.sha256,
+      byteSize:        ev.byte_size,
+      evidenceStatus:  ev.status,
       checkId:         check?.id ?? null,
       batchIndex:      ev.batch_index,
       checkStatus:     (check?.status ?? null) as SlipCheckStatus | null,
@@ -911,6 +924,12 @@ async function loadBatchEvidences(
       paidAmount:      check?.paid_amount ?? null,
       transactionTime: check?.transaction_time ?? null,
       referenceId:     check?.reference_id ?? null,
+      // OCR confidence is not proof of a correctly decoded bank reference.
+      referenceTrusted: isVerifiedSlipCheckStatus(check?.status)
+        || !!(verification && typeof verification === "object" && !Array.isArray(verification)
+          && verification.provider === "easyslip" && verification.reason == null
+          && typeof verification.duplicate === "boolean"
+          && typeof verification.receiver_account_matched === "boolean"),
       ocrFallbackReason,
       bankVerificationIssue,
       failureReason:   check?.failure_reason ?? null,
@@ -933,25 +952,82 @@ export async function applyGlobalDuplicateExclusions(
       .map((e) => normalizeTransactionId(e.referenceId))
       .filter((reference): reference is string => reference !== null),
   )];
-  if (candidateReferences.length === 0) return evidences.map((e) => ({ ...e }));
-
-  const acceptedCheckIds = await resolveGloballyAcceptedCheckIds(
+  const acceptedChecks = await resolveGloballyAcceptedChecks(
     supabase,
     candidateReferences,
   );
-  if (acceptedCheckIds.size === 0) return evidences.map((e) => ({ ...e }));
+  const result = evidences.map((e) => ({ ...e, globallyDuplicate: false }));
+  const reviewReferences = [...new Set(evidences
+    .filter((e) => e.checkStatus === "NEED_REVIEW" && e.referenceTrusted)
+    .map((e) => normalizeTransactionId(e.referenceId))
+    .filter((ref): ref is string => !!ref && !acceptedChecks.has(ref)))];
+  try {
+    const reviewMatches = await resolveGloballyAcceptedChecks(supabase, reviewReferences, false);
+    for (const [ref, original] of reviewMatches) acceptedChecks.set(ref, original);
+  } catch {
+    // Review-only lookup failure leaves the image unverified, never unique.
+  }
+  for (const e of result) {
+    const original = acceptedChecks.get(normalizeTransactionId(e.referenceId) ?? "");
+    if ((isVerifiedSlipCheckStatus(e.checkStatus) || e.referenceTrusted)
+      && original && e.checkId && original.id !== e.checkId) {
+      e.globallyDuplicate = true;
+      await attachOriginalMarket(supabase, e, original.evidence_id);
+    }
+  }
+  await applyIdenticalImageExclusions(supabase, result);
+  return result;
+}
 
-  return evidences.map((evidence) => {
-    const reference = normalizeTransactionId(evidence.referenceId);
-    return {
-      ...evidence,
-      globallyDuplicate:
-        isVerifiedSlipCheckStatus(evidence.checkStatus)
-        && reference !== null
-        && evidence.checkId != null
-        && !acceptedCheckIds.has(evidence.checkId),
-    };
-  });
+async function applyIdenticalImageExclusions(supabase: Supabase, evidences: EvidenceWithCheck[]) {
+  const candidates = evidences.filter((e) => !e.globallyDuplicate && e.checkStatus === "NEED_REVIEW"
+    && e.evidenceStatus === "RECEIVED" && e.byteSize != null && e.byteSize > 0
+    && typeof e.sha256 === "string" && /^[a-f0-9]{64}$/.test(e.sha256)
+    && e.sha256 !== DOWNLOAD_FAILED_SHA256);
+  if (!candidates.length) return;
+  try {
+    const { data: images, error } = await supabase.from("slip_evidences")
+      .select("id, sha256, byte_size").in("sha256", [...new Set(candidates.map((e) => e.sha256!))])
+      .eq("status", "RECEIVED");
+    // A capped result cannot establish a deterministic original.
+    if (error || !images?.length || images.length >= 1000) return;
+    const { data: checks, error: checkError } = await supabase.from("slip_checks")
+      .select("id, evidence_id").in("evidence_id", images.map((e) => e.id))
+      .in("status", VERIFIED_SLIP_CHECK_STATUSES)
+      .order("created_at", { ascending: true }).order("id", { ascending: true });
+    if (checkError || !checks || checks.length >= 1000) return;
+    const imageById = new Map(images.map((e) => [e.id, e]));
+    for (const e of candidates) {
+      const original = checks.find((check) => {
+        const image = imageById.get(check.evidence_id);
+        return image != null && image.sha256 === e.sha256 && image.byte_size === e.byteSize;
+      });
+      if (!original || original.evidence_id === e.id) continue;
+      e.globallyDuplicate = true;
+      await attachOriginalMarket(supabase, e, original.evidence_id);
+    }
+  } catch {
+    // An unavailable hash lookup supplies no duplicate evidence.
+  }
+}
+
+async function attachOriginalMarket(supabase: Supabase, evidence: EvidenceWithCheck, originalId: string) {
+  // Metadata failure must not undo a confirmed match or invent a market/source.
+  evidence.duplicateScope = "unknown";
+  try {
+    const { data: original, error } = await supabase.from("slip_evidences")
+      .select("source_id, batch_id").eq("id", originalId).maybeSingle();
+    if (error || !original) return;
+    if (evidence.sourceId && original.source_id) {
+      evidence.duplicateScope = evidence.sourceId === original.source_id ? "same_source" : "cross_source";
+    }
+    if (!original.batch_id) return;
+    const { data: batch, error: batchError } = await supabase.from("slip_batches")
+      .select("market_name").eq("id", original.batch_id).maybeSingle();
+    if (!batchError) evidence.originalMarketName = batch?.market_name?.trim() || null;
+  } catch {
+    // The alert uses the explicit unknown-market fallback.
+  }
 }
 
 function buildSessionTitle(batch: SlipBatchRow | null): string | undefined {
@@ -1017,14 +1093,15 @@ export function buildBatchSummaryMessage(
   const readableChecked = alreadyChecked.filter((e) =>
     e.flags.flagReasons.every((reason) => UNCLEAR_DATE_REASONS.has(reason)),
   );
-  const fallbackCandidates = all.filter(isBankOcrFallback);
+  const fallbackCandidates = all.filter((e) => isBankOcrFallback(e) && !e.globallyDuplicate);
 
   // Reapply guards to OCR candidates for report inclusion only. Placing every
   // already-checked slip FIRST gives its bank reference priority over an
   // unverified OCR image of the same transaction.
   const guardedWithOcr = computeValidationFlags([
     ...alreadyChecked,
-    ...fallbackCandidates.map((e) => ({ ...e, checkStatus: "PARTIAL_EXTRACTED" as const })),
+    ...fallbackCandidates.map((e) => ({ ...e, checkStatus: "PARTIAL_EXTRACTED" as const,
+      referenceId: e.referenceTrusted ? e.referenceId : null })),
   ], batchDate);
 
   const provisional: EnrichedEvidence[] = [];
@@ -1048,6 +1125,10 @@ export function buildBatchSummaryMessage(
   );
   const includedIds = new Set(included.map((e) => e.id));
   const uncounted = all.filter((e) => !includedIds.has(e.id));
+  const duplicates = uncounted.filter((e) => e.globallyDuplicate || e.bankVerificationIssue === "duplicate"
+    || e.flags.flagReasons.includes("สลิปซ้ำ") || rejectedOcrReasons.get(e.id)?.includes("สลิปซ้ำ"));
+  const duplicateIds = new Set(duplicates.map((e) => e.id));
+  const reviewUncounted = uncounted.filter((e) => !duplicateIds.has(e.id));
   const amountRead = included.reduce((sum, e) => sum + (e.flags.effectiveAmount ?? 0), 0);
   const roundedTotal = Math.round(amountRead * 100) / 100;
   const includedForReview = included.filter((e) =>
@@ -1083,9 +1164,23 @@ export function buildBatchSummaryMessage(
     }
   }
 
-  if (reviewCount > 0) {
+  if (duplicates.length > 0) {
+    lines.push("", "🚨🟥 พบสลิปซ้ำ — ไม่รวมยอดซ้ำ 🟥🚨");
+    for (const e of duplicates) {
+      const scope = e.duplicateScope === "same_source" ? "กลุ่มเดิม"
+        : e.duplicateScope === "cross_source" ? "ข้ามกลุ่ม/ตลาด" : "ยังไม่ทราบกลุ่มต้นทาง";
+      const amount = e.flags.effectiveAmount;
+      lines.push("รูปที่ " + (e.batchIndex ?? "?") + (amount !== null ? " — " + formatBaht(amount) + " บาท" : " — อ่านยอดเงินไม่ชัด")
+        + ": สลิปซ้ำ (" + scope + ") ตลาดต้นทาง: " + (e.originalMarketName?.trim() || "ไม่ทราบตลาดต้นทาง") + " (ยังไม่รวมยอด)");
+    }
+  }
+
+  if (includedForReview.length + reviewUncounted.length > 0) {
     lines.push("", "⚠️ หมายเหตุ");
-    for (const e of [...includedForReview, ...uncounted].sort(
+    if (all.some((e) => e.checkStatus === "NEED_REVIEW" && !duplicateIds.has(e.id))) {
+      lines.push("รูปที่ยังไม่ยืนยัน: ยังตรวจสอบสลิปซ้ำข้ามตลาดไม่ได้ กรุณาตรวจทาน");
+    }
+    for (const e of [...includedForReview, ...reviewUncounted].sort(
       (a, b) => (a.batchIndex ?? Number.MAX_SAFE_INTEGER) - (b.batchIndex ?? Number.MAX_SAFE_INTEGER),
     )) {
       const image = "รูปที่ " + (e.batchIndex ?? "?");
