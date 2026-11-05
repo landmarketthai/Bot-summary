@@ -29,6 +29,8 @@ BEGIN
   RETURN NEW;
 END;
 $fn$;
+REVOKE ALL ON FUNCTION public.guard_cancelled_slip_check() FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.guard_cancelled_slip_check() TO service_role;
 DROP TRIGGER IF EXISTS trg_guard_cancelled_slip_check ON public.slip_checks;
 CREATE TRIGGER trg_guard_cancelled_slip_check
   BEFORE INSERT OR UPDATE ON public.slip_checks
@@ -75,5 +77,5 @@ BEGIN
 END;
 $fn$;
 
-REVOKE ALL ON FUNCTION public.cancel_collecting_slip_batch(text, text, bigint) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.cancel_collecting_slip_batch(text, text, bigint) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.cancel_collecting_slip_batch(text, text, bigint) TO service_role;
