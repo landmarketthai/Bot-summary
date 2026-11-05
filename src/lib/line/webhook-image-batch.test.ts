@@ -108,7 +108,7 @@ describe("WebhookService batch slip flow", () => {
 
     expect(replies).toHaveLength(1);
     expect(replies[0]).toBe(
-      `รับรูปหลักฐานแล้วครับ\nถ้ามีหลายใบ ส่งต่อได้เลย\nพิมพ์ "จบสลิป" เมื่อส่งครบ`,
+      `รับรูปหลักฐานแล้วครับ\nถ้ามีหลายใบ ส่งต่อได้เลย\nพิมพ์ "จบสลิป" เมื่อส่งครบ หรือ "ยกเลิกสลิป" หากเปิดหัวผิด`,
     );
     expect(ingestCalls.count).toBe(1);
     expect(attachCalls).toEqual([{ batchId: "batch-1", evidenceId: "ev-1" }]);
