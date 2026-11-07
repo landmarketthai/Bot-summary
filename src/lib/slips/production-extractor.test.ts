@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { logger } from "@/lib/logger";
+import { GeminiSlipExtractor } from "./gemini-extractor";
 import { ExtractionHttpError, type SlipExtractor } from "./extractor";
 import type { SlipExtraction } from "./extraction-schema";
 import {
   GeminiFirstSlipExtractor,
+  PRODUCTION_GEMINI_CALL_TIMEOUT_MS,
   SLIP_GEMINI_OCR_ENABLED_ENV,
   createProductionSlipExtractor,
   isGeminiSlipOcrEnabled,
@@ -91,6 +93,18 @@ describe("createProductionSlipExtractor", () => {
     expect(extractor).toBeInstanceOf(GeminiFirstSlipExtractor);
     expect(await extractor.extract(input)).toEqual(geminiRead);
     expect(calls).toEqual(["gemini"]);
+  });
+
+  it("caps production Gemini provider calls to preserve time for legacy fallback", () => {
+    expect(PRODUCTION_GEMINI_CALL_TIMEOUT_MS).toBe(5_000);
+    const extractor = createProductionSlipExtractor(
+      { SLIP_GEMINI_OCR_ENABLED: "true", GEMINI_API_KEY: "local-test-key" },
+      { legacy: () => fake(legacyRead, [], "legacy") },
+    ) as GeminiFirstSlipExtractor;
+    const primary = (extractor as unknown as { primary: GeminiSlipExtractor }).primary;
+    expect(primary).toBeInstanceOf(GeminiSlipExtractor);
+    expect((primary as unknown as { callTimeoutMs: number }).callTimeoutMs).toBe(5_000);
+    expect(primary.model).toBe("gemini-3.5-flash-lite");
   });
 
   it("default construction with empty env does not throw", () => {

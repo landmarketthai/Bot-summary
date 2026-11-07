@@ -5,12 +5,14 @@ import {
   type SlipExtractor,
 } from "@/lib/slips/extractor";
 import { CascadingSlipExtractor } from "@/lib/slips/cascade-extractor";
-import { GeminiSlipExtractor } from "@/lib/slips/gemini-extractor";
+import { DEFAULT_GEMINI_SLIP_MODEL, GeminiSlipExtractor } from "@/lib/slips/gemini-extractor";
 import { logger } from "@/lib/logger";
 
 /** Env kill switch. Only the exact value "true" (trimmed) enables Gemini-first
  * OCR; unset or anything else keeps the legacy OpenAI OCR path. */
 export const SLIP_GEMINI_OCR_ENABLED_ENV = "SLIP_GEMINI_OCR_ENABLED";
+/** Leave enough of the existing 30s OCR redrive job budget for legacy fallback. */
+export const PRODUCTION_GEMINI_CALL_TIMEOUT_MS = 5_000;
 
 type Env = Record<string, string | undefined>;
 
@@ -75,5 +77,13 @@ export function createProductionSlipExtractor(
     });
     return legacy;
   }
-  return new GeminiFirstSlipExtractor(deps.gemini?.() ?? new GeminiSlipExtractor(), legacy);
+  return new GeminiFirstSlipExtractor(
+    deps.gemini?.() ?? new GeminiSlipExtractor(
+      env.GEMINI_API_KEY,
+      env.SLIP_GEMINI_MODEL ?? DEFAULT_GEMINI_SLIP_MODEL,
+      fetch,
+      PRODUCTION_GEMINI_CALL_TIMEOUT_MS,
+    ),
+    legacy,
+  );
 }
