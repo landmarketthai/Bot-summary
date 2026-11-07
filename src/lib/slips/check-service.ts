@@ -11,7 +11,9 @@ import {
 } from "@/lib/slips/extractor";
 import { buildSlipLineSummary } from "@/lib/slips/line-summary";
 import { EasySlipBankVerifier, EasySlipVerificationError, buildEasySlipBankMessage, isEasySlipEnabledForSource, type BankSlipVerifier } from "@/lib/slips/easyslip-bank";
-import { CascadingSlipExtractor } from "@/lib/slips/cascade-extractor";
+import { IoTimeoutError } from "@/lib/slips/io-timeout";
+import { createSlipOcrExtractor } from "@/lib/slips/ocr-extractor-factory";
+import { GeminiQuotaUnavailableError } from "@/lib/slips/gemini-rate-limit";
 import { findSlipTransactionDuplicate } from "@/lib/slips/transaction-dedupe";
 import { buildSlipTransactionDuplicateWarning } from "@/lib/slips/transaction-duplicate-warning";
 import type { Database } from "@/types/database";
@@ -54,7 +56,7 @@ export interface SlipCheckProcessor {
 export class SlipCheckService implements SlipCheckProcessor {
   constructor(
     private readonly supabase: Supabase,
-    private readonly extractor: SlipExtractor = new CascadingSlipExtractor(),
+    private readonly extractor: SlipExtractor = createSlipOcrExtractor(supabase),
     private readonly pushMessage: PushMessage = defaultPushMessage,
     private readonly leaseSeconds: number = SLIP_CHECK_LEASE_SECONDS,
     private readonly bankVerifier: BankSlipVerifier = new EasySlipBankVerifier(),
@@ -438,10 +440,14 @@ function safeFailureReason(error: unknown): string {
   }
 
   if (error instanceof EasySlipVerificationError) return `easyslip_${error.reason}`;
+  if (error instanceof GeminiQuotaUnavailableError) return `gemini_quota_${error.reason}`;
+  // Gemini-first OCR cuts a slow OpenAI fallback at the whole-job cap.
+  if (error instanceof IoTimeoutError && error.stage === "ocr_fallback") return "extractor_http_timeout";
   if (!(error instanceof Error)) return "unknown_extraction_failure";
 
   const knownMessages: Record<string, string> = {
     "OPENAI_API_KEY is not configured": "extractor_not_configured",
+    "GEMINI_API_KEY is not configured": "extractor_not_configured",
     "Slip evidence could not be loaded": "evidence_load_failed",
     "Slip evidence is not ready": "evidence_not_ready",
     "Slip check could not be created": "check_create_failed",
@@ -449,6 +455,7 @@ function safeFailureReason(error: unknown): string {
     "Could not save extracted slip fields": "check_update_failed",
     "Image extraction provider returned no structured output": "extractor_empty_output",
     "Image extraction provider returned invalid JSON": "extractor_invalid_output",
+    "Image extraction provider returned invalid extraction schema": "extractor_invalid_output",
     "Extractor returned a non-object result": "extractor_invalid_output",
   };
 
