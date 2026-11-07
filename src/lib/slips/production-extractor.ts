@@ -43,9 +43,25 @@ function safeFailureContext(error: unknown): Record<string, unknown> {
   return { provider: "gemini", reason: SAFE_FAILURE_REASONS[message] ?? "unknown" };
 }
 
+/** Distinguish readable amount from incomplete metadata: dates/refs are not
+ * required for a provisional amount. Never retry ordinary non-slip images. */
+function hasReadableAmount(extraction: SlipExtraction): boolean {
+  const amount = extraction.slipType === "BANK_SLIP_QR" || extraction.slipType === "BANK_SLIP_NO_QR"
+    ? extraction.transferAmount
+    : extraction.slipType === "GWALLET" || extraction.slipType === "THAI_HELP_THAI"
+      ? extraction.headlineTotalAmount ?? extraction.grossAmount
+      : null;
+  return amount !== null && typeof amount === "number" && Number.isFinite(amount) && amount >= 0;
+}
+
+function isRecognizedPayment(extraction: SlipExtraction): boolean {
+  return extraction.slipType === "BANK_SLIP_QR" || extraction.slipType === "BANK_SLIP_NO_QR"
+    || extraction.slipType === "GWALLET" || extraction.slipType === "THAI_HELP_THAI";
+}
+
 /** Gemini primary, legacy OCR fallback. Exactly one result is returned per
- * extract(): the primary is tried once, and on any failure the fallback is
- * called once. Fallback errors propagate unchanged. */
+ * extract(): the primary is tried once, and on provider failure or missing
+ * amount the fallback is called once. Fallback errors propagate unchanged. */
 export class GeminiFirstSlipExtractor implements SlipExtractor {
   constructor(
     private readonly primary: SlipExtractor,
@@ -58,6 +74,12 @@ export class GeminiFirstSlipExtractor implements SlipExtractor {
       result = await this.primary.extract(input);
     } catch (error) {
       logger.warn("slip Gemini OCR failed - using legacy OCR", safeFailureContext(error));
+      return this.fallback.extract(input);
+    }
+    if (isRecognizedPayment(result) && !hasReadableAmount(result)) {
+      logger.warn("slip Gemini OCR missing visible payment amount - using legacy OCR", {
+        provider: "gemini", reason: "missing_amount",
+      });
       return this.fallback.extract(input);
     }
     logger.info("slip OCR extracted", { provider: "gemini" });

@@ -121,6 +121,35 @@ describe("GeminiFirstSlipExtractor", () => {
     expect(calls).toEqual(["gemini"]);
   });
 
+  it("falls back on recognized bank slip with no amount, not just HTTP errors", async () => {
+    const calls: string[] = [];
+    const c = new GeminiFirstSlipExtractor(
+      fake({ ...geminiRead, transferAmount: null }, calls, "gemini"),
+      fake(legacyRead, calls, "legacy"),
+    );
+    expect(await c.extract(input)).toBe(legacyRead);
+    expect(calls).toEqual(["gemini", "legacy"]);
+  });
+
+  it("falls back on wallet with no gross/headline, never substitutes paid/net", async () => {
+    const calls: string[] = [];
+    const wallet = {
+      ...geminiRead, slipType: "GWALLET" as const, transferAmount: null,
+      headlineTotalAmount: null, grossAmount: null, paidAmount: 40,
+    };
+    const c = new GeminiFirstSlipExtractor(fake(wallet, calls, "gemini"), fake(legacyRead, calls, "legacy"));
+    expect(await c.extract(input)).toBe(legacyRead);
+    expect(calls).toEqual(["gemini", "legacy"]);
+  });
+
+  it("does not waste fallback on a non-payment image with no amount", async () => {
+    const calls: string[] = [];
+    const other = { ...geminiRead, slipType: "WHITE_PAPER" as const, transferAmount: null };
+    const c = new GeminiFirstSlipExtractor(fake(other, calls, "gemini"), fake(legacyRead, calls, "legacy"));
+    expect(await c.extract(input)).toBe(other);
+    expect(calls).toEqual(["gemini"]);
+  });
+
   it("falls back once on 429 and returns the legacy result", async () => {
     const calls: string[] = [];
     const err = new ExtractionHttpError(429, "rate_limit", true, `body ${SECRET}`, 10);

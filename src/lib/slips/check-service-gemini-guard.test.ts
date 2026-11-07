@@ -369,13 +369,18 @@ describe("Gemini wallet slip amount semantics through SlipCheckService", () => {
   it("never derives gross from paid + subsidy when no gross/headline is visible", async () => {
     const fake = createFakeSupabase();
     const gemini = realGemini(() => geminiReply({ ...walletBase, headline_total_amount: null, gross_amount: null }));
+    const legacy = countingExtractor(async () => ({
+      ...legacyBank, slipType: "GWALLET", grossAmount: null, headlineTotalAmount: null,
+      paidAmount: 40, discountAmount: 60, transferAmount: null,
+    }));
     const service = new SlipCheckService(fake.client,
-      new GeminiFirstSlipExtractor(gemini.extractor, countingExtractor(async () => legacyBank).extractor),
+      new GeminiFirstSlipExtractor(gemini.extractor, legacy.extractor),
       async () => {}, 300, neverVerifier);
 
     await service.processEvidence("ev-wallet");
 
     const fields = completedFields(fake);
+    expect(legacy.counter.calls).toBe(1);
     expect(fields.gross_amount).toBeNull();
     expect(fields.paid_amount).toBe(40);
     expect(fake.callsOf("complete_slip_check")[0].args.p_status).toBe("PARTIAL_EXTRACTED");
