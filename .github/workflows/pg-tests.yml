@@ -47,6 +47,7 @@ jobs:
           src/lib/slips/incident-baseline.pg.test.ts
           src/lib/slips/finalizer-accounting.pg.test.ts
           src/lib/slips/ocr-claim.pg.test.ts
+          src/lib/slips/gemini-rate-limit.pg.test.ts
           src/lib/slips/image-lease-fencing.pg.test.ts
           src/lib/slips/schema-compat.pg.test.ts
           src/lib/slips/cron-cohort-recovery.pg.test.ts
@@ -59,6 +60,10 @@ jobs:
           src/lib/slips/ingest-policy.test.ts
           src/lib/slips/evidence-service-timeout.test.ts
           src/lib/slips/check-service.test.ts
+          src/lib/slips/check-service-gemini.test.ts
+          src/lib/slips/gemini-extractor.test.ts
+          src/lib/slips/gemini-rate-limit.test.ts
+          src/lib/slips/ocr-extractor-factory.test.ts
           src/lib/slips/easyslip-bank.test.ts
           src/app/api/admin/easyslip-test/handler.test.ts
           src/lib/slips/batch-claim-signature-fallback.test.ts
