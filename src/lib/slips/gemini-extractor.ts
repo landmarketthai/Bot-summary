@@ -14,11 +14,10 @@ import { SLIP_INGEST_POLICY } from "@/lib/slips/ingest-policy";
 import { IoTimeoutError, withTimeout } from "@/lib/slips/io-timeout";
 
 /**
- * Gemini slip OCR adapter. Wired into Production only behind
- * SLIP_GEMINI_OCR_ENABLED via production-extractor.ts; with the flag off the
- * legacy OCR path is unchanged. It sends the same prompt and JSON schema as the
- * OpenAI extractor, and its output goes through the same parseSlipExtraction
- * canonicalization.
+ * Gemini slip OCR adapter: the ONLY Production slip OCR provider, wired behind
+ * SLIP_GEMINI_OCR_ENABLED via production-extractor.ts. With the flag off, or on
+ * any failure here, the OCR job fails closed; there is no OpenAI fallback. Its
+ * output goes through the shared parseSlipExtraction canonicalization.
  *
  * Output is TRANSCRIPTION ONLY: what the image visibly says. It is never bank
  * verification — no amount or reference read here proves a transfer happened.
@@ -31,8 +30,8 @@ const MAX_BACKOFF_MS = 2_000;
 const RETRYABLE_HTTP_STATUSES = new Set([429, 500, 502, 503, 504]);
 // Free-tier quota is 15 RPM / 500 RPD per project and there is no shared
 // cross-instance rate gate, so a 429 is never retried here: it is thrown at once
-// (still retryable=true) so the caller falls back to legacy OCR instead of
-// spending more of the same exhausted quota.
+// (still retryable=true) and the check fails closed instead of spending more of
+// the same exhausted quota.
 const NO_INLINE_RETRY_HTTP_STATUSES = new Set([429]);
 
 class RetryableGeminiOutputError extends Error {}

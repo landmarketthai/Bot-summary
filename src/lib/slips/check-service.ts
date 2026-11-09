@@ -11,7 +11,11 @@ import {
 } from "@/lib/slips/extractor";
 import { buildSlipLineSummary } from "@/lib/slips/line-summary";
 import { EasySlipBankVerifier, EasySlipVerificationError, buildEasySlipBankMessage, isEasySlipEnabledForSource, type BankSlipVerifier } from "@/lib/slips/easyslip-bank";
-import { createProductionSlipExtractor } from "@/lib/slips/production-extractor";
+import {
+  createProductionSlipExtractor,
+  SLIP_OCR_DISABLED_MESSAGE,
+  SLIP_OCR_NOT_CONFIGURED_MESSAGE,
+} from "@/lib/slips/production-extractor";
 import { findSlipTransactionDuplicate } from "@/lib/slips/transaction-dedupe";
 import { buildSlipTransactionDuplicateWarning } from "@/lib/slips/transaction-duplicate-warning";
 import type { Database } from "@/types/database";
@@ -441,7 +445,8 @@ function safeFailureReason(error: unknown): string {
   if (!(error instanceof Error)) return "unknown_extraction_failure";
 
   const knownMessages: Record<string, string> = {
-    "OPENAI_API_KEY is not configured": "extractor_not_configured",
+    [SLIP_OCR_NOT_CONFIGURED_MESSAGE]: "extractor_not_configured",
+    [SLIP_OCR_DISABLED_MESSAGE]: "extractor_disabled",
     "Slip evidence could not be loaded": "evidence_load_failed",
     "Slip evidence is not ready": "evidence_not_ready",
     "Slip check could not be created": "check_create_failed",
@@ -449,6 +454,7 @@ function safeFailureReason(error: unknown): string {
     "Could not save extracted slip fields": "check_update_failed",
     "Image extraction provider returned no structured output": "extractor_empty_output",
     "Image extraction provider returned invalid JSON": "extractor_invalid_output",
+    "Image extraction provider returned invalid extraction schema": "extractor_invalid_output",
     "Extractor returned a non-object result": "extractor_invalid_output",
   };
 

@@ -1116,7 +1116,9 @@ function describeReviewReason(e: EvidenceWithCheck): string {
   if (e.checkStatus === "FAILED") {
     if (e.failureReason === "evidence_load_failed")     return "โหลดรูปไม่สำเร็จ";
     if (e.failureReason === "evidence_download_failed") return "ดาวน์โหลดรูปไม่สำเร็จ";
-    if (e.failureReason === "extractor_not_configured") return "ระบบอ่านรูปไม่พร้อม";
+    if (e.failureReason === "extractor_not_configured" || e.failureReason === "extractor_disabled")
+      return "ระบบอ่านรูปไม่พร้อม กรุณาแจ้งผู้ดูแล";
+    if (e.failureReason === "extractor_http_rate_limit") return "ระบบอ่านรูปใช้งานเต็มชั่วคราว กรุณาส่งรูปใหม่ภายหลัง";
     return "อ่านข้อมูลไม่ครบ";
   }
   if (e.checkStatus === "NEED_REVIEW") {

@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
 import { logger } from "@/lib/logger";
 import { GeminiSlipExtractor } from "./gemini-extractor";
-import { ExtractionHttpError, type SlipExtractor } from "./extractor";
+import type { SlipExtractor } from "./extractor";
 import type { SlipExtraction } from "./extraction-schema";
 import {
-  GeminiFirstSlipExtractor,
   PRODUCTION_GEMINI_CALL_TIMEOUT_MS,
   SLIP_GEMINI_OCR_ENABLED_ENV,
+  SLIP_OCR_DISABLED_MESSAGE,
+  SLIP_OCR_NOT_CONFIGURED_MESSAGE,
   createProductionSlipExtractor,
   isGeminiSlipOcrEnabled,
 } from "./production-extractor";
@@ -18,13 +20,7 @@ const geminiRead: SlipExtraction = {
   senderName: "sender", receiverName: "receiver", receiverAccountTail: "1234",
   paymentChannelText: null, headlineTotalAmount: null, confidence: 0.95,
 };
-const legacyRead: SlipExtraction = { ...geminiRead, referenceId: "ref-legacy", transferAmount: 300 };
-
-function fake(result: SlipExtraction | Error, calls: string[], name: string): SlipExtractor {
-  return { async extract() { calls.push(name); if (result instanceof Error) throw result; return result; } };
-}
-
-const SECRET = "sk-secret-AIzaFAKEKEY123";
+const SECRET = "AIzaFAKEKEY123-secret";
 
 type LogCall = { level: string; msg: string; ctx?: Record<string, unknown> };
 let logs: LogCall[] = [];
@@ -55,56 +51,64 @@ describe("isGeminiSlipOcrEnabled", () => {
   });
 });
 
-describe("createProductionSlipExtractor", () => {
-  it("flag off returns legacy and never constructs Gemini", async () => {
-    const calls: string[] = [];
-    let geminiBuilt = 0;
-    const legacy = fake(legacyRead, calls, "legacy");
-    const extractor = createProductionSlipExtractor({ GEMINI_API_KEY: "k" }, {
-      gemini: () => { geminiBuilt++; return fake(geminiRead, calls, "gemini"); },
-      legacy: () => legacy,
-    });
-    expect(extractor).toBe(legacy);
-    expect(geminiBuilt).toBe(0);
-    expect((await extractor.extract(input)).referenceId).toBe("ref-legacy");
-    expect(calls).toEqual(["legacy"]);
+describe("createProductionSlipExtractor (Gemini-only, fail closed)", () => {
+  it("flag off fails closed with an actionable message and never constructs Gemini", async () => {
+    for (const flag of [undefined, "", "TRUE", "1", "false"]) {
+      let geminiBuilt = 0;
+      const extractor = createProductionSlipExtractor(
+        { [SLIP_GEMINI_OCR_ENABLED_ENV]: flag, GEMINI_API_KEY: SECRET },
+        { gemini: () => { geminiBuilt++; return { extract: async () => geminiRead }; } },
+      );
+      await expect(extractor.extract(input)).rejects.toThrow(SLIP_OCR_DISABLED_MESSAGE);
+      expect(geminiBuilt).toBe(0);
+    }
+    expect(SLIP_OCR_DISABLED_MESSAGE).toContain("SLIP_GEMINI_OCR_ENABLED=true");
   });
 
-  it("flag on with missing key returns legacy, warns, never constructs Gemini", () => {
+  it("flag on with missing/blank key fails closed, warns, never constructs Gemini", async () => {
     let geminiBuilt = 0;
-    const legacy = fake(legacyRead, [], "legacy");
     for (const key of [undefined, "", "   "]) {
       const extractor = createProductionSlipExtractor(
         { [SLIP_GEMINI_OCR_ENABLED_ENV]: "true", GEMINI_API_KEY: key },
-        { gemini: () => { geminiBuilt++; return legacy; }, legacy: () => legacy },
+        { gemini: () => { geminiBuilt++; return { extract: async () => geminiRead }; } },
       );
-      expect(extractor).toBe(legacy);
+      await expect(extractor.extract(input)).rejects.toThrow(SLIP_OCR_NOT_CONFIGURED_MESSAGE);
     }
     expect(geminiBuilt).toBe(0);
     expect(logs.filter(l => l.level === "warn")).toHaveLength(3);
   });
 
-  it("flag on with key uses Gemini primary and skips legacy on success", async () => {
-    const calls: string[] = [];
+  it("flag on with key returns the Gemini extractor itself, no wrapper or fallback", async () => {
+    const gemini: SlipExtractor = { extract: async () => geminiRead };
     const extractor = createProductionSlipExtractor(
       { [SLIP_GEMINI_OCR_ENABLED_ENV]: "true", GEMINI_API_KEY: "k" },
-      { gemini: () => fake(geminiRead, calls, "gemini"), legacy: () => fake(legacyRead, calls, "legacy") },
+      { gemini: () => gemini },
     );
-    expect(extractor).toBeInstanceOf(GeminiFirstSlipExtractor);
+    expect(extractor).toBe(gemini);
     expect(await extractor.extract(input)).toEqual(geminiRead);
-    expect(calls).toEqual(["gemini"]);
   });
 
-  it("caps production Gemini provider calls to preserve time for legacy fallback", () => {
-    expect(PRODUCTION_GEMINI_CALL_TIMEOUT_MS).toBe(5_000);
+  it("Gemini errors propagate unchanged (no second provider)", async () => {
+    const err = new Error("gemini down");
     const extractor = createProductionSlipExtractor(
-      { SLIP_GEMINI_OCR_ENABLED: "true", GEMINI_API_KEY: "local-test-key" },
-      { legacy: () => fake(legacyRead, [], "legacy") },
-    ) as GeminiFirstSlipExtractor;
-    const primary = (extractor as unknown as { primary: GeminiSlipExtractor }).primary;
-    expect(primary).toBeInstanceOf(GeminiSlipExtractor);
-    expect((primary as unknown as { callTimeoutMs: number }).callTimeoutMs).toBe(5_000);
-    expect(primary.model).toBe("gemini-3.5-flash-lite");
+      { [SLIP_GEMINI_OCR_ENABLED_ENV]: "true", GEMINI_API_KEY: "k" },
+      { gemini: () => ({ extract: async () => { throw err; } }) },
+    );
+    await expect(extractor.extract(input)).rejects.toBe(err);
+  });
+
+  it("default Gemini is the production model with a call timeout that fits two attempts in the job", () => {
+    expect(PRODUCTION_GEMINI_CALL_TIMEOUT_MS).toBe(10_000);
+    const extractor = createProductionSlipExtractor({ SLIP_GEMINI_OCR_ENABLED: "true", GEMINI_API_KEY: "local-test-key" });
+    expect(extractor).toBeInstanceOf(GeminiSlipExtractor);
+    expect((extractor as unknown as { callTimeoutMs: number }).callTimeoutMs).toBe(10_000);
+    expect((extractor as GeminiSlipExtractor).model).toBe("gemini-3.5-flash-lite");
+  });
+
+  it("disabled/missing-key logs never contain the key", () => {
+    createProductionSlipExtractor({ GEMINI_API_KEY: SECRET });
+    createProductionSlipExtractor({ SLIP_GEMINI_OCR_ENABLED: "true", GEMINI_API_KEY: " " });
+    expect(JSON.stringify(logs)).not.toContain(SECRET);
   });
 
   it("default construction with empty env does not throw", () => {
@@ -112,95 +116,11 @@ describe("createProductionSlipExtractor", () => {
   });
 });
 
-describe("GeminiFirstSlipExtractor", () => {
-  it("returns the primary result as-is with no second call", async () => {
-    const calls: string[] = [];
-    const lowConfidence = { ...geminiRead, confidence: 0.2 };
-    const c = new GeminiFirstSlipExtractor(fake(lowConfidence, calls, "gemini"), fake(legacyRead, calls, "legacy"));
-    expect(await c.extract(input)).toBe(lowConfidence);
-    expect(calls).toEqual(["gemini"]);
-  });
-
-  it("falls back on recognized bank slip with no amount, not just HTTP errors", async () => {
-    const calls: string[] = [];
-    const c = new GeminiFirstSlipExtractor(
-      fake({ ...geminiRead, transferAmount: null }, calls, "gemini"),
-      fake(legacyRead, calls, "legacy"),
-    );
-    expect(await c.extract(input)).toBe(legacyRead);
-    expect(calls).toEqual(["gemini", "legacy"]);
-  });
-
-  it("falls back on wallet with no gross/headline, never substitutes paid/net", async () => {
-    const calls: string[] = [];
-    const wallet = {
-      ...geminiRead, slipType: "GWALLET" as const, transferAmount: null,
-      headlineTotalAmount: null, grossAmount: null, paidAmount: 40,
-    };
-    const c = new GeminiFirstSlipExtractor(fake(wallet, calls, "gemini"), fake(legacyRead, calls, "legacy"));
-    expect(await c.extract(input)).toBe(legacyRead);
-    expect(calls).toEqual(["gemini", "legacy"]);
-  });
-
-  it("does not waste fallback on a non-payment image with no amount", async () => {
-    const calls: string[] = [];
-    const other = { ...geminiRead, slipType: "WHITE_PAPER" as const, transferAmount: null };
-    const c = new GeminiFirstSlipExtractor(fake(other, calls, "gemini"), fake(legacyRead, calls, "legacy"));
-    expect(await c.extract(input)).toBe(other);
-    expect(calls).toEqual(["gemini"]);
-  });
-
-  it("falls back once on 429 and returns the legacy result", async () => {
-    const calls: string[] = [];
-    const err = new ExtractionHttpError(429, "rate_limit", true, `body ${SECRET}`, 10);
-    const c = new GeminiFirstSlipExtractor(fake(err, calls, "gemini"), fake(legacyRead, calls, "legacy"));
-    expect(await c.extract(input)).toBe(legacyRead);
-    expect(calls).toEqual(["gemini", "legacy"]);
-    const warn = logs.find(l => l.level === "warn");
-    expect(warn?.ctx).toEqual({ provider: "gemini", httpStatus: 429, failureCode: "rate_limit", retryable: true });
-  });
-
-  for (const [label, err, reason] of [
-    ["503", new ExtractionHttpError(503, "upstream_error", true, "x", 10), undefined],
-    ["timeout", new ExtractionHttpError(0, "timeout", true, "", 30000), undefined],
-    ["invalid output", new Error("Image extraction provider returned invalid JSON"), "invalid_output"],
-    ["missing key", new Error("GEMINI_API_KEY is not configured"), "not_configured"],
-  ] as const) {
-    it(`falls back exactly once on ${label}`, async () => {
-      const calls: string[] = [];
-      const c = new GeminiFirstSlipExtractor(fake(err, calls, "gemini"), fake(legacyRead, calls, "legacy"));
-      expect(await c.extract(input)).toBe(legacyRead);
-      expect(calls).toEqual(["gemini", "legacy"]);
-      if (reason) expect(logs.find(l => l.level === "warn")?.ctx).toEqual({ provider: "gemini", reason });
-    });
-  }
-
-  it("propagates the fallback error unchanged when both fail", async () => {
-    const calls: string[] = [];
-    const legacyErr = new ExtractionHttpError(500, "upstream_error", true, "x", 10);
-    const c = new GeminiFirstSlipExtractor(
-      fake(new Error("gemini down"), calls, "gemini"),
-      fake(legacyErr, calls, "legacy"),
-    );
-    await expect(c.extract(input)).rejects.toBe(legacyErr);
-    expect(calls).toEqual(["gemini", "legacy"]);
-  });
-
-  it("never logs raw error text that may contain secrets", async () => {
-    const calls: string[] = [];
-    const c = new GeminiFirstSlipExtractor(
-      fake(new Error(`request failed key=${SECRET} provider body {...}`), calls, "gemini"),
-      fake(legacyRead, calls, "legacy"),
-    );
-    await c.extract(input);
-    const http = new GeminiFirstSlipExtractor(
-      fake(new ExtractionHttpError(400, "bad_request", false, `snippet ${SECRET}`, 10), calls, "gemini"),
-      fake(legacyRead, calls, "legacy"),
-    );
-    await http.extract(input);
-    const serialized = JSON.stringify(logs);
-    expect(serialized).not.toContain(SECRET);
-    expect(serialized).not.toContain("sk-secret");
-    expect(logs.find(l => l.level === "warn")?.ctx).toEqual({ provider: "gemini", reason: "unknown" });
+describe("OpenAI is unreachable from production slip OCR", () => {
+  it("no non-test source module imports OpenAiSlipExtractor", () => {
+    const sources = [...new Bun.Glob("src/**/*.{ts,tsx}").scanSync(".")]
+      .filter(f => !/\.test\.tsx?$/.test(f) && !/[\\/]slips[\\/]extractor\.ts$/.test(f));
+    expect(sources.some(f => /[\\/]slips[\\/]check-service\.ts$/.test(f))).toBe(true);
+    expect(sources.filter(f => readFileSync(f, "utf8").includes("OpenAiSlipExtractor"))).toEqual([]);
   });
 });

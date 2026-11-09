@@ -55,6 +55,9 @@ export interface SlipExtractor {
   extract(input: SlipExtractionInput): Promise<SlipExtraction>;
 }
 
+/** NOT used for Production slip OCR (Gemini-only, see production-extractor.ts).
+ * Kept only for existing tests; production-extractor.test.ts fails if any
+ * non-test module imports it. */
 export class OpenAiSlipExtractor implements SlipExtractor {
   constructor(
     private readonly apiKey = process.env.OPENAI_API_KEY,
