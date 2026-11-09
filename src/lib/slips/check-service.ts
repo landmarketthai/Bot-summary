@@ -11,7 +11,7 @@ import {
 } from "@/lib/slips/extractor";
 import { buildSlipLineSummary } from "@/lib/slips/line-summary";
 import { EasySlipBankVerifier, EasySlipVerificationError, buildEasySlipBankMessage, isEasySlipEnabledForSource, type BankSlipVerifier } from "@/lib/slips/easyslip-bank";
-import { CascadingSlipExtractor } from "@/lib/slips/cascade-extractor";
+import { createProductionSlipExtractor } from "@/lib/slips/production-extractor";
 import { findSlipTransactionDuplicate } from "@/lib/slips/transaction-dedupe";
 import { buildSlipTransactionDuplicateWarning } from "@/lib/slips/transaction-duplicate-warning";
 import type { Database } from "@/types/database";
@@ -54,7 +54,7 @@ export interface SlipCheckProcessor {
 export class SlipCheckService implements SlipCheckProcessor {
   constructor(
     private readonly supabase: Supabase,
-    private readonly extractor: SlipExtractor = new CascadingSlipExtractor(),
+    private readonly extractor: SlipExtractor = createProductionSlipExtractor(),
     private readonly pushMessage: PushMessage = defaultPushMessage,
     private readonly leaseSeconds: number = SLIP_CHECK_LEASE_SECONDS,
     private readonly bankVerifier: BankSlipVerifier = new EasySlipBankVerifier(),
