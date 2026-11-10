@@ -13,6 +13,7 @@ import { buildSlipLineSummary } from "@/lib/slips/line-summary";
 import { EasySlipBankVerifier, EasySlipVerificationError, buildEasySlipBankMessage, isEasySlipEnabledForSource, type BankSlipVerifier } from "@/lib/slips/easyslip-bank";
 import {
   createProductionSlipExtractor,
+  isSlipExtractorAvailable,
   SLIP_OCR_DISABLED_MESSAGE,
   SLIP_OCR_NOT_CONFIGURED_MESSAGE,
 } from "@/lib/slips/production-extractor";
@@ -37,6 +38,15 @@ interface CheckClaim {
   checkId: string;
   /** Fencing token; null only on the legacy path (claim RPCs not deployed). */
   token: number | null;
+  /** Shared Gemini 429 cooldown end (ms) from claim_slip_check; null = none. */
+  providerCooldownUntilMs: number | null;
+}
+
+/** OCR skipped because a shared 429 cooldown is active: no provider call was made. */
+class ProviderCooldownError extends ExtractionHttpError {
+  constructor(retryAfterMs: number) {
+    super(429, "rate_limit", true, "", 0, retryAfterMs);
+  }
 }
 
 /**
@@ -101,6 +111,12 @@ export class SlipCheckService implements SlipCheckProcessor {
           fallbackReason = error instanceof EasySlipVerificationError ? error.reason : "provider_error";
           log.warn("EasySlip verification unavailable; trying unverified OCR", { checkId, reason: fallbackReason });
         }
+      }
+      // Never spend an exhausted shared quota: while another worker's 429
+      // cooldown is active, defer without calling Gemini (EasySlip still ran).
+      const cooldownMs = (claim.providerCooldownUntilMs ?? 0) - Date.now();
+      if (bankResult?.kind !== "verified" && cooldownMs > 0 && isSlipExtractorAvailable(this.extractor)) {
+        throw new ProviderCooldownError(cooldownMs);
       }
       const extraction = bankResult?.kind === "verified"
         ? bankResult.extraction
@@ -198,7 +214,22 @@ export class SlipCheckService implements SlipCheckProcessor {
 
       let failureRecorded = true;
       if (checkId) {
-        if (claimToken !== null) {
+        // Transient provider failure (429 / 5xx / timeout): durable bounded
+        // retry instead of FAILED. defer_slip_check itself turns it FAILED when
+        // it cannot be retried (un-batched, attempts or 24 h age exhausted).
+        const deferred = claimToken !== null && error instanceof ExtractionHttpError && error.retryable
+          ? await this.deferCheck(checkId, claimToken, failureReason, error, log)
+          : null;
+        if (deferred === "deferred") {
+          // Batched only: no LINE push now; the batch summary reports it.
+          return;
+        }
+        if (deferred !== null && deferred !== "fallback") {
+          if (deferred !== "failed") {
+            failureRecorded = false;
+            log.warn("slip failure not recorded", { checkId, outcome: deferred });
+          }
+        } else if (claimToken !== null) {
           const outcome = await this.failCheck(checkId, claimToken, failureReason, log);
           // A stale worker must not notify: the check belongs to a newer claim
           // (or is already terminal) and the real result is reported there.
@@ -268,9 +299,17 @@ export class SlipCheckService implements SlipCheckProcessor {
         p_lease_seconds: this.leaseSeconds,
       });
       if (!error) {
-        const claim = data as { claimed?: boolean; check_id?: string; token?: number; reason?: string } | null;
+        const claim = data as {
+          claimed?: boolean; check_id?: string; token?: number; reason?: string;
+          provider_cooldown_until?: string | null;
+        } | null;
         if (claim?.claimed === true && claim.check_id && typeof claim.token === "number") {
-          return { checkId: claim.check_id, token: claim.token };
+          const cooldown = claim.provider_cooldown_until ? Date.parse(claim.provider_cooldown_until) : NaN;
+          return {
+            checkId: claim.check_id,
+            token: claim.token,
+            providerCooldownUntilMs: Number.isFinite(cooldown) ? cooldown : null,
+          };
         }
         if (claim?.claimed === false) {
           log.info("slip check not claimed", { reason: claim.reason ?? "unknown" });
@@ -286,7 +325,53 @@ export class SlipCheckService implements SlipCheckProcessor {
         throw new Error("Slip OCR migration 20261017110000 is required");
       }
     }
-    return { checkId: await this.createProcessingCheckLegacy(evidenceId), token: null };
+    return {
+      checkId: await this.createProcessingCheckLegacy(evidenceId),
+      token: null,
+      providerCooldownUntilMs: null,
+    };
+  }
+
+  /**
+   * Schedules a durable retry of a transient OCR failure. Returns the SQL
+   * outcome ("deferred", "failed", "stale_claim", ...) or "fallback" when the
+   * RPC is unavailable/erroring, in which case the caller fails the check as
+   * before (fail closed, nothing counted).
+   */
+  private async deferCheck(
+    checkId: string,
+    token: number,
+    reason: string,
+    error: ExtractionHttpError,
+    log: ReturnType<typeof logger.child>,
+  ): Promise<string> {
+    try {
+      const client = this.supabase as unknown as RpcClient;
+      const { data, error: rpcError } = await client.rpc!("defer_slip_check", {
+        p_check_id: checkId,
+        p_token: token,
+        p_reason: reason,
+        p_retry_after_seconds: error.retryAfterMs === null ? null : Math.ceil(error.retryAfterMs / 1000),
+        p_count_attempt: !(error instanceof ProviderCooldownError),
+      });
+      if (rpcError) {
+        log.error("slip OCR retry could not be scheduled - failing closed", { checkId, code: rpcError.code });
+        return "fallback";
+      }
+      const result = data as { outcome?: string; reason?: string; retry_count?: number; retry_at?: string } | null;
+      log.warn("slip OCR transient failure", {
+        checkId,
+        outcome: result?.outcome,
+        retryCount: result?.retry_count,
+        retryAt: result?.retry_at,
+        terminalReason: result?.reason,
+        cooldownSkip: error instanceof ProviderCooldownError,
+      });
+      return result?.outcome ?? "fallback";
+    } catch {
+      log.error("slip OCR retry could not be scheduled - failing closed", { checkId });
+      return "fallback";
+    }
   }
 
   private async completeCheck(

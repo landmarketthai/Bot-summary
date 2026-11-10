@@ -1049,7 +1049,11 @@ export function buildBatchSummaryMessage(
   const amountRead = included.reduce((sum, e) => sum + (e.flags.effectiveAmount ?? 0), 0);
   const roundedTotal = Math.round(amountRead * 100) / 100;
   const reviewCount = provisional.length + uncounted.length;
-  const pendingCount = all.filter((e) => e.checkStatus === null || e.checkStatus === "PROCESSING").length;
+  // A deferred transient OCR retry that the close outran will never run (the
+  // batch is no longer open), so it is reported as not read, not as pending.
+  const retryCutCount = all.filter(isOcrRetryCutByClose).length;
+  const pendingCount = all.filter((e) => e.checkStatus === null || e.checkStatus === "PROCESSING").length
+    - retryCutCount;
   const failedCount = all.filter((e) => e.checkStatus === "FAILED").length;
 
   const lines = [
@@ -1062,10 +1066,11 @@ export function buildBatchSummaryMessage(
     "ส่งสลิปมาทั้งหมด: " + evidences.length + " รูป",
     "อ่านยอดได้: " + included.length + " รูป",
   );
-  if (options?.isTimeout && (pendingCount > 0 || failedCount > 0)) {
+  if (options?.isTimeout && (pendingCount > 0 || failedCount > 0 || retryCutCount > 0)) {
     lines.push("ชุดนี้ยังมีรูปที่ตรวจไม่เสร็จ");
   }
   if (failedCount) lines.push("อ่านไม่สำเร็จ: " + failedCount + " รูป");
+  if (retryCutCount) lines.push("ระบบอ่านรูปขัดข้องชั่วคราว ลองอ่านซ้ำไม่ทันปิดชุด: " + retryCutCount + " รูป");
   if (pendingCount) lines.push("ยังรอผล: " + pendingCount + " รูป");
   if (reviewCount) lines.push("มีรูปที่ต้องตรวจทาน: " + reviewCount + " รูป");
   if (included.length > 0) lines.push("", "ยอดรวมที่อ่านได้: " + formatBaht(roundedTotal) + " บาท");
@@ -1108,9 +1113,15 @@ export function buildBatchSummaryMessage(
   return lines.join("\n");
 }
 
+/** PROCESSING with defer_slip_check's marker: a transient OCR retry the summary outran. */
+function isOcrRetryCutByClose(e: EvidenceWithCheck): boolean {
+  return e.checkStatus === "PROCESSING" && (e.failureReason ?? "").startsWith("ocr_retry:");
+}
+
 function describeReviewReason(e: EvidenceWithCheck): string {
   if (e.bankVerificationIssue === "duplicate") return "พบสลิปซ้ำ กรุณาตรวจว่าเคยส่งรูปนี้แล้วหรือไม่";
   if (e.bankVerificationIssue === "receiver_mismatch") return "บัญชีผู้รับเงินไม่ตรง กรุณาตรวจบัญชีปลายทาง";
+  if (isOcrRetryCutByClose(e)) return "ระบบอ่านรูปขัดข้องชั่วคราว ลองอ่านซ้ำไม่ทันปิดชุด กรุณาส่งรูปใหม่หรือให้แอดมินตรวจ";
   if (e.checkStatus === "PROCESSING") return "รอผลการตรวจสอบ";
   if (e.checkStatus === null)         return "ยังไม่ได้ตรวจสอบ";
   if (e.checkStatus === "FAILED") {
@@ -1119,6 +1130,8 @@ function describeReviewReason(e: EvidenceWithCheck): string {
     if (e.failureReason === "extractor_not_configured" || e.failureReason === "extractor_disabled")
       return "ระบบอ่านรูปไม่พร้อม กรุณาแจ้งผู้ดูแล";
     if (e.failureReason === "extractor_http_rate_limit") return "ระบบอ่านรูปใช้งานเต็มชั่วคราว กรุณาส่งรูปใหม่ภายหลัง";
+    if (e.failureReason === "extractor_http_timeout" || e.failureReason === "extractor_http_upstream_error")
+      return "ระบบอ่านรูปขัดข้องชั่วคราว กรุณาส่งรูปใหม่ภายหลัง";
     return "อ่านข้อมูลไม่ครบ";
   }
   if (e.checkStatus === "NEED_REVIEW") {

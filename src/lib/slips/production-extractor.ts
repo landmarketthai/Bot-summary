@@ -29,6 +29,11 @@ class UnavailableSlipExtractor implements SlipExtractor {
   }
 }
 
+/** False for the fail-closed extractor (flag off / key missing): no retry or cooldown applies. */
+export function isSlipExtractorAvailable(extractor: SlipExtractor): boolean {
+  return !(extractor instanceof UnavailableSlipExtractor);
+}
+
 export function createProductionSlipExtractor(
   env: Env = process.env,
   deps: { gemini?: () => SlipExtractor } = {},

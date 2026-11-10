@@ -16,7 +16,8 @@ import { IoTimeoutError, withTimeout } from "@/lib/slips/io-timeout";
 /**
  * Gemini slip OCR adapter: the ONLY Production slip OCR provider, wired behind
  * SLIP_GEMINI_OCR_ENABLED via production-extractor.ts. With the flag off, or on
- * any failure here, the OCR job fails closed; there is no OpenAI fallback. Its
+ * any failure here, the OCR job fails closed (transient ones are retried later
+ * by the cron redrive, never by another provider); there is no OpenAI fallback. Its
  * output goes through the shared parseSlipExtraction canonicalization.
  *
  * Output is TRANSCRIPTION ONLY: what the image visibly says. It is never bank
@@ -28,10 +29,9 @@ const IMAGE_TIMEOUT_MS = 30_000;
 const MAX_ATTEMPTS = 2;
 const MAX_BACKOFF_MS = 2_000;
 const RETRYABLE_HTTP_STATUSES = new Set([429, 500, 502, 503, 504]);
-// Free-tier quota is 15 RPM / 500 RPD per project and there is no shared
-// cross-instance rate gate, so a 429 is never retried here: it is thrown at once
-// (still retryable=true) and the check fails closed instead of spending more of
-// the same exhausted quota.
+// A 429 is never retried here: it is thrown at once (still retryable=true) so
+// SlipCheckService defers the check durably (defer_slip_check) and sets the
+// shared cross-instance cooldown instead of spending more of the same quota.
 const NO_INLINE_RETRY_HTTP_STATUSES = new Set([429]);
 
 class RetryableGeminiOutputError extends Error {}
