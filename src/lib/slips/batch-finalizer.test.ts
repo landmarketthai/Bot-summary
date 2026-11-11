@@ -514,37 +514,37 @@ describe("buildBatchSummaryMessage timeout breakdown", () => {
     ];
     const msg = buildBatchSummaryMessage(evidences, { isTimeout: true });
 
-    expect(msg).toContain("รับทั้งหมด: 6 รูป");
-    expect(msg).toContain("อ่านครบ: 2 รูป");
+    expect(msg).toContain("ส่งสลิปมาทั้งหมด: 6 รูป");
+    expect(msg).toContain("อ่านยอดได้: 2 รูป");
     expect(msg).toContain("อ่านไม่สำเร็จ: 1 รูป");
-    expect(msg).toContain("รอตรวจมือ: 1 รูป");
-    expect(msg).toContain("รอประมวลผล: 2 รูป");
+    expect(msg).toContain("มีรูปที่ต้องตรวจทาน: 4 รูป");
+    expect(msg).toContain("ยังรอผล: 2 รูป");
   });
 
   it("PROCESSING counts as pending (not completed)", () => {
     const evidences = [makeEvidence("PROCESSING", 1)];
     const msg = buildBatchSummaryMessage(evidences, { isTimeout: true });
-    expect(msg).toContain("อ่านครบ: 0 รูป");
-    expect(msg).toContain("รอประมวลผล: 1 รูป");
+    expect(msg).toContain("อ่านยอดได้: 0 รูป");
+    expect(msg).toContain("ยังรอผล: 1 รูป");
   });
 
   it("null check row (OCR not started) counts as pending", () => {
     const evidences = [makeEvidence(null, 1)];
     const msg = buildBatchSummaryMessage(evidences, { isTimeout: true });
-    expect(msg).toContain("รอประมวลผล: 1 รูป");
+    expect(msg).toContain("ยังรอผล: 1 รูป");
   });
 
   it("FAILED counts as failed extraction (not pending)", () => {
     const evidences = [makeEvidence("FAILED", 1)];
     const msg = buildBatchSummaryMessage(evidences, { isTimeout: true });
     expect(msg).toContain("อ่านไม่สำเร็จ: 1 รูป");
-    expect(msg).not.toContain("รอประมวลผล: 1 รูป");
+    expect(msg).not.toContain("ยังรอผล: 1 รูป");
   });
 
   it("uses (หมดเวลา) label for timeout summary with no title", () => {
     const evidences = [makeEvidence("PROCESSING", 1), makeEvidence("EXTRACTED", 2)];
     const msg = buildBatchSummaryMessage(evidences, { isTimeout: true });
-    expect(msg).toContain("หมดเวลา");
+    expect(msg).toContain("ยังตรวจไม่ครบ");
   });
 
   it("uses custom title when provided with timeout and shows detailed breakdown", () => {
@@ -555,8 +555,8 @@ describe("buildBatchSummaryMessage timeout breakdown", () => {
     });
     expect(msg).toContain("กี้");
     // Custom title is used as-is; breakdown must still be present
-    expect(msg).toContain("รอประมวลผล: 1 รูป");
-    expect(msg).toContain("อ่านครบ: 0 รูป");
+    expect(msg).toContain("ยังรอผล: 1 รูป");
+    expect(msg).toContain("อ่านยอดได้: 0 รูป");
   });
 
   it("falls back to normal rendering when isTimeout=true but all checks terminal (no pending/failed)", () => {
@@ -564,8 +564,8 @@ describe("buildBatchSummaryMessage timeout breakdown", () => {
     const evidences = [makeEvidence("EXTRACTED", 1), makeEvidence("NEED_REVIEW", 2)];
     const msg = buildBatchSummaryMessage(evidences, { isTimeout: true });
     // Normal rendering: "รอตรวจมือ" not "รอประมวลผล" / "อ่านไม่สำเร็จ"
-    expect(msg).toContain("อ่านครบ: 1 รูป");
-    expect(msg).toContain("รอตรวจมือ: 1 รูป");
+    expect(msg).toContain("อ่านยอดได้: 1 รูป");
+    expect(msg).toContain("มีรูปที่ต้องตรวจทาน: 1 รูป");
     expect(msg).not.toContain("รอประมวลผล");
   });
 
@@ -575,9 +575,9 @@ describe("buildBatchSummaryMessage timeout breakdown", () => {
       makeEvidence("NEED_REVIEW", 2),
     ];
     const msg = buildBatchSummaryMessage(evidences);
-    expect(msg).toContain("รับทั้งหมด: 2 รูป");
-    expect(msg).toContain("อ่านครบ: 1 รูป");
-    expect(msg).toContain("รอตรวจมือ: 1 รูป");
+    expect(msg).toContain("ส่งสลิปมาทั้งหมด: 2 รูป");
+    expect(msg).toContain("อ่านยอดได้: 1 รูป");
+    expect(msg).toContain("มีรูปที่ต้องตรวจทาน: 1 รูป");
     expect(msg).not.toContain("รอประมวลผล");
     expect(msg).not.toContain("อ่านไม่สำเร็จ");
   });
@@ -611,12 +611,41 @@ describe("buildBatchSummaryMessage trusted slip lines", () => {
     ];
     const msg = buildBatchSummaryMessage(evidences, { slipDate: "10/6/2569" });
 
-    expect(msg).toContain("รูปที่ตรวจผ่าน:");
-    expect(msg).toContain("#2 เช็คได้ 1,000 บาท");
-    expect(msg).toContain("#5 เช็คได้ 1,000 บาท");
-    expect(msg).toContain("รูปที่ต้องตรวจมือ:");
-    expect(msg).toContain("#9 ไม่พบข้อมูลครบถ้วน");
-    expect(msg.indexOf("รูปที่ตรวจผ่าน:")).toBeLessThan(msg.indexOf("รูปที่ต้องตรวจมือ:"));
+    expect(msg).toContain("รายละเอียดเงินโอน");
+    expect(msg).toContain("รูปที่ 2 = 1,000 บาท");
+    expect(msg).toContain("รูปที่ 5 = 1,000 บาท");
+    expect(msg).toContain("⚠️ หมายเหตุ");
+    expect(msg).toContain("รูปที่ 9: อ่านยอดเงินหรือข้อมูลสลิปไม่ครบ");
+    expect(msg.indexOf("รายละเอียดเงินโอน")).toBeLessThan(msg.indexOf("⚠️ หมายเหตุ"));
+  });
+
+  it("includes same-day OCR fallback bank amount in one readable total with clear note", () => {
+    const evidences = [
+      makeEvidence("EXTRACTED", 1, { transferAmount: 1000 }),
+      { ...makeEvidence("NEED_REVIEW", 2, { transferAmount: 315 }), ocrFallbackReason: "provider_error" },
+    ];
+    const msg = buildBatchSummaryMessage(evidences, { slipDate: "10/6/2569" });
+    expect(msg).toContain("ยอดรวมที่อ่านได้: 1,315 บาท");
+    expect(msg).toContain("อ่านยอดได้: 2 รูป");
+    expect(msg).toContain("รูปที่ 2 = 315 บาท");
+    expect(msg).toContain("รูปที่ 2 — 315 บาท: ยังตรวจสอบเงินเข้าไม่ได้");
+    expect(msg).toContain("รวมยอดแล้ว");
+    expect(msg).toContain("ไม่ต้องบวกเพิ่ม");
+    expect(msg).not.toContain("provider_error");
+    expect(msg).not.toContain("NEED_REVIEW");
+  });
+
+  it("includes same-day OCR fallback amount even when another slip fails during timeout", () => {
+    const evidences = [
+      { ...makeEvidence("NEED_REVIEW", 1, { transferAmount: 50 }), ocrFallbackReason: "slip_not_found" },
+      makeEvidence("FAILED", 2),
+    ];
+    const msg = buildBatchSummaryMessage(evidences, { isTimeout: true, slipDate: "10/6/2569" });
+    expect(msg).toContain("ยอดรวมที่อ่านได้: 50 บาท");
+    expect(msg).toContain("รูปที่ 1 = 50 บาท");
+    expect(msg).toContain("รูปที่ 1 — 50 บาท:");
+    expect(msg).toContain("รูปที่ 2: อ่านข้อมูลไม่ครบ");
+    expect(msg).toContain("อ่านไม่สำเร็จ: 1 รูป");
   });
 
   it("omits trusted section when no slips pass validation", () => {
@@ -626,7 +655,7 @@ describe("buildBatchSummaryMessage trusted slip lines", () => {
     ];
     const msg = buildBatchSummaryMessage(evidences);
 
-    expect(msg).not.toContain("รูปที่ตรวจผ่าน:");
+    expect(msg).not.toContain("รายละเอียดเงินโอน");
     expect(msg).not.toContain("เช็คได้");
   });
 
@@ -640,10 +669,10 @@ describe("buildBatchSummaryMessage trusted slip lines", () => {
       slipDate:  "10/6/2569",
     });
 
-    expect(msg).toContain("รูปที่ตรวจผ่าน:");
-    expect(msg).toContain("#36 เช็คได้ 1,000 บาท");
-    expect(msg).toContain("รูปที่ยังไม่ครบ:");
-    expect(msg).toContain("#5 รอผลการตรวจสอบ");
+    expect(msg).toContain("รายละเอียดเงินโอน");
+    expect(msg).toContain("รูปที่ 36 = 1,000 บาท");
+    expect(msg).toContain("⚠️ หมายเหตุ");
+    expect(msg).toContain("รูปที่ 5: รอผลการตรวจสอบ");
   });
 
   it("does not list guard-flagged slips as เช็คได้", () => {
@@ -653,9 +682,9 @@ describe("buildBatchSummaryMessage trusted slip lines", () => {
     ];
     const msg = buildBatchSummaryMessage(evidences, { slipDate: "10/6/2569" });
 
-    expect(msg).toContain("#1 เช็คได้");
-    expect(msg).not.toContain("#4 เช็คได้");
-    expect(msg).toContain("#4 วันที่รายการไม่ตรงกับรอบ");
+    expect(msg).toContain("รูปที่ 1 =");
+    expect(msg).not.toContain("รูปที่ 4 =");
+    expect(msg).toContain("รูปที่ 4 — 1,000 บาท: วันที่รายการไม่ตรงกับรอบ");
   });
 
   it("shows the per-slip amount next to เช็คได้ for trusted slips", () => {
@@ -665,8 +694,8 @@ describe("buildBatchSummaryMessage trusted slip lines", () => {
     ];
     const msg = buildBatchSummaryMessage(evidences, { slipDate: "10/6/2569" });
 
-    expect(msg).toContain("#2 เช็คได้ 1,117.8 บาท");
-    expect(msg).toContain("#7 เช็คได้ 250 บาท");
+    expect(msg).toContain("รูปที่ 2 = 1,117.8 บาท");
+    expect(msg).toContain("รูปที่ 7 = 250 บาท");
   });
 
   it("falls back to plain เช็คได้ when a trusted slip has no effective amount", () => {

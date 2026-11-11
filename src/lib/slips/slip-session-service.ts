@@ -21,6 +21,7 @@ export interface ActiveSlipSession {
   sellerName: string | null;
   marketName: string | null;
   slipDate:   string | null;
+  senderId?: string | null;
 }
 
 // "กี้-วัดทุ่งลานนา สลิปเงินโอน 9/6/2569"
@@ -32,6 +33,11 @@ const SLIP_OPEN_SPACE_RE =
   /^(.+?)\s+(.+?)\s+สลิป(?:เงินโอน|โอนเงิน|เงิน)\s+(.+)$/;
 
 export const SLIP_CLOSE_RE = /^(จบสลิป|สรุปสลิป|ปิดชุดสลิป|จบชุดสลิป)$/;
+export const SLIP_CANCEL_RE = /^ยกเลิกสลิป$/;
+
+export function isSlipCancelCommand(text: string): boolean {
+  return SLIP_CANCEL_RE.test(text.trim());
+}
 
 export function isSlipCloseCommand(text: string): boolean {
   return SLIP_CLOSE_RE.test(text.trim());
