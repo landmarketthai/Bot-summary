@@ -240,6 +240,44 @@ describe("batch finalizer global slip dedupe", () => {
     });
   });
 
+  for (const [label, loserCreatedAt] of [
+    ["earlier created_at", "2026-07-23T00:01:00Z"],
+    ["created_at tie resolved by id", "2026-07-23T00:00:00Z"],
+  ] as const) {
+    test(`counts the global winner at batch index 2: ${label}`, async () => {
+      const loser = check("check-z-loser", "EXTRACTED", "REF-LATER-WINNER", 500);
+      const winner = check("check-a-winner", "PARTIAL_EXTRACTED", "REF-LATER-WINNER", 500);
+      const { database, statusUpdates } = makeFinalizationDatabase(
+        [loser, winner],
+        [
+          // The database returns rows ordered by created_at, then id.
+          globalRow(winner.id, winner.reference_id!, "2026-07-23T00:00:00Z"),
+          globalRow(loser.id, loser.reference_id!, loserCreatedAt),
+        ],
+      );
+      const messages: string[] = [];
+
+      const result = await finalizeSlipBatch(
+        database,
+        "batch-1",
+        async (message) => { messages.push(message); },
+      );
+
+      expect(result).toEqual({ delivered: true, persisted: true });
+      expect(finalStatusUpdate(statusUpdates)).toMatchObject({
+        status: "review_needed",
+        success_count: 1,
+        failed_count: 1,
+      });
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toContain("อ่านยอดได้: 1 รูป");
+      expect(messages[0]).toContain("ยอดรวมที่อ่านได้: 500 บาท");
+      expect(messages[0]).toContain("รูปที่ 1 — 500 บาท: สลิปซ้ำ");
+      expect(messages[0]).toContain("รูปที่ 2 = 500 บาท");
+      expect(messages[0]).not.toContain("รูปที่ 2 —");
+    });
+  }
+
   test("finalizes an all-non-terminal batch without invoking the global resolver", async () => {
     const checks = [
       check("check-review", "NEED_REVIEW", "REF-REVIEW", null),

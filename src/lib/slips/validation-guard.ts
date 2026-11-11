@@ -180,7 +180,8 @@ export function computeValidationFlags(
   const isDuplicate = evidences.map((e) => {
     const isTerminal = e.checkStatus === "EXTRACTED" || e.checkStatus === "PARTIAL_EXTRACTED";
     const ref = typeof e.referenceId === "string" ? e.referenceId.trim() : "";
-    if (!isTerminal || !ref) return false;
+    // Global losers are flagged below and must not reserve the winner's reference.
+    if (!isTerminal || !ref || e.globallyDuplicate === true) return false;
     if (seenReferences.has(ref)) return true;
     seenReferences.add(ref);
     return false;

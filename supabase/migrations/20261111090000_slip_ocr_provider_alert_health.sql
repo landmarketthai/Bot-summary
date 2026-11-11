@@ -77,6 +77,7 @@ AS $fn$
          sc.failure_reason IN (
            'extractor_disabled',
            'extractor_not_configured',
+           'extractor_http_bad_request',
            'extractor_http_auth_error',
            'extractor_http_not_found',
            'extractor_http_rate_limit',

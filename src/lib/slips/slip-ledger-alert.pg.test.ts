@@ -204,6 +204,75 @@ describe.skipIf(!pgAvailable)("durable slip ledger health alert on PostgreSQL 17
     expect(result.health.unhealthy).toBe(false);
   });
 
+  test("HTTP 400 alone opens an incident and cannot recover until its 24-hour window expires", async () => {
+    const batchId = await createBatch("G-http-400");
+    const message = await receiveUnbound(60, "G-http-400");
+    const rawId = await db.scalar(
+      `SELECT raw_message_id FROM public.slip_image_events WHERE line_message_id='${message}'`,
+    );
+    const evidenceId = await db.scalar(`
+      INSERT INTO public.slip_evidences (
+        raw_message_id, line_message_id, source_id, source_type, storage_path,
+        mime_type, byte_size, sha256, status, batch_id, batch_index
+      ) VALUES (
+        '${rawId}', 'http-400-evidence-${serial}', 'G-http-400', 'group',
+        'slips/http-400-${serial}.jpg', 'image/jpeg', 4,
+        lpad(to_hex(${serial}), 64, '0'), 'RECEIVED', '${batchId}', 1
+      ) RETURNING id
+    `);
+    await db.query(`
+      INSERT INTO public.slip_checks (evidence_id, status, failure_reason, updated_at)
+      VALUES ('${evidenceId}', 'FAILED', 'extractor_http_bad_request', now());
+      UPDATE public.slip_image_events
+         SET state='attached', batch_id='${batchId}', evidence_id='${evidenceId}',
+             resolved_at=now()
+       WHERE line_message_id='${message}';
+    `);
+
+    const incident = await claim();
+    expect(incident).toMatchObject({ claimed: true, kind: "incident" });
+    expect(incident.health).toMatchObject({
+      provider_failed_24h: 1,
+      unhealthy: true,
+      unbound_total: 0,
+      unbound_stale: 0,
+      received_stale: 0,
+      ingesting_stale: 0,
+      retry_pending_total: 0,
+      retry_stale: 0,
+      queue_dead: 0,
+      failed_permanent_24h: 0,
+      late_after_finalize_24h: 0,
+      ocr_missing_overdue: 0,
+      ocr_processing_overdue: 0,
+      oldest_open_age_seconds: null,
+    });
+    expect(await complete(incident, true)).toBe(true);
+
+    const stillUnhealthy = await claim();
+    expect(stillUnhealthy).toMatchObject({ claimed: false, reason: "throttled" });
+    expect(stillUnhealthy.health.provider_failed_24h).toBe(1);
+    expect(stillUnhealthy.health.unhealthy).toBe(true);
+    expect(await db.scalar(`SELECT is_unhealthy FROM public.slip_ingest_alert_states`)).toBe("true");
+
+    // UPDATE resets updated_at through a trigger; reinsert the aged fixture.
+    await db.query(`
+      DELETE FROM public.slip_checks WHERE evidence_id='${evidenceId}';
+      INSERT INTO public.slip_checks (evidence_id, status, failure_reason, updated_at)
+      VALUES (
+        '${evidenceId}', 'FAILED', 'extractor_http_bad_request',
+        now() - interval '24 hours 1 second'
+      );
+    `);
+    const recovery = await claim();
+    expect(recovery).toMatchObject({ claimed: true, kind: "recovery" });
+    expect(recovery.health.provider_failed_24h).toBe(0);
+    expect(recovery.health.unhealthy).toBe(false);
+    expect(recovery.retry_key).not.toBe(incident.retry_key);
+    expect(await complete(recovery, true)).toBe(true);
+    expect(await claim()).toMatchObject({ claimed: false, reason: "healthy" });
+  });
+
   test("only recent terminal provider failures are actionable", async () => {
     const batchId = await createBatch("G-provider-alert");
     const reasons = [
