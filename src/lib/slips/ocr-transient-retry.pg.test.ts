@@ -185,6 +185,26 @@ describe.skipIf(!pgAvailable)("transient Gemini OCR retry on PostgreSQL 17", () 
     expect(pushes).toHaveLength(0);
   }, 60_000);
 
+  test("cooldown skips at retry_count 3 stay at 60 seconds while counted attempts remain exponential", async () => {
+    for (const [countAttempt, expectedDelay, expectedCount] of [
+      [false, 60, 3],
+      [true, 480, 4],
+    ] as const) {
+      const { evidenceId } = await seedEvidence("collecting");
+      const claim = JSON.parse(await db.scalar(`SELECT claim_slip_check('${evidenceId}', 300)`));
+      await db.query(`UPDATE slip_checks SET ocr_retry_count=3 WHERE evidence_id='${evidenceId}'`);
+      const result = JSON.parse(await db.scalar(
+        `SELECT defer_slip_check('${claim.check_id}', ${claim.token}, 'extractor_http_rate_limit', 5, ${countAttempt})`,
+      ));
+      expect(result.outcome).toBe("deferred");
+      const row = await check(evidenceId);
+      expect(row.ocr_retry_count).toBe(expectedCount);
+      expect(row.due_in!).toBeGreaterThan(expectedDelay - 5);
+      expect(row.due_in!).toBeLessThanOrEqual(expectedDelay);
+      await clearCooldown();
+    }
+  }, 60_000);
+
   test("not re-run before it is due; redrive picks it up when due; retry success completes once", async () => {
     const { evidenceId } = await seedEvidence("collecting");
     await service(scripted([() => http503()]).extractor).processEvidence(evidenceId);
@@ -199,7 +219,7 @@ describe.skipIf(!pgAvailable)("transient Gemini OCR retry on PostgreSQL 17", () 
     await runDueRetry(evidenceId, ok.extractor);
     expect(ok.calls).toHaveLength(1);
     const row = await check(evidenceId);
-    expect(row.status).toBe("EXTRACTED");
+    expect(row.status).toBe("NEED_REVIEW"); // OCR transcription, not bank verification
     expect(Number(row.transfer_amount)).toBe(250);
     expect(row.failure_reason).toBeNull();
     expect(row.lease_until).toBeNull();
@@ -344,7 +364,7 @@ describe.skipIf(!pgAvailable)("transient Gemini OCR retry on PostgreSQL 17", () 
     await Promise.all(Array.from({ length: 6 }, () => service(ok.extractor).processEvidence(evidenceId)));
     expect(ok.calls).toHaveLength(1);
     const row = await check(evidenceId);
-    expect(row.status).toBe("EXTRACTED");
+    expect(row.status).toBe("NEED_REVIEW"); // OCR-only outcome remains unverified
     expect(Number(row.transfer_amount)).toBe(333);
   }, 60_000);
 
@@ -359,7 +379,7 @@ describe.skipIf(!pgAvailable)("transient Gemini OCR retry on PostgreSQL 17", () 
     await makeDue(evidenceId);
     await service(scripted([], 222).extractor).processEvidence(evidenceId);
     const done = await check(evidenceId);
-    expect(done.status).toBe("EXTRACTED");
+    expect(done.status).toBe("NEED_REVIEW"); // only actual EasySlip verification can be trusted
 
     fail();
     await workerA;
@@ -434,9 +454,30 @@ describe.skipIf(!pgAvailable)("transient Gemini OCR retry on PostgreSQL 17", () 
     expect(claimed).toHaveLength(1);
     expect(claimed[0].was_timeout).toBe(true);
 
+    const before = await check(evidenceId);
+    await db.query(`UPDATE slip_checks SET transfer_amount=999 WHERE id='${before.id}'`);
+    expect(await db.scalar(`SELECT terminalize_slip_ocr_retries('${batchId}')`)).toBe("1");
+
     const row = await check(evidenceId);
+    expect(row.status).toBe("FAILED");
+    expect(row.failure_reason).toBe("ocr_retry:extractor_http_rate_limit");
+    expect(row.lease_until).toBeNull();
+    expect(row.claim_token).toBe(before.claim_token + 1);
+    expect(row.transfer_amount).toBeNull();
+
+    const lateComplete = JSON.parse(await db.scalar(
+      `SELECT complete_slip_check('${row.id}', ${before.claim_token}, 'EXTRACTED',
+        '{"slip_type":"BANK_SLIP_NO_QR","transfer_amount":999}'::jsonb)`,
+    ));
+    expect(lateComplete.outcome).toBe("batch_not_open");
+    const lateDefer = JSON.parse(await db.scalar(
+      `SELECT defer_slip_check('${row.id}', ${before.claim_token}, 'extractor_http_rate_limit', NULL, true)`,
+    ));
+    expect(lateDefer.outcome).toBe("batch_not_open");
+    expect((await check(evidenceId)).status).toBe("FAILED");
+
     const evidence: EvidenceWithCheck = {
-      id: evidenceId, checkId: row.id, batchIndex: 1, checkStatus: "PROCESSING", slipType: "UNKNOWN",
+      id: evidenceId, checkId: row.id, batchIndex: 1, checkStatus: "FAILED", slipType: "UNKNOWN",
       grossAmount: null, discountAmount: null, transferAmount: null, paidAmount: null,
       transactionTime: null, referenceId: null, ocrFallbackReason: null, bankVerificationIssue: null,
       failureReason: row.failure_reason,
@@ -479,10 +520,32 @@ describe.skipIf(!pgAvailable)("transient Gemini OCR retry on PostgreSQL 17", () 
     expect(await check(evidenceId)).toMatchObject({ status: "FAILED", failure_reason: "extractor_http_rate_limit" });
   }, 60_000);
 
-  test("privileges: claim/defer service_role only; cooldown table hidden from API roles", async () => {
+  test("terminalization ignores active batches and checks already completed", async () => {
+    const active = await seedEvidence("collecting");
+    await service(scripted([() => http503()]).extractor).processEvidence(active.evidenceId);
+    const activeBefore = await check(active.evidenceId);
+    expect(await db.scalar(`SELECT terminalize_slip_ocr_retries('${active.batchId}')`)).toBe("0");
+    const activeAfter = await check(active.evidenceId);
+    expect({ ...activeAfter, due_in: null }).toEqual({ ...activeBefore, due_in: null });
+    expect(activeAfter.due_in!).toBeGreaterThan(0);
+
+    const completed = await seedEvidence("processing");
+    await db.query(
+      `INSERT INTO slip_checks (evidence_id, status, slip_type, failure_reason, transfer_amount, claim_token)
+       VALUES ('${completed.evidenceId}', 'EXTRACTED', 'BANK_SLIP_NO_QR', 'ocr_retry:extractor_http_timeout', 321, 7)`,
+    );
+    expect(await db.scalar(`SELECT terminalize_slip_ocr_retries('${completed.batchId}')`)).toBe("0");
+    expect(await check(completed.evidenceId)).toMatchObject({
+      status: "EXTRACTED", transfer_amount: "321", claim_token: 7,
+      failure_reason: "ocr_retry:extractor_http_timeout",
+    });
+  }, 60_000);
+
+  test("privileges: retry RPCs are service_role only; cooldown table hidden from API roles", async () => {
     for (const sig of [
       "claim_slip_check(uuid, integer)",
       "defer_slip_check(uuid, integer, text, integer, boolean)",
+      "terminalize_slip_ocr_retries(uuid)",
     ]) {
       const rows = await db.query<{ anon: boolean; auth: boolean; pub: boolean; svc: boolean }>(
         `SELECT has_function_privilege('anon', 'public.${sig}', 'EXECUTE') AS anon,
@@ -508,15 +571,35 @@ describe.skipIf(!pgAvailable)("transient Gemini OCR retry on PostgreSQL 17", () 
     expect({ ...after, due_in: null }).toEqual({ ...before, due_in: null });
   }, 60_000);
 
-  test("rollback ends deferred checks FAILED, removes defer, and re-applies cleanly", async () => {
-    const { evidenceId } = await seedEvidence("collecting");
-    await service(scripted([() => http503()]).extractor).processEvidence(evidenceId);
+  test("rollback normalizes PROCESSING and already-FAILED retry markers, removes defer, and re-applies cleanly", async () => {
+    const processing = await seedEvidence("collecting");
+    await service(scripted([() => http503()]).extractor).processEvidence(processing.evidenceId);
+
+    const terminal = await seedEvidence("collecting");
+    await service(scripted([() => timeout()]).extractor).processEvidence(terminal.evidenceId);
+    await db.query(`UPDATE slip_checks SET status='FAILED', lease_until=now() + interval '5 minutes'
+                     WHERE evidence_id='${terminal.evidenceId}'`);
+
     await db.exec(await Bun.file(`${ROOT}/supabase/rollback/20261110090000_slip_ocr_transient_retry.down.sql`).text());
-    expect(await db.query<{ status: string; failure_reason: string }>(
-      `SELECT status, failure_reason FROM slip_checks WHERE evidence_id='${evidenceId}'`,
-    )).toEqual([{ status: "FAILED", failure_reason: "extractor_http_upstream_error" }]);
+    expect(await db.query<{ evidence_id: string; status: string; failure_reason: string; lease_until: string | null }>(
+      `SELECT evidence_id::text, status, failure_reason, lease_until::text
+         FROM slip_checks
+        WHERE evidence_id IN ('${processing.evidenceId}', '${terminal.evidenceId}')
+        ORDER BY evidence_id::text`,
+    )).toEqual([
+      {
+        evidence_id: processing.evidenceId, status: "FAILED",
+        failure_reason: "extractor_http_upstream_error", lease_until: null,
+      },
+      {
+        evidence_id: terminal.evidenceId, status: "FAILED",
+        failure_reason: "extractor_http_timeout", lease_until: null,
+      },
+    ].sort((a, b) => a.evidence_id.localeCompare(b.evidence_id)));
     expect(await db.scalar(`SELECT count(*) FROM pg_proc WHERE proname='defer_slip_check'`)).toBe("0");
+    expect(await db.scalar(`SELECT count(*) FROM pg_proc WHERE proname='terminalize_slip_ocr_retries'`)).toBe("0");
     await db.exec(await Bun.file(`${ROOT}/supabase/migrations/20261110090000_slip_ocr_transient_retry.sql`).text());
     expect(await db.scalar(`SELECT count(*) FROM pg_proc WHERE proname='defer_slip_check'`)).toBe("1");
+    expect(await db.scalar(`SELECT count(*) FROM pg_proc WHERE proname='terminalize_slip_ocr_retries'`)).toBe("1");
   }, 60_000);
 });

@@ -66,8 +66,9 @@ const CLOSE_MAX_SECONDS = parseCloseSeconds(
 // before the close command but are not yet ingested (download/store/retry).
 // After this the batch is finalized and the summary states what is missing, so
 // an irrecoverable image can never block a batch forever. Derived from the
-// ingest policy so all 5 attempts fit under the real scheduler (GitHub Actions
-// every 5 min, tolerated lateness included); see src/lib/slips/ingest-policy.ts.
+// ingest policy so all 5 attempts fit under the conservative scheduler model
+// (300 s period plus tolerated lateness). Supabase pg_cron job #1 was observed
+// running every 2 minutes; see src/lib/slips/ingest-policy.ts.
 export const CLOSE_INGEST_MAX_SECONDS = parseCloseSeconds(
   process.env.SLIP_CLOSE_INGEST_MAX_SECONDS,
   DEFAULT_INGEST_MAX_SECONDS,
@@ -126,6 +127,8 @@ export interface EvidenceWithCheck {
   transactionTime: string | null;
   referenceId?:    string | null;
   globallyDuplicate?: boolean;
+  /** Display-only suspicion: the provisional reference exists outside this batch. */
+  provisionalReferenceConflict?: boolean;
   /** Reason persisted for a bank image read by OCR after EasySlip could not verify it. */
   ocrFallbackReason?: string | null;
   bankVerificationIssue?: "duplicate" | "receiver_mismatch" | null;
@@ -631,7 +634,6 @@ export async function finalizeSlipBatch(
       loadBatchRow(supabase, batchId),
       loadBatchEvidences(supabase, batchId),
     ]);
-    const evidences = await applyGlobalDuplicateExclusions(supabase, loadedEvidences);
 
     // Idempotency guard: if summary_sent_at is already set, another worker
     // (or a previous retry) already delivered the summary — skip silently.
@@ -641,6 +643,29 @@ export async function finalizeSlipBatch(
       });
       return;
     }
+
+    let currentEvidences = loadedEvidences;
+    if (loadedEvidences.some((e) =>
+      e.checkStatus === "PROCESSING" && (e.failureReason ?? "").startsWith("ocr_retry:"))) {
+      const { data, error } = await supabase.rpc("terminalize_slip_ocr_retries" as never, {
+        p_batch_id: batchId,
+      } as never);
+      if (error) {
+        throw new Error(`slip OCR retry terminalization unavailable (${error.code ?? "unknown"})`);
+      }
+      if (typeof data !== "number" || !Number.isSafeInteger(data) || data < 0) {
+        throw new Error("slip OCR retry terminalization returned a malformed count");
+      }
+      // A zero count is valid when another finalizer won the race. Always reload
+      // and trust persisted terminal state rather than requiring this call to
+      // have changed the same number of rows observed before the RPC.
+      currentEvidences = await loadBatchEvidences(supabase, batchId);
+      if (currentEvidences.some((e) =>
+        e.checkStatus === "PROCESSING" && (e.failureReason ?? "").startsWith("ocr_retry:"))) {
+        throw new Error("slip OCR retry terminalization did not persist terminal state");
+      }
+    }
+    const evidences = await applyGlobalDuplicateExclusions(supabase, currentEvidences);
 
     // Throws on RPC error/exception (fail closed, pre-send): nothing is sent
     // and the batch stays in processing for the next recovery sweep.
@@ -890,10 +915,15 @@ async function loadBatchEvidences(
     const verification = stored && typeof stored === "object" && !Array.isArray(stored)
       ? stored.verification : null;
     // Only explicitly recorded OCR fallbacks are allowed into the provisional
-    // display total. Mismatch/duplicate bank-verification results never qualify.
+    // display total. Gemini-only results require the exact safe reason written
+    // by check-service. Mismatch/duplicate EasySlip results never qualify.
     const isUnverifiedEasySlip = verification && typeof verification === "object" && !Array.isArray(verification)
       && verification.provider === "easyslip" && verification.bank_verified === false;
-    const ocrFallbackReason = isUnverifiedEasySlip && typeof verification.reason === "string"
+    const isUnverifiedGeminiOnly = verification && typeof verification === "object" && !Array.isArray(verification)
+      && verification.provider === "gemini" && verification.bank_verified === false
+      && verification.reason === "ocr_only_unverified";
+    const isExplicitOcrFallback = isUnverifiedEasySlip || isUnverifiedGeminiOnly;
+    const ocrFallbackReason = isExplicitOcrFallback && typeof verification.reason === "string"
       ? verification.reason : null;
     const bankVerificationIssue = isUnverifiedEasySlip && verification.duplicate === true
       ? "duplicate"
@@ -927,19 +957,59 @@ export async function applyGlobalDuplicateExclusions(
   supabase: Supabase,
   evidences: readonly EvidenceWithCheck[],
 ): Promise<EvidenceWithCheck[]> {
-  const candidateReferences = [...new Set(
+  const verifiedReferences = [...new Set(
     evidences
       .filter((e) => e.checkId && isVerifiedSlipCheckStatus(e.checkStatus))
       .map((e) => normalizeTransactionId(e.referenceId))
       .filter((reference): reference is string => reference !== null),
   )];
-  if (candidateReferences.length === 0) return evidences.map((e) => ({ ...e }));
 
-  const acceptedCheckIds = await resolveGloballyAcceptedCheckIds(
-    supabase,
-    candidateReferences,
+  // Keep the existing verified-only winner lookup intact. Provisional OCR rows
+  // are only checked for an outside-batch conflict and never participate in
+  // verified winner selection.
+  const acceptedCheckIds = verifiedReferences.length > 0
+    ? await resolveGloballyAcceptedCheckIds(supabase, verifiedReferences)
+    : new Set<string>();
+
+  const provisionalReferences = [...new Set(
+    evidences
+      .filter((e) =>
+        e.checkId != null
+        && e.checkStatus === "NEED_REVIEW"
+        && (e.slipType === "BANK_SLIP_QR" || e.slipType === "BANK_SLIP_NO_QR")
+        && OCR_FALLBACK_REASONS.has(e.ocrFallbackReason ?? "")
+        && !e.bankVerificationIssue
+        && e.transferAmount !== null,
+      )
+      .map((e) => normalizeTransactionId(e.referenceId))
+      .filter((reference): reference is string => reference !== null),
+  )];
+  const currentCheckIds = new Set(
+    evidences.map((e) => e.checkId).filter((id): id is string => id != null),
   );
-  if (acceptedCheckIds.size === 0) return evidences.map((e) => ({ ...e }));
+  const conflictingReferences = new Set<string>();
+  const lookupStatuses = ["EXTRACTED", "PARTIAL_EXTRACTED", "NEED_REVIEW"] as const;
+  const lookupChunkSize = 25;
+
+  for (let offset = 0; offset < provisionalReferences.length; offset += lookupChunkSize) {
+    const chunk = provisionalReferences.slice(offset, offset + lookupChunkSize);
+    const { data, error } = await supabase
+      .from("slip_checks")
+      .select("id, reference_id")
+      .in("reference_id", chunk)
+      .in("status", lookupStatuses);
+    if (error) throw new Error(`provisional reference conflict lookup failed: ${error.message}`);
+    // A missing/partial result is not evidence of uniqueness. Fail before LINE
+    // rather than include potentially duplicated provisional money in the total.
+    if (!Array.isArray(data) || data.length >= 1000) {
+      throw new Error("provisional reference conflict lookup returned incomplete data");
+    }
+
+    for (const row of data) {
+      const reference = normalizeTransactionId(row.reference_id);
+      if (reference && !currentCheckIds.has(row.id)) conflictingReferences.add(reference);
+    }
+  }
 
   return evidences.map((evidence) => {
     const reference = normalizeTransactionId(evidence.referenceId);
@@ -949,7 +1019,13 @@ export async function applyGlobalDuplicateExclusions(
         isVerifiedSlipCheckStatus(evidence.checkStatus)
         && reference !== null
         && evidence.checkId != null
+        && acceptedCheckIds.size > 0
         && !acceptedCheckIds.has(evidence.checkId),
+      provisionalReferenceConflict:
+        evidence.checkStatus === "NEED_REVIEW"
+        && evidence.checkId != null
+        && reference !== null
+        && conflictingReferences.has(reference),
     };
   });
 }
@@ -967,7 +1043,7 @@ function buildSessionTitle(batch: SlipBatchRow | null): string | undefined {
 type EnrichedEvidence = EvidenceWithCheck & { flags: EvidenceFlags };
 const OCR_FALLBACK_REASONS = new Set([
   "slip_not_found", "provider_error", "invalid_response",
-  "invalid_image", "not_configured",
+  "invalid_image", "not_configured", "ocr_only_unverified",
 ]);
 
 function formatBaht(value: number): string {
@@ -1031,7 +1107,9 @@ export function buildBatchSummaryMessage(
     const readDate = bangkokDateOf(e.transactionTime);
     // OCR-only transfers must match the sales date exactly; the older +/-1 day
     // tolerance is deliberately not used for unverified money.
-    const reason = amount === null ? "อ่านยอดเงินไม่ชัด"
+    const reason = e.provisionalReferenceConflict
+      ? "เลขอ้างอิงอาจซ้ำกับสลิปอีกชุด กรุณาตรวจสอบ"
+      : amount === null ? "อ่านยอดเงินไม่ชัด"
       : !batchDate ? "ยังไม่ทราบวันที่ของชุดสลิป"
       : !readDate ? "อ่านวันที่โอนเงินไม่ชัด"
       : readDate !== batchDate ? "วันที่โอนเงินไม่ตรงกับวันที่ขาย"
@@ -1052,9 +1130,10 @@ export function buildBatchSummaryMessage(
   // A deferred transient OCR retry that the close outran will never run (the
   // batch is no longer open), so it is reported as not read, not as pending.
   const retryCutCount = all.filter(isOcrRetryCutByClose).length;
-  const pendingCount = all.filter((e) => e.checkStatus === null || e.checkStatus === "PROCESSING").length
-    - retryCutCount;
-  const failedCount = all.filter((e) => e.checkStatus === "FAILED").length;
+  const pendingCount = all.filter((e) =>
+    (e.checkStatus === null || e.checkStatus === "PROCESSING") && !isOcrRetryCutByClose(e)).length;
+  const failedCount = all.filter((e) =>
+    e.checkStatus === "FAILED" && !isOcrRetryCutByClose(e)).length;
 
   const lines = [
     options?.title ?? (options?.isTimeout ? "สรุปสลิปเงินโอน (ยังตรวจไม่ครบ)" : "สรุปสลิปเงินโอน"),
@@ -1113,9 +1192,10 @@ export function buildBatchSummaryMessage(
   return lines.join("\n");
 }
 
-/** PROCESSING with defer_slip_check's marker: a transient OCR retry the summary outran. */
+/** Deferred marker retained across terminalization: a transient OCR retry the summary outran. */
 function isOcrRetryCutByClose(e: EvidenceWithCheck): boolean {
-  return e.checkStatus === "PROCESSING" && (e.failureReason ?? "").startsWith("ocr_retry:");
+  return (e.checkStatus === "PROCESSING" || e.checkStatus === "FAILED")
+    && (e.failureReason ?? "").startsWith("ocr_retry:");
 }
 
 function describeReviewReason(e: EvidenceWithCheck): string {
@@ -1129,6 +1209,9 @@ function describeReviewReason(e: EvidenceWithCheck): string {
     if (e.failureReason === "evidence_download_failed") return "ดาวน์โหลดรูปไม่สำเร็จ";
     if (e.failureReason === "extractor_not_configured" || e.failureReason === "extractor_disabled")
       return "ระบบอ่านรูปไม่พร้อม กรุณาแจ้งผู้ดูแล";
+    if (e.failureReason === "extractor_http_auth_error" || e.failureReason === "extractor_http_not_found"
+      || e.failureReason === "extractor_http_bad_request")
+      return "ระบบอ่านรูปเชื่อมต่อผู้ให้บริการไม่ได้ กรุณาแจ้งผู้ดูแล";
     if (e.failureReason === "extractor_http_rate_limit") return "ระบบอ่านรูปใช้งานเต็มชั่วคราว กรุณาส่งรูปใหม่ภายหลัง";
     if (e.failureReason === "extractor_http_timeout" || e.failureReason === "extractor_http_upstream_error")
       return "ระบบอ่านรูปขัดข้องชั่วคราว กรุณาส่งรูปใหม่ภายหลัง";

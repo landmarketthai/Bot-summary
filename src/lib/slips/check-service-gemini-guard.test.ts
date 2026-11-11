@@ -319,6 +319,34 @@ describe("EasySlip fallback to Gemini OCR never constitutes bank verification", 
     }
   });
 
+  it("EasySlip disabled: Gemini-only bank reads stay NEED_REVIEW and never look verified", async () => {
+    for (const slipType of ["BANK_SLIP_QR", "BANK_SLIP_NO_QR"] as const) {
+      const fake = createFakeSupabase();
+      const gemini = realGemini(() => geminiReply({ ...geminiBankJson, slip_type: slipType }));
+      const { pushes, push } = pushRecorder();
+      const service = new SlipCheckService(fake.client, gemini.extractor, push, 300, neverVerifier);
+
+      await service.processEvidence("ev-1");
+
+      expect(gemini.calls).toHaveLength(1);
+      expect(fake.callsOf("complete_slip_check")).toHaveLength(1);
+      expect(fake.callsOf("complete_slip_check")[0].args.p_status).toBe("NEED_REVIEW");
+      expect(completedFields(fake)).toMatchObject({
+        slip_type: slipType,
+        transfer_amount: 500,
+        reference_id: geminiBankJson.reference_id,
+        transaction_time: new Date(geminiBankJson.transaction_time).toISOString(),
+        extracted_json: {
+          verification: { provider: "gemini", bank_verified: false, reason: "ocr_only_unverified" },
+        },
+      });
+      expect(pushes).toHaveLength(1);
+      expect(pushes[0].text).not.toContain("🟢");
+      expect(pushes[0].text).not.toContain("ตรวจสอบเงินเข้าแล้ว");
+      expect(pushes[0].text).toContain("ยังไม่รวมยอดเงินอัตโนมัติ");
+    }
+  });
+
   it("EasySlip provider_error + Gemini 429 -> FAILED, never completed or treated as verified", async () => {
     enableEasySlip();
     const fake = createFakeSupabase();
@@ -396,6 +424,42 @@ describe("Gemini wallet slip amount semantics through SlipCheckService", () => {
     // determineSlipCheckStatus: wallet with paid + time/ref but no gross -> PARTIAL_EXTRACTED.
     expect(fake.callsOf("complete_slip_check")[0].args.p_status).toBe("PARTIAL_EXTRACTED");
   });
+
+  it.each(["GWALLET", "THAI_HELP_THAI"] as const)(
+    "quarantines a bank image misclassified as %s when Gemini emits transfer_amount",
+    async (slipType) => {
+      const fake = createFakeSupabase();
+      const gemini = realGemini(() => geminiReply({
+        ...walletBase,
+        slip_type: slipType,
+        gross_amount: 100,
+        paid_amount: 40,
+        discount_amount: 60,
+        transfer_amount: 500,
+        reference_id: `MISCLASSIFIED-${slipType}`,
+      }));
+      const service = new SlipCheckService(fake.client, gemini.extractor, async () => {}, 300, neverVerifier);
+
+      await service.processEvidence(`ev-${slipType}`);
+
+      expect(gemini.calls).toHaveLength(1);
+      expect(fake.callsOf("complete_slip_check")).toHaveLength(1);
+      expect(fake.callsOf("complete_slip_check")[0].args.p_status).toBe("NEED_REVIEW");
+      expect(completedFields(fake)).toMatchObject({
+        slip_type: slipType,
+        transfer_amount: 500,
+        reference_id: `MISCLASSIFIED-${slipType}`,
+        extracted_json: {
+          verification: {
+            provider: "gemini",
+            bank_verified: false,
+            reason: "unverified_transfer_field",
+          },
+        },
+      });
+      expect(JSON.stringify(completedFields(fake))).not.toContain("\"bank_verified\":true");
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------

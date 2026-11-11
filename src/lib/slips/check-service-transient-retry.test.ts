@@ -86,6 +86,23 @@ describe("transient OCR failures are deferred, not failed", () => {
     expect(f.pushes).toEqual([]);
   });
 
+  it("sanitizes extreme or non-finite Retry-After values before defer RPC", async () => {
+    const cases: Array<[number, number | null]> = [
+      [(2 ** 31 + 1) * 1_000, 3_600],
+      [Number.POSITIVE_INFINITY, null],
+      [Number.NaN, null],
+    ];
+    for (const [retryAfterMs, expected] of cases) {
+      const f = fake();
+      const error = new ExtractionHttpError(429, "rate_limit", true, "", 3, retryAfterMs);
+      await f.svc(throwing(error).extractor).processEvidence("e1");
+      expect(f.calls[1]).toEqual({ name: "defer_slip_check", args: expect.objectContaining({
+        p_retry_after_seconds: expected,
+        p_count_attempt: true,
+      }) });
+    }
+  });
+
   it.each([
     ["503", new ExtractionHttpError(503, "upstream_error", true, "", 3), "extractor_http_upstream_error"],
     ["timeout", new ExtractionHttpError(0, "timeout", true, "", 10_000), "extractor_http_timeout"],
@@ -205,6 +222,15 @@ describe("batch summary for a retry the close outran", () => {
     expect(text).toContain("รูปที่ 1: ระบบอ่านรูปขัดข้องชั่วคราว ลองอ่านซ้ำไม่ทันปิดชุด");
     expect(text).not.toContain("ยังรอผล");
     expect(text).toContain("ยังรวมยอดไม่ได้");
+  });
+
+  it("a terminalized FAILED retry marker is reviewable but not also a generic failure", () => {
+    const text = buildBatchSummaryMessage([{ ...base, checkStatus: "FAILED" }], { isTimeout: true, slipDate: "2026-11-10" });
+    expect(text).toContain("ลองอ่านซ้ำไม่ทันปิดชุด: 1 รูป");
+    expect(text).toContain("รูปที่ 1: ระบบอ่านรูปขัดข้องชั่วคราว ลองอ่านซ้ำไม่ทันปิดชุด");
+    expect(text).toContain("มีรูปที่ต้องตรวจทาน: 1 รูป");
+    expect(text).not.toContain("อ่านไม่สำเร็จ: 1 รูป");
+    expect(text).not.toContain("ยังรอผล");
   });
 
   it("a plain PROCESSING check (no retry marker) still reads as waiting", () => {

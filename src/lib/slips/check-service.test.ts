@@ -165,20 +165,29 @@ describe("SlipCheckService", () => {
       mimeType: "image/jpeg",
     }]);
     expect(fake.updatedChecks[0]).toMatchObject({
-      status: "EXTRACTED",
+      status: "NEED_REVIEW",
       slip_type: "BANK_SLIP_NO_QR",
       transfer_amount: 315,
       reference_id: "004999",
       receiver_account_tail: "1234",
       confidence: 0.94,
       failure_reason: null,
+      extracted_json: {
+        verification: {
+          provider: "gemini",
+          bank_verified: false,
+          reason: "ocr_only_unverified",
+        },
+      },
     });
     expect(pushes).toHaveLength(1);
     expect(pushes[0].to).toBe("group-1");
-    expect(pushes[0].text).toContain("ยอดโอน 315 บาท");
+    expect(pushes[0].text).toContain("สลิปธนาคารรอตรวจสอบ");
+    expect(pushes[0].text).toContain("ยังไม่รวมยอดเงินอัตโนมัติ");
+    expect(pushes[0].text).not.toContain("ยอดโอน 315 บาท");
   });
 
-  it("keeps an extracted check when the LINE push fails", async () => {
+  it("keeps an OCR-only bank check in review when the LINE push fails", async () => {
     const fake = createFakeSupabase();
     const service = new SlipCheckService(
       fake.client,
@@ -191,12 +200,15 @@ describe("SlipCheckService", () => {
     await expect(service.processEvidence("evidence-1")).resolves.toBeUndefined();
     expect(fake.updatedChecks).toHaveLength(1);
     expect(fake.updatedChecks[0]).toMatchObject({
-      status: "EXTRACTED",
+      status: "NEED_REVIEW",
       slip_type: "BANK_SLIP_NO_QR",
+      extracted_json: {
+        verification: { provider: "gemini", bank_verified: false, reason: "ocr_only_unverified" },
+      },
     });
   });
 
-  it("pushes a duplicate-transaction warning instead of the summary, and keeps the check EXTRACTED", async () => {
+  it("keeps OCR-only bank evidence in review without claiming a verified duplicate", async () => {
     const fake = createFakeSupabase({
       duplicateChecks: [{ id: "check-original", evidence_id: "ev-original", created_at: "2026-06-05T00:00:00Z" }],
       evidenceSourceId: "group-1", // same source as this evidence => duplicate_same_source
@@ -210,18 +222,24 @@ describe("SlipCheckService", () => {
 
     await service.processEvidence("evidence-1");
 
-    // The original accepted record and the newly extracted check both keep
-    // their real, unmodified status — duplication is a messaging/total
-    // concern, not a status the schema has a slot for.
+    // The original accepted record is never modified, while the current
+    // Gemini-only bank result retains its finance-safe review status.
     expect(fake.updatedChecks[0]).toMatchObject({
-      status: "EXTRACTED",
+      status: "NEED_REVIEW",
       reference_id: "004999",
+      extracted_json: {
+        verification: { provider: "gemini", bank_verified: false, reason: "ocr_only_unverified" },
+      },
     });
     // Only the current check (check-1) is ever written — the original
     // accepted record (check-original) is never touched by this flow.
     expect(fake.updatedChecks).toHaveLength(1);
     expect(pushes).toHaveLength(1);
-    expect(pushes[0].text).toContain("สลิปนี้ถูกส่งและตรวจสอบแล้วในกลุ่มนี้");
+    expect(pushes[0].text).toContain("สลิปธนาคารรอตรวจสอบ");
+    expect(pushes[0].text).toContain("อ่านข้อความจากภาพได้ แต่ยังไม่ได้ตรวจยืนยันเงินเข้าธนาคาร");
+    expect(pushes[0].text).not.toContain("EasySlip ไม่สามารถตรวจยืนยัน");
+    expect(pushes[0].text).toContain("ยังไม่รวมยอดเงินอัตโนมัติ");
+    expect(pushes[0].text).not.toContain("สลิปนี้ถูกส่งและตรวจสอบแล้วในกลุ่มนี้");
     expect(pushes[0].text).not.toContain("ยอดโอน 315 บาท");
   });
 
@@ -406,7 +424,7 @@ describe("SlipCheckService", () => {
       expect(messages[0]).not.toContain("🟢");
     }));
 
-  it("EasySlip stays off for unallowlisted groups; legacy OCR flow is unchanged", () =>
+  it("EasySlip stays off for unallowlisted groups; Gemini OCR remains financially unverified", () =>
     inEasySlipTest(async () => {
       process.env.EASYSLIP_LINE_SOURCE_IDS = "another-group";
       const fake = createFakeSupabase();
@@ -418,7 +436,12 @@ describe("SlipCheckService", () => {
       });
       await service.processEvidence("evidence-1");
       expect(aiCalls).toBe(1);
-      expect(fake.updatedChecks[0]).toMatchObject({ status: "EXTRACTED", slip_type: "BANK_SLIP_NO_QR" });
-      expect((fake.updatedChecks[0].extracted_json as Record<string, unknown>).verification).toBeUndefined();
+      expect(fake.updatedChecks[0]).toMatchObject({
+        status: "NEED_REVIEW",
+        slip_type: "BANK_SLIP_NO_QR",
+        extracted_json: {
+          verification: { provider: "gemini", bank_verified: false, reason: "ocr_only_unverified" },
+        },
+      });
     }));
 });

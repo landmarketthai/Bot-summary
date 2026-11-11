@@ -33,6 +33,7 @@ const healthy = (overrides: Partial<SlipLedgerAlertHealth> = {}): SlipLedgerAler
   late_after_finalize_24h: 0,
   ocr_missing_overdue: 0,
   ocr_processing_overdue: 0,
+  provider_failed_24h: 0,
   oldest_open_age_seconds: null,
   ...overrides,
 });
@@ -233,6 +234,32 @@ describe("slip ledger alert cron route", () => {
     }
   });
 
+  test("old SQL payloads remain compatible and provider-only incidents are messaged", async () => {
+    process.env.SLIP_LEDGER_ALERT_ENABLED = "true";
+    process.env.SLIP_LEDGER_ALERT_LINE_TARGET = TARGET;
+
+    const oldPayloadClient = new FakeDurableAlertClient();
+    const oldPayload = { ...healthy() } as Record<string, unknown>;
+    delete oldPayload.provider_failed_24h;
+    oldPayloadClient.health = oldPayload as unknown as SlipLedgerAlertHealth;
+    const oldResponse = await handleSlipLedgerAlert(request(), {
+      getClient: () => oldPayloadClient,
+      push: async () => { throw new Error("healthy old payload must not send"); },
+    });
+    expect(oldResponse.status).toBe(200);
+    expect((await oldResponse.json()).sent).toBe(false);
+
+    const providerClient = new FakeDurableAlertClient();
+    providerClient.health = healthy({ unhealthy: true, provider_failed_24h: 2 });
+    let message = "";
+    const providerResponse = await handleSlipLedgerAlert(request(), {
+      getClient: () => providerClient,
+      push: async (_to, text) => { message = text; },
+    });
+    expect(providerResponse.status).toBe(200);
+    expect(message).toContain("Gemini provider ล้มเหลวใน 24 ชม.: 2");
+  });
+
   test("concurrent stale-unbound invocations produce one leased send", async () => {
     process.env.SLIP_LEDGER_ALERT_ENABLED = "true";
     process.env.SLIP_LEDGER_ALERT_LINE_TARGET = TARGET;
@@ -314,6 +341,8 @@ describe("slip ledger alert cron route", () => {
     for (const badHealth of [
       { ...healthy(), queue_dead: undefined },
       { ...healthy(), unhealthy: false, queue_dead: 1 },
+      { ...healthy(), unhealthy: false, provider_failed_24h: 1 },
+      { ...healthy(), provider_failed_24h: "not-a-count" },
       { ...healthy(), stale_threshold_seconds: 2159 },
     ]) {
       const client: SlipLedgerAlertClient = {

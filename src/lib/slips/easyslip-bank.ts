@@ -146,14 +146,16 @@ export class EasySlipBankVerifier implements BankSlipVerifier {
 export function buildEasySlipBankMessage(
   extraction: SlipExtraction,
   status: string,
-  verification: { bank_verified: boolean; duplicate?: boolean; receiver_account_matched?: boolean; reason?: string },
+  verification: { bank_verified: boolean; provider?: string; duplicate?: boolean; receiver_account_matched?: boolean; reason?: string },
 ): string {
   if (!verification.bank_verified || status !== "EXTRACTED") {
     const reason = verification.duplicate
       ? "พบสลิปซ้ำจาก EasySlip"
       : verification.receiver_account_matched === false
         ? "บัญชีผู้รับไม่ตรงกับบัญชีที่ลงทะเบียน"
-        : "EasySlip ไม่สามารถตรวจยืนยัน QR ของสลิปนี้ได้";
+        : verification.provider === "gemini"
+          ? "อ่านข้อความจากภาพได้ แต่ยังไม่ได้ตรวจยืนยันเงินเข้าธนาคาร"
+          : "EasySlip ไม่สามารถตรวจยืนยัน QR ของสลิปนี้ได้";
     return ["🟠 สลิปธนาคารรอตรวจสอบ", reason, "ยังไม่รวมยอดเงินอัตโนมัติ", "กรุณาตรวจสอบหลักฐานหรือส่งสลิปใหม่"].join("\n");
   }
   const amount = extraction.transferAmount?.toLocaleString("th-TH", { maximumFractionDigits: 2 }) ?? "-";

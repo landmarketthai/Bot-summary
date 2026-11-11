@@ -122,17 +122,28 @@ export class SlipCheckService implements SlipCheckProcessor {
         ? bankResult.extraction
         : await this.extractor.extract(input);
       const isBank = extraction.slipType === "BANK_SLIP_QR" || extraction.slipType === "BANK_SLIP_NO_QR";
-      // No QR match, duplicate, or receiver mismatch must never count as verified money.
+      const isEasySlipVerified = bankResult?.kind === "verified";
+      // A transfer_amount is a bank-money claim regardless of the model's
+      // slip_type classification. Only a genuine EasySlip result may promote
+      // that claim to a verified status; raw OCR must remain under review even
+      // when Gemini misclassifies the image as a wallet receipt.
+      const unverifiedTransferField = !isEasySlipVerified && extraction.transferAmount !== null;
+      // Preserve genuine EasySlip verification while keeping its duplicate and
+      // receiver-mismatch results under manual review as well.
       const manualBankReview = bankResult?.kind === "verified"
         ? bankResult.isDuplicate || !bankResult.accountMatched
-        : easySlipEnabled && isBank;
+        : isBank || unverifiedTransferField;
       const status = manualBankReview ? "NEED_REVIEW" : determineSlipCheckStatus(extraction);
       const providerMeta = bankResult?.kind === "verified"
         ? { provider: "easyslip", duplicate: bankResult.isDuplicate, receiver_account_matched: bankResult.accountMatched,
             bank_verified: !manualBankReview }
-        : easySlipEnabled && isBank
-          ? { provider: "easyslip", bank_verified: false, reason: fallbackReason ?? "provider_error" }
-          : null;
+        : unverifiedTransferField && !isBank
+          ? { provider: "gemini", bank_verified: false, reason: "unverified_transfer_field" }
+          : isBank
+            ? easySlipEnabled
+              ? { provider: "easyslip", bank_verified: false, reason: fallbackReason ?? "provider_error" }
+              : { provider: "gemini", bank_verified: false, reason: "ocr_only_unverified" }
+            : null;
 
       const fields = {
         slip_type: extraction.slipType,
@@ -347,11 +358,16 @@ export class SlipCheckService implements SlipCheckProcessor {
   ): Promise<string> {
     try {
       const client = this.supabase as unknown as RpcClient;
+      const retryAfterSeconds = error.retryAfterMs !== null
+        && Number.isFinite(error.retryAfterMs)
+        && error.retryAfterMs >= 0
+        ? Math.min(3600, Math.ceil(error.retryAfterMs / 1000))
+        : null;
       const { data, error: rpcError } = await client.rpc!("defer_slip_check", {
         p_check_id: checkId,
         p_token: token,
         p_reason: reason,
-        p_retry_after_seconds: error.retryAfterMs === null ? null : Math.ceil(error.retryAfterMs / 1000),
+        p_retry_after_seconds: retryAfterSeconds,
         p_count_attempt: !(error instanceof ProviderCooldownError),
       });
       if (rpcError) {

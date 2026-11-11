@@ -14,9 +14,10 @@ UPDATE public.slip_checks
    SET status = 'FAILED',
        failure_reason = left(substr(failure_reason, length('ocr_retry:') + 1), 80),
        lease_until = NULL
- WHERE status = 'PROCESSING'
+ WHERE status IN ('PROCESSING', 'FAILED')
    AND failure_reason LIKE 'ocr_retry:%';
 
+DROP FUNCTION IF EXISTS public.terminalize_slip_ocr_retries(uuid);
 DROP FUNCTION IF EXISTS public.defer_slip_check(uuid, integer, text, integer, boolean);
 DROP TABLE IF EXISTS public.slip_ocr_provider_cooldown;
 

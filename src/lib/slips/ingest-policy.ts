@@ -5,11 +5,13 @@
  * finalized with images still missing.
  *
  * WHY THIS EXISTS (PR #182 cross-check, P1 #5/#8)
- * The real scheduler is the GitHub Actions workflow finalize-slip-batches.yml,
- * `2,7,12,...,57 * * * *` = every 5 minutes, and GitHub documents that scheduled
- * runs may be delayed or dropped under load. vercel.json crons is empty. An
- * earlier draft assumed a sweep every minute. With sweeps at 0/300/600 s only 3
- * of the 5 attempts fit before a 600 s forced finalize. So:
+ * Recovery is driven operationally by Supabase pg_cron. Its observed production
+ * schedule was every 2 minutes as of 2026-11-10, but that deployment setting is
+ * not hardcoded truth and may drift. The repository's GitHub Actions workflow is
+ * manual-only. This policy deliberately models a conservative 5-minute period,
+ * plus tolerated delay, rather than promising the currently observed cadence.
+ * With sweeps at 0/300/600 s only 3 of the 5 attempts fit before a 600 s forced
+ * finalize. So:
  *
  *   1. The NORMAL path does not depend on cron cadence: when an attempt fails,
  *      the webhook's after() task retries the same image in-request, waiting
@@ -48,7 +50,7 @@ export interface SlipIngestPolicy {
     dueSlackMs: number;
   };
   cron: {
-    /** GitHub Actions schedule period. */
+    /** Conservative modelled sweep period (actual scheduler: Supabase pg_cron). */
     periodSeconds: number;
     /** Tolerated lateness of any single sweep. Beyond this the bound is void. */
     assumedMaxDelaySeconds: number;

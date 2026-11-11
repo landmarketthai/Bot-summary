@@ -267,6 +267,122 @@ describe("batch finalizer global slip dedupe", () => {
     });
   });
 
+  test("excludes only cross-batch provisional reference conflicts from the display subtotal", async () => {
+    const queriedReferences: string[][] = [];
+    const queriedStatuses: string[][] = [];
+    const db = {
+      from(table: string) {
+        if (table !== "slip_checks") throw new Error(`unexpected table: ${table}`);
+        return {
+          select(columns: string) {
+            expect(columns).toBe("id, reference_id");
+            let references: readonly string[] = [];
+            const builder = {
+              in(column: string, values: readonly string[]) {
+                if (column === "reference_id") {
+                  references = values;
+                  queriedReferences.push([...values]);
+                }
+                if (column === "status") queriedStatuses.push([...values]);
+                return builder;
+              },
+              then(resolve: (value: unknown) => void) {
+                const rows = [
+                  { id: "check-conflict", reference_id: "REF-CROSS" },
+                  { id: "check-external", reference_id: "REF-CROSS" },
+                  { id: "check-same-1", reference_id: "REF-SAME" },
+                  { id: "check-same-2", reference_id: "REF-SAME" },
+                  { id: "check-unique", reference_id: "REF-UNIQUE" },
+                ].filter((row) => references.includes(row.reference_id));
+                resolve({ data: rows, error: null });
+              },
+            };
+            return builder;
+          },
+        };
+      },
+    };
+    const provisional = (
+      id: string,
+      checkId: string,
+      batchIndex: number,
+      referenceId: string,
+      transferAmount: number,
+    ): EvidenceWithCheck => evidence({
+      id,
+      checkId,
+      batchIndex,
+      checkStatus: "NEED_REVIEW",
+      referenceId,
+      transferAmount,
+      transactionTime: "2026-11-10T05:00:00.000Z",
+      ocrFallbackReason: "ocr_only_unverified",
+    });
+
+    const marked = await applyGlobalDuplicateExclusions(db as never, [
+      provisional("cross", "check-conflict", 1, "REF-CROSS", 100),
+      provisional("same-1", "check-same-1", 2, "REF-SAME", 200),
+      provisional("same-2", "check-same-2", 3, "REF-SAME", 200),
+      provisional("unique", "check-unique", 4, "REF-UNIQUE", 300),
+    ]);
+
+    expect(queriedReferences).toEqual([["REF-CROSS", "REF-SAME", "REF-UNIQUE"]]);
+    expect(queriedStatuses).toEqual([["EXTRACTED", "PARTIAL_EXTRACTED", "NEED_REVIEW"]]);
+    expect(marked.map((row) => row.provisionalReferenceConflict)).toEqual([
+      true, false, false, false,
+    ]);
+    expect(marked.every((row) => !row.globallyDuplicate)).toBe(true);
+
+    const message = buildBatchSummaryMessage(marked, { slipDate: "2026-11-10" });
+    expect(message).toContain("ยอดรวมที่อ่านได้: 500 บาท");
+    expect(message).toContain("รูปที่ 1 — 100 บาท: เลขอ้างอิงอาจซ้ำกับสลิปอีกชุด กรุณาตรวจสอบ (ยังไม่รวมยอด)");
+    expect(message).toContain("รูปที่ 2 = 200 บาท");
+    expect(message).toContain("รูปที่ 3 — 200 บาท: สลิปซ้ำ");
+    expect(message).toContain("รูปที่ 4 = 300 บาท");
+  });
+
+  test("fails closed when the provisional conflict lookup fails", async () => {
+    const db = {
+      from: () => ({
+        select: () => {
+          const builder = {
+            in: () => builder,
+            then: (resolve: (value: unknown) => void) => resolve({
+              data: null,
+              error: { message: "database unavailable" },
+            }),
+          };
+          return builder;
+        },
+      }),
+    };
+
+    await expect(applyGlobalDuplicateExclusions(db as never, [evidence({
+      checkStatus: "NEED_REVIEW",
+      transactionTime: "2026-11-10T05:00:00.000Z",
+      ocrFallbackReason: "ocr_only_unverified",
+    })])).rejects.toThrow("provisional reference conflict lookup failed: database unavailable");
+  });
+
+  test("fails closed on a malformed empty response from provisional conflict lookup", async () => {
+    const db = {
+      from: () => ({
+        select: () => {
+          const builder = {
+            in: () => builder,
+            then: (resolve: (value: unknown) => void) => resolve({ data: null, error: null }),
+          };
+          return builder;
+        },
+      }),
+    };
+    await expect(applyGlobalDuplicateExclusions(db as never, [evidence({
+      checkStatus: "NEED_REVIEW",
+      transactionTime: "2026-11-10T05:00:00.000Z",
+      ocrFallbackReason: "ocr_only_unverified",
+    })])).rejects.toThrow("provisional reference conflict lookup returned incomplete data");
+  });
+
   test("keeps EXTRACTED and PARTIAL_EXTRACTED original/duplicate behavior unchanged", async () => {
     const db = {
       from(table: string) {

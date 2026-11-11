@@ -8,10 +8,11 @@
 --   * claim_closing_slip_batch's OCR gate keeps the batch open while it is
 --     PROCESSING, but ONLY for the existing bounded OCR wait
 --     (450 s + 420 s per 10 images). That wait is NOT extended here. A retry
---     that is not due before it never runs: the batch is force-finalized, the
---     check stays PROCESSING with failure_reason 'ocr_retry:<code>' (the
---     summary says so, nothing is counted), and every later claim/complete is
---     refused with batch_not_open. No retroactive money change after close.
+--     that is not due before it never runs: after the batch enters processing,
+--     finalizeSlipBatch terminalizes the deferred check as FAILED while retaining
+--     failure_reason 'ocr_retry:<code>' before sending the summary. Nothing is
+--     counted, and every later claim/complete is fenced out. No retroactive money
+--     change after close.
 --
 -- defer_slip_check is the only writer of the retry state. It is fenced like
 -- fail_slip_check (token + live lease + PROCESSING + batch collecting/closing)
@@ -192,7 +193,11 @@ BEGIN
 
   v_count := v_check.ocr_retry_count + CASE WHEN p_count_attempt THEN 1 ELSE 0 END;
   v_first := coalesce(v_check.ocr_retry_first_at, now());
-  v_delay := greatest(v_ra, least(c_base * (2 ^ (greatest(v_count, 1) - 1))::integer, c_cap));
+  v_delay := CASE
+    WHEN p_count_attempt THEN
+      greatest(v_ra, least(c_base * (2 ^ (greatest(v_count, 1) - 1))::integer, c_cap))
+    ELSE greatest(v_ra, c_cooldown_min)
+  END;
 
   v_why := CASE
     WHEN v_batch_id IS NULL THEN 'unbatched'
@@ -222,9 +227,50 @@ BEGIN
 END;
 $fn$;
 
+-- ── finalize deferred retries after the batch has closed ──────────────────────
+-- Lock order is batch first, then checks. Only processing batches qualify, so
+-- active collecting/closing batches and already-terminal checks are untouched.
+CREATE OR REPLACE FUNCTION public.terminalize_slip_ocr_retries(
+  p_batch_id uuid
+) RETURNS integer
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $fn$
+DECLARE
+  v_batch_status text;
+  v_affected     integer;
+BEGIN
+  SELECT b.status INTO v_batch_status
+    FROM public.slip_batches b
+   WHERE b.id = p_batch_id
+   FOR UPDATE;
+
+  IF NOT FOUND OR v_batch_status <> 'processing' THEN
+    RETURN 0;
+  END IF;
+
+  UPDATE public.slip_checks sc
+     SET status = 'FAILED',
+         lease_until = NULL,
+         claim_token = sc.claim_token + 1,
+         transfer_amount = NULL
+    FROM public.slip_evidences se
+   WHERE se.id = sc.evidence_id
+     AND se.batch_id = p_batch_id
+     AND sc.status = 'PROCESSING'
+     AND sc.failure_reason LIKE 'ocr_retry:%';
+
+  GET DIAGNOSTICS v_affected = ROW_COUNT;
+  RETURN v_affected;
+END;
+$fn$;
+
 REVOKE ALL ON FUNCTION public.claim_slip_check(uuid, integer) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.defer_slip_check(uuid, integer, text, integer, boolean) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.terminalize_slip_ocr_retries(uuid) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.claim_slip_check(uuid, integer) TO service_role;
 GRANT EXECUTE ON FUNCTION public.defer_slip_check(uuid, integer, text, integer, boolean) TO service_role;
+GRANT EXECUTE ON FUNCTION public.terminalize_slip_ocr_retries(uuid) TO service_role;
 
 COMMIT;
