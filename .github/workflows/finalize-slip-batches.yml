@@ -1,7 +1,8 @@
 name: finalize-slip-batches
 
-# Supabase pg_cron job #1 is the sole scheduled slip finalizer (every minute).
-# Manual dispatch is retained for incident recovery; do not schedule a duplicate.
+# Supabase pg_cron job #1 is the sole scheduled slip finalizer (observed */2 * * * *).
+# This workflow remains manual-only for incident recovery; do not schedule a duplicate.
+# The application timing policy intentionally models a conservative 300-second period.
 on:
   workflow_dispatch:
 

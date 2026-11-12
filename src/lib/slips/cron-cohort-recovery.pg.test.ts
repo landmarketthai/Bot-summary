@@ -233,14 +233,20 @@ describe.skipIf(!pgAvailable)("P1 cron-only cohort recovery on PostgreSQL 17", (
     // Healthy OCR: one sweep's lanes drain the whole fair list (slow OCR gets
     // at least ocrLanes per sweep; requiredOcrWaitSeconds is sized for that).
     expect(redriven).toEqual([BURST]);
-    expect(await count("slip_checks", "status = 'EXTRACTED'")).toBe(BURST);
+    expect(await count("slip_checks", "status = 'NEED_REVIEW'")).toBe(BURST);
+    expect(await count("slip_checks", "status = 'EXTRACTED'")).toBe(0);
+    expect(await count(
+      "slip_checks",
+      "extracted_json->'verification'->>'bank_verified' = 'false'",
+    )).toBe(BURST);
     expect(pushes).toHaveLength(1);
     expect(pushes[0]).toContain("2,500");
+    expect(pushes[0]).toContain("ยังตรวจสอบเงินเข้าไม่ได้");
     expect(pushes[0]).not.toContain("ยังไม่ครบ");
     const final = await batchRow(batchId);
-    expect(final.status).toBe("completed");
-    expect(final.success_count).toBe(BURST);
-    expect(final.failed_count).toBe(0);
+    expect(final.status).toBe("failed");
+    expect(final.success_count).toBe(0);
+    expect(final.failed_count).toBe(BURST);
   }, 120_000);
 
   test("OCR never recovers: the wait is bounded (requiredOcrWaitSeconds) and then the batch goes to review, never completed", async () => {
@@ -369,16 +375,23 @@ describe.skipIf(!pgAvailable)("P1 cron-only cohort recovery on PostgreSQL 17", (
       ocr_complete: BURST,
       incomplete: 0,
     });
-    expect(await count("slip_checks", "status='EXTRACTED'")).toBe(BURST);
+    expect(await count("slip_checks", "status='NEED_REVIEW'")).toBe(BURST);
+    expect(await count("slip_checks", "status='EXTRACTED'")).toBe(0);
+    expect(await count(
+      "slip_checks",
+      "extracted_json->'verification'->>'bank_verified' = 'false'",
+    )).toBe(BURST);
 
     const pushes: string[] = [];
     await advance(60);
     expect(await finalizeNow(pushes)).toBe(1);
     const final = await batchRow(batchId);
-    expect(final.status).toBe("completed");
-    expect(final.success_count).toBe(BURST);
-    expect(final.failed_count).toBe(0);
+    expect(final.status).toBe("failed");
+    expect(final.success_count).toBe(0);
+    expect(final.failed_count).toBe(BURST);
     expect(pushes).toHaveLength(1);
+    expect(pushes[0]).toContain("2,500");
+    expect(pushes[0]).toContain("ยังตรวจสอบเงินเข้าไม่ได้");
     expect(pushes[0]).not.toContain("ยังไม่ครบ");
 
     const elapsedMs = Math.round(performance.now() - startedAt);
@@ -430,19 +443,23 @@ describe.skipIf(!pgAvailable)("P1 cron-only cohort recovery on PostgreSQL 17", (
 
       await advance(60);
       expect(await finalizeNow(pushes)).toBe(1);
+      expect(await count("slip_checks", "status='NEED_REVIEW'")).toBe(BURST);
+      expect(await count("slip_checks", "status='EXTRACTED'")).toBe(0);
       expect(pushes[0]).toContain("2,500");
+      expect(pushes[0]).toContain("ยังตรวจสอบเงินเข้าไม่ได้");
       expect(pushes[0]).not.toContain("ยังไม่ครบ");
       const final = await batchRow(batchId);
-      expect(final.status).toBe("completed");
-      expect(final.success_count).toBe(BURST);
+      expect(final.status).toBe("failed");
+      expect(final.success_count).toBe(0);
+      expect(final.failed_count).toBe(BURST);
       expect([...downloads.values()].every((n) => n === 5)).toBe(true);
     }, 180_000);
   }
 
-  test("26-image burst with every recovery sweep skipped expires visibly incomplete, never completed", async () => {
+  test("26-image burst with every recovery sweep skipped expires visibly incomplete with no verified money", async () => {
     const aboveDesignBurst = SLIP_INGEST_POLICY.designBurstImages + 1;
-    // Keep one verified neighbour so the terminal state is review_needed;
-    // every other receipt remains durable retry_pending when all sweeps vanish.
+    // Keep one attached OCR-only neighbour to prove its readable amount remains
+    // provisional; every other receipt stays durable retry_pending.
     for (let i = 2; i <= aboveDesignBurst; i++) failFirst.set(`m-${G}-${i}`, 99);
     const healthy = new SlipCheckService(supa, healthyExtractor, async () => {});
     const batchId = await openAndReceive(makeWebhook(healthy), aboveDesignBurst);
@@ -456,11 +473,14 @@ describe.skipIf(!pgAvailable)("P1 cron-only cohort recovery on PostgreSQL 17", (
     const pushes: string[] = [];
     expect(await finalizeNow(pushes)).toBe(1);
     const final = await batchRow(batchId);
-    expect(final.status).toBe("review_needed");
-    expect(final.success_count).toBe(1);
-    expect(final.failed_count).toBe(aboveDesignBurst - 1);
+    expect(final.status).toBe("failed");
+    expect(final.success_count).toBe(0);
+    expect(final.failed_count).toBe(aboveDesignBurst);
+    expect(await count("slip_checks", "status='NEED_REVIEW'")).toBe(1);
+    expect(await count("slip_checks", "status='EXTRACTED'")).toBe(0);
     expect(pushes).toHaveLength(1);
     expect(pushes[0]).toContain(`ยังไม่ครบ: ${aboveDesignBurst - 1} รูป`);
+    expect(pushes[0]).toContain("ยังตรวจสอบเงินเข้าไม่ได้");
     expect(pushes[0]).not.toContain("2,600");
 
     const accounting = (await supa.rpc("slip_batch_image_accounting", { p_batch_id: batchId })).data as {

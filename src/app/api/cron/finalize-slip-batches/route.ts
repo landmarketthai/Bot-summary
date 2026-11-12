@@ -15,6 +15,7 @@ import {
 import {
   SLIP_INGEST_POLICY,
   assessIngestPolicy,
+  assessOcrRetryWindow,
   cronRecoveryBudget,
   cronRouteBudgetMs,
   runBounded,
@@ -153,6 +154,10 @@ export async function GET(req: NextRequest) {
     });
   }
 
+  // Transient OCR retries only run inside the close's bounded OCR wait (not
+  // extended for them); report how many actually fit so nobody assumes 24 h.
+  const ocrRetryWindow = assessOcrRetryWindow();
+
   const abandonedMinutes  = parseAbandonedMinutes(process.env.SLIP_ABANDONED_SESSION_MINUTES);
   const closeQuietSeconds = parseCloseSeconds(process.env.SLIP_CLOSE_QUIET_SECONDS, 10);
   const closeMaxSeconds   = parseCloseSeconds(process.env.SLIP_CLOSE_MAX_SECONDS, 120);
@@ -169,6 +174,7 @@ export async function GET(req: NextRequest) {
     ledgerDeployed,
     ledgerHealthError: ledgerError?.code ?? null,
     ingestPolicy,
+    ocrRetryWindow,
     abandonedMinutes,
     closeQuietSeconds,
     closeMaxSeconds,
@@ -185,6 +191,7 @@ export async function GET(req: NextRequest) {
     imageLedger,
     ledgerDeployed,
     ingestPolicy,
+    ocrRetryWindow,
     finalizedCount: abandonedCount + closedCount + processingRecovery.recovered,
     abandonedSessionMinutes: abandonedMinutes,
     closeQuietSeconds,

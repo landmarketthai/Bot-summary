@@ -5,11 +5,13 @@
  * finalized with images still missing.
  *
  * WHY THIS EXISTS (PR #182 cross-check, P1 #5/#8)
- * The real scheduler is the GitHub Actions workflow finalize-slip-batches.yml,
- * `2,7,12,...,57 * * * *` = every 5 minutes, and GitHub documents that scheduled
- * runs may be delayed or dropped under load. vercel.json crons is empty. An
- * earlier draft assumed a sweep every minute. With sweeps at 0/300/600 s only 3
- * of the 5 attempts fit before a 600 s forced finalize. So:
+ * Recovery is driven operationally by Supabase pg_cron. Its observed production
+ * schedule was every 2 minutes as of 2026-11-10, but that deployment setting is
+ * not hardcoded truth and may drift. The repository's GitHub Actions workflow is
+ * manual-only. This policy deliberately models a conservative 5-minute period,
+ * plus tolerated delay, rather than promising the currently observed cadence.
+ * With sweeps at 0/300/600 s only 3 of the 5 attempts fit before a 600 s forced
+ * finalize. So:
  *
  *   1. The NORMAL path does not depend on cron cadence: when an attempt fails,
  *      the webhook's after() task retries the same image in-request, waiting
@@ -48,7 +50,7 @@ export interface SlipIngestPolicy {
     dueSlackMs: number;
   };
   cron: {
-    /** GitHub Actions schedule period. */
+    /** Conservative modelled sweep period (actual scheduler: Supabase pg_cron). */
     periodSeconds: number;
     /** Tolerated lateness of any single sweep. Beyond this the bound is void. */
     assumedMaxDelaySeconds: number;
@@ -76,6 +78,21 @@ export interface SlipIngestPolicy {
   ocr: {
     /** slip_checks claim lease (SLIP_CHECK_LEASE_SECONDS / claim_slip_check). */
     leaseSeconds: number;
+    /**
+     * Durable retry of transient OCR failures (429 / 5xx / timeout). Enforced
+     * in SQL by defer_slip_check (migration 20261110090000); mirrored here.
+     */
+    transientRetry: {
+      /** Deferrals before FAILED (attempts = this + 1). */
+      maxRetries: number;
+      /** Delay after counted failure n = min(base * 2^(n-1), cap), >= Retry-After. */
+      backoffBaseSeconds: number;
+      backoffCapSeconds: number;
+      /** Retry-After beyond this is clamped. */
+      maxRetryAfterSeconds: number;
+      /** No retry is scheduled later than this after the first transient failure. */
+      maxAgeSeconds: number;
+    };
   };
   io: {
     lineDownloadTimeoutMs: number;
@@ -126,6 +143,13 @@ export const SLIP_INGEST_POLICY: SlipIngestPolicy = {
   designBurstImages: 25,
   ocr: {
     leaseSeconds: 300,
+    transientRetry: {
+      maxRetries: 4,
+      backoffBaseSeconds: 60,
+      backoffCapSeconds: 600,
+      maxRetryAfterSeconds: 3600,
+      maxAgeSeconds: 86_400,
+    },
   },
   io: {
     lineDownloadTimeoutMs: 8_000,
@@ -226,6 +250,63 @@ export function requiredOcrWaitSeconds(
     + policy.io.ocrJobTimeoutMs / 1000
     + policy.ingestWaitMarginSeconds
     + rounds * maxSweepGapSeconds(policy);
+}
+
+/** Delay defer_slip_check schedules after counted transient failure n. Mirrors SQL. */
+export function ocrRetryDelaySeconds(
+  failedAttempt: number,
+  retryAfterSeconds: number | null = null,
+  policy: SlipIngestPolicy = SLIP_INGEST_POLICY,
+): number {
+  const r = policy.ocr.transientRetry;
+  const n = Math.max(1, Math.floor(failedAttempt));
+  const retryAfter = Math.min(Math.max(retryAfterSeconds ?? 0, 0), r.maxRetryAfterSeconds);
+  return Math.max(retryAfter, Math.min(r.backoffBaseSeconds * 2 ** (n - 1), r.backoffCapSeconds));
+}
+
+export interface OcrRetryWindowAssessment {
+  /** Bounded OCR wait of claim_closing_slip_batch for this many images (NOT extended for retries). */
+  ocrWaitSeconds: number;
+  maxRetries: number;
+  maxAgeSeconds: number;
+  /** Retries that start before the forced close even if every sweep is as late as the model allows. */
+  guaranteedRetriesBeforeClose: number;
+  /** Same with on-time sweeps every cron period. */
+  nominalRetriesBeforeClose: number;
+}
+
+/**
+ * Honest bound on how many transient-OCR retries a closing batch can actually
+ * get: the close's OCR wait is not extended for retries, so a retry that is
+ * not due and swept before it never runs (the summary reports the image as a
+ * transient OCR failure, uncounted). Worst case: the first failure at the
+ * start of the wait, no Retry-After, every image of the batch retrying.
+ */
+export function assessOcrRetryWindow(
+  evidenceCount = 10,
+  policy: SlipIngestPolicy = SLIP_INGEST_POLICY,
+): OcrRetryWindowAssessment {
+  const wait = requiredOcrWaitSeconds(evidenceCount, policy);
+  const rounds = Math.ceil(Math.max(1, evidenceCount) / Math.max(1, cronOcrCapacityPerSweep(policy)));
+  const job = policy.io.ocrJobTimeoutMs / 1000;
+  const fit = (gap: number) => {
+    let start = 0;
+    let retries = 0;
+    while (retries < policy.ocr.transientRetry.maxRetries) {
+      const next = start + job + ocrRetryDelaySeconds(retries + 1, null, policy) + gap * rounds;
+      if (next + job > wait) break;
+      start = next;
+      retries += 1;
+    }
+    return retries;
+  };
+  return {
+    ocrWaitSeconds: wait,
+    maxRetries: policy.ocr.transientRetry.maxRetries,
+    maxAgeSeconds: policy.ocr.transientRetry.maxAgeSeconds,
+    guaranteedRetriesBeforeClose: fit(maxSweepGapSeconds(policy)),
+    nominalRetriesBeforeClose: fit(policy.cron.periodSeconds),
+  };
 }
 
 // ── Simulation ────────────────────────────────────────────────────────────────

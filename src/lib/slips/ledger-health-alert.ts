@@ -35,6 +35,7 @@ export type SlipLedgerAlertHealth = {
   late_after_finalize_24h: number;
   ocr_missing_overdue: number;
   ocr_processing_overdue: number;
+  provider_failed_24h: number;
   oldest_open_age_seconds: number | null;
 };
 
@@ -105,10 +106,18 @@ export function parseSlipLedgerAlertHealth(value: unknown): SlipLedgerAlertHealt
   const version = parsed.version!;
   const staleThreshold = parsed.stale_threshold_seconds!;
   const ocrThreshold = parsed.ocr_overdue_threshold_seconds!;
+  // The provider counter was added to the version-1 payload by an additive
+  // migration. Treat absence as zero for app-first/old-database rollout, but
+  // reject a present malformed value and every unhealthy contradiction.
+  const providerFailed = row.provider_failed_24h === undefined
+    ? 0
+    : nonNegativeInteger(row.provider_failed_24h);
+  if (providerFailed === null) return null;
   const actionable = parsed.unbound_stale! + parsed.received_stale!
     + parsed.ingesting_stale! + parsed.retry_stale! + parsed.queue_dead!
     + parsed.failed_permanent_24h! + parsed.late_after_finalize_24h!
-    + parsed.ocr_missing_overdue! + parsed.ocr_processing_overdue!;
+    + parsed.ocr_missing_overdue! + parsed.ocr_processing_overdue!
+    + providerFailed;
   if (
     version !== 1
     || staleThreshold < SLIP_LEDGER_ALERT_STALE_SECONDS
@@ -137,6 +146,7 @@ export function parseSlipLedgerAlertHealth(value: unknown): SlipLedgerAlertHealt
     late_after_finalize_24h: parsed.late_after_finalize_24h!,
     ocr_missing_overdue: parsed.ocr_missing_overdue!,
     ocr_processing_overdue: parsed.ocr_processing_overdue!,
+    provider_failed_24h: providerFailed,
     oldest_open_age_seconds: oldest,
   };
 }
@@ -289,6 +299,7 @@ export function buildSlipLedgerAlertMessage(claim: SlipLedgerAlertClaim): string
     `ค้างเกิน 36 นาที: unbound ${h.unbound_stale}, received ${h.received_stale}, ingesting ${h.ingesting_stale}, retry ${h.retry_stale}`,
     `สูญเสีย/ล้มเหลว: queue-dead ${h.queue_dead}, permanent ${h.failed_permanent_24h}, late ${h.late_after_finalize_24h}`,
     `OCR เกิน 36 นาที: missing ${h.ocr_missing_overdue}, processing ${h.ocr_processing_overdue}`,
+    `Gemini provider ล้มเหลวใน 24 ชม.: ${h.provider_failed_24h}`,
     "Action: ตรวจ finalize-slip-batches/recovery logs, queue+ledger row และ provider health; ห้ามสรุป batch ว่าครบจนเคลียร์รายการค้าง",
   ].join("\n");
 }
