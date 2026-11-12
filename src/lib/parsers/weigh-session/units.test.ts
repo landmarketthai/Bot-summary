@@ -13,10 +13,11 @@ describe("reviewed unit aliases", () => {
     expect(resolveUnitQuantity(3, "ปุก")).toEqual({ quantity: 3, unit: "กระปุก" });
   });
 
-  test("จาน and typo โลโล resolve without altering quantities", () => {
+  test("จาน is accepted but โลโล remains invalid", () => {
     expect(isKnownUnit("จาน")).toBe(true);
     expect(resolveUnitQuantity(9, "จาน")).toEqual({ quantity: 9, unit: "จาน" });
-    expect(resolveUnitQuantity(14.3, "โลโล")).toEqual({ quantity: 14.3, unit: "โล" });
+    expect(isKnownUnit("โลโล")).toBe(false);
+    expect(resolveUnitQuantity(14.3, "โลโล")).toEqual({ quantity: 14.3, unit: "โลโล" });
     const parsed = parseWeighSession("นาง-ตลาดทรัพยพัน2 เบิก 11/11/2569\n11กล้วยหอมจาน20บาท\n9จาน\nจบรายการเบิก", "2026-11-11");
     expect(parsed.items).toHaveLength(1);
     expect(parsed.items[0].product_name).toBe("กล้วยหอมจาน");
