@@ -61,6 +61,10 @@ jobs:
           src/lib/slips/evidence-service-timeout.test.ts
           src/lib/slips/check-service.test.ts
           src/lib/slips/easyslip-bank.test.ts
+          src/lib/slips/gemini-extractor.test.ts
+          src/lib/slips/production-extractor.test.ts
+          src/lib/slips/check-service-gemini-guard.test.ts
+          src/lib/slips/cascade-extractor.test.ts
           src/app/api/admin/easyslip-test/handler.test.ts
           src/lib/slips/batch-claim-signature-fallback.test.ts
           src/lib/slips/batch-finalizer.test.ts
