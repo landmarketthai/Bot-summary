@@ -32,6 +32,8 @@ let storage: FakeStorage;
 let supa: AnySupabase;
 let failures: Map<string, { failFirst: number; calls: number }>;
 let backgroundTasks: Array<() => Promise<void>>;
+/** Bank reference per LINE message id (default: none). */
+let references: Map<string, string>;
 
 const T0 = 1_760_000_000_000;
 const HEADER = "น้อย-ราชพฤกษ์ สลิปเงินโอน 16/10/2569";
@@ -61,8 +63,9 @@ async function ocr(evidenceId: string) {
   const source = id.slice(2, id.lastIndexOf("-"));
   const time = n === 20 ? "NULL" : n === 25 ? "'2026-10-10T12:00:00+07'" : "'2026-10-16T12:00:00+07'";
   await db.query(
-    `INSERT INTO slip_checks (evidence_id, status, slip_type, transfer_amount, transaction_time)
-     VALUES ('${evidenceId}', 'EXTRACTED', 'BANK_SLIP_QR', ${amountOf(n, source)}, ${time})
+    `INSERT INTO slip_checks (evidence_id, status, slip_type, transfer_amount, transaction_time, reference_id)
+     VALUES ('${evidenceId}', 'EXTRACTED', 'BANK_SLIP_QR', ${amountOf(n, source)}, ${time},
+             ${references.has(id) ? `'${references.get(id)}'` : "NULL"})
      ON CONFLICT (evidence_id) DO NOTHING`,
   );
 }
@@ -145,6 +148,7 @@ describe.skipIf(!pgAvailable)("slip summary #N = LINE send order on PostgreSQL 1
     supa = createPgSupabase(db, storage);
     failures = new Map();
     backgroundTasks = [];
+    references = new Map();
   });
 
   test("30 images: retries attach late, OCR finishes in reverse, one image fails, payload redelivered, close while pending", async () => {
@@ -309,5 +313,64 @@ describe.skipIf(!pgAvailable)("slip summary #N = LINE send order on PostgreSQL 1
       }
       expect(text.match(/^รูปที่ \d+ = /gm)).toHaveLength(5);
     }
+  }, 120_000);
+  test("same bank reference sent twice, OCR finishes in reverse: exactly one image counted", async () => {
+    const G = "G-dupref";
+    references.set(msgId(G, 1), "REF-DUP-1");
+    references.set(msgId(G, 2), "REF-DUP-1");
+    const webhook = makeWebhook();
+    await deliver(webhook, [
+      textEvent(G, "open", HEADER, T0),
+      imageEvent(G, 1, T0 + 1000),
+      imageEvent(G, 2, T0 + 2000),
+      textEvent(G, "close", "จบสลิป", T0 + 3_000),
+    ]);
+    await runTasksNewestFirst();
+    // The later-sent image's check is the globally earliest-created one.
+    await db.query(
+      `UPDATE slip_checks c SET created_at = now() - CASE e.line_message_id
+              WHEN '${msgId(G, 2)}' THEN interval '10 minutes' ELSE interval '5 minutes' END
+         FROM slip_evidences e WHERE e.id = c.evidence_id`,
+    );
+
+    const pushes: string[] = [];
+    expect(await finalizeNow(pushes)).toBe(1);
+    const text = pushes[0];
+    expect(text).toContain("ส่งสลิปมาทั้งหมด: 2 รูป");
+    expect(text).toContain("อ่านยอดได้: 1 รูป");
+    // The global winner (earliest-created check, #2) is the one counted, so
+    // the summary agrees with reconciliation; #1 is the duplicate.
+    expect(text.match(/^รูปที่ \d+ = /gm)).toEqual(["รูปที่ 2 = "]);
+    expect(text).toContain(`ยอดรวมที่อ่านได้: ${amountOf(2).toLocaleString("th-TH")} บาท`);
+    expect(text).toContain(`รูปที่ 1 — ${amountOf(1).toLocaleString("th-TH")} บาท: สลิปซ้ำ (ยังไม่รวมยอด)`);
+    const counted = await db.scalar(
+      `SELECT success_count FROM slip_batches WHERE id='${await batchIdOf(G)}'`,
+    );
+    expect(Number(counted)).toBe(1);
+  }, 120_000);
+
+  test("every evidence NEED_REVIEW plus one lost image: each #N and the missing image still listed", async () => {
+    const G = "G-allreview";
+    failures.set(msgId(G, 2), { failFirst: 99, calls: 0 });
+    const webhook = makeWebhook();
+    await deliver(webhook, [
+      textEvent(G, "open", HEADER, T0),
+      ...[1, 2, 3].map((n) => imageEvent(G, n, T0 + 1000 * n)),
+      textEvent(G, "close", "จบสลิป", T0 + 4_000),
+    ]);
+    await runTasksNewestFirst();
+    for (let i = 0; i < 5; i++) await retryDue(webhook, [msgId(G, 2)]);
+    await db.query(`UPDATE slip_checks SET status = 'NEED_REVIEW', transaction_time = NULL`);
+
+    const pushes: string[] = [];
+    expect(await finalizeNow(pushes)).toBe(1);
+    const text = pushes[0];
+    expect(text).toContain("ส่งสลิปมาทั้งหมด: 3 รูป");
+    expect(text).toContain("อ่านยอดได้: 0 รูป");
+    expect(text).toContain("ยังไม่เข้าระบบ: 1 รูป");
+    expect(text).toContain(`รูปที่ 1 — ${amountOf(1).toLocaleString("th-TH")} บาท: อ่านวันที่โอนเงินไม่ชัด (ยังไม่รวมยอด)`);
+    expect(text).toContain("รูปที่ 2: รูปเข้าระบบไม่สำเร็จ (ยังไม่รวมยอด)");
+    expect(text).toContain(`รูปที่ 3 — ${amountOf(3).toLocaleString("th-TH")} บาท: อ่านวันที่โอนเงินไม่ชัด (ยังไม่รวมยอด)`);
+    expect(text).not.toContain("รูปที่ ?");
   }, 120_000);
 });

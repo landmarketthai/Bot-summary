@@ -181,6 +181,10 @@ export function computeValidationFlags(
     const isTerminal = e.checkStatus === "EXTRACTED" || e.checkStatus === "PARTIAL_EXTRACTED";
     const ref = typeof e.referenceId === "string" ? e.referenceId.trim() : "";
     if (!isTerminal || !ref) return false;
+    // A global loser never claims the reference: otherwise an earlier-sent
+    // loser would mark the later-sent global winner as a batch duplicate and
+    // the transfer would be counted by nobody (both images excluded).
+    if (e.globallyDuplicate === true) return false;
     if (seenReferences.has(ref)) return true;
     seenReferences.add(ref);
     return false;
