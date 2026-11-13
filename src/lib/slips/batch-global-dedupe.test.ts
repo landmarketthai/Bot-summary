@@ -200,8 +200,9 @@ describe("batch finalizer global slip dedupe", () => {
     expect(referenceQueries).toEqual([["REF-EXTRACTED"]]);
     expect(statusQueries).toEqual([[...VERIFIED_SLIP_CHECK_STATUSES]]);
     expect(messages).toHaveLength(1);
+    // Pre-ledger schema stub: the attach counter is not a confirmed LINE position.
     expect(messages[0]).toContain("มีรูปที่ต้องตรวจทาน: 1 รูป");
-    expect(messages[0]).toContain("รูปที่ 2: อ่านวันที่โอนเงินไม่ชัด");
+    expect(messages[0]).toContain("รูปที่ 2?: อ่านวันที่โอนเงินไม่ชัด");
     expect(finalStatusUpdate(statusUpdates)).toMatchObject({
       status: "review_needed",
       success_count: 1,
@@ -230,9 +231,10 @@ describe("batch finalizer global slip dedupe", () => {
 
     expect(result).toEqual({ delivered: true, persisted: true });
     expect(referenceQueries).toEqual([["REF-DUP"]]);
-    expect(messages[0]).toContain("รูปที่ 1 = 500 บาท");
-    expect(messages[0]).toContain("รูปที่ 2 — 500 บาท: สลิปซ้ำ");
-    expect(messages[0]).toContain("รูปที่ 3: อ่านวันที่โอนเงินไม่ชัด");
+    // Pre-ledger schema stub: the attach counter is not a confirmed LINE position.
+    expect(messages[0]).toContain("รูปที่ 1? = 500 บาท");
+    expect(messages[0]).toContain("รูปที่ 2? — 500 บาท: สลิปซ้ำ");
+    expect(messages[0]).toContain("รูปที่ 3?: อ่านวันที่โอนเงินไม่ชัด");
     expect(finalStatusUpdate(statusUpdates)).toMatchObject({
       status: "review_needed",
       success_count: 1,
