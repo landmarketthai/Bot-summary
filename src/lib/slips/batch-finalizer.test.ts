@@ -517,7 +517,7 @@ describe("buildBatchSummaryMessage timeout breakdown", () => {
     expect(msg).toContain("ส่งสลิปมาทั้งหมด: 6 รูป");
     expect(msg).toContain("อ่านยอดได้: 2 รูป");
     expect(msg).toContain("อ่านไม่สำเร็จ: 1 รูป");
-    expect(msg).toContain("มีรูปที่ต้องตรวจทาน: 4 รูป");
+    expect(msg).toContain("มีรูปที่ต้องตรวจทาน: 6 รูป (อาจซ้ำกับรูปที่อ่านยอดได้)");
     expect(msg).toContain("ยังรอผล: 2 รูป");
   });
 
@@ -565,11 +565,11 @@ describe("buildBatchSummaryMessage timeout breakdown", () => {
     const msg = buildBatchSummaryMessage(evidences, { isTimeout: true });
     // Normal rendering: "รอตรวจมือ" not "รอประมวลผล" / "อ่านไม่สำเร็จ"
     expect(msg).toContain("อ่านยอดได้: 1 รูป");
-    expect(msg).toContain("มีรูปที่ต้องตรวจทาน: 1 รูป");
+    expect(msg).toContain("มีรูปที่ต้องตรวจทาน: 2 รูป (อาจซ้ำกับรูปที่อ่านยอดได้)");
     expect(msg).not.toContain("รอประมวลผล");
   });
 
-  it("non-timeout rendering is unchanged", () => {
+  it("non-timeout rendering includes review notes for readable slips with unclear dates", () => {
     const evidences = [
       makeEvidence("EXTRACTED",   1),
       makeEvidence("NEED_REVIEW", 2),
@@ -577,7 +577,7 @@ describe("buildBatchSummaryMessage timeout breakdown", () => {
     const msg = buildBatchSummaryMessage(evidences);
     expect(msg).toContain("ส่งสลิปมาทั้งหมด: 2 รูป");
     expect(msg).toContain("อ่านยอดได้: 1 รูป");
-    expect(msg).toContain("มีรูปที่ต้องตรวจทาน: 1 รูป");
+    expect(msg).toContain("มีรูปที่ต้องตรวจทาน: 2 รูป (อาจซ้ำกับรูปที่อ่านยอดได้)");
     expect(msg).not.toContain("รอประมวลผล");
     expect(msg).not.toContain("อ่านไม่สำเร็จ");
   });
