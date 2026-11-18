@@ -1,3 +1,8 @@
 {
-  "crons": []
+  "crons": [],
+  "git": {
+    "deploymentEnabled": {
+      "feat/morning-brief-v3-20261117": false
+    }
+  }
 }

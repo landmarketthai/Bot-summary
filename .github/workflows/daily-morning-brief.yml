@@ -1,12 +1,12 @@
 name: daily-morning-brief
 
-# Supabase Cron owns Fruit 08:00 and Vegetable 14:00 Asia/Bangkok delivery.
+# Supabase Cron owns Fruit 12:00 and Vegetable 14:00-18:00 Asia/Bangkok delivery.
 # Keep GitHub Actions manual-only so two schedulers cannot race the same report.
 on:
   workflow_dispatch:
     inputs:
       scope:
-        description: "Report market scope. Fruit 08:00 / Vegetable 14:00 Bangkok (07:00 UTC); Production schedule changes require approval."
+        description: "Report scope. Fruit 12:00 / Vegetable half-hourly 14:00-18:00 Bangkok. Staged activation is operator-only."
         required: true
         type: choice
         options: [fruit, vegetable]
@@ -24,7 +24,7 @@ on:
         required: false
         type: string
       retry_nonce:
-        description: "Optional unique token for a manual same-date resend. Requires target or target_marker."
+        description: "Legacy preview field only. Sends reject retry_nonce to preserve durable delivery identity."
         required: false
         type: string
       debug:
@@ -38,26 +38,41 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Call daily-morning-brief cron
+        env:
+          BRIEF_SCOPE: ${{ inputs.scope }}
+          BRIEF_DATE: ${{ inputs.date }}
+          BRIEF_TARGET: ${{ inputs.target }}
+          BRIEF_MARKER: ${{ inputs.target_marker }}
+          BRIEF_NONCE: ${{ inputs.retry_nonce }}
+          BRIEF_DEBUG: ${{ inputs.debug }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
           URL="https://bot-summary.vercel.app/api/cron/daily-morning-brief"
-          QUERY="?scope=${{ inputs.scope }}"
-          if [ -n "${{ inputs.date }}" ]; then
-            QUERY="$QUERY&date=${{ inputs.date }}"
-          fi
-          if [ -n "${{ inputs.target }}" ]; then
-            if [ -n "$QUERY" ]; then QUERY="$QUERY&target=${{ inputs.target }}"; else QUERY="?target=${{ inputs.target }}"; fi
-          fi
-          if [ -n "${{ inputs.target_marker }}" ]; then
-            MARKER_ENCODED="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "${{ inputs.target_marker }}")"
-            if [ -n "$QUERY" ]; then QUERY="$QUERY&target_marker=$MARKER_ENCODED"; else QUERY="?target_marker=$MARKER_ENCODED"; fi
-          fi
-          if [ -n "${{ inputs.retry_nonce }}" ]; then
-            if [ -n "$QUERY" ]; then QUERY="$QUERY&retry_nonce=${{ inputs.retry_nonce }}"; else QUERY="?retry_nonce=${{ inputs.retry_nonce }}"; fi
-          fi
-          if [ "${{ inputs.debug }}" = "true" ]; then
-            if [ -n "$QUERY" ]; then QUERY="$QUERY&debug=1"; else QUERY="?debug=1"; fi
-          fi
-          curl -sf --max-time 60 \
+          QUERY="$(python3 - <<'PY'
+          import datetime, os, re, urllib.parse
+          scope, date, target, marker, nonce, debug = [os.environ.get("BRIEF_" + key, "") for key in
+              ["SCOPE", "DATE", "TARGET", "MARKER", "NONCE", "DEBUG"]]
+          def require(condition):
+              if not condition:
+                  raise SystemExit("Invalid Morning Brief dispatch input")
+          require(scope in ("fruit", "vegetable") and debug in ("true", "false"))
+          if date:
+              require(re.fullmatch(r"\d{4}-\d{2}-\d{2}", date))
+              try:
+                  datetime.date.fromisoformat(date)
+              except ValueError:
+                  raise SystemExit("Invalid Morning Brief business date")
+          require(not target or re.fullmatch(r"[CUR][0-9A-Za-z]{10,}", target))
+          require(not (target and marker) and len(marker) <= 200)
+          require(not nonce or (debug == "true" and (target or marker) and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", nonce)))
+          params = {"scope": scope, **{key: value for key, value in
+              [("date", date), ("target", target), ("target_marker", marker), ("retry_nonce", nonce)] if value}}
+          if debug == "true":
+              params["debug"] = "1"
+          print("?" + urllib.parse.urlencode(params))
+          PY
+          )"
+          curl -sf --max-time 250 \
             -X GET \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -H "Authorization: Bearer $CRON_SECRET" \
             "$URL$QUERY"

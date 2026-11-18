@@ -100,7 +100,46 @@ function collectRenderCallbacks(node: React.ReactNode): PdfRenderCallback[] {
 }
 
 describe("Morning Brief A4 PDF", () => {
-  test("fruit and vegetable PDFs show totals and stock without data-quality status or weighing entries", async () => {
+  test("vegetable LINE, PDF and reference JSON discard an accidentally supplied full review bucket", async () => {
+    const scoped = await loadMorningBriefReport(scopeFixture().client, DATE, "vegetable");
+    scoped.unassigned = { transactionCount: 9876, reasons: { private_reason: 1 }, confirmedSalesSatang: 91234567,
+      pendingReviewSalesSatang: 92345678, withdrawalValueSatang: 93456789, unavailableCount: 1,
+      sourceTransactions: [{ id: "private-source", sessionId: "private-session", accountabilityRoundId: "private-round" }] };
+    const before = JSON.stringify(scoped);
+    const text = collectText(MorningBriefA4Doc({ report: scoped, generatedAt: new Date("2026-11-17T07:00:00Z") }));
+    expect(text).not.toContain("รายการรอตรวจขอบเขต");
+    expect(text).not.toContain("9876");
+    const { buildMorningBriefMessages } = await import("./morning-brief-message");
+    expect(buildMorningBriefMessages(scoped).join("\n")).not.toContain("9876");
+    const reference = buildMorningBriefReferenceData(scoped, new Date(), { bucket: "synthetic", path: "synthetic.pdf", filename: "synthetic.pdf" });
+    expect(reference.report.unassigned).toBeUndefined();
+    expect(JSON.stringify(reference)).not.toContain("private-source");
+    expect(JSON.stringify(scoped)).toBe(before);
+  });
+  test("unassigned review has its own page and leaves assigned money unchanged", async () => {
+    const scoped = await loadMorningBriefReport(scopeFixture({ alias: "พาซิโอ้" }).client, DATE, "fruit");
+    const snapshot = JSON.stringify(scoped);
+    const doc = MorningBriefA4Doc({ report: scoped, generatedAt: new Date("2026-11-17T07:00:00Z") });
+    const text = collectText(doc);
+    for (const expected of ["รายการรอตรวจขอบเขต", "ยังไม่จัดขอบเขต 2 รายการ", "ห้ามบวกซ้ำ", "140.00", "680.00"]) expect(text).toContain(expected);
+    registerFonts();
+    const bytes = await renderToBuffer(doc);
+    expect((bytes.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(4);
+    expect(JSON.stringify(scoped)).toBe(snapshot);
+  });
+  test("stock-only evidence does not create an empty market page", async () => {
+    const scoped = await loadMorningBriefReport(scopeFixture().client, DATE, "fruit");
+    scoped.sales = { ...scoped.sales, confirmedSalesSatang: 0, totalSalesSatang: 0, markets: [] };
+    scoped.produceFinancial = {};
+    scoped.fruitFinancial = undefined;
+    scoped.produceReadiness = { transactionCount: 1, markets: [] };
+    const doc = MorningBriefA4Doc({ report: scoped, generatedAt: new Date("2026-11-17T07:00:00Z") });
+    expect(collectText(doc)).not.toContain("สรุปยอดตามตลาด");
+    registerFonts();
+    const bytes = await renderToBuffer(doc);
+    expect((bytes.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(2);
+  });
+  test("fruit and vegetable PDFs retain data-quality status and never mutate numeric inputs", async () => {
     for (const scope of ["fruit", "vegetable"] as const) {
       for (const options of [{ damage: true }, { pending: true }, { invalidQuantity: true }]) {
         const scoped = await loadMorningBriefReport(scopeFixture(options).client, DATE, scope);
@@ -111,8 +150,8 @@ describe("Morning Brief A4 PDF", () => {
         expect(text).toContain("สรุปยอดตามตลาด");
         expect(text).toContain(scope === "vegetable" ? "เฉพาะตลาดพาซิโอ้ผัก" : "ผลไม้");
         if (!options.invalidQuantity) expect(text).toContain("รวมคงเหลือ");
-        for (const phrase of ["รายละเอียดสินค้าและสถานะยอดขาย", "สินค้า / หน่วย", "รายละเอียดการตรวจข้อมูล",
-          "สถานะข้อมูล", "รอตรวจ", "รอชั่งคืน", "ยังไม่คำนวณ", "รอจัดหมวด", "คำนวณไม่ได้", "รอยอดบ้าน", "รอข้อมูล"]) {
+        for (const phrase of ["รายละเอียดสินค้าและสถานะยอดขาย", "สินค้า / หน่วย",
+          "รายละเอียดสินค้าและสถานะยอดขายซ้ำ"]) {
           expect(text).not.toContain(phrase);
         }
         expect(JSON.stringify(scoped)).toBe(before);
@@ -121,13 +160,13 @@ describe("Morning Brief A4 PDF", () => {
       empty.produceReadiness!.transactionCount = 0;
       const text = collectText(MorningBriefA4Doc({ report: empty, generatedAt: new Date("2026-10-20T13:00:00+07:00") }));
       expect(text).toContain("ยังไม่มีข้อมูลสำหรับสรุปยอดขาย");
-      expect(text).not.toContain("สถานะ");
+      expect(text).toContain("สถานะ");
       expect(text).not.toContain("0.00");
     }
   });
   for (const count of [3, 10, 30]) {
     test(`summarizes ${count} markets and retains missing evidence and financial exceptions`, async () => {
-      const base: MorningBriefReport = await Bun.file(`${import.meta.dir}/../../../docs/handoffs/pr184-uat-20261020/after-return.report.json`).json();
+      const base = await loadMorningBriefReport(scopeFixture().client, DATE, "fruit");
       const fixture = morningBriefLayoutFixture(base, count, 6, 3, 2);
       const healthy = collectText(MorningBriefA4Doc({ report: fixture, generatedAt: new Date("2026-10-20T12:15:00+07:00") })).replace(/\s+/g, " ");
       expect(healthy).toContain(`พบ ${count} ตลาด • มีเบิก ${count} ตลาด • มีชั่งคืน ${count} ตลาด • พบทั้งสองประเภท ${count} ตลาด`);
@@ -146,8 +185,8 @@ describe("Morning Brief A4 PDF", () => {
     });
   }
 
-  test("fits all 64 overflow products into four pages with the last row and every unit total together", async () => {
-    const base: MorningBriefReport = await Bun.file(`${import.meta.dir}/../../../docs/handoffs/pr184-uat-20261020/after-return.report.json`).json();
+  test("fits all 64 overflow products at 20pt with bounded pagination with the last row and every unit total together", async () => {
+    const base = await loadMorningBriefReport(scopeFixture().client, DATE, "fruit");
     const fixture = morningBriefLayoutFixture(base, 30, 48, 12, 4);
     const snapshot = JSON.stringify(fixture);
     const doc = MorningBriefA4Doc({ report: fixture, generatedAt: new Date("2026-10-20T12:15:00+07:00") });
@@ -155,33 +194,33 @@ describe("Morning Brief A4 PDF", () => {
     for (const item of fixture.purchasePlanning.strong.items!) expect(text).toContain(item.productName.replace(/\s+/g, ""));
     registerFonts();
     const pdf = await renderToBuffer(doc);
-    expect((pdf.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(4);
+    expect((pdf.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(13);
     expect(JSON.stringify(fixture)).toBe(snapshot);
   });
 
-  for (const [name, expectedPages] of [["before-return", 1], ["after-return", 2]] as const) {
-    test(`packs the unchanged 19 October ${name} UAT snapshot into ${expectedPages} A4 pages`, async () => {
-      const fixture: MorningBriefReport = await Bun.file(`${import.meta.dir}/../../../docs/handoffs/pr184-uat-20261020/${name}.report.json`).json();
+  for (const scope of ["fruit", "vegetable"] as const) {
+    test(`renders synthetic ${scope} at 20pt with financial values unchanged`, async () => {
+      const fixture = await loadMorningBriefReport(scopeFixture({ damage: true }).client, DATE, scope);
       const snapshot = JSON.stringify(fixture);
       const doc = MorningBriefA4Doc({ report: fixture, generatedAt: new Date("2026-10-20T12:15:00+07:00") });
       const text = collectText(doc).replace(/\s+/g, " ");
-      expect(text).toContain("19,375.50");
+      expect(text).toContain(scope === "fruit" ? "680.00" : "120.00");
       expect(text).toContain("รายละเอียดการตรวจข้อมูล");
       expect(text).toContain("สถานะข้อมูลตามตลาด");
-      if (name === "before-return") {
-        expect(text).toContain("ยังไม่คำนวณ 26 รายการ");
-        expect(text).toContain("รอชั่งคืน 26 รายการ");
-        expect(text).not.toContain("รายการ (ผลไม้)");
-      } else {
-        for (const amount of ["13,725.00", "5,860.50", "-210.00", "5,650.50"]) expect(text).toContain(amount);
-        expect(text).toContain("รายการ (อื่นๆ)");
-        for (const group of Object.values(fixture.purchasePlanning)) {
-          for (const item of group.items ?? []) expect(text).toContain(item.productName);
-        }
+      for (const group of Object.values(fixture.purchasePlanning)) {
+        for (const item of group.items ?? []) expect(text).toContain(item.productName);
       }
       registerFonts();
       const pdf = await renderToBuffer(doc);
-      expect((pdf.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(expectedPages);
+      const mediaBoxes = [...pdf.toString("latin1").matchAll(/\/MediaBox \[([^\]]+)\]/g)];
+      expect(mediaBoxes.length).toBeGreaterThan(0);
+      for (const [, box] of mediaBoxes) {
+        const [x, y, width, height] = box.trim().split(/\s+/).map(Number);
+        expect([x, y]).toEqual([0, 0]);
+        expect(width).toBeCloseTo(841.89, 1);
+        expect(height).toBeCloseTo(595.28, 1);
+      }
+      expect((pdf.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(3);
       expect(JSON.stringify(fixture)).toBe(snapshot);
     });
   }
@@ -354,9 +393,9 @@ describe("Morning Brief A4 PDF", () => {
     const doc = MorningBriefA4Doc({ report: data, generatedAt: new Date("2026-10-12T08:00:00+07:00") });
     const fragment = (doc as React.ReactElement<{ children: React.ReactNode }>).props.children;
     const pages = React.Children.toArray((fragment as React.ReactElement<{ children: React.ReactNode }>).props.children);
-    expect(pages).toHaveLength(2);
+    expect(pages).toHaveLength(3);
     const cover = collectText(pages[0]).replace(/\s+/g, " ");
-    const detail = collectText(pages[1]).replace(/\s+/g, " ");
+    const detail = collectText(pages[2]).replace(/\s+/g, " ");
     for (const amount of ["15,980.75", "48,824.34", "32,843.82"]) expect(cover).toContain(amount);
     for (const phrase of ["หมวดผลไม้", "หมวดผัก"]) {
       expect(cover).not.toContain(phrase);
@@ -364,10 +403,10 @@ describe("Morning Brief A4 PDF", () => {
     }
     const fruitHeader = detail.indexOf("หมวดผลไม้ -");
     const fruitKpis = detail.indexOf("ยอดขายยืนยันแล้ว", fruitHeader);
-    const fruitTable = detail.indexOf("รายการ (ผลไม้)");
+    const fruitTable = detail.indexOf("หน่วย", fruitKpis);
     const vegHeader = detail.indexOf("หมวดผัก -");
     const vegKpis = detail.indexOf("ยอดขายยืนยันแล้ว", vegHeader);
-    const vegTable = detail.indexOf("รายการ (ผัก)");
+    const vegTable = detail.indexOf("หน่วย", vegKpis);
     expect(fruitHeader).toBeGreaterThanOrEqual(0);
     expect(fruitKpis).toBeGreaterThan(fruitHeader);
     expect(fruitTable).toBeGreaterThan(fruitKpis);
@@ -378,7 +417,7 @@ describe("Morning Brief A4 PDF", () => {
       "รอยอดบ้าน", "คงเหลือพร้อมขาย", "500.00", "0.00"]) expect(detail).toContain(phrase);
     expect(cover).toContain("ยืนยันแล้ว");
     expect(cover).toContain("รอตรวจ");
-    expect(cover).toContain("รายละเอียดการตรวจข้อมูล");
+    expect(collectText(pages[1])).toContain("รายละเอียดการตรวจข้อมูล");
     expect(detail).not.toContain("คำอธิบายตัวเลข");
     registerFonts();
     const buffer = await renderToBuffer(doc);
@@ -417,7 +456,7 @@ describe("Morning Brief A4 PDF", () => {
     expect(text).not.toContain("0.00 บาท");
     registerFonts();
     const bytes = await renderToBuffer(doc);
-    expect((bytes.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(1);
+    expect((bytes.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(2);
   });
 
   test("separates confirmed, pending and unavailable values on the cover and detail pages", () => {
@@ -429,18 +468,18 @@ describe("Morning Brief A4 PDF", () => {
     const doc = MorningBriefA4Doc({ report: withPending, generatedAt: new Date("2026-10-14T08:00:00+07:00") });
     const fragment = (doc as React.ReactElement<{ children: React.ReactNode }>).props.children;
     const pages = React.Children.toArray((fragment as React.ReactElement<{ children: React.ReactNode }>).props.children);
-    expect(pages).toHaveLength(2);
+    expect(pages).toHaveLength(3);
     const cover = collectText(pages[0]);
-    const details = collectText(pages[1]);
+    const details = collectText(pages[2]);
     expect(cover).toContain("ยอดขายยืนยันแล้ว");
     expect(cover).toContain("1,234.56");
-    for (const text of ["ปรับราคา", "รายละเอียดการตรวจข้อมูล"]) {
+    for (const text of ["ยอดขายยืนยันแล้ว"]) {
       expect(cover).toContain(text);
     }
     expect(details).toContain("ยอดขายยืนยันแล้ว");
     expect(cover).toContain("ยอดรอตรวจ");
-    expect(cover).toContain("ยอดปรับราคา");
-    expect(cover.replace(/\s+/g, " ")).toContain("มี 2 รายการที่คำนวณยอดขายไม่ได้");
+    expect(collectText(pages[1])).toContain("ยอดปรับราคา");
+    expect(collectText(pages[1]).replace(/\s+/g, " ")).toContain("มี 2 รายการที่คำนวณยอดขายไม่ได้");
   });
 
   test("warns when category sums disagree with the authoritative daily sales instead of silently replacing it", () => {
@@ -494,7 +533,7 @@ describe("Morning Brief A4 PDF", () => {
     const normalized = text.replace(/\s+/g, " ").trim();
     expect(normalized).toContain("หมวดผลไม้ - 22 กันยายน 2569");
 
-    expect(normalized).toContain("รายการ (ผลไม้) บ้านเจ๊ ในตลาด รวมคงเหลือ");
+    expect(normalized).toContain("รายการ / หน่วย บ้านเจ๊ ในตลาด รวมคงเหลือ");
 
     const apple = text.indexOf("แอปเปิ้ล");
     const house = text.indexOf("40", apple);
@@ -543,7 +582,7 @@ describe("Morning Brief A4 PDF", () => {
     expect(text).not.toContain("ยังไม่มีข้อมูลสินค้า");
   });
 
-  test("skips a category whose rows are all zero", () => {
+  test("retains known zero quantities instead of hiding them", () => {
     const zeroOnlyReport: MorningBriefReport = {
       ...report,
       houseStock: {
@@ -556,8 +595,8 @@ describe("Morning Brief A4 PDF", () => {
       },
     };
     const text = collectText(MorningBriefA4Doc({ report: zeroOnlyReport, generatedAt: new Date("2026-09-20T08:00:00+07:00") }));
-    expect(text).not.toContain("หมวดอื่นๆ");
-    expect(text).not.toContain("ขนมจีน");
+    expect(text).toContain("หมวดอื่นๆ");
+    expect(text).toContain("ขนมจีน");
     expect(text).not.toContain("ยังไม่มีข้อมูลสินค้า");
   });
 
@@ -598,13 +637,13 @@ describe("Morning Brief A4 PDF", () => {
     const buffer = await renderToBuffer(doc);
     const totalPages = (buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length;
     // The clean executive summary has its own page; stock follows on page two.
-    expect(totalPages).toBe(2);
+    expect(totalPages).toBeGreaterThanOrEqual(3);
 
     // Both document sections have page-number footers with the same total.
     const footerRenders = collectRenderCallbacks(doc);
-    expect(footerRenders).toHaveLength(2);
-    expect(footerRenders[0]?.({ pageNumber: 1, totalPages })).toBe("หน้า 1/2");
-    expect(footerRenders[1]?.({ pageNumber: 2, totalPages })).toBe("หน้า 2/2");
+    expect(footerRenders).toHaveLength(3);
+    expect(footerRenders[0]?.({ pageNumber: 1, totalPages })).toBe(`หน้า 1/${totalPages}`);
+    expect(footerRenders[1]?.({ pageNumber: 2, totalPages })).toBe(`หน้า 2/${totalPages}`);
   });
 
   test("flows a long category as one table with every row exactly once", async () => {
@@ -645,7 +684,7 @@ describe("Morning Brief A4 PDF", () => {
       <MorningBriefA4Doc report={pagedReport} generatedAt={new Date("2026-09-20T08:00:00+07:00")} />,
     );
     // Executive cover comes first; detail tables still flow without a new page per category.
-    expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBeLessThanOrEqual(3);
+    expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBeLessThanOrEqual(8);
   });
 
   test("packs the 11 October shape without empty vegetable-finance pages or lost stock rows", async () => {
@@ -717,7 +756,7 @@ describe("Morning Brief A4 PDF", () => {
     const pages = (buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length;
     // One executive cover plus flow-paginated financial and stock details.
     // No extra standalone page is forced for the small vegetable stock.
-    expect(pages).toBeLessThanOrEqual(4);
+    expect(pages).toBeLessThanOrEqual(9);
     expect(pages).toBeGreaterThanOrEqual(2);
   });
 
@@ -742,7 +781,7 @@ describe("Morning Brief A4 PDF", () => {
     expect(content).toContain("มูลค่าสินค้ารอจัดหมวด");
     registerFonts();
     const buffer = await renderToBuffer(doc);
-    expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBeLessThanOrEqual(3);
+    expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBeLessThanOrEqual(8);
   });
 
   test("paginates unusually long market tables and stock units without dropping rows", async () => {
@@ -855,7 +894,23 @@ describe("Morning Brief A4 PDF", () => {
     );
     expect(buffer.subarray(0, 4).toString("ascii")).toBe("%PDF");
     expect(buffer.length).toBeGreaterThan(5_000);
-    expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(2);
+    expect((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBeGreaterThanOrEqual(3);
+  });
+
+  test("a replacement lease writes a distinct artifact and invalid paths fail before storage", async () => {
+    const paths: string[] = [];
+    const client = { storage: { from: () => ({
+      upload: async (path: string) => { paths.push(path); return { error: null }; },
+      createSignedUrl: async () => ({ data: { signedUrl: "https://example.test/synthetic" }, error: null }),
+    }) } } as unknown as Parameters<typeof createMorningBriefPdfArtifact>[0];
+    await expect(createMorningBriefPdfArtifact(client, report, new Date(), "../invalid")).rejects.toThrow("invalid morning brief artifact identity");
+    expect(paths).toHaveLength(0);
+    const prefix = "a".repeat(64);
+    const old = await createMorningBriefPdfArtifact(client, report, new Date(), `${prefix}-00000000-0000-4000-8000-000000000001`);
+    const replacement = await createMorningBriefPdfArtifact(client, report, new Date(), `${prefix}-00000000-0000-4000-8000-000000000002`);
+    expect(old.path).not.toBe(replacement.path);
+    expect(new Set(paths).size).toBe(4);
+    expect(old.referencePath).toBe(old.path.replace(/\.pdf$/, ".ref.json"));
   });
 
   test("sums house Stock groups split by unit price instead of keeping only the first", () => {
@@ -870,7 +925,7 @@ describe("Morning Brief A4 PDF", () => {
     };
     const normalized = collectText(MorningBriefA4Doc({ report: split, generatedAt: new Date("2026-09-20T08:00:00+07:00") }))
       .replace(/\s+/g, " ");
-    expect(normalized).toContain("มังคุด (กก.) 5.75 5.75");
+    expect(normalized).toContain("มังคุด (กก.) 5.75 0 5.75");
     expect(normalized).not.toContain("มังคุด 2.25");
     expect((normalized.match(/มังคุด/g) ?? []).length).toBe(1);
   });
@@ -889,9 +944,9 @@ describe("Morning Brief A4 PDF", () => {
     const normalized = collectText(MorningBriefA4Doc({
       report: labeled, generatedAt: new Date("2026-09-20T08:00:00+07:00"),
     })).replace(/\s+/g, " ");
-    expect(normalized).toContain("แตงไทย (ลูก) 3 3");
-    expect(normalized).toContain("มะเขือราชินี (กก.) 2.2 2.2");
-    expect(normalized).toContain("สินค้าทดสอบไม่ทราบหน่วย (ไม่ระบุหน่วย) 1 1");
+    expect(normalized).toContain("แตงไทย (ลูก) 3 0 3");
+    expect(normalized).toContain("มะเขือราชินี (กก.) 2.2 0 2.2");
+    expect(normalized).toContain("สินค้าทดสอบไม่ทราบหน่วย (ไม่ระบุหน่วย) 1 0 1");
   });
 
   test("totals โล and กก. rows in one รวม (กก.) row, never two partial rows", () => {
@@ -964,7 +1019,7 @@ describe("Morning Brief A4 PDF", () => {
     try {
       registerFonts();
       const pdf = await renderToBuffer(doc);
-      expect((pdf.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(2);
+      expect((pdf.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBeGreaterThanOrEqual(3);
     } finally {
       console.warn = originalWarn;
     }

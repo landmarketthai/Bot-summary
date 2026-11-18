@@ -35,7 +35,7 @@ type MigrationManifest = {
  * repository filename. The two are not the same number: Production applied
  * 20260829090000_produce_pending_inactivity_lifecycle.sql under ledger version
  * 20260831045503 (see production_ledger_drift). A file such as
- * 20260830090000_x.sql sorts after the filename baseline but BEFORE the real
+ * 20260901120000_x.sql sorts after the filename baseline but BEFORE the real
  * ledger max, so it would be ordered behind a migration Production has already
  * run. Only the ledger max is a safe forward boundary.
  */
@@ -69,9 +69,9 @@ const historicalSet = new Set(HISTORICAL);
 const pendingForward = repoFiles.filter((file) => !historicalSet.has(file));
 
 describe("Production migration-history baseline", () => {
-  it("is exactly the 96 audited Production migrations", () => {
-    expect(HISTORICAL).toHaveLength(96);
-    expect(new Set(HISTORICAL).size).toBe(96);
+  it("is exactly the 99 migrations in the recorded 2026-09-03 audit", () => {
+    expect(HISTORICAL).toHaveLength(99);
+    expect(new Set(HISTORICAL).size).toBe(99);
   });
 
   it("still exists in the repository under its exact reconciled filenames", () => {
@@ -105,14 +105,19 @@ describe("Production migration-history baseline", () => {
 
   it("includes the applied #108 inactivity lifecycle migration", () => {
     expect(HISTORICAL).toContain("20260829090000_produce_pending_inactivity_lifecycle.sql");
-    expect(HISTORICAL_FILENAME_CUTOFF).toBe("20260829090000");
+    expect(HISTORICAL_FILENAME_CUTOFF).toBe("20260901093000");
+    expect(HISTORICAL.slice(-3)).toEqual([
+      "20260831120000_produce_close_validation_race.sql",
+      "20260901090000_produce_finalizer_review_presentation.sql",
+      "20260901093000_produce_product_dictionary_add_chinese_jujube.sql",
+    ]);
   });
 });
 
 describe("Production ledger version drift", () => {
   // Production's ledger version for a migration normally equals the repository
   // filename prefix. The Supabase apply_migration operation stamps its own
-  // version from the apply time instead, so one entry diverges. Production
+  // version from the apply time instead, so four entries diverge. Production
   // history is authoritative and must never be hand-edited to match the
   // filename, so the divergence is recorded in the manifest.
   //
@@ -129,6 +134,24 @@ describe("Production ledger version drift", () => {
         applied_name: "produce_pending_inactivity_lifecycle",
         note: expect.any(String),
       },
+      {
+        file: "20260831120000_produce_close_validation_race.sql",
+        applied_version: "20260901084806",
+        applied_name: "produce_close_validation_race",
+        note: expect.any(String),
+      },
+      {
+        file: "20260901090000_produce_finalizer_review_presentation.sql",
+        applied_version: "20260901084830",
+        applied_name: "produce_finalizer_review_presentation",
+        note: expect.any(String),
+      },
+      {
+        file: "20260901093000_produce_product_dictionary_add_chinese_jujube.sql",
+        applied_version: "20260902042836",
+        applied_name: "produce_product_dictionary_add_chinese_jujube",
+        note: expect.any(String),
+      },
     ]);
   });
 
@@ -141,7 +164,7 @@ describe("Production ledger version drift", () => {
   });
 
   it("records a ledger max that covers every applied version, drifted or not", () => {
-    expect(PRODUCTION_LEDGER_MAX_VERSION).toBe("20260831045503");
+    expect(PRODUCTION_LEDGER_MAX_VERSION).toBe("20260902042836");
     expect(/^\d+$/.test(PRODUCTION_LEDGER_MAX_VERSION)).toBe(true);
     // The ledger max must be at least the largest historical filename,
     // otherwise the manifest is internally inconsistent.
@@ -172,17 +195,17 @@ describe("Pending forward migrations", () => {
   // this classification exists to permit.
 
   it("rejects a file that clears the filename cutoff but not the ledger max", () => {
-    // The exact hazard the ledger-max cutoff exists to catch: 20260830090000
-    // sorts AFTER the largest historical filename (20260829090000) yet BEFORE
-    // the version Production actually recorded (20260831045503), so it would be
+    // The exact hazard the ledger-max cutoff exists to catch: 20260901120000
+    // sorts AFTER the largest historical filename (20260901093000) yet BEFORE
+    // the version Production actually recorded (20260902042836), so it would be
     // ordered behind an already-applied migration.
-    const backdated = "20260830090000_backdated_after_filename_but_before_ledger.sql";
+    const backdated = "20260901120000_backdated_after_filename_but_before_ledger.sql";
     expect(versionOf(backdated) > HISTORICAL_FILENAME_CUTOFF).toBe(true);
     expect(isForwardOfProduction(backdated)).toBe(false);
   });
 
   it("accepts a genuine future migration above the ledger max", () => {
-    expect(isForwardOfProduction("20260901000000_true_forward.sql")).toBe(true);
+    expect(isForwardOfProduction("20260903000000_true_forward.sql")).toBe(true);
     expect(isForwardOfProduction("20270101000000_future_forward.sql")).toBe(true);
   });
 
@@ -192,6 +215,6 @@ describe("Pending forward migrations", () => {
     const withFutureForward = [...repoFiles, "20270101000000_future_forward.sql"].sort();
     const stillHistorical = withFutureForward.filter((file) => historicalSet.has(file));
     expect(stillHistorical).toEqual(HISTORICAL);
-    expect(stillHistorical).toHaveLength(96);
+    expect(stillHistorical).toHaveLength(99);
   });
 });

@@ -234,7 +234,7 @@ export class FakeDatabase {
   /** Names of every RPC the code under test attempted, in order. */
   readonly rpcCalls: string[] = [];
 
-  rpc(name: string, args?: Row) {
+  rpc(name: string, args?: Row): Promise<{ data: unknown; error: null }> {
     this.rpcCalls.push(name);
     if (name === "receive_line_webhook_event") {
       const row = this.insert("raw_messages", {

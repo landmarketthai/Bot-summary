@@ -55,7 +55,7 @@ export function buildMorningBriefReferenceData(
     businessDate: report.businessDate,
     generatedAt: generatedAt.toISOString(),
     pdf,
-    report,
+    report: report.reportScope === "vegetable" ? { ...report, unassigned: undefined } : report,
   };
 }
 
@@ -63,15 +63,18 @@ export async function createMorningBriefPdfArtifact(
   supabase: Supabase,
   report: MorningBriefReport,
   generatedAt = new Date(),
+  deliveryKey?: string,
 ): Promise<MorningBriefPdfArtifact> {
+  if (deliveryKey !== undefined && !/^[0-9a-f]{64}-[0-9a-f-]{36}$/.test(deliveryKey)) throw new Error("invalid morning brief artifact identity");
   if (report.readiness?.status === "not_ready") throw new Error(`morning brief not_ready: ${report.readiness.reasons.join(", ")}`);
   registerFonts();
   const buffer = await renderToBuffer(
     <MorningBriefA4Doc report={report} generatedAt={generatedAt} />,
   );
-  const path = morningBriefPdfPath(report.businessDate, report.reportScope);
+  const basePath = morningBriefPdfPath(report.businessDate, report.reportScope);
+  const path = deliveryKey ? basePath.replace("/", `/${deliveryKey}/`) : basePath;
   const filename = morningBriefPdfFilename(report.businessDate, report.reportScope);
-  const referencePath = morningBriefReferencePath(report.businessDate, report.reportScope);
+  const referencePath = path.replace(/\.pdf$/, ".ref.json");
   const bucket = supabase.storage.from(MORNING_BRIEF_PDF_BUCKET);
 
   const { error: uploadError } = await bucket.upload(path, new Uint8Array(buffer), {

@@ -312,12 +312,13 @@ describe("Morning Brief LINE layout — Production 2026-09-07 regression", () =>
     expect(messages.join("\n")).not.toContain("รายละเอียดมากเกินขีดจำกัด LINE");
   });
 
-  test("the PDF shows daily money and real stock but skips zero-quantity review placeholders", () => {
+  test("the PDF shows daily money and retains zero quantities separately from unknown house stock", () => {
     const text = pdfText(MorningBriefA4Doc({ report: heavy, generatedAt: new Date("2026-09-08T01:00:00Z") }));
     expect(text).toContain("ยอดขายยืนยันแล้ว");
     expect(text).toContain("21,740.74");
-    // Pending-return names with no proven stock quantity are not inventory rows.
-    for (const name of unknownNames) expect(text).not.toContain(name);
+    // V3 preserves explicit numeric zero and unknown values instead of hiding rows.
+    for (const name of unknownNames) expect(text).toContain(name);
+    // Legacy productNames without item data cannot supply a quantity row.
     expect(text).not.toContain("สาลี่");
     for (const forbidden of [
       "⚠️ ข้อมูลที่ต้องตรวจ",
