@@ -12,6 +12,7 @@ import type {
 } from "@/lib/summary/morning-brief";
 
 import { PRODUCE_SECTIONS, PRODUCE_SECTION_LABEL } from "@/lib/summary/produce-section";
+import { morningBriefUnassignedLines } from "./morning-brief";
 
 export const MORNING_BRIEF_TITLE = "🌅 สรุปเช้า";
 export const MORNING_BRIEF_OVERFLOW_NOTICE =
@@ -184,6 +185,7 @@ export function buildMorningBriefBlocks(report: MorningBriefReport): string[] {
   if (report.produceReadiness?.transactionCount === 0) {
     return [
       `${MORNING_BRIEF_TITLE}${report.reportScope ? ` (${report.reportScope === "fruit" ? "ผลไม้" : "ผัก"})` : ""} — ${formatThaiDate(report.businessDate)}`,
+      ...morningBriefUnassignedLines(report),
       readinessBlock!,
       ...(report.houseStock.status === "available" ? [buildHouseStockBlock(report)] : []),
     ];
@@ -191,6 +193,7 @@ export function buildMorningBriefBlocks(report: MorningBriefReport): string[] {
   return [
     `${MORNING_BRIEF_TITLE}${report.reportScope ? ` (${report.reportScope === "fruit" ? "ผลไม้" : "ผัก"})` : ""} — ${formatThaiDate(report.businessDate)}`,
     buildSalesBlock(report),
+    ...morningBriefUnassignedLines(report),
     ...buildProduceFinancialBlocks(report),
     ...(readinessBlock ? [readinessBlock] : []),
     ...(whiteSheetDataBlock ? [whiteSheetDataBlock] : []),

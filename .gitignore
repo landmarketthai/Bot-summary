@@ -2,6 +2,7 @@
 
 # dependencies
 /node_modules
+/.npm-cache/
 /.pnp
 .pnp.*
 .yarn/*
@@ -52,3 +53,6 @@ __pycache__/
 
 # local debug scratch files
 .tmp-*
+
+# generated synthetic report evidence
+/output/

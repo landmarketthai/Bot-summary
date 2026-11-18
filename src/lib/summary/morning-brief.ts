@@ -1,5 +1,5 @@
 import { canonicalMarketLabel } from "@/lib/market";
-import { isSoldOutByAbsentReturn, type SalesReport, type SalesIdentityRow } from "@/lib/sales/calculate";
+import { isSoldOutByAbsentReturn, satangToBahtText, type SalesReport, type SalesIdentityRow } from "@/lib/sales/calculate";
 import type { SalesValueStatus } from "@/lib/sales/calculate";
 import { approvedCategoryFor, DICTIONARY_CATEGORY_NAME } from "@/lib/produce/product-code/category";
 import { PRODUCT_CODE_ENTRIES } from "@/lib/produce/product-code/dictionary";
@@ -284,6 +284,16 @@ export type MorningBriefWhiteSheetStatus = "entered" | "missing" | "unavailable"
 export type MorningBriefScope = "fruit" | "vegetable";
 
 export interface MorningBriefReport {
+  /** Fruit/authorized combined context only; outside both assigned totals. */
+  unassigned?: {
+    transactionCount: number;
+    reasons: Record<string, number>;
+    confirmedSalesSatang: number;
+    pendingReviewSalesSatang: number;
+    withdrawalValueSatang: number | null;
+    unavailableCount: number;
+    sourceTransactions: { id: string | null; sessionId: string | null; accountabilityRoundId: string | null }[];
+  };
   reportScope?: MorningBriefScope;
   /** Original calculator rows, including round identity and damage, without recomputing money. */
   salesDetails?: SalesIdentityRow[];
@@ -299,4 +309,21 @@ export interface MorningBriefReport {
   /** Only populated sections; each total includes exclusively that section. */
   produceFinancial?: Partial<Record<ProduceSection, MorningBriefFruitFinancialSummary>>;
   reconciliation?: MorningBriefReconciliation;
+}
+
+/** Review evidence appears once in Fruit/authorized combined context, outside assigned totals. */
+export function morningBriefUnassignedLines(report: MorningBriefReport): string[] {
+  const review = report.unassigned;
+  if (report.reportScope === "vegetable" || !review?.transactionCount) return [];
+  return [
+    `⚠️ ยังไม่จัดขอบเขต ${review.transactionCount} รายการ`,
+    "ไม่รวมในยอดผลไม้หรือผัก",
+    `ยอดตามหลักฐาน ${satangToBahtText(review.confirmedSalesSatang)} บาท`,
+    `ยอดรอตรวจ ${satangToBahtText(review.pendingReviewSalesSatang)} บาท`,
+    `มูลค่าเบิกที่บันทึก ${review.withdrawalValueSatang == null ? "ยังคำนวณไม่ได้" : `${satangToBahtText(review.withdrawalValueSatang)} บาท`}`,
+    `ยังคำนวณยอดขายไม่ได้ ${review.unavailableCount} รายการ`,
+    ...(review.unavailableCount ? ["ยอดรวมส่วนนี้ยังสรุปไม่ได้"] : []),
+    "โปรดตรวจตลาด ผู้ขาย รอบ และวันที่ก่อนจัดขอบเขต",
+    "แสดงครั้งเดียวในรายงานผลไม้ ห้ามบวกซ้ำกับยอดที่จัดขอบเขตภายหลัง",
+  ];
 }

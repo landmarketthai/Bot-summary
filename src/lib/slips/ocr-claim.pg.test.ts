@@ -418,7 +418,7 @@ describe.skipIf(!pgAvailable)("P1 OCR claim + fencing on PostgreSQL 17", () => {
     const sqlText = await Bun.file(
       `${ROOT}/supabase/migrations/20261017110000_slip_ocr_claim_fencing.sql`,
     ).text();
-    await db.sql.unsafe(sqlText);
+    await db.exec(sqlText);
     const row = (await checks(evidenceId))[0];
     expect(row.status).toBe("EXTRACTED");
     expect(row.claim_token).toBe(1);

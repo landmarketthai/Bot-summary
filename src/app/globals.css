@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+:root {
+  --font-sarabun: "Sarabun";
+}
+
 @theme {
   --font-sans: var(--font-sarabun), ui-sans-serif, system-ui, sans-serif;
   --color-brand: #06c755;

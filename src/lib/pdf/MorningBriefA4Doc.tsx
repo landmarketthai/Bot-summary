@@ -1,7 +1,7 @@
 import React from "react";
 import { Document, Page, StyleSheet, Text, View } from "@react-pdf/renderer";
 import { formatThaiDate } from "@/lib/date";
-import { morningBriefProductIdentity, type MorningBriefReport, type MorningBriefFruitFinancialSummary } from "@/lib/summary/morning-brief";
+import { morningBriefProductIdentity, morningBriefUnassignedLines, type MorningBriefReport, type MorningBriefFruitFinancialSummary } from "@/lib/summary/morning-brief";
 import { PRODUCE_SECTIONS, PRODUCE_SECTION_LABEL, produceSectionOf } from "@/lib/summary/produce-section";
 
 function bahtFromSatang(satang: number): string {
@@ -23,74 +23,74 @@ function thaiNumericDate(businessDate: string): string {
 const S = StyleSheet.create({
   page: {
     fontFamily: "SarabunPDF",
-    fontSize: 11.1,
+    fontSize: 20,
     paddingTop: 22,
-    paddingBottom: 28,
+    paddingBottom: 42,
     paddingHorizontal: 24,
     color: "#111827",
   },
   header: { marginBottom: 8 },
-  title: { fontSize: 21.5, fontWeight: "bold" },
-  subtitle: { fontSize: 10, color: "#6B7280", marginTop: 2 },
-  kpiGrid: { flexDirection: "row", marginHorizontal: -2, marginBottom: 5, alignItems: "stretch" },
-  kpi: { width: "20%", paddingHorizontal: 2 },
-  kpiBox: { borderWidth: 0.9, borderColor: "#C7C9CE", padding: 5, height: 58, borderRadius: 3, justifyContent: "space-between" },
+  title: { fontSize: 26, fontWeight: "bold" },
+  subtitle: { fontSize: 20, color: "#6B7280", marginTop: 2 },
+  kpiGrid: { flexDirection: "row", flexWrap: "wrap", marginHorizontal: -2, marginBottom: 5, alignItems: "stretch" },
+  kpi: { width: "50%", paddingHorizontal: 2, marginBottom: 4 },
+  kpiBox: { borderWidth: 0.9, borderColor: "#C7C9CE", padding: 8, minHeight: 90, borderRadius: 3, justifyContent: "space-between" },
   kpiContent: { flexDirection: "column", justifyContent: "flex-end", alignItems: "flex-end" },
   kpiSales: { backgroundColor: "#FFF0BF", borderColor: "#D7AC3D" },
   kpiWithdrawal: { backgroundColor: "#DFEDFA", borderColor: "#6EACD5" },
   kpiReturn: { backgroundColor: "#DDF2DC", borderColor: "#6CAD76" },
   kpiHouse: { backgroundColor: "#FFE7C4", borderColor: "#E8AD65" },
   kpiReady: { backgroundColor: "#E6E4F7", borderColor: "#9E98D4" },
-  kpiUnknownValue: { fontSize: 9.5, fontWeight: "bold", color: "#92400E", textAlign: "right", marginTop: 3 },
+  kpiUnknownValue: { fontSize: 20, fontWeight: "bold", color: "#92400E", textAlign: "right", marginTop: 3 },
   stockWarning: { backgroundColor: "#FFF8E8", borderLeftWidth: 2, borderLeftColor: "#D09A39", padding: 5, marginTop: 4 },
-  kpiLabel: { fontSize: 8.2, lineHeight: 1.25, color: "#6B7280", minHeight: 21 },
-  kpiValue: { fontSize: 12.2, fontWeight: "bold", textAlign: "right" },
-  kpiUnit: { fontSize: 7.2, color: "#6B7280", textAlign: "right", marginTop: 1 },
+  kpiLabel: { fontSize: 20, lineHeight: 1.25, color: "#374151" },
+  kpiValue: { fontSize: 24, fontWeight: "bold", textAlign: "right" },
+  kpiUnit: { fontSize: 20, color: "#6B7280", textAlign: "right", marginTop: 1 },
   financialCategory: { marginTop: 10 },
-  financialCategoryTitle: { fontSize: 14, fontWeight: "bold", marginBottom: 5, backgroundColor: "#E9EFF7", borderLeftWidth: 4, borderLeftColor: "#477FA8", paddingVertical: 3, paddingHorizontal: 6 },
-  summaryTitle: { fontSize: 18, fontWeight: "bold" },
+  financialCategoryTitle: { fontSize: 20, fontWeight: "bold", marginBottom: 5, backgroundColor: "#E9EFF7", borderLeftWidth: 4, borderLeftColor: "#477FA8", paddingVertical: 3, paddingHorizontal: 6 },
+  summaryTitle: { fontSize: 26, fontWeight: "bold" },
   dailyOverview: {
     borderWidth: 1, borderColor: "#D6A84B", borderRadius: 4,
     backgroundColor: "#FFF9E9", padding: 9, marginBottom: 8,
   },
-  dailyOverviewTitle: { fontSize: 13, fontWeight: "bold", color: "#704C15" },
-  dailyOverviewTotal: { fontSize: 23, fontWeight: "bold", color: "#111827", marginTop: 2 },
-  dailyOverviewDetails: { fontSize: 10, marginTop: 4, color: "#374151" },
-  dailyOverviewWarning: { fontSize: 9.2, marginTop: 4, color: "#92400E" },
+  dailyOverviewTitle: { fontSize: 20, fontWeight: "bold", color: "#704C15" },
+  dailyOverviewTotal: { fontSize: 36, fontWeight: "bold", color: "#111827", marginTop: 2 },
+  dailyOverviewDetails: { fontSize: 20, marginTop: 4, color: "#374151" },
+  dailyOverviewWarning: { fontSize: 20, marginTop: 4, color: "#92400E" },
   emptyPreviewTag: { backgroundColor: "#F1E7FB", borderWidth: 0.7, borderColor: "#9A76BE", padding: 7, marginBottom: 10 },
-  emptyPreviewText: { fontSize: 10, fontWeight: "bold", color: "#6A437F" },
+  emptyPreviewText: { fontSize: 20, fontWeight: "bold", color: "#6A437F" },
   emptyHeader: { marginBottom: 17, borderBottomWidth: 1.2, borderBottomColor: "#CBD5E1", paddingBottom: 11 },
-  emptyHeaderKicker: { fontSize: 10, fontWeight: "bold", color: "#477FA8", marginBottom: 4 },
+  emptyHeaderKicker: { fontSize: 20, fontWeight: "bold", color: "#477FA8", marginBottom: 4 },
   emptyHeaderTitle: { fontSize: 20.5, fontWeight: "bold" },
-  emptyHeaderSubtitle: { fontSize: 10.8, color: "#6B7280", marginTop: 5 },
+  emptyHeaderSubtitle: { fontSize: 20, color: "#6B7280", marginTop: 5 },
   emptyHero: { backgroundColor: "#FFF7E7", borderWidth: 1, borderColor: "#D6A84B",
     borderRadius: 6, paddingVertical: 17, paddingHorizontal: 16, marginBottom: 19 },
-  emptyHeroLabel: { fontSize: 10.2, fontWeight: "bold", color: "#946217", marginBottom: 6 },
-  emptyHeroTitle: { fontSize: 16, lineHeight: 1.35, fontWeight: "bold", color: "#5B4018", marginBottom: 8 },
-  emptyHeroDescription: { fontSize: 11.4, lineHeight: 1.45, color: "#74552B" },
-  emptySectionTitle: { fontSize: 14.5, fontWeight: "bold", marginBottom: 8 },
+  emptyHeroLabel: { fontSize: 20, fontWeight: "bold", color: "#946217", marginBottom: 6 },
+  emptyHeroTitle: { fontSize: 20, lineHeight: 1.35, fontWeight: "bold", color: "#5B4018", marginBottom: 8 },
+  emptyHeroDescription: { fontSize: 20, lineHeight: 1.45, color: "#74552B" },
+  emptySectionTitle: { fontSize: 20, fontWeight: "bold", marginBottom: 8 },
   emptyCardRow: { flexDirection: "row", marginHorizontal: -4, marginBottom: 8 },
   emptyCardOuter: { width: "50%", paddingHorizontal: 4 },
   emptyCard: { borderWidth: 0.8, borderColor: "#D7DEE7", backgroundColor: "#F8FAFC",
     borderRadius: 5, padding: 12, minHeight: 102, justifyContent: "space-between" },
-  emptyCardTitle: { fontSize: 11.7, fontWeight: "bold", color: "#35455A" },
-  emptyCardValue: { fontSize: 12.5, fontWeight: "bold", color: "#946217", marginTop: 6 },
-  emptyCardValueAvailable: { fontSize: 12.5, fontWeight: "bold", color: "#326A48", marginTop: 6 },
-  emptyCardValueUnavailable: { fontSize: 12, fontWeight: "bold", color: "#6B7280", marginTop: 6 },
-  emptyCardNote: { fontSize: 9.5, color: "#6B7280", marginTop: 5 },
+  emptyCardTitle: { fontSize: 20, fontWeight: "bold", color: "#35455A" },
+  emptyCardValue: { fontSize: 20, fontWeight: "bold", color: "#946217", marginTop: 6 },
+  emptyCardValueAvailable: { fontSize: 20, fontWeight: "bold", color: "#326A48", marginTop: 6 },
+  emptyCardValueUnavailable: { fontSize: 20, fontWeight: "bold", color: "#6B7280", marginTop: 6 },
+  emptyCardNote: { fontSize: 20, color: "#6B7280", marginTop: 5 },
   emptyNotice: { backgroundColor: "#EDF4FB", borderLeftWidth: 3, borderLeftColor: "#477FA8",
     marginTop: 13, paddingVertical: 12, paddingHorizontal: 13 },
-  emptyNoticeTitle: { fontSize: 11.7, fontWeight: "bold", marginBottom: 5, color: "#254F75" },
-  emptyNoticeText: { fontSize: 10.5, lineHeight: 1.45, color: "#374151" },
+  emptyNoticeTitle: { fontSize: 20, fontWeight: "bold", marginBottom: 5, color: "#254F75" },
+  emptyNoticeText: { fontSize: 20, lineHeight: 1.45, color: "#374151" },
 
-  coverSectionTitle: { fontSize: 13, fontWeight: "bold", marginTop: 7, marginBottom: 4 },
+  coverSectionTitle: { fontSize: 22, fontWeight: "bold", marginTop: 7, marginBottom: 4 },
   coverCategory: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 5, paddingHorizontal: 8, borderBottomWidth: 0.6, borderBottomColor: "#DEE3E9" },
-  coverCategoryName: { fontSize: 11.3 },
-  coverCategoryValue: { fontSize: 11.3, fontWeight: "bold" },
+  coverCategoryName: { fontSize: 20 },
+  coverCategoryValue: { fontSize: 20, fontWeight: "bold" },
   coverMarketHeader: { flexDirection: "row", paddingVertical: 5, paddingHorizontal: 8, backgroundColor: "#E9EFF7" },
   coverMarketRow: { flexDirection: "row", paddingVertical: 4, paddingHorizontal: 8, borderBottomWidth: 0.6, borderBottomColor: "#DEE3E9" },
-  coverMarketName: { width: "65%", fontSize: 10.3 },
-  coverMarketAmount: { width: "35%", fontSize: 10.3, textAlign: "right" },
+  coverMarketName: { width: "65%", fontSize: 20 },
+  coverMarketAmount: { width: "35%", fontSize: 20, textAlign: "right" },
   explanation: {
     borderLeftWidth: 2.5,
     borderLeftColor: "#777B80",
@@ -99,10 +99,10 @@ const S = StyleSheet.create({
     paddingHorizontal: 8,
     marginBottom: 9,
   },
-  explanationTitle: { fontWeight: "bold", fontSize: 11.2, marginBottom: 2 },
-  explanationText: { fontSize: 9.8, lineHeight: 1.35 },
+  explanationTitle: { fontWeight: "bold", fontSize: 22, marginBottom: 2 },
+  explanationText: { fontSize: 20, lineHeight: 1.35 },
   sectionTitle: {
-    fontSize: 13,
+    fontSize: 20,
     fontWeight: "bold",
     borderTopWidth: 0.7,
     borderTopColor: "#B6BAC0",
@@ -118,10 +118,10 @@ const S = StyleSheet.create({
     paddingVertical: 3.8,
     paddingHorizontal: 5,
   },
-  th: { fontWeight: "bold", fontSize: 11.4, backgroundColor: "#E8E8E8" },
+  th: { fontWeight: "bold", fontSize: 20, backgroundColor: "#E8E8E8" },
   totalRow: { backgroundColor: "#E8E8E8", fontWeight: "bold" },
   marketTitle: {
-    fontSize: 12.3,
+    fontSize: 20,
     fontWeight: "bold",
     borderTopWidth: 0.7,
     borderTopColor: "#B6BAC0",
@@ -134,18 +134,18 @@ const S = StyleSheet.create({
     borderColor: "#CBD5E1",
     paddingVertical: 4,
     paddingHorizontal: 5,
-    fontSize: 10.2,
+    fontSize: 20,
     textAlign: "center",
   },
-  marketHeader: { fontWeight: "bold", fontSize: 10.6 },
+  marketHeader: { fontWeight: "bold", fontSize: 20 },
   marketName: { backgroundColor: "#F4F5F7" },
   marketWithdrawal: { backgroundColor: "#E5F0FD" },
   marketSales: { backgroundColor: "#F8F0CD" },
   marketReturn: { backgroundColor: "#E4F2E1" },
-  marketTotal: { fontWeight: "bold", fontSize: 11.1 },
+  marketTotal: { fontWeight: "bold", fontSize: 20 },
   // Row padding leaves Thai tone marks clear without reserving blank space.
-  matrixCell: { paddingVertical: 1, paddingHorizontal: 5, fontSize: 11.7 },
-  stockUnit: { fontSize: 9.2, color: "#4B5563" },
+  matrixCell: { paddingVertical: 4, paddingHorizontal: 4, fontSize: 20 },
+  stockUnit: { fontSize: 20, color: "#4B5563" },
   matrixName: { backgroundColor: "#FFFFFF" },
   matrixAlternate: { backgroundColor: "#F4F7F4" },
   matrixTotal: { backgroundColor: "#DCEBD5" },
@@ -155,7 +155,7 @@ const S = StyleSheet.create({
   center: { textAlign: "center" },
   right: { textAlign: "right" },
   noteBox: { borderWidth: 0.7, borderColor: "#8E9298", padding: 5, marginTop: 5 },
-  note: { fontSize: 9.2, color: "#4B5563" },
+  note: { fontSize: 20, color: "#4B5563" },
   stockHeader: {
     borderBottomWidth: 1.4,
     borderBottomColor: "#111827",
@@ -169,7 +169,7 @@ const S = StyleSheet.create({
     right: 24,
     flexDirection: "row",
     justifyContent: "space-between",
-    fontSize: 8.2,
+    fontSize: 20,
     color: "#6B7280",
   },
 });
@@ -236,7 +236,7 @@ function MatrixCell({
         ? S.matrixHouse
         : S.matrixName;
 
-  return <View style={[S.cell, S.matrixCell, toneStyle, alternate && tone === "name" ? S.matrixAlternate : {}, header ? S.th : {}, tone === "total" && !header ? { paddingVertical: 0.5 } : {}, { width }]}>
+  return <View style={[S.cell, S.matrixCell, header ? S.th : {}, toneStyle, alternate && tone === "name" ? S.matrixAlternate : {}, { width }]}>
     <Text style={[
       right ? S.right : center ? S.center : {},
       tone === "market" && !header ? S.matrixMarketText : {},
@@ -252,7 +252,7 @@ type StockMatrixItem = {
   category: string;
   unit: string;
   houseStockQuantity: number | null;
-  marketStockQuantity: number;
+  marketStockQuantity: number | null;
   totalRemainingQuantity: number | null;
 };
 
@@ -275,7 +275,7 @@ function stockMatrixItems(report: MorningBriefReport): StockMatrixItem[] {
       category: item.category,
       unit: item.unit,
       houseStockQuantity: item.houseStockQuantity ?? null,
-      marketStockQuantity: item.marketStockQuantity ?? 0,
+      marketStockQuantity: item.marketStockQuantity ?? null,
       totalRemainingQuantity: item.totalRemainingQuantity ?? null,
     });
   }
@@ -302,28 +302,23 @@ function stockMatrixItems(report: MorningBriefReport): StockMatrixItem[] {
       const row = byKey.get(key)!;
       if (row.houseStockQuantity != null) continue;
       row.houseStockQuantity = milli / 1000;
-      row.totalRemainingQuantity = (milli + Math.round(row.marketStockQuantity * 1000)) / 1000;
+      row.totalRemainingQuantity = row.marketStockQuantity == null ? null : (milli + Math.round(row.marketStockQuantity * 1000)) / 1000;
     }
   }
 
   return [...byKey.values()];
 }
 
-function hasRealStockQuantity(item: StockMatrixItem): boolean {
-  return (item.houseStockQuantity ?? 0) > 0 || item.marketStockQuantity > 0;
-}
-
-function stockQuantity(value: number | null | undefined, blankZero = false): string {
+function stockQuantity(value: number | null | undefined): string {
   if (value == null) return "-";
-  if (blankZero && value === 0) return "";
   return qty(value);
 }
 
 function displayUnit(unit: string): string {
-  return unit === "โล" ? "กก." : unit;
+  return unit === "โล" ? "กก." : unit || "ไม่ระบุหน่วย";
 }
 
-function StockMatrix({ items, category }: { items: ReturnType<typeof stockMatrixItems>; category: StockPageCategory }) {
+function StockMatrix({ items, startIndex }: { items: ReturnType<typeof stockMatrixItems>; startIndex: number }) {
   const totals = Array.from(new Set(items.map((item) => displayUnit(item.unit)))).map((unit) => {
       // โล and กก. are one unit; never print two partial "รวม (กก.)" rows.
       const unitItems = items.filter((item) => displayUnit(item.unit) === unit);
@@ -340,21 +335,14 @@ function StockMatrix({ items, category }: { items: ReturnType<typeof stockMatrix
       </View>;
     });
   return <View style={S.table}>
-    <View style={S.tr} fixed>
-      {/* The fixed table header repeats when a category spans pages, preserving context. */}
-      <MatrixCell width="40%" header center>{`รายการ (${category})`}</MatrixCell>
-      <MatrixCell width="20%" header tone="house" center>บ้านเจ๊</MatrixCell>
-      <MatrixCell width="20%" header tone="market" center>ในตลาด</MatrixCell>
-      <MatrixCell width="20%" header tone="total" center>รวมคงเหลือ</MatrixCell>
-    </View>
     {items.map((item, index) => {
       const unitLabel = displayUnit(item.unit) || "ไม่ระบุหน่วย";
       const row = <View style={S.tr} key={`${item.productName}-${item.unit}-${index}`} wrap={false}>
         <MatrixCell width="40%" center alternate={index % 2 === 1}>
-          <TableLabel>{item.productName}</TableLabel> <Text style={S.stockUnit}>{`(${unitLabel})`}</Text>
+          <TableLabel>{`${startIndex + index + 1}. ${item.productName}`}</TableLabel> <Text style={S.stockUnit}>{`(${unitLabel})`}</Text>
         </MatrixCell>
-        <MatrixCell width="20%" tone="house" right>{stockQuantity(item.houseStockQuantity, true)}</MatrixCell>
-        <MatrixCell width="20%" tone="market" right>{stockQuantity(item.marketStockQuantity, true)}</MatrixCell>
+        <MatrixCell width="20%" tone="house" right>{stockQuantity(item.houseStockQuantity)}</MatrixCell>
+        <MatrixCell width="20%" tone="market" right>{stockQuantity(item.marketStockQuantity)}</MatrixCell>
         <MatrixCell width="20%" tone="total" right>{stockQuantity(item.totalRemainingQuantity)}</MatrixCell>
       </View>;
       // Measure the complete final row and unit totals together instead of guessing 35 pt.
@@ -450,7 +438,7 @@ function FinancialKpis({ label, financial, showTitle = true, compact = false, sh
       <Text style={S.explanationText}>{cards.slice(0, 3).map((card) => `${card.label} ${card.value} บาท`).join(" • ")}</Text>
       <Text style={S.explanationText}>{cards.slice(3).map((card) => `${card.label} ${card.value}${card.unknown ? "" : " บาท"}`).join(" • ")}</Text>
     </> : <View style={S.kpiGrid}>
-      {cards.map((card, i) => <View style={S.kpi} key={i}>
+      {cards.slice(1).map((card, i) => <View style={S.kpi} key={i}>
         <View style={[S.kpiBox, card.tone]}>
           <Text style={S.kpiLabel}>{card.label}</Text>
           <View style={S.kpiContent}>
@@ -474,8 +462,7 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
   const financialBySection = report.produceFinancial ?? (report.fruitFinancial ? { fruit: report.fruitFinancial } : {});
   const financialSections = PRODUCE_SECTIONS.flatMap((section) => {
     const financial = financialBySection[section];
-    // No dedicated finance block for a category with only zero-valued data.
-    // This does NOT suppress its physical stock rows later in the document.
+    // Retain zero-valued evidence; omit a category only when it has no activity or rows.
     const hasFinanceActivity = financial && (
       financial.withdrawalValueSatang !== 0 ||
       financial.salesValueSatang !== 0 ||
@@ -485,7 +472,7 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
       financial.markets.some((market) =>
         market.withdrawalValueSatang !== 0 || market.salesValueSatang !== 0 || market.goodReturnValueSatang !== 0)
     );
-    return hasFinanceActivity ? [{ section, financial }] : [];
+    return financial && (hasFinanceActivity || financial.markets.length > 0) ? [{ section, financial }] : [];
   });
   // Unclassified/other money is included in these totals, but NEVER forced into
   // fruit or vegetable to make the front page look clean.
@@ -532,7 +519,7 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
   // No saved produce rows means "not reported yet", never a business-zero day.
   const noProduceEvidence = report.produceReadiness?.transactionCount === 0;
   const hasDailyActivity = !noProduceEvidence && ((report.salesDetails?.length ?? 0) > 0 || financialSections.length > 0
-    || stockItems.some(hasRealStockQuantity)
+    || stockItems.length > 0
     || report.sales.totalSalesSatang !== 0
     || report.sales.confirmedSalesSatang !== 0
     || report.sales.pendingReviewSalesSatang !== 0);
@@ -544,14 +531,17 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
     const financial = category === "ผลไม้" ? financialBySection.fruit
       : category === "ผัก" ? financialBySection.vegetable : undefined;
     // Finance without physical stock stays on the overview, never an empty detail page.
-    const hasStock = items.some(hasRealStockQuantity);
+    const hasStock = items.length > 0;
     return hasStock ? [{ category, items, financial, hasStock }] : [];
   });
 
-  const showDataQuality = report.reportScope == null;
+  const showDataQuality = true;
+  const hasQualityDetail = report.sales.pendingReviewSalesSatang !== 0 || report.sales.excludedFromSalesCount > 0
+    || !report.sales.valueAuthoritative || salesBreakdownDiffers || Boolean(unclassified)
+    || Boolean(report.produceReadiness?.markets.length);
   const scopeLabel = report.reportScope === "fruit" ? "ผลไม้" : report.reportScope === "vegetable" ? "ผัก" : "";
   return <Document title={`Morning Brief ${scopeLabel} ${report.businessDate}`}>
-    {hasDailyActivity ? <><Page size="A4" style={S.page} wrap>
+    {hasDailyActivity ? <><Page size="A4" orientation="landscape" style={S.page} wrap>
       <View style={S.header}>
         <Text style={S.summaryTitle}>สรุปยอดขายประจำวัน{scopeLabel ? ` (${scopeLabel})` : ""} - {formatThaiDate(report.businessDate)}</Text>
         <Text style={S.subtitle}>Bot-summary | ข้อมูลวันที่ {thaiNumericDate(report.businessDate)} | {report.reportScope === "vegetable" ? "เฉพาะตลาดพาซิโอ้ผัก" : report.reportScope === "fruit" ? "ขอบเขตตลาดผลไม้" : "ภาพรวมยอดขายทุกหมวดและรายละเอียดตามตลาด"}</Text>
@@ -562,18 +552,25 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
         </Text>
         <Text style={S.dailyOverviewTotal}>{bahtFromSatang(report.sales.confirmedSalesSatang)} บาท</Text>
         <Text style={S.dailyOverviewDetails}>{report.reportScope ? "ทุกสินค้าในขอบเขตรายงาน" : "ทุกหมวดสินค้าและทุกตลาด • ยอดรอตรวจและรอชั่งคืนแสดงแยกด้านล่าง"}</Text>
+        {report.reportScope !== "vegetable" && report.unassigned?.transactionCount ? <Text style={S.dailyOverviewWarning}>มีรายการยังไม่จัดขอบเขต {report.unassigned.transactionCount} รายการ • ดูหน้ารอตรวจ</Text> : null}
         {showDataQuality && report.sales.pendingReviewSalesSatang !== 0 ? <Text style={S.dailyOverviewDetails}>ยอดขายคำนวณได้ (รวมรอตรวจ) {bahtFromSatang(report.sales.totalSalesSatang)} บาท</Text> : null}
       </View>
       <FinancialKpis label="รวมทุกสินค้า" financial={combined} showDataQuality={showDataQuality} />
+      <DataFooter generatedText={generatedText} />
+    </Page>
+    {marketRows.length > 0 || hasQualityDetail ? <Page size="A4" orientation="landscape" style={[S.page, { paddingTop: marketRows.length ? 120 : 75 }]} wrap>
+      <View fixed style={{ position: "absolute", top: 22, left: 24, right: 24 }}>
+        <Text style={{ fontSize: 24, fontWeight: "bold", marginBottom: 6 }}>{marketRows.length ? "สรุปยอดตามตลาด" : "สถานะข้อมูล"} - {formatThaiDate(report.businessDate)}</Text>
+        {marketRows.length ? <View style={S.tr}>
+          <MarketCell width="28%" tone="name" header>ตลาด</MarketCell>
+          <MarketCell width="24%" tone="withdrawal" header>เบิกไปขาย</MarketCell>
+          <MarketCell width="24%" tone="sales" header>ยืนยันแล้ว</MarketCell>
+          <MarketCell width="24%" tone="return" header>ชั่งคืนดี</MarketCell>
+        </View> : null}
+      </View>
       {marketRows.length > 0 ? <View style={{ marginTop: 4 }}>
         <Text style={S.coverSectionTitle}>สรุปยอดตามตลาด (ทุกสินค้า)</Text>
         <View style={S.table}>
-          <View style={S.tr} fixed>
-            <MarketCell width="28%" tone="name" header>ตลาด</MarketCell>
-            <MarketCell width="24%" tone="withdrawal" header>เบิกไปขาย</MarketCell>
-            <MarketCell width="24%" tone="sales" header>ยืนยันแล้ว</MarketCell>
-            <MarketCell width="24%" tone="return" header>ชั่งคืนดี</MarketCell>
-          </View>
           {marketRows.map((market, index) => {
             const totals = coverMarketTotals.get(market.marketLabel);
             return <View key={`${market.marketLabel}-${index}`} style={S.tr} wrap={false}>
@@ -605,28 +602,47 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
         && !stockSections.some(({ category }) => category === PRODUCE_SECTION_LABEL[section]))
         .map(({ section, financial }) => <FinancialKpis key={section} label={PRODUCE_SECTION_LABEL[section]} financial={financial} compact showDataQuality={showDataQuality} />)}
       <DataFooter generatedText={generatedText} />
-    </Page>
-    {stockSections.length > 0 ? <Page size="A4" style={S.page} wrap>
+    </Page> : null}
+    {stockSections.length > 0 ? <Page size="A4" orientation="landscape" style={[S.page, { paddingTop: 120 }]} wrap>
+      <View fixed style={{ position: "absolute", top: 22, left: 24, right: 24 }}>
+        <Text style={{ fontSize: 24, fontWeight: "bold", marginBottom: 6 }}>สินค้าคงเหลือ - {formatThaiDate(report.businessDate)}</Text>
+        <View style={S.tr}>
+          <MatrixCell width="40%" header center>รายการ / หน่วย</MatrixCell>
+          <MatrixCell width="20%" header tone="house" center>บ้านเจ๊</MatrixCell>
+          <MatrixCell width="20%" header tone="market" center>ในตลาด</MatrixCell>
+          <MatrixCell width="20%" header tone="total" center>รวมคงเหลือ</MatrixCell>
+        </View>
+      </View>
       {/* Keep category headings with their first rows; small categories share a page. */}
       {stockSections.map(({ category, items, financial, hasStock }, index) => <React.Fragment key={category}>
         <View wrap={false} minPresenceAhead={items.length > 1 ? 70 : 40}>
           <View style={[S.stockHeader, { marginTop: index === 0 ? 0 : 4 }]}>
-            <Text style={{ fontSize: 16, fontWeight: "bold" }}>{`หมวด${category} - ${formatThaiDate(report.businessDate)}`}</Text>
+            <Text style={{ fontSize: 24, fontWeight: "bold" }}>{`หมวด${category} - ${formatThaiDate(report.businessDate)}`}</Text>
             {index === 0 ? <Text style={[S.note, { marginTop: 3 }]}>
               รวมคงเหลือ = คงเหลือในบ้าน + ในตลาด • ในตลาด = ของดีชั่งคืน • ไม่ทราบยอดบ้านแสดง “-”
             </Text> : null}
           </View>
           {financial ? <FinancialKpis label={category} financial={financial} showTitle={false} compact showDataQuality={showDataQuality} /> : null}
         </View>
-        {hasStock ? <StockMatrix items={items} category={category} /> : null}
+        {hasStock ? [...new Set(items.map((item) => displayUnit(item.unit)))].sort().map((unit, unitIndex, units) => {
+          const unitItems = items.filter((item) => displayUnit(item.unit) === unit);
+          const startIndex = stockSections.slice(0, index).reduce((sum, group) => sum + group.items.length, 0)
+            + items.filter((item) => units.slice(0, unitIndex).includes(displayUnit(item.unit))).length;
+          return <View key={unit}>
+            <Text minPresenceAhead={80} style={{ fontSize: 20, fontWeight: "bold", marginTop: 6 }}>หน่วย {unit}</Text>
+            <StockMatrix items={unitItems} startIndex={startIndex} />
+          </View>;
+        }) : null}
       </React.Fragment>)}
       <DataFooter generatedText={generatedText} />
     </Page> : null}
-    </> : <Page size="A4" style={S.page}>
-      {!showDataQuality ? <>
-        <Text style={S.summaryTitle}>สรุปยอดขายประจำวัน ({scopeLabel}) - {formatThaiDate(report.businessDate)}</Text>
-        <Text style={S.subtitle}>ยังไม่มีข้อมูลสำหรับสรุปยอดขาย</Text>
-      </> : noProduceEvidence ? <>
+    {report.reportScope !== "vegetable" && report.unassigned?.transactionCount ? <Page size="A4" orientation="landscape" style={S.page} wrap>
+      <Text style={S.summaryTitle}>รายการรอตรวจขอบเขต - {formatThaiDate(report.businessDate)}</Text>
+      {morningBriefUnassignedLines(report).map((line, index) => <Text key={index} style={[S.explanationText, { marginTop: 14 }]}>{line.replace("⚠️ ", "")}</Text>)}
+      <DataFooter generatedText={generatedText} />
+    </Page> : null}
+    </> : <Page size="A4" orientation="landscape" style={S.page}>
+      {noProduceEvidence ? <>
         {previewLabel ? <View style={S.emptyPreviewTag}><Text style={S.emptyPreviewText}>{previewLabel}</Text></View> : null}
         <View style={S.emptyHeader}>
           <Text style={S.emptyHeaderKicker}>MORNING BRIEF / สถานะข้อมูลประจำวัน</Text>
@@ -670,6 +686,7 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
           </Text>
         </View>
       </> : <Text>ยังไม่มีข้อมูลสินค้าในระบบ</Text>}
+      {morningBriefUnassignedLines(report).map((line, index) => <Text key={index} style={[S.explanationText, { marginTop: 14 }]}>{line.replace("⚠️ ", "")}</Text>)}
       <DataFooter generatedText={generatedText} />
     </Page>}
   </Document>;

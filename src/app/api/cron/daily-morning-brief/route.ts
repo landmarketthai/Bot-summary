@@ -1,5 +1,6 @@
 import { enterCategoryPolicy, loadApprovedCategoryPolicy } from "@/lib/produce/category-learning/rules";
 import { NextRequest, NextResponse } from "next/server";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { createServiceClient } from "@/lib/supabase/server";
 import { pushLineMessage } from "@/lib/line/reply";
 import { logger } from "@/lib/logger";
@@ -16,9 +17,12 @@ import {
   morningBriefPdfLineMessage,
 } from "@/lib/summary/morning-brief-pdf";
 
+import { briefDelivery, briefTargetKey, type BriefDelivery } from "@/lib/summary/morning-brief-delivery";
+import { morningBriefSlot } from "@/lib/summary/morning-brief-schedule";
 const MORNING_BRIEF_TARGETS_ENV = "MORNING_BRIEF_LINE_TARGETS";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 240;
 
 function isStrictBusinessDate(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
@@ -46,6 +50,9 @@ async function resolveMarkerTarget(
 }
 
 export async function GET(req: NextRequest) {
+  const arrival = Date.now();
+  const started = performance.now();
+  let stage = "configuration";
   const secret = process.env.CRON_SECRET;
   if (!secret) {
     logger.error("morning brief cron rejected - CRON_SECRET is missing");
@@ -83,161 +90,180 @@ export async function GET(req: NextRequest) {
   if (targetMarker && [...targetMarker].length > 200) {
     return NextResponse.json({ error: "target_marker exceeds 200 characters" }, { status: 400 });
   }
-  const hasManualTarget = Boolean(targetOverride || targetMarker);
+  // Explicit dispatcher mode retains the legacy marker but requires the
+  // same slot and private target parity gates as configured ENV sends.
+  const scheduledParam = req.nextUrl.searchParams.get("scheduled");
+  const scheduledMarker = scheduledParam === "1";
+  if (scheduledParam !== null && !scheduledMarker) {
+    return NextResponse.json({ error: "invalid scheduled mode" }, { status: 400 });
+  }
+  if (scheduledMarker && (!dateParam || !targetMarker || targetOverride || debugMode || retryNonce
+    || ["scheduled", "date", "scope", "target_marker", "target", "debug", "retry_nonce"].some((key) => req.nextUrl.searchParams.getAll(key).length > 1))) {
+    return NextResponse.json({ error: "scheduled mode requires one date and marker, without manual overrides" }, { status: 400 });
+  }
+  const hasManualTarget = !scheduledMarker && Boolean(targetOverride || targetMarker);
   if (retryNonce && (!hasManualTarget || !/^[A-Za-z0-9_-]{1,64}$/.test(retryNonce))) {
     return NextResponse.json({ error: "retry_nonce requires a manual target and must be 1-64 safe characters" }, { status: 400 });
   }
 
   const businessDate = resolveStockSummaryDate(dateParam);
   const supabase = createServiceClient();
+
   let targets: string[];
   if (targetOverride) {
     targets = [targetOverride];
   } else if (targetMarker) {
     const resolved = await resolveMarkerTarget(supabase, targetMarker);
     if (resolved.error) {
-      logger.error("morning brief marker target lookup failed", { businessDate, error: resolved.error });
+      logger.error("morning brief marker target lookup failed", { businessDate });
       return NextResponse.json({ error: "marker target lookup failed" }, { status: 500 });
     }
     if (!resolved.target) {
       return NextResponse.json({ error: "marker target not found" }, { status: 404 });
+    }
+    if (scheduledMarker && !/^C[0-9A-Za-z]{10,}$/.test(resolved.target)) {
+      return NextResponse.json({ ok: false, status: "invalid_scheduled_marker_target", sent: false }, { status: 409 });
     }
     targets = [resolved.target];
   } else {
     targets = parseStockSummaryTargets(process.env[targetsEnv]);
   }
 
-  logger.info("morning brief cron started", {
-    reportScope,
-    businessDate,
-    hasDateParam: Boolean(dateParam),
-    debugMode,
-    targetOverride: Boolean(targetOverride),
-    targetMarker: Boolean(targetMarker),
-    targetCount: targets.length,
-  });
-
-  // One complete category snapshot for the report, its PDF and its messages
-  // (see category-learning/rules.ts).
-  enterCategoryPolicy(await loadApprovedCategoryPolicy(supabase));
-
-  let messages: string[];
-  let report: Awaited<ReturnType<typeof loadMorningBriefReport>>;
+  if (retryNonce && !debugMode) {
+    return NextResponse.json({ error: "retry_nonce cannot bypass durable delivery state" }, { status: 400 });
+  }
   try {
-    report = await loadMorningBriefReport(supabase, businessDate, reportScope);
-    if (report.readiness?.status === "not_ready") {
-      return NextResponse.json({ ok: true, status: "not_ready", businessDate, reportScope,
-        reasons: report.readiness.reasons, sent: false, pdfDelivered: false, wouldSendLine: false });
+    if (!debugMode && reportScope === "vegetable" && !morningBriefSlot(reportScope, arrival)) {
+      logger.warn("morning brief outside slot grace", { businessDate, reportScope, stage: "window" });
+      return NextResponse.json({ ok: false, status: "outside_window", sent: false, graceMinutes: 5 }, { status: 409 });
     }
-    messages = buildMorningBriefMessages(report);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    logger.error("morning brief cron failed - report build error", { businessDate, error: message });
-    return NextResponse.json({ error: message }, { status: 500 });
-  }
-
-  if (debugMode) {
-    logger.info("morning brief cron debug completed", {
-      businessDate,
-      messageCount: messages.length,
-      targetCount: targets.length,
-      wouldSendLine: targets.length > 0,
-    });
-    return NextResponse.json({
-      ok: true,
-      debug: true,
-      reportScope,
-      readiness: report.readiness,
-      businessDate,
-      messageCount: messages.length,
-      targetCount: targets.length,
-      wouldSendLine: targets.length > 0,
-      messages,
-    });
-  }
-
-  let pdfUrl: string | null = null;
-  let pdfError: string | null = null;
-  try {
-    const artifact = await createMorningBriefPdfArtifact(supabase, report);
-    pdfUrl = artifact.signedUrl;
-  } catch (error) {
-    pdfError = error instanceof Error ? error.message : String(error);
-    logger.error("morning brief PDF generation failed", { businessDate, error: pdfError });
-  }
-
-  if (targets.length === 0) {
-    logger.warn("morning brief cron skipped - no LINE targets configured", {
-      businessDate,
-      envVar: targetsEnv,
-    });
-    return NextResponse.json({
-      ok: !pdfError,
-      reportScope,
-      pdfDelivered: false,
-      morningBriefReferencePersisted: Boolean(pdfUrl),
-      businessDate,
-      sent: false,
-      reason: "no_targets_configured",
-      messageCount: messages.length,
-      targetCount: 0,
-    }, { status: pdfError ? 500 : 200 });
-  }
-
-  let sentCount = 0;
-  const failedTargets: string[] = [];
-  for (const target of targets) {
-    try {
-      for (const [index, message] of messages.entries()) {
-        await pushLineMessage(target, message, morningBriefRetryKey(businessDate, target, index, retryNonce || undefined, reportScope));
+    // Configured sends, including recovery, obey the slots and bounded date range.
+    if (!debugMode && !hasManualTarget) {
+      if (!morningBriefSlot(reportScope, arrival)) {
+        logger.warn("morning brief outside slot grace", { businessDate, reportScope, stage: "window" });
+        return NextResponse.json({ ok: false, status: "outside_window", sent: false, graceMinutes: 5 }, { status: 409 });
       }
-      if (pdfUrl) {
-        const pdfMessage = morningBriefPdfLineMessage(pdfUrl);
-        await pushLineMessage(target, pdfMessage, morningBriefPdfRetryKey(businessDate, target, reportScope, retryNonce || undefined));
-      }
-      sentCount += 1;
-    } catch (error) {
-      failedTargets.push(target);
-      logger.error("morning brief cron push failed", {
-        businessDate,
-        target,
-        error: error instanceof Error ? error.message : String(error),
+    }
+    // Check the additive schema before claiming, rendering, or sending, including manual UAT.
+    stage = "context";
+    const context = await (supabase as SupabaseClient).rpc("morning_brief_context", { p_date: businessDate, p_scope: reportScope });
+    if (context.error || !["ready", "not_ready"].includes(context.data?.readiness?.status)) {
+      logger.error("morning brief schema context unavailable", { businessDate, reportScope, stage });
+      return NextResponse.json({ ok: false, status: "schema_unavailable", stage, sent: false }, { status: 503 });
+    }
+    if (!debugMode && !hasManualTarget) {
+      stage = "target_parity";
+      const parity = await (supabase as SupabaseClient).rpc("morning_brief_target_parity", {
+        p_scope: reportScope, p_targets: targets.map(briefTargetKey),
       });
+      if (parity.error || typeof parity.data?.matched !== "boolean") throw new Error("morning brief target parity unavailable");
+      if (!parity.data.matched || targets.length === 0) {
+        // Allowlist count fields; never reflect private RPC payloads or hashes.
+        const counts = Object.fromEntries(["configuredCount", "requestedCount", "missingCount", "excessCount"].map((key) =>
+          [key, Number.isSafeInteger(parity.data[key]) && parity.data[key] >= 0 ? parity.data[key] : null]));
+        logger.warn("morning brief target config mismatch", { reportScope, ...counts });
+        return NextResponse.json({ ok: false, status: "target_config_mismatch", sent: false, ...counts }, { status: 409 });
+      }
+      stage = "preflight";
+      const { data, error } = await (supabase as SupabaseClient).rpc("morning_brief_should_invoke", {
+        p_date: businessDate, p_scope: reportScope, p_targets: targets.map(briefTargetKey),
+        p_now: new Date(arrival).toISOString(),
+      });
+      if (error) throw new Error("morning brief preflight unavailable");
+      if (!data) {
+        stage = "delivery_status";
+        const status = await (supabase as SupabaseClient).rpc("morning_brief_delivery_status", {
+          p_date: businessDate, p_scope: reportScope, p_targets: targets.map(briefTargetKey), p_now: new Date(arrival).toISOString(),
+        });
+        if (status.error || !status.data) throw new Error("morning brief status unavailable");
+        const review = status.data.reviewCount > 0;
+        return NextResponse.json({ ok: !review, status: review ? "needs_review" : context.data.readiness.status === "not_ready" ? "not_ready" : "skipped",
+          readiness: context.data.readiness, deliveryStatus: status.data, sent: false, sentCount: 0,
+          newlyAcceptedCount: 0, previouslyAcceptedCount: status.data.acceptedCount, pdfDelivered: false }, { status: review ? 409 : 200 });
+      }
     }
+    // One complete category snapshot for the report, its PDF and its messages
+    // (see category-learning/rules.ts); loaded only after every delivery gate.
+    enterCategoryPolicy(await loadApprovedCategoryPolicy(supabase));
+    if (debugMode) {
+      const report = await loadMorningBriefReport(supabase, businessDate, reportScope);
+      const messages = report.readiness?.status === "not_ready" ? [] : buildMorningBriefMessages(report);
+      return NextResponse.json({ ok: true, debug: true, reportScope, businessDate, readiness: report.readiness,
+        messages, messageCount: messages.length, targetCount: targets.length, wouldSendLine: messages.length > 0 && targets.length > 0 });
+    }
+    let newlyAcceptedCount = 0;
+    let previouslyAcceptedCount = 0;
+    let failedCount = 0;
+    const failureStages = new Set<string>();
+    let busyCount = 0;
+    let reviewCount = 0;
+    let notReady = false;
+    let deferredCount = 0;
+    let artifactCreated = false;
+    let artifact: Awaited<ReturnType<typeof createMorningBriefPdfArtifact>> | undefined;
+    let report: Awaited<ReturnType<typeof loadMorningBriefReport>> | undefined;
+    for (const target of targets) {
+      if (performance.now() - started >= 195_000) { deferredCount++; continue; }
+      let claim: BriefDelivery | undefined;
+      try {
+        stage = "claim";
+        claim = await briefDelivery(supabase, businessDate, reportScope, target, "claim");
+        if (claim.state === "accepted") { previouslyAcceptedCount++; continue; }
+        if (claim.state === "busy") { busyCount++; continue; }
+        if (claim.state === "needs_review") { reviewCount++; continue; }
+        if (!claim.payload) {
+          stage = "report";
+          report ??= await loadMorningBriefReport(supabase, businessDate, reportScope);
+          if (report.readiness?.status === "not_ready") { notReady = true; continue; }
+          if (performance.now() - started >= 195_000) { deferredCount++; continue; }
+          // Artifact success is required before sending; freeze both text and URL
+          // so a partial/unknown retry uses exactly the same request body.
+          stage = "artifact";
+          artifact ??= await createMorningBriefPdfArtifact(supabase, report, new Date(Date.now()), `${briefTargetKey(target)}-${claim.lease_token}`);
+          artifactCreated = true;
+          const parts = buildMorningBriefMessages(report).map((text, index) => ({ text, kind: "text" as const,
+            key: morningBriefRetryKey(businessDate, target, index, undefined, reportScope) }));
+          const payload = { artifactPath: artifact.path, parts: [...parts, {
+            text: morningBriefPdfLineMessage(artifact.signedUrl), kind: "pdf" as const,
+            key: morningBriefPdfRetryKey(businessDate, target, reportScope),
+          }] };
+          stage = "freeze";
+          claim = await briefDelivery(supabase, businessDate, reportScope, target, "freeze", claim, payload);
+        }
+        const parts = claim.payload!.parts;
+        for (let index = claim.next_part; index < parts.length; index++) {
+          if (performance.now() - started >= 195_000) { deferredCount++; break; }
+          stage = "prepare";
+          claim = await briefDelivery(supabase, businessDate, reportScope, target, "prepare", claim, undefined, index);
+          if (claim.state !== "pending") { reviewCount++; break; }
+          stage = "push";
+          await pushLineMessage(target, parts[index].text, parts[index].key, { signal: AbortSignal.timeout(15_000) });
+          stage = "accept";
+          claim = await briefDelivery(supabase, businessDate, reportScope, target, "accept", claim, undefined, index);
+        }
+        if (claim.state === "accepted") newlyAcceptedCount++;
+      } catch {
+        failedCount++;
+        failureStages.add(stage);
+        // No target IDs, provider bodies, signed URLs or credentials in logs.
+        logger.error("morning brief delivery attempt failed", { businessDate, reportScope, stage, code: `${stage}_failed` });
+      } finally {
+        if (claim?.state === "pending") {
+          try { await briefDelivery(supabase, businessDate, reportScope, target, "release", claim); }
+          catch { /* Expired/fenced claims recover through the same stored keys. */ }
+        }
+      }
+    }
+    return NextResponse.json({ ok: failedCount === 0 && deferredCount === 0 && reviewCount === 0, businessDate, reportScope,
+      status: failedCount ? "failed" : reviewCount ? "needs_review" : deferredCount ? "pending" : notReady ? "not_ready" : busyCount ? "in_progress" : "complete",
+      readiness: notReady ? report?.readiness : undefined, deferredCount,
+      failureStages: [...failureStages],
+      sent: newlyAcceptedCount > 0, sentCount: newlyAcceptedCount, newlyAcceptedCount, previouslyAcceptedCount,
+      lineAcceptedCount: newlyAcceptedCount + previouslyAcceptedCount, failedCount, busyCount, reviewCount,
+      artifactCreated, pdfDelivered: newlyAcceptedCount > 0, targetCount: targets.length,
+    }, { status: failedCount ? 500 : reviewCount ? 409 : deferredCount ? 503 : 200 });
+  } catch {
+    logger.error("morning brief preflight failed", { businessDate, reportScope, stage });
+    return NextResponse.json({ error: "morning brief unavailable", stage }, { status: 500 });
   }
-
-  if (failedTargets.length > 0 || pdfError) {
-    logger.error("morning brief cron completed with failures", {
-      businessDate,
-      sentCount,
-      failedCount: failedTargets.length,
-      pdfFailed: Boolean(pdfError),
-    });
-    return NextResponse.json(
-      {
-        ok: false,
-        businessDate,
-        sent: sentCount > 0,
-        sentCount,
-        failedCount: failedTargets.length,
-        pdfFailed: Boolean(pdfError),
-        messageCount: messages.length,
-        targetCount: targets.length,
-      },
-      { status: 500 },
-    );
-  }
-
-  logger.info("morning brief cron sent", { businessDate, sentCount });
-  return NextResponse.json({
-    ok: true,
-    reportScope,
-    businessDate,
-    sent: true,
-    sentCount,
-    messageCount: messages.length,
-    targetCount: targets.length,
-    pdfDelivered: Boolean(pdfUrl),
-    targetMode: targetMarker ? "marker" : targetOverride ? "override" : "configured",
-  });
 }

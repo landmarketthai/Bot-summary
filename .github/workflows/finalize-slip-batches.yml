@@ -1,8 +1,8 @@
 name: finalize-slip-batches
 
+# Supabase pg_cron job #1 is the sole scheduled slip finalizer (every minute).
+# Manual dispatch is retained for incident recovery; do not schedule a duplicate.
 on:
-  schedule:
-    - cron: "2,7,12,17,22,27,32,37,42,47,52,57 * * * *"
   workflow_dispatch:
 
 jobs:

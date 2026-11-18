@@ -86,12 +86,13 @@ describe("policy mirrors the SQL it depends on", () => {
     expect(sqlDefault).toBeGreaterThanOrEqual(DEFAULT_INGEST_MAX_SECONDS);
   });
 
-  test("the cron period assumed here is the one the real scheduler uses", () => {
-    const schedule = workflow.match(/cron:\s*"([^"]+)"/);
-    expect(schedule).not.toBeNull();
-    const minutes = schedule![1].split(" ")[0].split(",").map(Number);
-    const gaps = minutes.map((m, i) => (minutes[(i + 1) % minutes.length] - m + 60) % 60);
-    expect(Math.max(...gaps) * 60).toBe(P.cron.periodSeconds);
+  test("slip recovery uses Supabase cron; GitHub is manual-only and safety budget remains conservative", () => {
+    // Supabase pg_cron #1 is configured operationally (2-minute ticks as of Nov 4).
+    // The 300-second policy is an intentionally conservative max sweep interval,
+    // NOT an assertion that the removed duplicate GitHub schedule still runs.
+    expect(workflow).toContain("workflow_dispatch:");
+    expect(workflow).not.toMatch(/\bcron:\s*["']/);
+    expect(P.cron.periodSeconds).toBe(300);
     expect(JSON.parse(readFileSync(join(ROOT, "vercel.json"), "utf8")).crons).toEqual([]);
   });
 });

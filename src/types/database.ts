@@ -39,7 +39,7 @@ export type SlipImageEventState =
   | "late_after_finalize";
 
 export type SlipBatchStatus =
-  | "collecting" | "closing" | "processing" | "completed" | "review_needed" | "failed";
+  | "collecting" | "closing" | "processing" | "completed" | "review_needed" | "failed" | "cancelled";
 export type ManualSlipSessionStatus      = "open" | "closed";
 export type ManualWhiteSheetNoteSessionStatus = "open" | "closed" | "cancelled";
 export type SettlementFinalizationStatus = "pending" | "sending" | "sent" | "failed" | "ambiguous";
@@ -2357,6 +2357,14 @@ export interface Database {
       };
     };
     Functions: {
+      cancel_collecting_slip_batch: {
+        Args: {
+          p_source_id: string;
+          p_sender_id: string | null;
+          p_event_ts_ms: number | null;
+        };
+        Returns: "cancelled" | "no_active" | "not_owner" | "already_closing";
+      };
       upsert_data_quality_issues: {
         Args: {
           p_candidates: Json;
