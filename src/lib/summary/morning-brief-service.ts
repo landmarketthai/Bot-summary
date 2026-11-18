@@ -8,10 +8,12 @@ import {
 import { quantityTimesSatang, toMilliQuantity } from "@/lib/sales/calculate";
 import { fetchSalesProduceRows, loadSalesReport, loadProduceFailureScan, type SalesMarketFilter } from "@/lib/sales/load";
 import { canonicalMarketLabel } from "@/lib/market";
+import { morningBriefMarket } from "./morning-brief-identity";
 import { isQaMarketLabel } from "@/lib/sales/qa-scopes";
 import { fetchReconciliationReport } from "@/lib/reconciliation-report-service";
 import { summarizeReconciliationReport } from "@/lib/reconciliation-report";
 import { baseTransactionType } from "@/lib/summary/transactions";
+import { exactLineTotalScaled, scaledToSatang } from "@/lib/produce/exact-line-total";
 import { loadPurchasePlanningReport } from "@/lib/summary/purchase-planning-service";
 import {
   morningBriefProductIdentity,
@@ -239,23 +241,59 @@ export async function loadMorningBriefReport(
 ): Promise<MorningBriefReport> {
   const allRows = await fetchSalesProduceRows(supabase, businessDate);
   const roundMarkets = new Map<string, string>();
+  const roundIssues = new Map<string, string>();
+  const qaRoundIds = new Set<string>();
+  let scopeReadiness: MorningBriefReport["readiness"];
   if (reportScope) {
-    const ids = [...new Set(allRows.flatMap((row) => row.accountability_round_id ? [row.accountability_round_id] : []))];
-    for (let offset = 0; offset < ids.length; offset += 500) {
-      // Round tables use the same ungenerated schema boundary as round-return-status.
-      const { data, error } = await (supabase as SupabaseClient).from("accountability_rounds")
-        .select("id, market_label").in("id", ids.slice(offset, offset + 500));
-      if (error) throw new Error(`morning brief market scope lookup failed: ${error.message}`);
-      for (const round of (data ?? []) as { id: string; market_label: string | null }[]) roundMarkets.set(round.id, canonicalMarketLabel(round.market_label));
-    }
+    // The same authority is used before pg_net invokes this route. Includes
+    // known rounds and unresolved pending documents. This is an as-of snapshot,
+    // not a guarantee against future late amendments.
+    const { data, error } = await (supabase as SupabaseClient).rpc("morning_brief_context", { p_date: businessDate, p_scope: reportScope });
+    if (error || !["ready", "not_ready"].includes(data?.readiness?.status) || !data?.roundMarkets) throw new Error("morning brief scope context unavailable");
+    scopeReadiness = data.readiness;
+    for (const [id, label] of Object.entries(data.roundMarkets)) roundMarkets.set(id, typeof label === "string" ? label : "");
+    for (const [id, reason] of Object.entries(data.roundIssues ?? {})) roundIssues.set(id, String(reason));
+    for (const id of data.qaRoundIds ?? []) qaRoundIds.add(String(id));
   }
   const marketFilter: SalesMarketFilter | undefined = reportScope ? (market, roundId) => {
-    const label = (roundId && roundMarkets.get(roundId)) || canonicalMarketLabel(market);
-    if (isQaMarketLabel(label)) return false;
+    if (isQaMarketLabel(canonicalMarketLabel(market)) || qaRoundIds.has(roundId ?? "")) return false;
+    const label = roundId ? roundMarkets.get(roundId) : morningBriefMarket(market);
+    if (!label || isQaMarketLabel(label)) return false;
     const vegetable = label === "พาซิโอ้ผัก";
     return reportScope === "vegetable" ? vegetable : !vegetable;
   } : undefined;
   const produceRows = allRows.filter((row) => !marketFilter || marketFilter(row.market_name, row.accountability_round_id));
+  // The full review bucket is shown once, to Fruit's authorized recipients.
+  const unassignedRows = reportScope === "fruit" ? allRows.filter((row) =>
+    !isQaMarketLabel(canonicalMarketLabel(row.market_name))
+    && !qaRoundIds.has(row.accountability_round_id ?? "")
+    && !(row.accountability_round_id ? roundMarkets.get(row.accountability_round_id) : morningBriefMarket(row.market_name))) : [];
+  let unassigned: MorningBriefReport["unassigned"];
+  if (unassignedRows.length) {
+    const unassignedFilter: SalesMarketFilter = (market, roundId) => !isQaMarketLabel(canonicalMarketLabel(market))
+      && !qaRoundIds.has(roundId ?? "")
+      && !(roundId ? roundMarkets.get(roundId) : morningBriefMarket(market));
+    const evidence = await loadSalesReport(supabase, businessDate, {
+      rows: unassignedRows, marketFilter: unassignedFilter, requireReturnEvidence: true,
+    });
+    const summary = summarizeSales(evidence);
+    const withdrawals = unassignedRows.filter((row) => baseTransactionType(row.transaction_type) === "เบิก").map((row) =>
+      exactLineTotalScaled({ quantity: row.quantity, pricePerUnit: row.price_per_unit, basisQuantity: row.basis_quantity, basisPrice: row.basis_price }));
+    const reasons: Record<string, number> = {};
+    for (const row of unassignedRows) {
+      const reason = row.accountability_round_id
+        ? roundIssues.get(row.accountability_round_id) ?? (roundMarkets.has(row.accountability_round_id) ? "unreviewed_market_identity" : "missing_round")
+        : "unbound_unreviewed_identity";
+      reasons[reason] = (reasons[reason] ?? 0) + 1;
+    }
+    unassigned = { transactionCount: unassignedRows.length, reasons,
+      confirmedSalesSatang: summary.confirmedSalesSatang, pendingReviewSalesSatang: summary.pendingReviewSalesSatang,
+      withdrawalValueSatang: withdrawals.some((value) => value === null) ? null
+        : Number(scaledToSatang(withdrawals.reduce<bigint>((sum, value) => sum + value!, BigInt(0)))),
+      unavailableCount: summary.excludedFromSalesCount,
+      sourceTransactions: unassignedRows.map((row) => ({ id: row.id, sessionId: row.session_id, accountabilityRoundId: row.accountability_round_id })),
+    };
+  }
   const [houseStock, failures] = await Promise.all([
     loadHouseStock(supabase, businessDate, reportScope),
     loadProduceFailureScan(supabase, businessDate, marketFilter),
@@ -267,6 +305,28 @@ export async function loadMorningBriefReport(
     loadReconciliation(supabase, businessDate, marketFilter),
     loadWhiteSheetStatus(supabase, businessDate, marketFilter),
   ]);
+  // The general Sales reader retains historical market spellings. This split
+  // report alone presents the reviewed vegetable scope under its canonical name.
+  if (reportScope === "vegetable") {
+    for (const market of sales.markets) {
+      market.marketLabel = "พาซิโอ้ผัก";
+      for (const row of market.rows) row.marketLabel = "พาซิโอ้ผัก";
+    }
+  }
+  const salesSummary = summarizeSales(sales);
+  // A market can have several distinct rounds. Roll up the display once while
+  // retaining all round rows and source identities in the reference data.
+  const markets = new Map<string, NonNullable<typeof salesSummary.markets>[number]>();
+  for (const market of salesSummary.markets ?? []) {
+    const previous = markets.get(market.marketLabel);
+    if (!previous) { markets.set(market.marketLabel, { ...market }); continue; }
+    for (const key of ["awaitingReturnCount", "totalSalesSatang", "confirmedSalesSatang", "pendingReviewSalesSatang", "adjustmentSatang",
+      "trustedCount", "unresolvedCount", "soldOutCount", "priceIssueCount", "incompleteReturnIssueCount", "excludedFromSalesCount"] as const) {
+      previous[key] = (previous[key] ?? 0) + (market[key] ?? 0);
+    }
+    previous.valueAuthoritative = previous.valueAuthoritative && market.valueAuthoritative;
+  }
+  salesSummary.markets = [...markets.values()];
 
   const produceFinancial: NonNullable<MorningBriefReport["produceFinancial"]> = {};
   for (const section of PRODUCE_SECTIONS) {
@@ -282,13 +342,18 @@ export async function loadMorningBriefReport(
   return {
     ...(reportScope ? {
       reportScope,
-      readiness: morningBriefReadiness(produceRows, reportScope),
+      readiness: (() => {
+        const local = morningBriefReadiness(produceRows, reportScope);
+        const reasons = [...new Set([...(scopeReadiness?.reasons ?? []), ...local.reasons])];
+        return { status: reasons.length ? "not_ready" as const : "ready" as const, reasons };
+      })(),
       salesDetails: sales.markets.flatMap((market) => market.rows),
       sourceTransactions: produceRows.map((row) => ({ id: row.id, sessionId: row.session_id, accountabilityRoundId: row.accountability_round_id })),
     } : {}),
     businessDate,
+    ...(unassigned ? { unassigned } : {}),
     purchasePlanning: summarizePurchasePlanning(purchasePlanning),
-    sales: summarizeSales(sales),
+    sales: salesSummary,
     fruitFinancial: produceFinancial.fruit,
     produceFinancial,
     houseStock,
@@ -322,5 +387,6 @@ export function morningBriefReadiness(
   if (withdrawals.size === 0) reasons.push("missing_withdrawal");
   if (returns.size === 0) reasons.push("missing_good_return");
   if (withdrawals.size && returns.size && ![...withdrawals].some((id) => returns.has(id))) reasons.push("no_matching_accountability_round");
+  if ([...new Set([...withdrawals, ...returns])].some((id) => !withdrawals.has(id) || !returns.has(id))) reasons.push("incomplete_known_round");
   return { status: reasons.length ? "not_ready" : "ready", reasons };
 }

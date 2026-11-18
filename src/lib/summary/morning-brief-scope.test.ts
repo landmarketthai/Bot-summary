@@ -87,7 +87,8 @@ describe("market-scoped Morning Brief UAT (synthetic, no network)", () => {
 
   test("both documents do not override pending return review", async () => {
     const report = await loadMorningBriefReport(scopeFixture({ pending: true }).client, DATE, "vegetable");
-    expect(report.readiness?.status).toBe("ready");
+    expect(report.readiness?.status).toBe("not_ready");
+    expect(report.readiness?.reasons).toContain("unresolved_vegetable_document");
     expect(report.sales.confirmedSalesSatang).toBe(0);
     expect(report.sales.pendingReviewSalesSatang).toBe(12_500);
     expect(report.sales.valueAuthoritative).toBe(false);

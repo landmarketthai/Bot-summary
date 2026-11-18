@@ -165,10 +165,15 @@ describe("scheduler configuration", () => {
     expect(yaml).not.toMatch(/^\s*- cron:/m);
     expect(yaml).toContain("Supabase Cron");
     expect(yaml).toContain("/api/cron/daily-morning-brief");
-    expect(yaml).toContain("Authorization: Bearer ${{ secrets.CRON_SECRET }}");
-    expect(yaml).toContain("Fruit 08:00");
+    expect(yaml).toContain("CRON_SECRET: ${{ secrets.CRON_SECRET }}");
+    expect(yaml).toContain("Authorization: Bearer $CRON_SECRET");
+    const run = yaml.slice(yaml.indexOf("        run: |"));
+    expect(run).not.toContain("${{ inputs.");
+    expect(run).not.toContain("${{ secrets.");
+    expect(run).toContain("urllib.parse.urlencode(params)");
+    expect(yaml).toContain("Fruit 12:00");
     expect(yaml).toContain("Vegetable 14:00");
-    expect(yaml).toContain("07:00 UTC");
+    expect(yaml).toContain("14:00-18:00");
     expect(yaml).not.toContain("13:00");
   });
 

@@ -1,5 +1,8 @@
 # Executive Morning Brief — Activation Plan
 
+> Historical plan. For the V3 delivery ledger, exact retry window, staged SQL,
+> rollback and backfill review, use [Morning Brief V3](morning-brief-v3/README.md).
+
 Status as of this writing: **the Morning Brief is built but fully inert.**
 Nothing in this document has been done. It exists so a human can execute the
 cutover deliberately, one step at a time, instead of it happening by

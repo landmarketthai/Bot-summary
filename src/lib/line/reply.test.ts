@@ -366,6 +366,21 @@ describe("buildWeighSessionSummary — header", () => {
 });
 
 describe("pushLineMessage — X-Line-Retry-Key and 409 handling", () => {
+  it("forwards the caller abort signal and never internally retries an aborted push", async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      calls++;
+      expect(init?.signal).toBe(controller.signal);
+      return new Promise<Response>((_resolve, reject) => {
+        init!.signal!.addEventListener("abort", () => reject(new DOMException("synthetic abort", "AbortError")), { once: true });
+      });
+    }) as typeof fetch;
+    const push = pushLineMessage("synthetic-target", "synthetic message", "synthetic-key", { signal: controller.signal });
+    controller.abort();
+    await expect(push).rejects.toBeInstanceOf(LinePushError);
+    expect(calls).toBe(1);
+  });
   it("transmits X-Line-Retry-Key header when retryKey is provided", async () => {
     let capturedHeaders: Record<string, string> = {};
     globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {

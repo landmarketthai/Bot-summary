@@ -3,6 +3,11 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "../../../src/types/database";
 import { FakeDatabase, type Row } from "../../../src/lib/summary/test-fake-supabase";
 import { HOUSE_STOCK_PRICED_PARSER_VERSION } from "../../../src/lib/physical-inventory/types";
+import { morningBriefMarket } from "../../../src/lib/summary/morning-brief-identity";
+import { morningBriefReadiness } from "../../../src/lib/summary/morning-brief-service";
+import { canonicalMarketLabel } from "../../../src/lib/market";
+import { isQaMarketLabel } from "../../../src/lib/sales/qa-scopes";
+import { RESOLVED_PENDING_STATUSES } from "../../../src/lib/produce/round-return-status";
 
 export const DATE = "2026-10-19";
 export function scopeFixture(options: {
@@ -31,10 +36,10 @@ export function scopeFixture(options: {
   const db = new FakeDatabase()
     .seed("produce_transactions", rows)
     .seed("accountability_rounds", [
-      { id: "vegetable", market_label: options.alias ?? "พาซิโอ้ผัก", seller_label: "synthetic" },
+      { id: "vegetable", market_label: options.alias ?? "พาซิโอ้ผัก", seller_label: options.alias === "หนูเล็ก-พาซีโอ้" ? "หนูเล็ก" : "synthetic" },
       { id: "fruit", market_label: "พาซิโอ้ผลไม้", seller_label: "synthetic" },
       { id: "durian", market_label: "พาซิโอ้ทุเรียน", seller_label: "synthetic" },
-      { id: "other-round", market_label: "พาซิโอ้ผัก", seller_label: "other seller" },
+      ...options.differentRound ? [{ id: "other-round", market_label: "พาซิโอ้ผัก", seller_label: "other seller" }] : [],
     ])
     .seed("produce_sessions", rows.map((row) => ({ id: row.session_id, session_date: DATE,
       session_title: row.market_name, total_items: 1, parser_errors: [], voided_at: null, raw_message_id: row.raw_message_id })))
@@ -48,5 +53,52 @@ export function scopeFixture(options: {
     .seed("physical_inventory_items", ["หมอนทอง", "ผักบุ้ง"].map((name, i) => ({ snapshot_id: "house", item_ordinal: i + 1,
       normalized_product: name, raw_product_description: name, normalized_unit: "โล", raw_unit: "โล", quantity: 100,
       unit_price_satang: 2000, raw_text: name, resolution_status: "AUTO_RESOLVED" })));
+  const originalRpc = db.rpc.bind(db);
+  db.rpc = (name, args) => {
+    if (name !== "morning_brief_context") return originalRpc(name, args);
+    const rounds = db.rows("accountability_rounds");
+    const current = rounds.filter((row) => (row.business_date ?? DATE) === args?.p_date && row.status !== "cancelled");
+    const roundMarkets = Object.fromEntries(current.map((row) => [String(row.id), morningBriefMarket(String(row.market_label), row.seller_label as string | null)]));
+    const transactions = db.rows("produce_transactions").filter((row) => row.transaction_date === args?.p_date);
+    const roundIssues: Record<string, string> = {};
+    const ambiguity = new Set<string>();
+    for (const row of transactions) {
+      const round = rounds.find((r) => r.id === row.accountability_round_id);
+      const issue = !round ? "missing_round" : round.status === "cancelled" ? "cancelled_round"
+        : (round.business_date ?? DATE) !== args?.p_date ? "round_date_mismatch" : null;
+      if (issue && row.accountability_round_id) roundIssues[String(row.accountability_round_id)] = issue;
+      const label = String(round?.market_label ?? row.market_name ?? "");
+      if (isQaMarketLabel(canonicalMarketLabel(label))) continue;
+      const resolved = morningBriefMarket(label, round?.seller_label as string | null);
+      if (resolved && resolved !== "พาซิโอ้ผัก") continue;
+      if ((issue || !roundMarkets[String(row.accountability_round_id)])
+        && (!label || /พาซ|พาส|พาช|pasio|ผัก/i.test(label) || round?.seller_label === "หนูเล็ก")) {
+        ambiguity.add(!row.accountability_round_id ? "unbound_vegetable_round"
+          : issue === "missing_round" ? "missing_vegetable_round"
+          : issue === "cancelled_round" ? "cancelled_vegetable_round"
+          : issue === "round_date_mismatch" ? "vegetable_round_date_mismatch" : "unresolved_vegetable_identity");
+      }
+    }
+    const vegetableRows = transactions.filter((row) => roundMarkets[String(row.accountability_round_id)] === "พาซิโอ้ผัก");
+    const readiness = morningBriefReadiness(vegetableRows as never, args?.p_scope as "fruit" | "vegetable");
+    if (args?.p_scope === "vegetable") {
+      readiness.reasons.push(...ambiguity);
+      if (db.rows("pending_sessions").some((pending) => {
+        const round = current.find((row) => row.id === pending.accountability_round_id);
+        if (!round || RESOLVED_PENDING_STATUSES.has(String(pending.finalization_status ?? "pending"))) return false;
+        const label = String(round.market_label ?? "");
+        const resolved = roundMarkets[String(round.id)];
+        return !isQaMarketLabel(canonicalMarketLabel(label)) && (resolved === "พาซิโอ้ผัก"
+          || (!resolved && (!label || /พาซ|พาส|พาช|pasio|ผัก/i.test(label) || round.seller_label === "หนูเล็ก")));
+      })) readiness.reasons.push("unresolved_vegetable_document");
+      for (const row of current.filter((row) => roundMarkets[String(row.id)] === "พาซิโอ้ผัก")) {
+        if (!vegetableRows.some((t) => t.accountability_round_id === row.id)) readiness.reasons.push("incomplete_known_round");
+      }
+      if (readiness.reasons.length) readiness.status = "not_ready";
+    }
+    return Promise.resolve({ data: { roundMarkets, roundIssues, qaRoundIds: rounds.filter((row) =>
+      ((row.business_date ?? DATE) === args?.p_date || transactions.some((t) => t.accountability_round_id === row.id))
+      && isQaMarketLabel(canonicalMarketLabel(String(row.market_label)))).map((row) => row.id), readiness }, error: null });
+  };
   return { db, rows, client: db as unknown as SupabaseClient<Database> };
 }

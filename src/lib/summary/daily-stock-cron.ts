@@ -123,7 +123,7 @@ export function morningBriefRetryKey(
 }
 
 /** A fixed PDF part cannot collide with a changing number of text messages. */
-// shortcut: LINE retains retry keys for 24 hours; add durable receipts before automatic multi-day resends.
+// The Morning Brief delivery ledger retains acceptance beyond LINE's 24h window.
 export function morningBriefPdfRetryKey(
   businessDate: string, targetId: string, reportScope: "fruit" | "vegetable", retryNonce?: string,
 ): string {
