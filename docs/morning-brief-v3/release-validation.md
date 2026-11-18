@@ -16,11 +16,11 @@
   Not a real timed worker/remote HTTP/LINE test or production inspection.
 - CI is PR-only with exact npm ci, separate summary/route/LINE/PG suites and
   explicit failure on skipped SQL tests, typecheck, lint and synthetic build.
-  Branch auto-preview is disabled temporarily until isolation is established.
+  Candidate Preview uses branch-scoped synthetic configuration with no real DB/provider credentials. Preview build is not end-to-end staging.
   Never bypass required Vercel status checks. No raw reviewer output, private
   identifiers, production rows, generated reports or local machine artifacts
   are included.
-- Remaining: independent review, CI, isolated staging with authorized test
+- Independent read-only code re-review: GO, no P0/P1 found; N1-N10 dispositions accepted. Remaining: CI, isolated staging with authorized test
   recipient, private live schema/target/cron/acceptance parity and safe cutover.
   Do not merge while a gate is unresolved.
 
