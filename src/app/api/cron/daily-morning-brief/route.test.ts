@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { NextRequest } from "next/server";
-import type { BriefDelivery, BriefPayload } from "@/lib/summary/morning-brief-delivery";
+import { briefTargetKey, type BriefDelivery, type BriefPayload } from "@/lib/summary/morning-brief-delivery";
 let deliveryRows = new Map<string, BriefDelivery & { leaseUntil: number; firstAttempt: number | null; frozenAt: number | null }>();
 let allowPreflight = true;
 let stateUnavailable = false;
@@ -8,6 +8,7 @@ let failPart: string | null = null;
 let unknownAccepted = false;
 let preflightArgs: Record<string, unknown> | undefined;
 let parityResult: Record<string, unknown>;
+let parityArgs: Record<string, unknown> | undefined;
 import {
   morningBriefRetryKey,
   purchasePlanningRetryKey,
@@ -33,7 +34,7 @@ const serviceClient = {
   rpc: async (name: string, args: Record<string, unknown>) => {
     if (stateUnavailable) return { data: null, error: { message: "offline" } };
     if (name === "morning_brief_context") return { data: { readiness: { status: "ready", reasons: [] }, roundMarkets: {} }, error: null };
-    if (name === "morning_brief_target_parity") return { data: parityResult, error: null };
+    if (name === "morning_brief_target_parity") { parityArgs = args; return { data: parityResult, error: null }; }
     if (name === "morning_brief_delivery_status") return { data: {
       acceptedCount: [...deliveryRows.values()].filter((row) => row.state === "accepted").length,
       pendingCount: [...deliveryRows.values()].filter((row) => row.state === "pending").length,
@@ -166,7 +167,7 @@ beforeEach(() => {
   pdfUrl = "https://example.test/morning-brief.pdf?token=signed";
   Date.now = () => Date.UTC(2026, 7, 23, 5, 0);
   deliveryRows = new Map(); allowPreflight = true; stateUnavailable = false; failPart = null; unknownAccepted = false;
-  preflightArgs = undefined;
+  preflightArgs = undefined; parityArgs = undefined;
   parityResult = { matched: true, configuredCount: 1, requestedCount: 1, missingCount: 0, excessCount: 0 };
 });
 
@@ -321,6 +322,68 @@ describe("daily morning brief cron", () => {
 
     await GET(request("?date=2026-08-22"));
     expect(pushCalls[0]!.retryKey).toBe(briefKey);
+  });
+
+  const scheduledQuery = "?scheduled=1&date=2026-08-22&target_marker=synthetic-marker";
+  test("scheduled legacy marker works for both scopes without target ENV and preserves distinct deliveries", async () => {
+    delete process.env.MORNING_BRIEF_LINE_TARGETS;
+    process.env.MORNING_BRIEF_VEGETABLE_LINE_TARGETS = "Disable";
+    const key = briefTargetKey("Cmarker12345678901");
+    expect((await GET(request(scheduledQuery))).status).toBe(200);
+    expect(parityArgs).toEqual({ p_scope: "fruit", p_targets: [key] });
+    expect(preflightArgs).toMatchObject({ p_date: "2026-08-22", p_scope: "fruit", p_targets: [key] });
+    expect(pushCalls).toHaveLength(2);
+    expect((await GET(request(scheduledQuery))).status).toBe(200);
+    expect(pushCalls).toHaveLength(2);
+    Date.now = () => Date.UTC(2026, 7, 23, 7, 0);
+    expect((await GET(request(scheduledQuery + "&scope=vegetable"))).status).toBe(200);
+    expect(parityArgs).toEqual({ p_scope: "vegetable", p_targets: [key] });
+    expect(pushCalls).toHaveLength(4);
+    expect(pushCalls.every((call) => call.to === "Cmarker12345678901")).toBe(true);
+    expect(new Set(pushCalls.map(call => call.retryKey)).size).toBe(4);
+  });
+  test("scheduled marker cannot bypass private parity even with a valid group", async () => {
+    parityResult = { matched: false, configuredCount: 1, requestedCount: 1, missingCount: 1, excessCount: 1 };
+    markerSourceId = "Cdrift123456789012";
+    const res = await GET(request(scheduledQuery));
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ status: "target_config_mismatch", sent: false });
+    expect(parityArgs).toEqual({ p_scope: "fruit", p_targets: [briefTargetKey(markerSourceId)] });
+    expect(deliveryRows.size).toBe(0); expect(loadCalls).toHaveLength(0);
+    expect(pdfCalls).toHaveLength(0); expect(pushCalls).toHaveLength(0);
+  });
+  test("scheduled fruit marker cannot bypass slot or SQL date preflight", async () => {
+    Date.now = () => Date.UTC(2026, 7, 23, 5, 5);
+    expect((await GET(request(scheduledQuery))).status).toBe(409);
+    expect(parityArgs).toBeUndefined();
+    Date.now = () => Date.UTC(2026, 7, 23, 5, 0);
+    allowPreflight = false;
+    expect((await GET(request(scheduledQuery))).status).toBe(200);
+    expect(preflightArgs).toBeDefined();
+    expect(deliveryRows.size).toBe(0); expect(pushCalls).toHaveLength(0); expect(pdfCalls).toHaveLength(0);
+  });
+  test("scheduled marker rejects missing or invalid group before delivery", async () => {
+    markerSourceId = null;
+    expect((await GET(request(scheduledQuery))).status).toBe(404);
+    markerSourceId = "Disable";
+    expect((await GET(request(scheduledQuery))).status).toBe(409);
+    expect(parityArgs).toBeUndefined(); expect(deliveryRows.size).toBe(0); expect(pushCalls).toHaveLength(0);
+  });
+  test.each([
+    "?scheduled=1&date=2026-08-22",
+    "?scheduled=1&target_marker=synthetic-marker",
+    scheduledQuery + "&debug=1",
+    scheduledQuery + "&target=C12345678901",
+    scheduledQuery + "&retry_nonce=uat2",
+    scheduledQuery + "&target_marker=other",
+    scheduledQuery + "&date=2026-08-22",
+    scheduledQuery + "&scope=fruit&scope=vegetable",
+    scheduledQuery + "&scheduled=1",
+    "?scheduled=0",
+  ])("scheduled mode rejects ambiguous/manual query %s", async (query) => {
+    expect((await GET(request(query))).status).toBe(400);
+    expect(markerOps).toHaveLength(0); expect(parityArgs).toBeUndefined();
+    expect(deliveryRows.size).toBe(0); expect(pushCalls).toHaveLength(0);
   });
 
   test("manual target override isolates a UAT send from configured production targets", async () => {

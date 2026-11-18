@@ -89,7 +89,18 @@ export async function GET(req: NextRequest) {
   if (targetMarker && [...targetMarker].length > 200) {
     return NextResponse.json({ error: "target_marker exceeds 200 characters" }, { status: 400 });
   }
-  const hasManualTarget = Boolean(targetOverride || targetMarker);
+  // Explicit dispatcher mode retains the legacy marker but requires the
+  // same slot and private target parity gates as configured ENV sends.
+  const scheduledParam = req.nextUrl.searchParams.get("scheduled");
+  const scheduledMarker = scheduledParam === "1";
+  if (scheduledParam !== null && !scheduledMarker) {
+    return NextResponse.json({ error: "invalid scheduled mode" }, { status: 400 });
+  }
+  if (scheduledMarker && (!dateParam || !targetMarker || targetOverride || debugMode || retryNonce
+    || ["scheduled", "date", "scope", "target_marker", "target", "debug", "retry_nonce"].some((key) => req.nextUrl.searchParams.getAll(key).length > 1))) {
+    return NextResponse.json({ error: "scheduled mode requires one date and marker, without manual overrides" }, { status: 400 });
+  }
+  const hasManualTarget = !scheduledMarker && Boolean(targetOverride || targetMarker);
   if (retryNonce && (!hasManualTarget || !/^[A-Za-z0-9_-]{1,64}$/.test(retryNonce))) {
     return NextResponse.json({ error: "retry_nonce requires a manual target and must be 1-64 safe characters" }, { status: 400 });
   }
@@ -108,6 +119,9 @@ export async function GET(req: NextRequest) {
     }
     if (!resolved.target) {
       return NextResponse.json({ error: "marker target not found" }, { status: 404 });
+    }
+    if (scheduledMarker && !/^C[0-9A-Za-z]{10,}$/.test(resolved.target)) {
+      return NextResponse.json({ ok: false, status: "invalid_scheduled_marker_target", sent: false }, { status: 409 });
     }
     targets = [resolved.target];
   } else {

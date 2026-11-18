@@ -106,8 +106,12 @@ needs_review, ahead of not_ready/pending status. sent/sentCount/pdfDelivered ref
 to newly accepted ledger deliveries in this request; previouslyAcceptedCount is
 separate. Configured routes check exact private SHA256 target-set parity before
 claims/render/push and return count-only 409 target_config_mismatch for drift,
-empty targets or absent/disabled config. Manual isolated UAT/debug bypass this
-parity gate, keeping schema/ledger/slot protections. No configuration is seeded.
+empty targets or absent/disabled config. Scheduled legacy-marker dispatch explicitly provides `scheduled=1`, one
+`target_marker` and business date. It resolves the existing group and checks the
+same private parity and slots as configured ENV sends; empty/disabled legacy
+ENV values need no change. A changed target fails closed. Manual isolated
+UAT/debug bypass this parity gate, keeping schema/ledger/slot protections.
+No configuration is seeded.
 Each deduplicated scheduled check records a sanitized outcome (not_ready, invoked,
 accepted, busy, review, skipped, enqueue_failed). Invoked means queued, not LINE
 acceptance. A final blocked slot emits at most one scope/outcome LOG observation;
@@ -158,8 +162,12 @@ Operator steps below require verified release gates; they are not executed merel
    RPCs and sanitized missing-RPC behavior, preserve existing auth/target env
    values, and check synthetic previews. No live app-first deployment.
 6. Privately stage disabled config rows for both scopes with exactly matching
-   SHA256 target lists and explicit date=__BRIEF_DATE__. Reject manual/debug/nonce,
-   duplicate dates and extra statements. Review seller identity and all gates.
+   SHA256 target lists and explicit date=__BRIEF_DATE__. Where the operator confirms
+   a shared legacy group, preserve the original Fruit marker in both scope
+   templates and add `scheduled=1`; retain each scope's auth and HTTP settings.
+   No environment-target change is needed. Verify the marker resolves uniquely
+   to the approved group, not the UAT group. Reject manual target/debug/nonce,
+   duplicate dates and extra statements. Review all gates.
 7. In a deliberate transaction set LOCAL morning_brief_v3.activate = 'reviewed'
    and run activate.sql. It privately backs up two original jobs including owner,
    preserves active flags and installs exactly the approved schedules. Suspended
