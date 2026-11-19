@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { NextRequest } from "next/server";
+import type { LineApiMessage } from "@/lib/line/reply";
 import { briefTargetKey, type BriefDelivery, type BriefPayload } from "@/lib/summary/morning-brief-delivery";
 let deliveryRows = new Map<string, BriefDelivery & { leaseUntil: number; firstAttempt: number | null; frozenAt: number | null }>();
 let allowPreflight = true;
@@ -10,6 +11,7 @@ let preflightArgs: Record<string, unknown> | undefined;
 let parityResult: Record<string, unknown>;
 let parityArgs: Record<string, unknown> | undefined;
 import {
+  morningBriefPdfRetryKey,
   morningBriefRetryKey,
   purchasePlanningRetryKey,
   stockSummaryRetryKey,
@@ -63,7 +65,7 @@ const serviceClient = {
       if (args.p_action === "freeze") {
         const payload = args.p_payload as BriefPayload | null;
         if (!Array.isArray(payload?.parts) || !payload.parts.length) throw new Error("missing delivery parts");
-        if (!row.payload) { row.payload = payload; row.frozenAt = Date.now(); }
+        if (!row.payload) { row.payload = structuredClone(payload); row.frozenAt = Date.now(); }
       }
       if (["prepare", "accept"].includes(String(args.p_action)) && (!row.payload || args.p_part !== row.next_part)) throw new Error("invalid part");
       if (args.p_action === "accept" && row.firstAttempt === null) throw new Error("invalid part");
@@ -82,12 +84,19 @@ let loadError: Error | null = null;
 let loadCalls: Array<{ client: unknown; businessDate: string; reportScope: string }> = [];
 let formatterCalls: unknown[] = [];
 let formatterMessages = ["🌅 สรุปเช้า — 22 สิงหาคม 2569"];
-let pushCalls: Array<{ to: string; text: string; retryKey?: string }> = [];
+let pushCalls: Array<{ to: string; text: string; retryKey?: string; message?: LineApiMessage }> = [];
 let acceptedRetryKeys = new Set<string>();
 let failingTarget: string | null = null;
 let pdfCalls: Array<{ client: unknown; report: unknown }> = [];
 let pdfError: Error | null = null;
-let pdfUrl = "https://example.test/morning-brief.pdf?token=signed";
+const pdfOrigin = "https://storage.example.test";
+const pdfBucket = "morning-brief-pdfs";
+const pdfFilename = "report.pdf";
+const pdfPath = `synthetic/${pdfFilename}`;
+const pdfEndpoint = `${pdfOrigin}/storage/v1/object/sign/${pdfBucket}/${pdfPath}`;
+const pdfToken = "synthetic%2Btoken%2F%3D";
+const signedPdfUrl = `${pdfEndpoint}?token=${pdfToken}&download=report%2Epdf`;
+let pdfUrl = signedPdfUrl;
 
 mock.module("@/lib/supabase/server", () => ({
   createServiceClient: () => serviceClient,
@@ -109,17 +118,18 @@ mock.module("@/lib/summary/morning-brief-message", () => ({
 }));
 
 mock.module("@/lib/summary/morning-brief-pdf", () => ({
+  MORNING_BRIEF_PDF_BUCKET: pdfBucket,
   createMorningBriefPdfArtifact: async (client: unknown, report: unknown) => {
     pdfCalls.push({ client, report });
     if (pdfError) throw pdfError;
-    return { signedUrl: pdfUrl, path: "synthetic/report.pdf" };
+    return { signedUrl: pdfUrl, bucket: pdfBucket, path: pdfPath, filename: pdfFilename };
   },
   morningBriefPdfLineMessage: (url: string) => `PDF A4\n${url}`,
 }));
 
 mock.module("@/lib/line/reply", () => ({
-  pushLineMessage: async (to: string, text: string, retryKey?: string) => {
-    pushCalls.push({ to, text, retryKey });
+  pushLineMessage: async (to: string, text: string, retryKey?: string, options?: { message?: LineApiMessage }) => {
+    pushCalls.push({ to, text, retryKey, ...(options?.message ? { message: options.message } : {}) });
     if (to === failingTarget) throw new Error("LINE unavailable");
     if (retryKey && acceptedRetryKeys.has(retryKey)) return { status: "already_accepted" };
     if (text === failPart && !unknownAccepted) throw new Error("rejected");
@@ -134,6 +144,7 @@ const { GET } = await import("./route");
 const originalSecret = process.env.CRON_SECRET;
 const originalTargets = process.env.MORNING_BRIEF_LINE_TARGETS;
 const originalVegetableTargets = process.env.MORNING_BRIEF_VEGETABLE_LINE_TARGETS;
+const originalSupabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const realDateNow = Date.now;
 
 function restore(name: string, value: string | undefined) {
@@ -164,7 +175,8 @@ beforeEach(() => {
   failingTarget = null;
   pdfCalls = [];
   pdfError = null;
-  pdfUrl = "https://example.test/morning-brief.pdf?token=signed";
+  pdfUrl = signedPdfUrl;
+  process.env.NEXT_PUBLIC_SUPABASE_URL = pdfOrigin;
   Date.now = () => Date.UTC(2026, 7, 23, 5, 0);
   deliveryRows = new Map(); allowPreflight = true; stateUnavailable = false; failPart = null; unknownAccepted = false;
   preflightArgs = undefined; parityArgs = undefined;
@@ -175,6 +187,7 @@ afterEach(() => {
   restore("MORNING_BRIEF_VEGETABLE_LINE_TARGETS", originalVegetableTargets);
   restore("CRON_SECRET", originalSecret);
   restore("MORNING_BRIEF_LINE_TARGETS", originalTargets);
+  restore("NEXT_PUBLIC_SUPABASE_URL", originalSupabaseUrl);
   Date.now = realDateNow;
 });
 
@@ -305,6 +318,14 @@ describe("daily morning brief cron", () => {
       { to: "Cowner", text: "part 3" },
       { to: "Cowner", text: `PDF A4\n${pdfUrl}` },
     ]);
+    expect(pushCalls.slice(0, 3).every((call) => call.message === undefined)).toBe(true);
+    expect(pushCalls[3]?.message).toMatchObject({
+      type: "flex",
+      contents: { type: "bubble", footer: { contents: [
+        { type: "button", action: { type: "uri", uri: `${pdfEndpoint}?token=${pdfToken}&openExternalBrowser=1` } },
+        { type: "button", action: { type: "uri", uri: `${signedPdfUrl}&openExternalBrowser=1` } },
+      ] } },
+    });
     expect(new Set(pushCalls.map((call) => call.retryKey)).size).toBe(4);
     expect(pdfCalls).toEqual([{ client: serviceClient, report: loadedReport }]);
 
@@ -483,6 +504,32 @@ describe("daily morning brief cron", () => {
     expect(await response.json()).toMatchObject({ sent: false, failedCount: 1, pdfDelivered: false });
   });
 
+  test.each([
+    signedPdfUrl.replace(pdfOrigin, "https://other.test"),
+    signedPdfUrl.replace("https://", "http://"),
+    signedPdfUrl.replace("https://", "https://synthetic@"),
+    signedPdfUrl.replace("https://", "https://@"),
+    `${signedPdfUrl}#`,
+    signedPdfUrl.replace("/object/sign/", "/object/public/"),
+    signedPdfUrl.replace(pdfBucket, "other-bucket"),
+    signedPdfUrl.replace(pdfPath, "synthetic/other.pdf"),
+    signedPdfUrl.replace(pdfPath, `other/../${pdfPath}`),
+    `${pdfEndpoint}?download=${pdfFilename}`,
+    `${pdfEndpoint}?token=&download=${pdfFilename}`,
+    `${signedPdfUrl}&token=duplicate`,
+    `${pdfEndpoint}?token=${pdfToken}`,
+    `${pdfEndpoint}?token=${pdfToken}&download=other.pdf`,
+    `${signedPdfUrl}&download=${pdfFilename}`,
+    `${signedPdfUrl}&openExternalBrowser=1`,
+  ])("rejects invalid signed PDF URL %s before freezing or pushing", async (url) => {
+    pdfUrl = url;
+    const response = await GET(request());
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({ sent: false, failureStages: ["artifact"] });
+    expect([...deliveryRows.values()][0]?.payload).toBeNull();
+    expect(pushCalls).toHaveLength(0);
+  });
+
   test("isolates target failures and reports the partial failure", async () => {
     process.env.MORNING_BRIEF_LINE_TARGETS = "Cbroken,Cowner";
     formatterMessages = ["part 1", "part 2"];
@@ -514,10 +561,52 @@ describe("daily morning brief cron", () => {
     pdfUrl = "https://example.test/changed";
     failPart = null;
     await GET(request());
-    expect(pushCalls.map((call) => call.text)).toEqual(["part 1", "part 2", "part 2", "PDF A4\nhttps://example.test/morning-brief.pdf?token=signed"]);
+    expect(pushCalls.map((call) => call.text)).toEqual(["part 1", "part 2", "part 2", `PDF A4\n${signedPdfUrl}`]);
     expect(pushCalls[2].retryKey).toBe(originalKey);
     expect(pdfCalls).toHaveLength(1);
     expect([...deliveryRows.values()][0].state).toBe("accepted");
+  });
+
+  test("retries the exact frozen PDF Flex after losing LINE acceptance", async () => {
+    const query = "?date=2026-08-22";
+    failPart = `PDF A4\n${signedPdfUrl}`;
+    unknownAccepted = true;
+    expect((await GET(request(query))).status).toBe(500);
+    const row = [...deliveryRows.values()][0]!;
+    expect(row.next_part).toBe(1);
+    const frozen = row.payload!.parts[1]!;
+    expect(frozen.message?.type).toBe("flex");
+    expect(frozen.key).toBe(morningBriefPdfRetryKey("2026-08-22", "Cowner", "fruit"));
+    const expected = { to: "Cowner", text: frozen.text, retryKey: frozen.key, message: frozen.message };
+    expect(pushCalls[1]).toEqual(expected);
+    expect(acceptedRetryKeys.has(frozen.key)).toBe(true);
+
+    delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+    pdfUrl = "https://other.test/changed.pdf";
+    expect((await GET(request(query))).status).toBe(200);
+    expect(pushCalls.slice(2)).toEqual([expected]);
+    expect(pdfCalls).toHaveLength(1);
+    expect(row.state).toBe("accepted");
+    expect(await (await GET(request(query))).json()).toMatchObject({ previouslyAcceptedCount: 1, sent: false });
+    expect(pushCalls).toHaveLength(3);
+  });
+
+  test("resumes a legacy frozen PDF as the original text with its original key", async () => {
+    const date = "2026-08-22";
+    const text = "Legacy PDF\nhttps://example.test/legacy.pdf?token=synthetic";
+    const key = morningBriefPdfRetryKey(date, "Cowner", "fruit");
+    deliveryRows.set(`${date}/fruit/${briefTargetKey("Cowner")}`, {
+      state: "pending", lease_token: "", leaseUntil: 0, firstAttempt: Date.now(), frozenAt: Date.now(), next_part: 1,
+      payload: { artifactPath: "legacy.pdf", parts: [
+        { text: "accepted summary", key: morningBriefRetryKey(date, "Cowner", 0), kind: "text" },
+        { text, key, kind: "pdf" },
+      ] },
+    });
+    delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+    expect((await GET(request(`?date=${date}`))).status).toBe(200);
+    expect(pushCalls).toEqual([{ to: "Cowner", text, retryKey: key }]);
+    expect(loadCalls).toHaveLength(0);
+    expect(pdfCalls).toHaveLength(0);
   });
 
   test("stale claim resumes with the same frozen key after lease expiry", async () => {
@@ -615,7 +704,7 @@ describe("daily morning brief cron", () => {
     } finally { timer.mockRestore(); }
     formatterMessages = ["changed"];
     expect((await GET(request())).status).toBe(200);
-    expect(pushCalls.map((call) => call.text)).toEqual(["🌅 สรุปเช้า — 22 สิงหาคม 2569", "PDF A4\nhttps://example.test/morning-brief.pdf?token=signed"]);
+    expect(pushCalls.map((call) => call.text)).toEqual(["🌅 สรุปเช้า — 22 สิงหาคม 2569", `PDF A4\n${signedPdfUrl}`]);
     expect([...deliveryRows.values()][0].state).toBe("accepted");
   });
 });

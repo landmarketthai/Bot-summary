@@ -146,7 +146,7 @@ export async function pushLineMessage(
   to: string,
   text: string | LineApiMessage[],
   retryKey?: string,
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; message?: LineApiMessage } = {},
 ): Promise<PushResult> {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`,
@@ -161,7 +161,7 @@ export async function pushLineMessage(
       headers,
       body: JSON.stringify({
         to,
-        messages: typeof text === "string" ? [{ type: "text", text }] : text,
+        messages: typeof text === "string" ? [options.message ?? { type: "text", text }] : text,
       }),
       signal: options.signal,
     });

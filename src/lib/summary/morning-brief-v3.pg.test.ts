@@ -7,6 +7,7 @@ import { morningBriefSlotMinute } from "./morning-brief-schedule";
 import { baseTransactionType } from "./transactions";
 import { qaMarketLabels } from "@/lib/sales/qa-scopes";
 import { morningBriefMarket } from "./morning-brief-identity";
+import type { LineApiMessage } from "@/lib/line/reply";
 
 const available = await probePg();
 if (!available && process.env.REQUIRE_MORNING_BRIEF_POSTGRES === "1") throw new Error("Morning Brief requires disposable local PostgreSQL 17; skipping is forbidden");
@@ -383,7 +384,10 @@ describe.skipIf(!available)("Morning Brief V3 real PostgreSQL", () => {
 
   // Run this file in its own Bun process: only external I/O/report construction is mocked.
   test("real route uses SQL context, preflight and fenced ledger, including missing-RPC and frozen retry", async () => {
-    const calls: { text: string; key: string }[] = [];
+    const calls: { text: string; key: string; message: LineApiMessage | undefined }[] = [];
+    const pdfOrigin = "https://storage.example.invalid";
+    const pdfBucket = "morning-brief-pdfs";
+    const pdfFilename = "synthetic.pdf";
     let failPdf = true;
     let renders = 0;
     await db.exec("CREATE TABLE mock_route_rpc_results(call_key text PRIMARY KEY,result jsonb);");
@@ -404,11 +408,18 @@ describe.skipIf(!available)("Morning Brief V3 real PostgreSQL", () => {
     mock.module("@/lib/summary/morning-brief-service", () => ({ loadMorningBriefReport: async () => ({ businessDate: date, reportScope: "fruit", readiness: { status: "ready", reasons: [] } }) }));
     mock.module("@/lib/summary/morning-brief-message", () => ({ buildMorningBriefMessages: () => ["synthetic text"] }));
     mock.module("@/lib/summary/morning-brief-pdf", () => ({
-      createMorningBriefPdfArtifact: async () => { renders++; return { path: "synthetic.pdf", signedUrl: "https://example.invalid/synthetic.pdf" }; },
+      MORNING_BRIEF_PDF_BUCKET: pdfBucket,
+      createMorningBriefPdfArtifact: async () => {
+        renders++;
+        return {
+          bucket: pdfBucket, path: pdfFilename, filename: pdfFilename,
+          signedUrl: `${pdfOrigin}/storage/v1/object/sign/${pdfBucket}/${pdfFilename}?token=synthetic&download=${pdfFilename}`,
+        };
+      },
       morningBriefPdfLineMessage: () => "synthetic PDF",
     }));
-    mock.module("@/lib/line/reply", () => ({ pushLineMessage: async (_target: string, text: string, key: string) => {
-      calls.push({ text, key });
+    mock.module("@/lib/line/reply", () => ({ pushLineMessage: async (_target: string, text: string, key: string, options?: { message?: LineApiMessage }) => {
+      calls.push({ text, key, message: options?.message });
       if (text === "synthetic PDF" && failPdf) throw new Error("synthetic unknown provider outcome");
     } }));
     const { NextRequest } = await import("next/server");
@@ -416,12 +427,14 @@ describe.skipIf(!available)("Morning Brief V3 real PostgreSQL", () => {
     const originalNow = Date.now;
     const originalSecret = process.env.CRON_SECRET;
     const originalTargets = process.env.MORNING_BRIEF_LINE_TARGETS;
+    const originalSupabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
     process.env.CRON_SECRET = "synthetic-contract";
     process.env.MORNING_BRIEF_LINE_TARGETS = "Csynthetic";
     Date.now = () => Date.parse("2026-11-17T12:01:30+07:00");
     await db.exec(`INSERT INTO morning_brief_private.morning_brief_dispatch_config VALUES('fruit',true,ARRAY['${(await import('./morning-brief-delivery')).briefTargetKey('Csynthetic')}'],${quote(httpCommand)});`);
     const request = () => new NextRequest(`http://localhost/api/cron/daily-morning-brief?date=${date}`, { headers: { authorization: "Bearer synthetic-contract" } });
     try {
+      process.env.NEXT_PUBLIC_SUPABASE_URL = pdfOrigin;
       await db.exec("ALTER FUNCTION morning_brief_context(date,text) RENAME TO synthetic_hidden_context;");
       try {
         const response = await GET(request());
@@ -436,7 +449,8 @@ describe.skipIf(!available)("Morning Brief V3 real PostgreSQL", () => {
       expect((await GET(request())).status).toBe(200);
       expect(await db.scalar("SELECT state FROM morning_brief_deliveries")).toBe("accepted");
       expect(calls.map((call) => call.text)).toEqual(["synthetic text", "synthetic PDF", "synthetic PDF"]);
-      expect(calls[1].key).toBe(calls[2].key);
+      expect(calls[1].message).toMatchObject({ type: "flex" });
+      expect(calls[2]).toEqual(calls[1]);
       expect(renders).toBe(1);
       await GET(request());
       expect(calls).toHaveLength(3);
@@ -444,6 +458,7 @@ describe.skipIf(!available)("Morning Brief V3 real PostgreSQL", () => {
       Date.now = originalNow;
       if (originalSecret === undefined) delete process.env.CRON_SECRET; else process.env.CRON_SECRET = originalSecret;
       if (originalTargets === undefined) delete process.env.MORNING_BRIEF_LINE_TARGETS; else process.env.MORNING_BRIEF_LINE_TARGETS = originalTargets;
+      if (originalSupabaseUrl === undefined) delete process.env.NEXT_PUBLIC_SUPABASE_URL; else process.env.NEXT_PUBLIC_SUPABASE_URL = originalSupabaseUrl;
     }
   });
 });

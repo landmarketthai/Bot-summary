@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import type { LineApiMessage } from "@/lib/line/reply";
 import type { MorningBriefScope } from "./morning-brief";
 
 export interface BriefPayload {
   artifactPath: string;
-  parts: { text: string; key: string; kind: "text" | "pdf" }[];
+  parts: { text: string; key: string; kind: "text" | "pdf"; message?: LineApiMessage }[];
 }
 export interface BriefDelivery {
   state: "pending" | "busy" | "accepted" | "needs_review";
