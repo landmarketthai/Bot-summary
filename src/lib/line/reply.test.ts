@@ -425,6 +425,28 @@ describe("pushLineMessage — X-Line-Retry-Key and 409 handling", () => {
     expect(result).toEqual({ status: "already_accepted" });
   });
 
+  it("sends the supplied Flex body with the same retry key on a 409", async () => {
+    const message = {
+      type: "flex",
+      altText: "Synthetic PDF",
+      contents: { type: "bubble", body: { type: "box", layout: "vertical", contents: [
+        { type: "text", text: "Synthetic PDF" },
+      ] } },
+    };
+    let body: unknown;
+    const retryKeys: (string | null)[] = [];
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      retryKeys.push(new Headers(init?.headers).get("X-Line-Retry-Key"));
+      return new Response("{}", { status: 409 });
+    }) as unknown as typeof fetch;
+
+    expect(await pushLineMessage("group-id", "fallback", "retry-key", { message }))
+      .toEqual({ status: "already_accepted" });
+    expect(body).toEqual({ to: "group-id", messages: [message] });
+    expect(retryKeys).toEqual(["retry-key"]);
+  });
+
   it("409 without retry key throws (not treated as already_accepted)", async () => {
     globalThis.fetch = (async () =>
       new Response("{}", { status: 409 })) as unknown as typeof fetch;

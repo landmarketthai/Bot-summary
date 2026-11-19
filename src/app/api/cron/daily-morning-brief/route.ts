@@ -15,6 +15,7 @@ import {
   createMorningBriefPdfArtifact,
   morningBriefPdfLineMessage,
 } from "@/lib/summary/morning-brief-pdf";
+import { buildMorningBriefPdfFlexMessage } from "@/lib/summary/morning-brief-pdf-line";
 
 import { briefDelivery, briefTargetKey, type BriefDelivery } from "@/lib/summary/morning-brief-delivery";
 import { morningBriefSlot } from "@/lib/summary/morning-brief-schedule";
@@ -212,8 +213,7 @@ export async function GET(req: NextRequest) {
           report ??= await loadMorningBriefReport(supabase, businessDate, reportScope);
           if (report.readiness?.status === "not_ready") { notReady = true; continue; }
           if (performance.now() - started >= 195_000) { deferredCount++; continue; }
-          // Artifact success is required before sending; freeze both text and URL
-          // so a partial/unknown retry uses exactly the same request body.
+          // Freeze the full PDF message before sending so retries reuse the same body.
           stage = "artifact";
           artifact ??= await createMorningBriefPdfArtifact(supabase, report, new Date(Date.now()), `${briefTargetKey(target)}-${claim.lease_token}`);
           artifactCreated = true;
@@ -221,6 +221,7 @@ export async function GET(req: NextRequest) {
             key: morningBriefRetryKey(businessDate, target, index, undefined, reportScope) }));
           const payload = { artifactPath: artifact.path, parts: [...parts, {
             text: morningBriefPdfLineMessage(artifact.signedUrl), kind: "pdf" as const,
+            message: buildMorningBriefPdfFlexMessage(artifact, businessDate, reportScope),
             key: morningBriefPdfRetryKey(businessDate, target, reportScope),
           }] };
           stage = "freeze";
@@ -233,7 +234,11 @@ export async function GET(req: NextRequest) {
           claim = await briefDelivery(supabase, businessDate, reportScope, target, "prepare", claim, undefined, index);
           if (claim.state !== "pending") { reviewCount++; break; }
           stage = "push";
-          await pushLineMessage(target, parts[index].text, parts[index].key, { signal: AbortSignal.timeout(15_000) });
+          const part = parts[index];
+          await pushLineMessage(target, part.text, part.key, {
+            signal: AbortSignal.timeout(15_000),
+            ...(part.message ? { message: part.message } : {}),
+          });
           stage = "accept";
           claim = await briefDelivery(supabase, businessDate, reportScope, target, "accept", claim, undefined, index);
         }
