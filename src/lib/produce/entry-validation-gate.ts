@@ -278,14 +278,15 @@ export type ProduceCloseGateDecision =
  * gate lives here: a refusal leaves the round in capture, where a corrected
  * line is still an ordinary item message. Confirmable reviews use two presses
  * of the same button — the first shows the exceptions and records them, the
- * second (a different LINE event, so a duplicate delivery can never stand in
- * for it) acknowledges exactly the exception set that was shown.
+ * second (a distinct LINE event created after delivery) acknowledges exactly
+ * the exception set that was shown.
  */
 export async function runProduceCloseGate(
   supabase: AnyClient,
   ref: ProduceValidationSessionRef,
   parsed: WeighSession,
   lineEventId: string,
+  lineTimestampMs: number,
 ): Promise<ProduceCloseGateDecision> {
   const { result, reviewConfirmed } = await evaluateProduceEntryGate(supabase, ref, parsed);
   if (result.status === "blocked") return { decision: "blocked", result };
@@ -310,12 +311,10 @@ export async function runProduceCloseGate(
     ref,
     result.digest,
     lineEventId,
+    lineTimestampMs,
   );
-  // Only confirmed/already_confirmed authorize. not_found (stale digest),
-  // not_presented (recorded but never proven delivered — the finalizer's push
-  // failed) and terminalized all mean re-present, never approve. record_ above
-  // has just marked this reply as the delivery, so the NEXT distinct close can
-  // confirm it.
+  // The caller can re-present a review that was not proven delivered before
+  // this event. A later event can then acknowledge the delivered review.
   if (!isProduceReviewApproved(confirmation)) {
     return { decision: "review_presented", result };
   }
@@ -397,8 +396,7 @@ export async function runProduceFinalizeGate(
 
 /**
  * `not_found`   — the digest no longer describes the session (stale press).
- * `not_presented` — recorded but never proven delivered to the operator; the
- *                 caller must re-present, never approve.
+ * `not_presented` — no delivery was proven before the LINE event.
  * `terminalized` — the generation is dead; nothing about it can be approved.
  *
  * Only `confirmed` and `already_confirmed` are approvals. Everything else means
@@ -444,7 +442,8 @@ export async function confirmProduceSubunitReview(
   parsed: WeighSession,
   itemNumber: number,
   lineEventId: string,
-  closedEvent?: ClosedProduceReviewEvent,
+  lineTimestampMs: number,
+  closedIngestRevision?: number,
 ): Promise<ProduceReviewConfirmation> {
   const roundRows = ref.accountabilityRoundId
     ? await loadRoundMasterRows(supabase, ref.accountabilityRoundId)
@@ -464,9 +463,14 @@ export async function confirmProduceSubunitReview(
   if (!review || result.reviews.filter((entry) => entry.kind === "subunit_confirmation"
     && entry.itemNumber === itemNumber).length !== 1) return "not_found";
   const digest = computeValidationDigest(parsed, [], [review], ref);
-  if (!closedEvent) return confirmProduceValidationReview(supabase, ref, digest, lineEventId);
+  if (closedIngestRevision === undefined) {
+    return confirmProduceValidationReview(supabase, ref, digest, lineEventId, lineTimestampMs);
+  }
 
-  const status = await applyClosedProduceReview(supabase, ref, lineEventId, closedEvent, digest, null);
+  const status = await applyClosedProduceReview(supabase, ref, lineEventId, {
+    ingestRevision: closedIngestRevision,
+    timestampMs: lineTimestampMs,
+  }, digest, null);
   if (status === "stale") return "not_found";
   return parseReviewConfirmationStatus(status);
 }
@@ -483,6 +487,7 @@ export async function confirmProduceValidationReview(
   ref: ProduceValidationSessionRef,
   digest: string,
   lineEventId: string,
+  lineTimestampMs: number,
 ): Promise<ProduceReviewConfirmation> {
   if (!ref.lineUserId) {
     throw new ProduceValidationGateError(
@@ -495,6 +500,7 @@ export async function confirmProduceValidationReview(
     p_validation_digest: digest,
     p_line_user_id: ref.lineUserId,
     p_line_event_id: lineEventId,
+    p_line_timestamp_ms: lineTimestampMs,
   });
 
   if (error) {

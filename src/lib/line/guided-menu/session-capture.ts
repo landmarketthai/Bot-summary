@@ -221,7 +221,7 @@ export class GuidedSessionCaptureService {
       //
       // This branch runs before the close boundary, so a validation refusal
       // leaves the same draft open for targeted correction.
-      const gate = await this.runEntryGate(current, input.lineEventId);
+      const gate = await this.runEntryGate(current, input.lineEventId, input.lineTimestampMs);
       if (gate) return gate;
     }
 
@@ -268,6 +268,7 @@ export class GuidedSessionCaptureService {
   async confirmFinalize(input: {
     identity: GuidedMenuIdentity;
     lineEventId: string;
+    lineTimestampMs: number;
   }): Promise<GuidedCaptureFinalizeOutcome> {
     const current = await this.snapshot(input.identity);
     if (current.status !== "ok") {
@@ -299,7 +300,7 @@ export class GuidedSessionCaptureService {
     // No cancel hint: the close boundary is already written by the time confirm
     // is pressed. Validation copy therefore stays focused on correcting the
     // effective draft, never on abandoning it.
-    const gate = await this.runEntryGate(current, input.lineEventId);
+    const gate = await this.runEntryGate(current, input.lineEventId, input.lineTimestampMs);
     if (gate) return gate;
 
     const result = await this.commands.execute(
@@ -344,6 +345,7 @@ export class GuidedSessionCaptureService {
   private async runEntryGate(
     current: GuidedSessionSnapshot,
     lineEventId: string,
+    lineTimestampMs: number,
   ): Promise<
     | ({ status: "validation_failed"; errors: string[]; detail: string } & GuidedSessionSnapshot)
     | ({ status: "review_required"; detail: string } & GuidedSessionSnapshot)
@@ -361,6 +363,7 @@ export class GuidedSessionCaptureService {
         entryValidationRef(current.session),
         current.parsed,
         lineEventId,
+        lineTimestampMs,
       );
     } catch (error) {
       return {

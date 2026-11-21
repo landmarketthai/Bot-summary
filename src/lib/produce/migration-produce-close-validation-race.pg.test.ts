@@ -20,6 +20,9 @@ const PGHOST = process.env.PGHOST ?? "localhost";
 const PGUSER = process.env.PGUSER ?? "postgres";
 const PGPASSWORD = process.env.PGPASSWORD ?? "postgres";
 const PGPORT = process.env.PGPORT ?? "5432";
+const HELD_CLOSE_SAFETY = join(
+  ROOT, "supabase", "migrations", "20261121120000_produce_held_close_state_safety.sql",
+);
 const DATABASE = `mig_${randomBytes(4).toString("hex")}`;
 const DB_NAME_PATTERN = /^mig_[a-f0-9]+$/;
 const ALLOWED_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
@@ -197,10 +200,12 @@ async function recordReview(s: Session, digest: string, eventId: string): Promis
     ) AS r`);
 }
 
-async function confirmReview(s: Session, digest: string, eventId: string): Promise<string> {
+async function confirmReview(
+  s: Session, digest: string, eventId: string, timestampMs: number | null = Date.now() + 1000,
+): Promise<string> {
   return await scalar(`
     SELECT public.confirm_produce_validation_review(
-      ${q(s.key)}, ${q(s.generation)}::uuid, ${q(digest)}, ${q(OWNER)}, ${q(eventId)}
+      ${q(s.key)}, ${q(s.generation)}::uuid, ${q(digest)}, ${q(OWNER)}, ${q(eventId)}, ${timestampMs ?? "NULL"}
     )->>'status'`);
 }
 
@@ -227,9 +232,7 @@ describe.skipIf(!pgAvailable)("produce close validation race on PostgreSQL 17", 
       ROOT, "supabase", "migrations",
       "20260901090000_produce_finalizer_review_presentation.sql",
     ));
-    await apply(join(
-      ROOT, "supabase", "migrations", "20261121120000_produce_held_close_state_safety.sql",
-    ));
+    await apply(HELD_CLOSE_SAFETY);
   }, 120_000);
 
   afterAll(async () => {
@@ -258,6 +261,8 @@ describe.skipIf(!pgAvailable)("produce close validation race on PostgreSQL 17", 
       ROOT, "supabase", "migrations",
       "20260901090000_produce_finalizer_review_presentation.sql",
     ));
+    await apply(HELD_CLOSE_SAFETY);
+    await apply(HELD_CLOSE_SAFETY);
 
     // The delivery guard must be the live definition after any replay.
     expect(await scalar(`
@@ -265,6 +270,13 @@ describe.skipIf(!pgAvailable)("produce close validation race on PostgreSQL 17", 
       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
       WHERE n.nspname = 'public' AND p.proname = 'confirm_produce_validation_review'`))
       .toBe("true");
+    expect(await scalar(`
+      SELECT (to_regprocedure('public.confirm_produce_validation_review(text,uuid,text,text,text)') IS NULL)::text`))
+      .toBe("true");
+    for (const [role, allowed] of [["anon", "f"], ["authenticated", "f"], ["service_role", "t"]]) {
+      expect(await scalar(`SELECT has_function_privilege(${q(role)},
+        'public.confirm_produce_validation_review(text,uuid,text,text,text,bigint)', 'EXECUTE')`)).toBe(allowed);
+    }
     expect(await scalar(`
       SELECT count(*)::text FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
       WHERE n.nspname = 'public' AND p.proname = 'append_pending_session'`)).toBe("2");
@@ -932,7 +944,7 @@ describe.skipIf(!pgAvailable)("produce close validation race on PostgreSQL 17", 
   function confirmHeldSql(
     session: Session,
     revision: number,
-    { eventId = "later-close", timestamp = CLOSE_TS + 1, owner = OWNER, environment = "production",
+    { eventId = "later-close", timestamp = Date.now() + 1000, owner = OWNER, environment = "production",
       digest = "held-review", required = "ARRAY['held-review']::text[]" } = {},
   ): string {
     return `SELECT public.confirm_pending_validation_close(
@@ -940,6 +952,37 @@ describe.skipIf(!pgAvailable)("produce close validation race on PostgreSQL 17", 
       ${q(eventId)}, ${timestamp}, ${q(environment)}, ${q(digest)}, ${required}
     )->>'status'`;
   }
+
+  test("a queued close or subunit command predating delivered review cannot approve it", async () => {
+    const s = await seedSession();
+    await closeWithPin(s, "first-close", await revisionOf(s.key));
+    const revision = await revisionOf(s.key);
+    await hold(s, revision);
+    for (const digest of ["held-review", "item-review"]) {
+      await recordFinalizerReview(s, digest, "finalizer-presentation");
+    }
+    const earlyTimestamp = CLOSE_TS + 1;
+    await markMany(s, ["held-review", "item-review"], "finalizer-presentation");
+
+    expect(await scalar(confirmHeldSql(s, revision, {
+      eventId: "queued-close", timestamp: earlyTimestamp,
+    }))).toBe("review_required");
+    expect(await scalar(confirmHeldSql(s, revision, {
+      eventId: "queued-item", timestamp: earlyTimestamp, digest: "item-review", required: "NULL::text[]",
+    }))).toBe("not_presented");
+    const presentationMs = Number(await scalar(`
+      UPDATE public.produce_entry_validation_reviews
+      SET presented_delivered_at = date_trunc('milliseconds', presented_delivered_at)
+      WHERE validation_digest = 'item-review'
+      RETURNING (extract(epoch FROM presented_delivered_at) * 1000)::bigint`));
+    expect(await confirmReview(s, "item-review", "queued-before-close", earlyTimestamp)).toBe("not_presented");
+    expect(await confirmReview(s, "item-review", "same-millisecond", presentationMs)).toBe("not_presented");
+    expect(await confirmReview(s, "item-review", "no-timestamp", null)).toBe("not_presented");
+    expect(await scalar("SELECT count(*) FROM public.produce_entry_validation_reviews WHERE confirmed_at IS NOT NULL"))
+      .toBe("0");
+    expect(await field(s.key, "next_attempt_at")).toBe("<null>");
+    expect(await confirmReview(s, "item-review", "fresh-item", presentationMs + 1)).toBe("confirmed");
+  });
 
   test("a distinct owner close approves the delivered review and schedules the held generation", async () => {
     const s = await seedSession();
@@ -1000,6 +1043,11 @@ describe.skipIf(!pgAvailable)("produce close validation race on PostgreSQL 17", 
     expect(await scalar(confirmHeldSql(s, revision, {
       digest: "item-review", eventId: "item-confirm", required: "NULL::text[]",
     }))).toBe("confirmed");
+    expect(await field(s.key, "next_attempt_at")).toBe("<null>");
+
+    expect(await scalar(confirmHeldSql(s, revision, {
+      required, eventId: "queued-close", timestamp: CLOSE_TS + 1,
+    }))).toBe("review_required");
     expect(await field(s.key, "next_attempt_at")).toBe("<null>");
 
     expect(await scalar(confirmHeldSql(s, revision, { required, eventId: "last-close" }))).toBe("proceed");

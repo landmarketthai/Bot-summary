@@ -1741,12 +1741,10 @@ export class WebhookService {
             parsed,
             subunitConfirm.itemNumber,
             eventId,
-            closedAt != null ? { ingestRevision: pending.ingest_revision, timestampMs: event.timestamp } : undefined,
+            event.timestamp,
+            closedAt != null ? pending.ingest_revision : undefined,
           );
-          // Only a genuine approval may report success. not_presented (recorded
-          // but never proven shown) and terminalized must never read as
-          // "✅ ยืนยันแล้ว" — that would tell the operator a subunit was
-          // confirmed when nothing authorized it.
+          // Only report success when the subunit approval is on record.
           if (replyToken) await replyMessage(replyToken,
             isProduceReviewApproved(result)
               ? `✅ ยืนยันข้อ ${subunitConfirm.itemNumber} แล้ว\nกรุณาส่ง “จบรายการ” อีกครั้งเมื่อยืนยันครบทุกข้อ`
@@ -3097,7 +3095,7 @@ export class WebhookService {
         lineUserId:    closedAt == null ? pending.line_user_id : lineUserId,
       };
       const decision = closedAt == null
-        ? await runProduceCloseGate(this.supabase, gateRef, parsed, eventId)
+        ? await runProduceCloseGate(this.supabase, gateRef, parsed, eventId, eventTimestampMs)
         : await runClosedProduceCloseGate(this.supabase, gateRef, parsed, eventId, {
             ingestRevision: pending.ingest_revision,
             timestampMs: eventTimestampMs,

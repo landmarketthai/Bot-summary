@@ -188,6 +188,7 @@ describe("จบรายการ validates before it writes the close boundary
     const confirmed = await capture.confirmFinalize({
       identity: IDENTITY,
       lineEventId: "evt-confirm",
+      lineTimestampMs: TS + 2000,
     });
     expect(confirmed.status).toBe("confirmed");
   });
@@ -264,6 +265,7 @@ describe("จบรายการ validates before it writes the close boundary
     const outcome = await capture.confirmFinalize({
       identity: IDENTITY,
       lineEventId: "evt-confirm",
+      lineTimestampMs: TS + 1000,
     });
     expect(outcome.status).toBe("validation_failed");
     expect(row(db).finalize_confirmed_at ?? null).toBeNull();

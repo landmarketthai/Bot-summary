@@ -1169,10 +1169,12 @@ export class GuidedMenuUxHandler {
   private async confirmFinalize(input: {
     identity: GuidedMenuIdentity;
     lineEventId: string;
+    lineTimestampMs: number;
   }): Promise<GuidedMenuUxResult> {
     const outcome = await this.capture.confirmFinalize({
       identity: input.identity,
       lineEventId: input.lineEventId,
+      lineTimestampMs: input.lineTimestampMs,
     });
     if (outcome.status === "refused") return this.refusalEnvelope(outcome.reason);
     if (outcome.status === "not_ready") {
