@@ -51,6 +51,7 @@ CREATE TABLE public.pending_sessions (
   updated_at                timestamptz NOT NULL DEFAULT now(),
   close_requested_at        timestamptz,
   close_event_timestamp_ms  bigint,
+  close_line_event_id        text,
   close_session_generation  uuid,
   close_deadline_at         timestamptz,
   close_refused_at          timestamptz,
@@ -61,7 +62,8 @@ CREATE TABLE public.pending_sessions (
   finalized_at              timestamptz,
   finalization_error        jsonb,
   expected_item_count       integer,
-  runtime_environment       text
+  runtime_environment       text,
+  entry_origin              text
 );
 
 CREATE TABLE public.pending_session_admission (
@@ -185,6 +187,8 @@ BEGIN
       close_event_timestamp_ms = CASE
         WHEN p_mark_close AND NOT v_was_closing THEN p_line_timestamp_ms
         ELSE ps.close_event_timestamp_ms END,
+      close_line_event_id = CASE
+        WHEN p_mark_close AND NOT v_was_closing THEN p_line_event_id ELSE ps.close_line_event_id END,
       close_session_generation = CASE
         WHEN p_mark_close AND NOT v_was_closing THEN ps.session_generation
         ELSE ps.close_session_generation END,
@@ -198,6 +202,15 @@ BEGIN
 
   RETURN jsonb_build_object('accepted', true, 'reason', 'appended', 'session', to_jsonb(v_row));
 END;
+$$;
+
+-- The finalization delegate is a marker here. The test verifies the schedule
+-- guard before any of the existing persistence logic is reached.
+CREATE FUNCTION public.try_finalize_pending_generation(
+  text, uuid, text, integer, text, text, jsonb, jsonb, text[]
+)
+RETURNS jsonb LANGUAGE sql AS $$
+  SELECT jsonb_build_object('status', 'delegated')
 $$;
 
 -- Pre-migration versions of the review RPCs, so the test proves the migration

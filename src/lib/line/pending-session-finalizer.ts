@@ -54,6 +54,7 @@ import {
   runProduceFinalizeGate,
 } from "@/lib/produce/entry-validation-gate";
 import { bindPlainTextRound } from "@/lib/produce/plain-text-round-binding";
+import { notifyFinalizerReviewGroup } from "@/lib/line/finalizer-review-group-notice";
 import {
   buildBlockingValidationReply,
   buildPriceAdvisoryNotification,
@@ -68,7 +69,7 @@ import type {
 import { getRuntimeEnvironment } from "@/lib/runtime-environment";
 
 type Supabase = SupabaseClient<Database>;
-type PushMessage = (to: string, text: string) => Promise<unknown>;
+type PushMessage = (...args: Parameters<typeof pushLineMessage>) => Promise<unknown>;
 
 export interface PendingFinalizerRun {
   due: number;
@@ -99,7 +100,7 @@ export function buildUnconfirmedStructuredCloseMessage(): string {
  */
 const FINALIZER_REVIEW_CLOSE_COMMAND = "จบรายการ";
 
-const defaultPush: PushMessage = (to, text) => pushLineMessage(to, text);
+const defaultPush: PushMessage = pushLineMessage;
 
 export function buildTransientFinalizationRetryMessage(): string {
   return [
@@ -275,8 +276,7 @@ function ownsSnapshotEnvironment(snapshot: PendingSession): boolean {
  *
  * Because step 4 is the only thing that makes the review confirmable, ONE
  * distinct later close is enough on the success path, and no close can ever
- * confirm an undelivered review. Returns null when the session must fall
- * through to normal finalization instead.
+ * confirm an undelivered review. Returns null when the snapshot lost its fence.
  */
 export async function holdAndPresentFinalizerReview(
   supabase: Supabase,
@@ -313,12 +313,11 @@ export async function holdAndPresentFinalizerReview(
   //    `parsed` is passed so the per-item subunit rows exist too: #109
   //    confirms each risky ขีด/กรัม item by its own digest.
   try {
-    await recordProduceValidationReview(supabase, ref, reviewResult, token, parsed);
+    const recorded = await recordProduceValidationReview(supabase, ref, reviewResult, token, parsed);
+    if (recorded.terminalized) return null;
   } catch (recordError) {
-    // Nothing was parked and nothing claims delivery. Fall through: the normal
-    // path still refuses to finalize an unconfirmed review.
     log.error("finalizer review could not be recorded", { error: String(recordError) });
-    return null;
+    throw recordError;
   }
 
   // 2. Park. Revision-pinned, so a document that moved again is not parked
@@ -327,6 +326,7 @@ export async function holdAndPresentFinalizerReview(
     snapshot.session_key,
     snapshot.session_generation,
     snapshot.ingest_revision ?? null,
+    snapshot.next_attempt_at,
   );
   if (!held) return null;
 
@@ -380,10 +380,14 @@ export async function holdAndPresentFinalizerReview(
     return { status: "validation_held", reason: "entry_review_undelivered" };
   }
 
-  return {
+  const result: TryFinalizeResult = {
     status: "validation_held",
     reason: fullyDelivered ? "entry_review_presented" : "entry_review_partially_presented",
   };
+  // Best-effort group status after private presentation is proven. This does not
+  // confirm any review, and group messaging is disabled unless allowlisted.
+  await notifyFinalizerReviewGroup(snapshot, result, push);
+  return result;
 }
 
 export async function finalizePendingGeneration(
@@ -469,7 +473,8 @@ export async function finalizePendingGeneration(
         ? String((snapshot.finalization_error as Record<string, unknown>).reason ?? "")
         : "";
       const deferred = await service.deferTransientFinalizationRetry(
-        snapshot.session_key, snapshot.session_generation, snapshot.ingest_revision, reconstructionError,
+        snapshot.session_key, snapshot.session_generation, snapshot.ingest_revision,
+        snapshot.next_attempt_at, reconstructionError,
       );
       log.warn("produce finalization deferred after transient reconstruction error", {
         error: reconstructionError, scheduled: deferred.scheduled, nextAttemptAt: deferred.nextAttemptAt,
@@ -494,7 +499,7 @@ export async function finalizePendingGeneration(
     reconstructionErrors.push(reconstructionError);
   }
 
-  const parsed = seed || !snapshot.plain_text_opened_line_event_id
+  const parsed = seed
     ? parseWeighSession(
         finalText,
         bangkokBusinessDateNow(),
@@ -585,9 +590,10 @@ export async function finalizePendingGeneration(
           log,
         );
         if (heldStatus) return heldStatus;
-        log.warn("validation hold refused; falling through to normal finalization", {
+        log.warn("validation hold refused for finalizer snapshot", {
           ingestRevision: snapshot.ingest_revision,
         });
+        return { status: "stale_snapshot", reason: "validation_hold_refused" };
       }
 
       validationErrors.push(...gate.errors);
@@ -612,7 +618,8 @@ export async function finalizePendingGeneration(
         ? String((snapshot.finalization_error as Record<string, unknown>).reason ?? "")
         : "";
       const deferred = await service.deferTransientFinalizationRetry(
-        snapshot.session_key, snapshot.session_generation, snapshot.ingest_revision, gateError,
+        snapshot.session_key, snapshot.session_generation, snapshot.ingest_revision,
+        snapshot.next_attempt_at, gateError,
       );
       log.warn("produce finalization deferred after transient entry-gate error", {
         error: gateError, scheduled: deferred.scheduled, nextAttemptAt: deferred.nextAttemptAt,
@@ -777,6 +784,7 @@ export async function finalizePendingGeneration(
     snapshot.session_generation,
     snapshot.line_user_id,
     snapshot.ingest_revision,
+    snapshot.next_attempt_at,
     businessFingerprint,
     finalText,
     sessionPayload,

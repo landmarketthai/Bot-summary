@@ -23,6 +23,7 @@ type Row = Record<string, unknown>;
 
 const SESSION_KEY = "group:test-market-1:user:test-staff-1";
 const GENERATION = "44444444-4444-4444-8444-444444444444";
+const SCHEDULED_AT = "2026-11-21T00:00:00.000Z";
 
 class RpcDouble {
   calls: Array<{ name: string; args: Row }> = [];
@@ -106,13 +107,14 @@ describe("validation hold — RPC boundary", () => {
       hold_pending_validation_review: { accepted: true, reason: "held" },
     });
 
-    expect(await svc.holdValidationReview(SESSION_KEY, GENERATION, 9)).toBe(true);
+    expect(await svc.holdValidationReview(SESSION_KEY, GENERATION, 9, SCHEDULED_AT)).toBe(true);
     expect(db.calls[0]).toEqual({
       name: "hold_pending_validation_review",
       args: {
         p_session_key: SESSION_KEY,
         p_expected_session_generation: GENERATION,
         p_expected_ingest_revision: 9,
+        p_expected_next_attempt_at: SCHEDULED_AT,
       },
     });
   });
@@ -121,26 +123,14 @@ describe("validation hold — RPC boundary", () => {
     const { svc } = service({
       hold_pending_validation_review: { accepted: false, reason: "stale_validation_snapshot" },
     });
-    expect(await svc.holdValidationReview(SESSION_KEY, GENERATION, 9)).toBe(false);
+    expect(await svc.holdValidationReview(SESSION_KEY, GENERATION, 9, SCHEDULED_AT)).toBe(false);
   });
 
   it("treats a terminalized refusal as not held", async () => {
     const { svc } = service({
       hold_pending_validation_review: { accepted: false, reason: "terminalized" },
     });
-    expect(await svc.holdValidationReview(SESSION_KEY, GENERATION, 9)).toBe(false);
-  });
-
-  it("resumes by generation only — never by revision, which has moved by then", async () => {
-    const { db, svc } = service({
-      resume_pending_close_finalization: { accepted: true, reason: "resumed" },
-    });
-
-    expect(await svc.resumeCloseFinalization(SESSION_KEY, GENERATION)).toBe(true);
-    expect(db.calls[0].args).toEqual({
-      p_session_key: SESSION_KEY,
-      p_expected_session_generation: GENERATION,
-    });
+    expect(await svc.holdValidationReview(SESSION_KEY, GENERATION, 9, SCHEDULED_AT)).toBe(false);
   });
 });
 
@@ -174,9 +164,9 @@ describe("finalizer ordering guarantee", () => {
     expect(source).toContain("snapshot.ingest_revision ?? null");
   });
 
-  it("falls through to normal finalization when the hold is refused", async () => {
+  it("stops the stale finalizer when the hold is refused", async () => {
     const source = await Bun.file(finalizerPath).text();
-    expect(source).toContain("validation hold refused; falling through to normal finalization");
+    expect(source).toContain('return { status: "stale_snapshot", reason: "validation_hold_refused" }');
   });
 });
 
@@ -238,11 +228,9 @@ describe("webhook close gate wiring", () => {
 
   it("resumes a held session when the distinct later close confirms its review", async () => {
     const source = await Bun.file(webhookPath).text();
-    // Without this, hold_pending_validation_review's next_attempt_at = NULL
-    // would strand a CONFIRMED session forever: no sweep can see a closed row
-    // with no attempt scheduled.
-    expect(source).toContain("pendingService.resumeCloseFinalization(");
-    expect(source).toContain("!closeGateRefusal && pending.close_event_timestamp_ms !== null");
+    expect(source).toContain("runClosedProduceCloseGate(this.supabase, gateRef, parsed, eventId, {");
+    expect(source).toContain("canAcknowledgeClosedProduceReview(pending, lineUserId, eventId, event.timestamp)");
+    expect(source).not.toContain("resumeCloseFinalization");
   });
 
   it("answers a raced close with recoverable Thai copy, not a terminal failure", async () => {

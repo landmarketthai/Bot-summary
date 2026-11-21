@@ -24,7 +24,7 @@ describe("Release B close command and completeness protocol", () => {
     expect(buildMissingItemsMessage([2], true)).toContain("ยังขาด 1 รายการ");
   });
 
-  it("pins generation, sender, and ingest revision in the finalizer RPC call", async () => {
+  it("pins generation, sender, ingest revision, and schedule in the finalizer RPC call", async () => {
     const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
     const supabase = {
       rpc: async (name: string, args: Record<string, unknown>) => {
@@ -39,6 +39,7 @@ describe("Release B close command and completeness protocol", () => {
       "11111111-1111-4111-8111-111111111111",
       "u-1",
       7,
+      "2026-11-21T00:00:00.000Z",
       "hash",
       "raw",
       { staff_name: "ก้อย" },
@@ -52,6 +53,7 @@ describe("Release B close command and completeness protocol", () => {
       .toBe("11111111-1111-4111-8111-111111111111");
     expect(calls[0].args.p_expected_line_user_id).toBe("u-1");
     expect(calls[0].args.p_snapshot_revision).toBe(7);
+    expect(calls[0].args.p_expected_next_attempt_at).toBe("2026-11-21T00:00:00.000Z");
   });
 });
 

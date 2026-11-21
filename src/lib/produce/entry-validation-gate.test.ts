@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { WeighSession, WeighSessionItem } from "@/lib/parsers/weigh-session/types";
 import { parseWeighSession } from "@/lib/parsers/weigh-session/parser";
 import {
+  runClosedProduceCloseGate,
   runProduceCloseGate,
   runProduceFinalizeGate,
   confirmProduceSubunitReview,
@@ -48,6 +49,7 @@ interface ReviewRow {
 class FakeDb {
   readonly reviews: ReviewRow[] = [];
   readonly masterQueries: Array<string | null> = [];
+  readonly closedReviewCalls: Record<string, unknown>[] = [];
   masterError: string | null = null;
   masterRowOverride: RoundMasterRow[] | null = null;
 
@@ -104,6 +106,11 @@ class FakeDb {
   }
 
   private rpc(name: string, params: Record<string, unknown>) {
+    if (name === "confirm_pending_validation_close") {
+      this.closedReviewCalls.push(params);
+      return Promise.resolve({ data: { status: "review_required" }, error: null });
+    }
+
     if (name === "record_produce_validation_review") {
       const existing = this.find(params);
       if (existing) {
@@ -229,6 +236,25 @@ const riskyWithdrawal = (name = "องุ่น") =>
     product_name: name, pricing_mode: "basis", basis_quantity: 0.2, basis_unit: "โล",
     basis_price: 20, entered_quantity: 2, entered_unit: "ขีด", quantity: 0.2,
   })]);
+
+it("pins a held close to its ingest revision and requires the individual subunit approval", async () => {
+  const db = new FakeDb();
+  const gate = await runClosedProduceCloseGate(db.client(), REF, riskyWithdrawal(), "later-close", {
+    ingestRevision: 7,
+    timestampMs: 2000,
+  });
+  expect(gate.decision).toBe("review_presented");
+  expect(db.reviews).toHaveLength(1);
+  const [itemReview] = db.reviews;
+  expect(db.closedReviewCalls).toEqual([expect.objectContaining({
+    p_session_generation: REF.sessionGeneration,
+    p_ingest_revision: 7,
+    p_line_event_id: "later-close",
+    p_line_timestamp_ms: 2000,
+    p_confirmation_digest: null,
+    p_required_digests: [itemReview.validation_digest],
+  })]);
+});
 
 /** Present on E1, then confirm the single subunit item. */
 async function presentAndConfirm(db: FakeDb, parsed = riskyWithdrawal()) {

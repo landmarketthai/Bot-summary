@@ -35,7 +35,6 @@ interface Review {
 
 class PlainTextGateDatabase {
   reviews: Review[] = [];
-  resumedGenerations: unknown[] = [];
   closeRefusals: Array<{
     session_key: string;
     session_generation: string;
@@ -136,7 +135,7 @@ class PlainTextGateDatabase {
     return builder;
   }
 
-  rpc = async (name: string, args: Row) => {
+  rpc = async (name: string, args: Row): Promise<{ data: Row | null; error: { message: string } | null }> => {
     if (name === "bind_plain_text_accountability_round") {
       return { data: this.bindOutcome, error: null };
     }
@@ -203,9 +202,29 @@ class PlainTextGateDatabase {
       this.pending.next_attempt_at = null;
       return { data: { accepted: true }, error: null };
     }
-    if (name === "resume_pending_close_finalization") {
-      this.resumedGenerations.push(args.p_expected_session_generation);
-      return { data: { accepted: true }, error: null };
+    if (name === "confirm_pending_validation_close") {
+      const pending = this.pending;
+      if (
+        args.p_session_generation !== pending.close_session_generation
+        || args.p_ingest_revision !== pending.ingest_revision
+        || args.p_line_user_id !== pending.line_user_id
+        || args.p_runtime_environment !== pending.runtime_environment
+        || Number(args.p_line_timestamp_ms) <= Number(pending.close_event_timestamp_ms)
+      ) {
+        return { data: { status: "stale" }, error: null };
+      }
+      const digests = args.p_required_digests as string[] | null;
+      if (digests === null) {
+        return this.rpc("confirm_produce_validation_review", {
+          ...args,
+          p_validation_digest: args.p_confirmation_digest,
+        });
+      }
+      if (digests.some((digest) => !this.reviews.find((review) => review.digest === digest)?.confirmed_at)) {
+        return { data: { status: "review_required" }, error: null };
+      }
+      pending.next_attempt_at = new Date().toISOString();
+      return { data: { status: "proceed" }, error: null };
     }
     // P1-B: a refused close must leave durable, generation-scoped state behind,
     // or the generation waits forever with nothing scheduled.
@@ -602,6 +621,7 @@ describe("P4A on the plain-text close", () => {
       close_line_event_id: "first-close",
       close_session_generation: GENERATION,
       accountability_round_id: ROUND,
+      next_attempt_at: new Date(boundary + 8_000).toISOString(),
       runtime_environment: getRuntimeEnvironment(),
     });
     const db = new PlainTextGateDatabase(pending, []);
@@ -634,13 +654,21 @@ describe("P4A on the plain-text close", () => {
     }], "dest");
     expect(replies.at(-1)).toContain("✅ ยืนยันข้อ 4 แล้ว");
     await webhook.processEvents([{
-      ...textEvent("5.ฝรั่ง20บาท\n1โล\nจบรายการเบิก", "close-confirm"),
+      ...textEvent("5.ฝรั่ง20บาท\n1โล\nจบรายการเบิก", "close-with-item"),
       timestamp: boundary + 120_001,
+    }], "dest");
+    expect(replies.at(-1)).toBe(CLOSE_RACED_LATE_ITEM_REPLY);
+    expect(db.pending.next_attempt_at).toBeNull();
+
+    await webhook.processEvents([{
+      ...textEvent(close, "close-confirm"),
+      timestamp: boundary + 120_002,
     }], "dest");
 
     expect(replies.at(-1)).toBe(PRODUCE_CLOSE_PENDING_REPLY);
     expect(db.reviews.map((review) => review.digest)).toEqual(digests);
-    expect(db.resumedGenerations).toEqual([GENERATION]);
+    expect(db.pending.next_attempt_at).toEqual(expect.any(String));
+    expect(db.pending.accumulated_text).toBe([header, quantity, close, item].join("\n"));
     expect(db.pending.close_line_event_id).toBe("first-close");
     expect(db.pending.close_event_timestamp_ms).toBe(boundary);
   });

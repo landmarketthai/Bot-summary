@@ -45,6 +45,7 @@ class TimeoutDb {
   updates: Row[] = [];
   rpcNames: string[] = [];
   scheduleResult = [{ session_generation: GENERATION }];
+  retrySchedule?: string | null;
 
   from = (table: string) => {
     const filters: Array<(row: Row) => boolean> = [];
@@ -53,6 +54,7 @@ class TimeoutDb {
     builder.select = () => builder;
     builder.eq = (column: string, value: unknown) => {
       filters.push((row) => row[column] === value);
+      if (column === "next_attempt_at") this.retrySchedule = value as string | null;
       return builder;
     };
     builder.lte = () => builder;
@@ -89,10 +91,11 @@ describe("transient pending-finalizer reconstruction failures", () => {
   it("keeps the generation retryable and never calls the authoritative finalize RPC", async () => {
     const db = new TimeoutDb();
     const pushes: string[] = [];
+    const attempted = snapshot();
 
     const result = await finalizePendingGeneration(
       db as never,
-      snapshot(),
+      attempted,
       async (_to, text) => { pushes.push(text); return {}; },
     );
 
@@ -100,6 +103,7 @@ describe("transient pending-finalizer reconstruction failures", () => {
     expect(result.reason).toBe("transient_reconstruction_error");
     expect(db.rpcNames).not.toContain("try_finalize_pending_generation");
     expect(db.updates).toHaveLength(1);
+    expect(db.retrySchedule).toBe(attempted.next_attempt_at);
     expect(db.updates[0]).toMatchObject({
       finalization_status: "pending",
       finalization_error: {

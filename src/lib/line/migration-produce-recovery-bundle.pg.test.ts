@@ -218,6 +218,9 @@ describe.skipIf(!pgAvailable)("Produce recovery-bundle durability on PostgreSQL 
     await apply(join(
       ROOT, "supabase", "migrations", "20260825091605_produce_recovery_bundle_durability.sql",
     ));
+    await apply(join(
+      ROOT, "supabase", "migrations", "20261121120100_produce_explicit_recovery_open_guard.sql",
+    ));
   }, 60_000);
 
   afterAll(async () => {
@@ -427,6 +430,33 @@ describe.skipIf(!pgAvailable)("Produce recovery-bundle durability on PostgreSQL 
       "SELECT status FROM public.pending_produce_deferred_events WHERE line_event_id='crash-item'",
     );
     expect(status).toBe("rejected_orphan");
+  });
+
+  test("a close that wins the race prevents explicit recovery even for an older LINE timestamp", async () => {
+    const key = keyFor("recover-after-close-race");
+    const opened = await open({ key, eventId: "guard-head", timestamp: 20_000 });
+    const generation = (opened.session as { session_generation: string }).session_generation;
+    const rawId = await raw("guard-item", "1อะโวคาโด้50บาท");
+    await scalar(`INSERT INTO public.pending_produce_deferred_events (
+      line_event_id, raw_message_id, session_key, source_id, line_user_id,
+      line_timestamp_ms, raw_text, runtime_environment, status, defer_reason, resolved_at
+    ) VALUES (
+      'guard-item', ${q(rawId)}::uuid, ${q(key)}, ${q(SOURCE)}, ${q(USER)},
+      20_100, '1อะโวคาโด้50บาท', 'development', 'rejected_orphan', 'no_temporally_valid_generation',
+      clock_timestamp()
+    ) RETURNING 1`);
+    await scalar(`SELECT public.append_pending_session(${q(key)}, 'จบรายการเบิก', NULL,
+      'guard-close', 20_500, true, ${q(generation)}::uuid, NULL)`);
+
+    const result = JSON.parse(await scalar(`SELECT public.recover_pending_produce_deferred_event(
+      ${q(key)}, 'guard-item', '1อะโวคาโด้50บาท', 'reply', 20_100, ${q(generation)}::uuid)`));
+    expect(result).toEqual({ accepted: false, reason: "recovery_draft_closed" });
+    expect(await scalar(
+      "SELECT count(*) FROM public.pending_session_ingest WHERE line_event_id='guard-item'",
+    )).toBe("0");
+    expect(await scalar(
+      "SELECT status FROM public.pending_produce_deferred_events WHERE line_event_id='guard-item'",
+    )).toBe("rejected_orphan");
   });
 
   test("PR #82 after-close grouping is unchanged: opener/close keys still take precedence", async () => {
