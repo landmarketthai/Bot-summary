@@ -23,6 +23,9 @@ const PGPORT = process.env.PGPORT ?? "5432";
 const HELD_CLOSE_SAFETY = join(
   ROOT, "supabase", "migrations", "20261121120000_produce_held_close_state_safety.sql",
 );
+const CONFIRMATION_TIMESTAMP_GUARD = join(
+  ROOT, "supabase", "migrations", "20261121120200_produce_line_confirmation_timestamp_guard.sql",
+);
 const DATABASE = `mig_${randomBytes(4).toString("hex")}`;
 const DB_NAME_PATTERN = /^mig_[a-f0-9]+$/;
 const ALLOWED_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
@@ -233,6 +236,7 @@ describe.skipIf(!pgAvailable)("produce close validation race on PostgreSQL 17", 
       "20260901090000_produce_finalizer_review_presentation.sql",
     ));
     await apply(HELD_CLOSE_SAFETY);
+    await apply(CONFIRMATION_TIMESTAMP_GUARD);
   }, 120_000);
 
   afterAll(async () => {
@@ -263,6 +267,8 @@ describe.skipIf(!pgAvailable)("produce close validation race on PostgreSQL 17", 
     ));
     await apply(HELD_CLOSE_SAFETY);
     await apply(HELD_CLOSE_SAFETY);
+    await apply(CONFIRMATION_TIMESTAMP_GUARD);
+    await apply(CONFIRMATION_TIMESTAMP_GUARD);
 
     // The delivery guard must be the live definition after any replay.
     expect(await scalar(`
