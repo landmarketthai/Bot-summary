@@ -274,14 +274,17 @@ describe.skipIf(!pgAvailable)("produce close validation race on PostgreSQL 17", 
     expect(await scalar(`
       SELECT (p.prosrc LIKE '%not_presented%')::text
       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-      WHERE n.nspname = 'public' AND p.proname = 'confirm_produce_validation_review'`))
+      WHERE n.nspname = 'public' AND p.oid =
+        to_regprocedure('public.confirm_produce_validation_review(text,uuid,text,text,text,bigint)')`))
       .toBe("true");
     expect(await scalar(`
-      SELECT (to_regprocedure('public.confirm_produce_validation_review(text,uuid,text,text,text)') IS NULL)::text`))
+      SELECT (to_regprocedure('public.confirm_produce_validation_review(text,uuid,text,text,text)') IS NOT NULL)::text`))
       .toBe("true");
     for (const [role, allowed] of [["anon", "f"], ["authenticated", "f"], ["service_role", "t"]]) {
       expect(await scalar(`SELECT has_function_privilege(${q(role)},
         'public.confirm_produce_validation_review(text,uuid,text,text,text,bigint)', 'EXECUTE')`)).toBe(allowed);
+      expect(await scalar(`SELECT has_function_privilege(${q(role)},
+        'public.confirm_produce_validation_review(text,uuid,text,text,text)', 'EXECUTE')`)).toBe(allowed);
     }
     expect(await scalar(`
       SELECT count(*)::text FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
@@ -569,7 +572,9 @@ describe.skipIf(!pgAvailable)("produce close validation race on PostgreSQL 17", 
       const src = await scalar(`
         SELECT translate(p.prosrc, E'\\n\\r\\t', '   ')
         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-        WHERE n.nspname = 'public' AND p.proname = ${q(fn)}`);
+        WHERE n.nspname = 'public' AND p.proname = ${q(fn)}
+          AND (p.proname <> 'confirm_produce_validation_review' OR p.oid =
+            to_regprocedure('public.confirm_produce_validation_review(text,uuid,text,text,text,bigint)'))`);
       // Compare STATEMENTS, not any mention: the DECLARE block names the
       // review table as a row type long before either table is touched.
       const pendingLock = src.indexOf("FROM public.pending_sessions");
@@ -587,6 +592,8 @@ describe.skipIf(!pgAvailable)("produce close validation race on PostgreSQL 17", 
       SELECT count(*)::text FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
       WHERE n.nspname = 'public'
         AND p.proname IN ('record_produce_validation_review', 'confirm_produce_validation_review')
+        AND (p.proname <> 'confirm_produce_validation_review' OR p.oid =
+          to_regprocedure('public.confirm_produce_validation_review(text,uuid,text,text,text,bigint)'))
         AND p.prosrc LIKE '%FOR UPDATE%'`)).toBe("2");
   });
 

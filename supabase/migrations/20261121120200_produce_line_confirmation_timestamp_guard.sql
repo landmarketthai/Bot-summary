@@ -149,6 +149,14 @@ BEGIN
 END;
 $fn$;
 
-DROP FUNCTION IF EXISTS public.confirm_produce_validation_review(text, uuid, text, text, text);
+-- Expand/contract compatibility: preserve the five-argument RPC for the currently deployed
+-- app during migration-before-deploy. Drop it only in a separate contract migration,
+-- after old application instances have fully drained and legacy callers are verified gone.
+-- Reassert least-privilege EXECUTE on the legacy signature too: the new signature
+-- is already restricted above, and both must be service_role-only during overlap.
+REVOKE ALL ON FUNCTION public.confirm_produce_validation_review(text, uuid, text, text, text)
+  FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.confirm_produce_validation_review(text, uuid, text, text, text)
+  TO service_role;
 
 COMMIT;
