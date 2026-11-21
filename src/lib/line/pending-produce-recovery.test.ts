@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { plainTextIngestDocument } from "@/lib/line/pending-session-finalizer";
+import { plainTextIngestDocument } from "@/lib/line/pending-produce-document";
 import { validateProduceEntry } from "@/lib/produce/entry-validation";
 import { parseWeighSession } from "@/lib/parsers/weigh-session/parser";
 import {

@@ -65,6 +65,10 @@ import {
   type PendingSession,
 } from "@/lib/line/pending-session-service";
 import {
+  loadPlainTextProduceDocument,
+  parsePlainTextProduceDocument,
+} from "@/lib/line/pending-produce-document";
+import {
   boundaryRejectReply,
   headerOpenedWithRetainedReply,
   incompleteCloserReply,
@@ -172,6 +176,7 @@ import {
   markProduceValidationReviewsPresented,
   deliveredPresentationDigests,
   isProduceReviewApproved,
+  runClosedProduceCloseGate,
   runProduceCloseGate,
 } from "@/lib/produce/entry-validation-gate";
 import {
@@ -619,6 +624,19 @@ function formatPhysicalInventoryBusinessDate(value: string): string {
 
 function hasSessionEnd(text: string): boolean {
   return text.split("\n").some((l) => RE.SESSION_END.test(l.trim()));
+}
+
+function canAcknowledgeClosedProduceReview(
+  pending: PendingSession,
+  lineUserId: string | null,
+  eventId: string,
+  timestampMs: number,
+): boolean {
+  return pending.close_event_timestamp_ms != null
+    && timestampMs > pending.close_event_timestamp_ms
+    && eventId !== pending.close_line_event_id
+    && lineUserId != null && lineUserId === pending.line_user_id
+    && (pending.runtime_environment ?? "production") === getRuntimeEnvironment();
 }
 
 export function parseExpectedItemCount(text: string): number | null {
@@ -1656,7 +1674,9 @@ export class WebhookService {
 
       const subunitConfirm = parseSubunitConfirmCommandLine(text);
       if (subunitConfirm) {
-        if (expired) {
+        const structured = pending as StructuredPendingSession;
+        const closedAt = structured.entry_origin == null ? pending.close_event_timestamp_ms : null;
+        if (expired && !(closedAt != null && pending.next_attempt_at === null)) {
           log.warn("expired produce confirmation refused", {
             sessionKey: pending.session_key,
             sessionGeneration: pending.session_generation,
@@ -1664,17 +1684,26 @@ export class WebhookService {
           if (replyToken) await replyMessage(replyToken, STALE_PRODUCE_SESSION_REPLY);
           return { eventId, eventType: event.type, status: "saved", parsed: false };
         }
-        const structured = pending as StructuredPendingSession;
-        const parsed = structured.entry_origin != null
-          ? parseWeighSession(
-              pending.accumulated_text,
-              structured.business_date ?? bangkokToday(),
-              undefined,
-              buildSeedFromStructuredMetadata(structured),
-            )
-          : parseWeighSession(pending.accumulated_text, bangkokToday());
+        if (closedAt != null && !canAcknowledgeClosedProduceReview(pending, lineUserId, eventId, event.timestamp)) {
+          if (replyToken) await replyMessage(replyToken, CLOSE_RACED_LATE_ITEM_REPLY);
+          return { eventId, eventType: event.type, status: "saved", parsed: false };
+        }
         let roundId = pending.accountability_round_id ?? null;
         try {
+          const parsed = structured.entry_origin != null
+            ? parseWeighSession(
+                pending.accumulated_text,
+                structured.business_date ?? bangkokToday(),
+                undefined,
+                buildSeedFromStructuredMetadata(structured),
+              )
+            : closedAt != null || pending.plain_text_opened_line_event_id
+              ? parsePlainTextProduceDocument(
+                  await loadPlainTextProduceDocument(pendingService, pending, event.timestamp),
+                  pending,
+                  event.timestamp,
+                )
+              : parseWeighSession(pending.accumulated_text, bangkokToday());
           if ((pending as StructuredPendingSession).entry_origin == null) {
             const binding = await bindPlainTextRound(
               this.supabase,
@@ -1707,16 +1736,15 @@ export class WebhookService {
               staffLabel: structured.entry_origin != null
                 ? structured.staff_label ?? null
                 : parsed.staff_name,
-              lineUserId: pending.line_user_id,
+              lineUserId: closedAt != null ? lineUserId : pending.line_user_id,
             },
             parsed,
             subunitConfirm.itemNumber,
             eventId,
+            event.timestamp,
+            closedAt != null ? pending.ingest_revision : undefined,
           );
-          // Only a genuine approval may report success. not_presented (recorded
-          // but never proven shown) and terminalized must never read as
-          // "✅ ยืนยันแล้ว" — that would tell the operator a subunit was
-          // confirmed when nothing authorized it.
+          // Only report success when the subunit approval is on record.
           if (replyToken) await replyMessage(replyToken,
             isProduceReviewApproved(result)
               ? `✅ ยืนยันข้อ ${subunitConfirm.itemNumber} แล้ว\nกรุณาส่ง “จบรายการ” อีกครั้งเมื่อยืนยันครบทุกข้อ`
@@ -1865,45 +1893,31 @@ export class WebhookService {
       // the boundary landed on a document the gate never saw, and the finalizer
       // later terminalized the session for a review that was never presented.
       let closeGatePinnedRevision: number | undefined;
+      const closedAt = pending.close_event_timestamp_ms;
       if (
         markClose
         && !incomingHeader
         && (pending as StructuredPendingSession).entry_origin == null
+        && (closedAt == null || pending.next_attempt_at === null)
       ) {
+        if (closedAt != null && (
+          normalizedText.trim().includes("\n")
+          || !canAcknowledgeClosedProduceReview(pending, lineUserId, eventId, event.timestamp)
+        )) {
+          if (replyToken) await replyMessage(replyToken, CLOSE_RACED_LATE_ITEM_REPLY);
+          return { eventId, eventType: event.type, status: "saved", parsed: false };
+        }
         closeGateRefusal = await this.runPlainTextCloseGate(
+          pendingService,
           pending,
           text,
           eventId,
+          event.timestamp,
+          lineUserId,
           log,
         );
         if (closeGateRefusal) markClose = false;
         else closeGatePinnedRevision = pending.ingest_revision ?? undefined;
-
-        // The gate just passed on a session that ALREADY has a close boundary,
-        // so this is the distinct later close that confirms a review the
-        // finalizer parked. hold_pending_validation_review set next_attempt_at
-        // to NULL; without this the confirmed session would sit held forever,
-        // because no sweep can see a closed row with no attempt scheduled.
-        if (!closeGateRefusal && pending.close_event_timestamp_ms !== null) {
-          try {
-            const resumed = await pendingService.resumeCloseFinalization(
-              sessionKey,
-              pending.session_generation,
-            );
-            log.info("produce finalization resumed after review confirmation", {
-              sessionKey,
-              sessionGeneration: pending.session_generation,
-              resumed,
-            });
-          } catch (resumeError) {
-            // The confirmation itself is already committed. A failed resume
-            // costs a delay, not the confirmation — and never terminalizes.
-            log.error("produce finalization resume failed", {
-              sessionKey,
-              error: String(resumeError),
-            });
-          }
-        }
       }
 
       let updated;
@@ -1929,6 +1943,10 @@ export class WebhookService {
           if (replyToken) await replyMessage(replyToken, STALE_PRODUCE_SESSION_REPLY);
           return { eventId, eventType: event.type, status: "saved", parsed: false };
         }
+      } else if (markClose && closedAt != null && !incomingHeader) {
+        // The closed generation was already scheduled or the gate re-armed it.
+        // A second append could race the finalizer and report a false refusal.
+        updated = pending;
       } else if (
         incomingHeader
         && (
@@ -2221,32 +2239,32 @@ export class WebhookService {
           // success and leave the generation strandable with nothing in the
           // log to say so. The catch remains for transport-level throws.
           try {
-            const { data, error } = await this.supabase.rpc(
-              "mark_plain_text_close_refused",
-              {
-                p_session_key: sessionKey,
-                p_session_generation: pending.session_generation,
-                p_close_line_event_id: eventId,
-                p_reason: "entry_gate_refusal",
-              },
-            );
-            if (error) {
-              log.error("plain-text close refusal stamp rejected", {
-                sessionKey,
-                sessionGeneration: pending.session_generation,
-                error: error.message,
-              });
-            } else {
-              const marked = (data as { marked?: boolean; reason?: string } | null) ?? null;
-              if (marked?.marked !== true) {
-                // A refusal the database declined to record — for example a
-                // generation that rotated underneath us. Not an error, but it
-                // must be visible, because the recovery sweep will not see it.
-                log.warn("plain-text close refusal not stamped", {
+            // The refusal sweep tracks drafts without a close boundary.
+            if (closedAt == null) {
+              const { data, error } = await this.supabase.rpc(
+                "mark_plain_text_close_refused",
+                {
+                  p_session_key: sessionKey,
+                  p_session_generation: pending.session_generation,
+                  p_close_line_event_id: eventId,
+                  p_reason: "entry_gate_refusal",
+                },
+              );
+              if (error) {
+                log.error("plain-text close refusal stamp rejected", {
                   sessionKey,
                   sessionGeneration: pending.session_generation,
-                  reason: marked?.reason ?? "unknown",
+                  error: error.message,
                 });
+              } else {
+                const marked = (data as { marked?: boolean; reason?: string } | null) ?? null;
+                if (marked?.marked !== true) {
+                  log.warn("plain-text close refusal not stamped", {
+                    sessionKey,
+                    sessionGeneration: pending.session_generation,
+                    reason: marked?.reason ?? "unknown",
+                  });
+                }
               }
             }
           } catch (markError) {
@@ -2371,7 +2389,7 @@ export class WebhookService {
         endCommandReceived: true,
         sessionGeneration: updated.session_generation,
         expectedItemCount,
-        nextAttemptAt: updated.next_attempt_at,
+        nextAttemptAt: closedAt == null ? updated.next_attempt_at : undefined,
         closeDeadlineAt: updated.close_deadline_at,
       });
       if (replyToken) {
@@ -2959,13 +2977,11 @@ export class WebhookService {
   // message already carries its closer, marks the close so the Release B
   // deferred finalizer picks it up. No produce rows are written here.
   /**
-   * P4A on the plain-text close, before the close boundary exists.
+   * Validate the initial plain-text close or confirm a held close.
    *
-   * Returns the operator-facing refusal, or null to let the close proceed. The
-   * round is bound first — without it there is no withdrawal master and every
-   * return would validate against nothing. A parse-level failure returns null
-   * on purpose: the deferred finalizer already reports those in its own words,
-   * and calling a malformed line an "unknown product" would be misleading.
+   * Returns the operator-facing refusal, or null to let the close proceed.
+   * Parse failures stage the valid subset for correction. A clean parse binds
+   * the round before validating against its withdrawal master.
    *
    * Confirmable reviews use two closes: the first records and shows the
    * exception set; the second acknowledges exactly that set. Price differences
@@ -2981,13 +2997,35 @@ export class WebhookService {
    * is confirmable, so it must never be stamped as a delivered review.
    */
   private async runPlainTextCloseGate(
+    service:   PendingSessionService,
     pending:   PendingSession,
     closeText: string,
     eventId:   string,
+    eventTimestampMs: number,
+    lineUserId: string | null,
     log:       ChildLogger,
   ): Promise<PlainTextCloseGateRefusal | null> {
-    const document = `${pending.accumulated_text}\n${closeText}`;
-    const parsed = parseWeighSession(document, bangkokToday());
+    const closedAt = pending.close_event_timestamp_ms;
+    let parsed: WeighSession;
+    try {
+      parsed = closedAt != null || pending.plain_text_opened_line_event_id
+        ? parsePlainTextProduceDocument(
+            await loadPlainTextProduceDocument(service, pending, eventTimestampMs, closedAt == null ? {
+              line_event_id: eventId,
+              line_timestamp_ms: eventTimestampMs,
+              raw_text: closeText,
+            } : undefined),
+            pending,
+            eventTimestampMs,
+          )
+        : parseWeighSession(`${pending.accumulated_text}\n${closeText}`, bangkokToday());
+    } catch (error) {
+      log.error("plain-text produce close document unavailable", {
+        sessionKey: pending.session_key,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { refusalText: PRODUCE_ENTRY_GATE_UNAVAILABLE_REPLY };
+    }
     const finalizationErrors = getWeighSessionFinalizationErrors(parsed);
     if (finalizationErrors.length > 0) {
       // A malformed line no longer throws away every line that parsed cleanly.
@@ -3006,7 +3044,7 @@ export class WebhookService {
         provisionalValidation,
         finalizationErrors,
       );
-      const staged = await new PendingSessionService(this.supabase).savePartialCapture(
+      const staged = await service.savePartialCapture(
         pending.session_key,
         pending.session_generation,
         pending.ingest_revision,
@@ -3054,22 +3092,22 @@ export class WebhookService {
         businessDate:  parsed.date,
         marketLabel:   parsed.session_title,
         staffLabel:    parsed.staff_name,
-        lineUserId:    pending.line_user_id,
+        lineUserId:    closedAt == null ? pending.line_user_id : lineUserId,
       };
-      const decision = await runProduceCloseGate(
-        this.supabase,
-        gateRef,
-        parsed,
-        eventId,
-      );
+      const decision = closedAt == null
+        ? await runProduceCloseGate(this.supabase, gateRef, parsed, eventId, eventTimestampMs)
+        : await runClosedProduceCloseGate(this.supabase, gateRef, parsed, eventId, {
+            ingestRevision: pending.ingest_revision,
+            timestampMs: eventTimestampMs,
+          });
+      if (decision.decision === "stale") return { refusalText: CLOSE_RACED_LATE_ITEM_REPLY };
       if (decision.decision === "blocked") {
         // Not confirmable: no presentation to prove. Keep every clean line in
         // the durable staging snapshot and send the correction detail as its
         // own LINE message, so one bad row no longer makes the operator resend
         // the good rows.
         const capture = buildProducePartialCapture(parsed, decision.result, []);
-        const staging = new PendingSessionService(this.supabase);
-        const staged = await staging.savePartialCapture(
+        const staged = await service.savePartialCapture(
           pending.session_key,
           pending.session_generation,
           pending.ingest_revision,
@@ -3099,7 +3137,7 @@ export class WebhookService {
           closeText,
         );
         const capture = buildProducePartialCapture(parsed, decision.result, []);
-        const staged = await new PendingSessionService(this.supabase).savePartialCapture(
+        const staged = await service.savePartialCapture(
           pending.session_key,
           pending.session_generation,
           pending.ingest_revision,

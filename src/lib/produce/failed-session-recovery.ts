@@ -17,7 +17,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { parseWeighSession, getWeighSessionFinalizationErrors } from "@/lib/parsers/weigh-session/parser";
 import { buildSeedFromStructuredMetadata } from "@/lib/parsers/weigh-session/seed";
 import type { WeighSession } from "@/lib/parsers/weigh-session/types";
-import { plainTextIngestDocument } from "@/lib/line/pending-session-finalizer";
+import { plainTextIngestDocument } from "@/lib/line/pending-produce-document";
 import type { PendingSession } from "@/lib/line/pending-session-service";
 import { produceIngestIdempotencyKey, type StructuredPendingSession } from "@/lib/line/produce-session-commands";
 import { computeSessionHash } from "@/lib/line/session-dedup-service";

@@ -18,6 +18,7 @@ import type { BaseTransactionType } from "@/lib/parsers/weigh-session/types";
 import {
   PendingSessionAfterCloseBoundaryError,
   PendingSessionClosedError,
+  PendingSessionGenerationConflictError,
   PendingSessionService,
   type PendingSession,
   type RecoverableDeferredEventRow,
@@ -501,6 +502,7 @@ export async function recoverLatestRejectedBundle(
         if (
           error instanceof PendingSessionAfterCloseBoundaryError
           || error instanceof PendingSessionClosedError
+          || error instanceof PendingSessionGenerationConflictError
         ) {
           // Every event recovered so far is already durably marked admitted
           // (see above) — nothing further to batch-mark before returning.

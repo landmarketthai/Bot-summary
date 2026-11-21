@@ -20,6 +20,12 @@ const PGHOST = process.env.PGHOST ?? "localhost";
 const PGUSER = process.env.PGUSER ?? "postgres";
 const PGPASSWORD = process.env.PGPASSWORD ?? "postgres";
 const PGPORT = process.env.PGPORT ?? "5432";
+const HELD_CLOSE_SAFETY = join(
+  ROOT, "supabase", "migrations", "20261121120000_produce_held_close_state_safety.sql",
+);
+const CONFIRMATION_TIMESTAMP_GUARD = join(
+  ROOT, "supabase", "migrations", "20261121120200_produce_line_confirmation_timestamp_guard.sql",
+);
 const DATABASE = `mig_${randomBytes(4).toString("hex")}`;
 const DB_NAME_PATTERN = /^mig_[a-f0-9]+$/;
 const ALLOWED_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
@@ -197,10 +203,12 @@ async function recordReview(s: Session, digest: string, eventId: string): Promis
     ) AS r`);
 }
 
-async function confirmReview(s: Session, digest: string, eventId: string): Promise<string> {
+async function confirmReview(
+  s: Session, digest: string, eventId: string, timestampMs: number | null = Date.now() + 1000,
+): Promise<string> {
   return await scalar(`
     SELECT public.confirm_produce_validation_review(
-      ${q(s.key)}, ${q(s.generation)}::uuid, ${q(digest)}, ${q(OWNER)}, ${q(eventId)}
+      ${q(s.key)}, ${q(s.generation)}::uuid, ${q(digest)}, ${q(OWNER)}, ${q(eventId)}, ${timestampMs ?? "NULL"}
     )->>'status'`);
 }
 
@@ -227,6 +235,8 @@ describe.skipIf(!pgAvailable)("produce close validation race on PostgreSQL 17", 
       ROOT, "supabase", "migrations",
       "20260901090000_produce_finalizer_review_presentation.sql",
     ));
+    await apply(HELD_CLOSE_SAFETY);
+    await apply(CONFIRMATION_TIMESTAMP_GUARD);
   }, 120_000);
 
   afterAll(async () => {
@@ -255,13 +265,27 @@ describe.skipIf(!pgAvailable)("produce close validation race on PostgreSQL 17", 
       ROOT, "supabase", "migrations",
       "20260901090000_produce_finalizer_review_presentation.sql",
     ));
+    await apply(HELD_CLOSE_SAFETY);
+    await apply(HELD_CLOSE_SAFETY);
+    await apply(CONFIRMATION_TIMESTAMP_GUARD);
+    await apply(CONFIRMATION_TIMESTAMP_GUARD);
 
     // The delivery guard must be the live definition after any replay.
     expect(await scalar(`
       SELECT (p.prosrc LIKE '%not_presented%')::text
       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-      WHERE n.nspname = 'public' AND p.proname = 'confirm_produce_validation_review'`))
+      WHERE n.nspname = 'public' AND p.oid =
+        to_regprocedure('public.confirm_produce_validation_review(text,uuid,text,text,text,bigint)')`))
       .toBe("true");
+    expect(await scalar(`
+      SELECT (to_regprocedure('public.confirm_produce_validation_review(text,uuid,text,text,text)') IS NOT NULL)::text`))
+      .toBe("true");
+    for (const [role, allowed] of [["anon", "f"], ["authenticated", "f"], ["service_role", "t"]]) {
+      expect(await scalar(`SELECT has_function_privilege(${q(role)},
+        'public.confirm_produce_validation_review(text,uuid,text,text,text,bigint)', 'EXECUTE')`)).toBe(allowed);
+      expect(await scalar(`SELECT has_function_privilege(${q(role)},
+        'public.confirm_produce_validation_review(text,uuid,text,text,text)', 'EXECUTE')`)).toBe(allowed);
+    }
     expect(await scalar(`
       SELECT count(*)::text FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
       WHERE n.nspname = 'public' AND p.proname = 'append_pending_session'`)).toBe("2");
@@ -548,7 +572,9 @@ describe.skipIf(!pgAvailable)("produce close validation race on PostgreSQL 17", 
       const src = await scalar(`
         SELECT translate(p.prosrc, E'\\n\\r\\t', '   ')
         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-        WHERE n.nspname = 'public' AND p.proname = ${q(fn)}`);
+        WHERE n.nspname = 'public' AND p.proname = ${q(fn)}
+          AND (p.proname <> 'confirm_produce_validation_review' OR p.oid =
+            to_regprocedure('public.confirm_produce_validation_review(text,uuid,text,text,text,bigint)'))`);
       // Compare STATEMENTS, not any mention: the DECLARE block names the
       // review table as a row type long before either table is touched.
       const pendingLock = src.indexOf("FROM public.pending_sessions");
@@ -566,6 +592,8 @@ describe.skipIf(!pgAvailable)("produce close validation race on PostgreSQL 17", 
       SELECT count(*)::text FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
       WHERE n.nspname = 'public'
         AND p.proname IN ('record_produce_validation_review', 'confirm_produce_validation_review')
+        AND (p.proname <> 'confirm_produce_validation_review' OR p.oid =
+          to_regprocedure('public.confirm_produce_validation_review(text,uuid,text,text,text,bigint)'))
         AND p.prosrc LIKE '%FOR UPDATE%'`)).toBe("2");
   });
 
@@ -924,6 +952,143 @@ describe.skipIf(!pgAvailable)("produce close validation race on PostgreSQL 17", 
     const s = await seedSession();
     await closeWithPin(s, "evt-close", await revisionOf(s.key));
     expect(await markPresented(s, "digest-absent", "evt-x")).toBe("not_found");
+  });
+
+  function confirmHeldSql(
+    session: Session,
+    revision: number,
+    { eventId = "later-close", timestamp = Date.now() + 1000, owner = OWNER, environment = "production",
+      digest = "held-review", required = "ARRAY['held-review']::text[]" } = {},
+  ): string {
+    return `SELECT public.confirm_pending_validation_close(
+      ${q(session.key)}, ${q(session.generation)}::uuid, ${revision}, ${q(owner)},
+      ${q(eventId)}, ${timestamp}, ${q(environment)}, ${q(digest)}, ${required}
+    )->>'status'`;
+  }
+
+  test("a queued close or subunit command predating delivered review cannot approve it", async () => {
+    const s = await seedSession();
+    await closeWithPin(s, "first-close", await revisionOf(s.key));
+    const revision = await revisionOf(s.key);
+    await hold(s, revision);
+    for (const digest of ["held-review", "item-review"]) {
+      await recordFinalizerReview(s, digest, "finalizer-presentation");
+    }
+    const earlyTimestamp = CLOSE_TS + 1;
+    await markMany(s, ["held-review", "item-review"], "finalizer-presentation");
+
+    expect(await scalar(confirmHeldSql(s, revision, {
+      eventId: "queued-close", timestamp: earlyTimestamp,
+    }))).toBe("review_required");
+    expect(await scalar(confirmHeldSql(s, revision, {
+      eventId: "queued-item", timestamp: earlyTimestamp, digest: "item-review", required: "NULL::text[]",
+    }))).toBe("not_presented");
+    const presentationMs = Number(await scalar(`
+      UPDATE public.produce_entry_validation_reviews
+      SET presented_delivered_at = date_trunc('milliseconds', presented_delivered_at)
+      WHERE validation_digest = 'item-review'
+      RETURNING (extract(epoch FROM presented_delivered_at) * 1000)::bigint`));
+    expect(await confirmReview(s, "item-review", "queued-before-close", earlyTimestamp)).toBe("not_presented");
+    expect(await confirmReview(s, "item-review", "same-millisecond", presentationMs)).toBe("not_presented");
+    expect(await confirmReview(s, "item-review", "no-timestamp", null)).toBe("not_presented");
+    expect(await scalar("SELECT count(*) FROM public.produce_entry_validation_reviews WHERE confirmed_at IS NOT NULL"))
+      .toBe("0");
+    expect(await field(s.key, "next_attempt_at")).toBe("<null>");
+    expect(await confirmReview(s, "item-review", "fresh-item", presentationMs + 1)).toBe("confirmed");
+  });
+
+  test("a distinct owner close approves the delivered review and schedules the held generation", async () => {
+    const s = await seedSession();
+    await closeWithPin(s, "first-close", await revisionOf(s.key));
+    const revision = await revisionOf(s.key);
+    const originalSchedule = await field(s.key, "next_attempt_at");
+    await hold(s, revision);
+    await recordFinalizerReview(s, "held-review", "finalizer-presentation");
+    const finalize = (schedule: string) => scalar(`SELECT public.try_finalize_pending_generation(
+      ${q(s.key)}, ${q(s.generation)}::uuid, ${q(OWNER)}, ${revision},
+      'hash', 'document', '{}'::jsonb, '[]'::jsonb, ARRAY[]::text[], ${q(schedule)}::timestamptz
+    )->>'status'`);
+
+    expect(await scalar(confirmHeldSql(s, revision))).toBe("review_required");
+    expect(await finalize(originalSchedule)).toBe("stale_snapshot");
+    await markPresented(s, "held-review", "finalizer-presentation");
+    for (const invalid of [
+      { eventId: "first-close" },
+      { timestamp: CLOSE_TS },
+      { eventId: "finalizer-presentation" },
+      { owner: "other-line-user" },
+      { environment: "preview" },
+    ]) {
+      const status = invalid.eventId === "finalizer-presentation" ? "review_required" : "stale";
+      expect(await scalar(confirmHeldSql(s, revision, invalid))).toBe(status);
+    }
+    expect(await scalar(confirmHeldSql(s, revision - 1))).toBe("stale");
+    expect(await field(s.key, "next_attempt_at")).toBe("<null>");
+    expect(await scalar("SELECT (confirmed_at IS NULL)::text FROM public.produce_entry_validation_reviews")).toBe("true");
+
+    expect(await scalar(confirmHeldSql(s, revision))).toBe("proceed");
+    const nextAttempt = await field(s.key, "next_attempt_at");
+    expect(nextAttempt).not.toBe("<null>");
+    expect(await finalize(originalSchedule)).toBe("stale_snapshot");
+    expect(await finalize(nextAttempt)).toBe("delegated");
+    expect(await scalar("SELECT confirmed_line_event_id FROM public.produce_entry_validation_reviews")).toBe("later-close");
+    expect(await field(s.key, "close_line_event_id")).toBe("first-close");
+    expect(await revisionOf(s.key)).toBe(revision);
+
+    expect(await scalar(`SELECT public.hold_pending_validation_review(
+      ${q(s.key)}, ${q(s.generation)}::uuid, ${revision}, ${q(originalSchedule)}::timestamptz
+    )->>'reason'`)).toBe("stale_schedule");
+    expect(await scalar(confirmHeldSql(s, revision))).toBe("proceed");
+    expect(await field(s.key, "next_attempt_at")).toBe(nextAttempt);
+  });
+
+  test("an individual subunit approval leaves the hold until the close verifies the full set", async () => {
+    const s = await seedSession();
+    await closeWithPin(s, "first-close", await revisionOf(s.key));
+    const revision = await revisionOf(s.key);
+    await hold(s, revision);
+    for (const digest of ["held-review", "item-review"]) {
+      await recordFinalizerReview(s, digest, "finalizer-presentation");
+      await markPresented(s, digest, "finalizer-presentation");
+    }
+    const required = "ARRAY['held-review', 'item-review']::text[]";
+    expect(await scalar(confirmHeldSql(s, revision, { required }))).toBe("review_required");
+    expect(await scalar(confirmHeldSql(s, revision, {
+      digest: "item-review", eventId: "item-confirm", required: "NULL::text[]",
+    }))).toBe("confirmed");
+    expect(await field(s.key, "next_attempt_at")).toBe("<null>");
+
+    expect(await scalar(confirmHeldSql(s, revision, {
+      required, eventId: "queued-close", timestamp: CLOSE_TS + 1,
+    }))).toBe("review_required");
+    expect(await field(s.key, "next_attempt_at")).toBe("<null>");
+
+    expect(await scalar(confirmHeldSql(s, revision, { required, eventId: "last-close" }))).toBe("proceed");
+    expect(await field(s.key, "next_attempt_at")).not.toBe("<null>");
+  });
+
+  test("a failed schedule write rolls the review approval back", async () => {
+    const s = await seedSession();
+    await closeWithPin(s, "first-close", await revisionOf(s.key));
+    const revision = await revisionOf(s.key);
+    await hold(s, revision);
+    await recordFinalizerReview(s, "held-review", "finalizer-presentation");
+    await markPresented(s, "held-review", "finalizer-presentation");
+    await scalar(`CREATE FUNCTION public.reject_test_schedule() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'test schedule write failed'; END;
+      $$;
+      CREATE TRIGGER reject_test_schedule BEFORE UPDATE OF next_attempt_at ON public.pending_sessions
+      FOR EACH ROW EXECUTE FUNCTION public.reject_test_schedule();
+      SELECT 1`);
+    try {
+      const failure = await run(confirmHeldSql(s, revision));
+      expect(failure.code).not.toBe(0);
+      expect(failure.stderr).toContain("test schedule write failed");
+      expect(await scalar("SELECT (confirmed_at IS NULL)::text FROM public.produce_entry_validation_reviews")).toBe("true");
+      expect(await field(s.key, "next_attempt_at")).toBe("<null>");
+    } finally {
+      await scalar("DROP TRIGGER reject_test_schedule ON public.pending_sessions; DROP FUNCTION public.reject_test_schedule(); SELECT 1");
+    }
   });
 
   // ── E. #108 inactivity interaction ────────────────────────────────────────

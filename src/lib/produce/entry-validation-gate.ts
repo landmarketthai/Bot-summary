@@ -10,6 +10,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { WeighSession } from "@/lib/parsers/weigh-session/types";
+import { getRuntimeEnvironment } from "@/lib/runtime-environment";
 import {
   validateProduceEntry,
   computeValidationDigest,
@@ -51,6 +52,11 @@ export interface ProduceGateEvaluation {
   result: ProduceValidationResult;
   /** True when this exact exception set already carries an explicit confirmation. */
   reviewConfirmed: boolean;
+}
+
+export interface ClosedProduceReviewEvent {
+  ingestRevision: number;
+  timestampMs: number;
 }
 
 export class ProduceValidationGateError extends Error {}
@@ -131,17 +137,23 @@ export async function evaluateProduceEntryGate(
   if (result.reviews.length === 0) {
     return { result, reviewConfirmed: false };
   }
-  const subunits = result.reviews.filter((review) => review.kind === "subunit_confirmation");
-  const otherReviews = result.reviews.filter((review) => review.kind !== "subunit_confirmation");
-  const productConfirmed = otherReviews.length === 0
-    || await isReviewConfirmed(supabase, ref, result.digest);
-  const subunitsConfirmed = await Promise.all(subunits.map((review) =>
-    isReviewConfirmed(supabase, ref, computeValidationDigest(parsed, [], [review], {
-      sessionKey: ref.sessionKey,
-      sessionGeneration: ref.sessionGeneration,
-      accountabilityRoundId: ref.accountabilityRoundId,
-    }))));
-  return { result, reviewConfirmed: productConfirmed && subunitsConfirmed.every(Boolean) };
+  const approvals = await Promise.all(requiredReviewDigests(ref, parsed, result).map((digest) =>
+    isReviewConfirmed(supabase, ref, digest)));
+  return { result, reviewConfirmed: approvals.every(Boolean) };
+}
+
+function requiredReviewDigests(
+  ref: ProduceValidationSessionRef,
+  parsed: WeighSession,
+  result: ProduceValidationResult,
+): string[] {
+  const digests = result.reviews
+    .filter((review) => review.kind === "subunit_confirmation")
+    .map((review) => computeValidationDigest(parsed, [], [review], ref));
+  if (result.reviews.some((review) => review.kind !== "subunit_confirmation")) {
+    digests.push(result.digest);
+  }
+  return digests;
 }
 
 async function isReviewConfirmed(
@@ -266,14 +278,15 @@ export type ProduceCloseGateDecision =
  * gate lives here: a refusal leaves the round in capture, where a corrected
  * line is still an ordinary item message. Confirmable reviews use two presses
  * of the same button — the first shows the exceptions and records them, the
- * second (a different LINE event, so a duplicate delivery can never stand in
- * for it) acknowledges exactly the exception set that was shown.
+ * second (a distinct LINE event created after delivery) acknowledges exactly
+ * the exception set that was shown.
  */
 export async function runProduceCloseGate(
   supabase: AnyClient,
   ref: ProduceValidationSessionRef,
   parsed: WeighSession,
   lineEventId: string,
+  lineTimestampMs: number,
 ): Promise<ProduceCloseGateDecision> {
   const { result, reviewConfirmed } = await evaluateProduceEntryGate(supabase, ref, parsed);
   if (result.status === "blocked") return { decision: "blocked", result };
@@ -298,12 +311,10 @@ export async function runProduceCloseGate(
     ref,
     result.digest,
     lineEventId,
+    lineTimestampMs,
   );
-  // Only confirmed/already_confirmed authorize. not_found (stale digest),
-  // not_presented (recorded but never proven delivered — the finalizer's push
-  // failed) and terminalized all mean re-present, never approve. record_ above
-  // has just marked this reply as the delivery, so the NEXT distinct close can
-  // confirm it.
+  // The caller can re-present a review that was not proven delivered before
+  // this event. A later event can then acknowledge the delivered review.
   if (!isProduceReviewApproved(confirmation)) {
     return { decision: "review_presented", result };
   }
@@ -312,6 +323,55 @@ export async function runProduceCloseGate(
     if (!current.reviewConfirmed) return { decision: "review_presented", result: current.result };
   }
   return { decision: "proceed", result };
+}
+
+/** Revalidate the closed document and commit its approval with finalizer scheduling. */
+export async function runClosedProduceCloseGate(
+  supabase: AnyClient,
+  ref: ProduceValidationSessionRef,
+  parsed: WeighSession,
+  lineEventId: string,
+  event: ClosedProduceReviewEvent,
+): Promise<ProduceCloseGateDecision | { decision: "stale" }> {
+  const { result } = await evaluateProduceEntryGate(supabase, ref, parsed);
+  if (result.status === "blocked") return { decision: "blocked", result };
+
+  const digest = result.reviews.some((review) => review.kind !== "subunit_confirmation")
+    ? result.digest : null;
+  const status = await applyClosedProduceReview(
+    supabase, ref, lineEventId, event, digest, requiredReviewDigests(ref, parsed, result),
+  );
+  if (status === "proceed") return { decision: status, result };
+  if (status === "stale") return { decision: status };
+  if (status === "review_required") {
+    const recorded = await recordProduceValidationReview(supabase, ref, result, lineEventId, parsed);
+    if (recorded.terminalized) return { decision: "stale" };
+    return { decision: "review_presented", result };
+  }
+  throw new ProduceValidationGateError("closed produce confirmation returned an unknown status");
+}
+
+async function applyClosedProduceReview(
+  supabase: AnyClient,
+  ref: ProduceValidationSessionRef,
+  lineEventId: string,
+  event: ClosedProduceReviewEvent,
+  digest: string | null,
+  requiredDigests: string[] | null,
+): Promise<string | undefined> {
+  const { data, error } = await supabase.rpc("confirm_pending_validation_close", {
+    p_session_key: ref.sessionKey,
+    p_session_generation: ref.sessionGeneration,
+    p_ingest_revision: event.ingestRevision,
+    p_line_user_id: ref.lineUserId,
+    p_line_event_id: lineEventId,
+    p_line_timestamp_ms: event.timestampMs,
+    p_runtime_environment: getRuntimeEnvironment(),
+    p_confirmation_digest: digest,
+    p_required_digests: requiredDigests,
+  });
+  if (error) throw new ProduceValidationGateError(`closed produce confirmation failed: ${error.message}`);
+  return (data as { status?: string } | null)?.status;
 }
 
 /**
@@ -336,8 +396,7 @@ export async function runProduceFinalizeGate(
 
 /**
  * `not_found`   — the digest no longer describes the session (stale press).
- * `not_presented` — recorded but never proven delivered to the operator; the
- *                 caller must re-present, never approve.
+ * `not_presented` — no delivery was proven before the LINE event.
  * `terminalized` — the generation is dead; nothing about it can be approved.
  *
  * Only `confirmed` and `already_confirmed` are approvals. Everything else means
@@ -383,6 +442,8 @@ export async function confirmProduceSubunitReview(
   parsed: WeighSession,
   itemNumber: number,
   lineEventId: string,
+  lineTimestampMs: number,
+  closedIngestRevision?: number,
 ): Promise<ProduceReviewConfirmation> {
   const roundRows = ref.accountabilityRoundId
     ? await loadRoundMasterRows(supabase, ref.accountabilityRoundId)
@@ -401,16 +462,17 @@ export async function confirmProduceSubunitReview(
     entry.kind === "subunit_confirmation" && entry.itemNumber === itemNumber);
   if (!review || result.reviews.filter((entry) => entry.kind === "subunit_confirmation"
     && entry.itemNumber === itemNumber).length !== 1) return "not_found";
-  return confirmProduceValidationReview(
-    supabase,
-    ref,
-    computeValidationDigest(parsed, [], [review], {
-      sessionKey: ref.sessionKey,
-      sessionGeneration: ref.sessionGeneration,
-      accountabilityRoundId: ref.accountabilityRoundId,
-    }),
-    lineEventId,
-  );
+  const digest = computeValidationDigest(parsed, [], [review], ref);
+  if (closedIngestRevision === undefined) {
+    return confirmProduceValidationReview(supabase, ref, digest, lineEventId, lineTimestampMs);
+  }
+
+  const status = await applyClosedProduceReview(supabase, ref, lineEventId, {
+    ingestRevision: closedIngestRevision,
+    timestampMs: lineTimestampMs,
+  }, digest, null);
+  if (status === "stale") return "not_found";
+  return parseReviewConfirmationStatus(status);
 }
 
 /**
@@ -425,6 +487,7 @@ export async function confirmProduceValidationReview(
   ref: ProduceValidationSessionRef,
   digest: string,
   lineEventId: string,
+  lineTimestampMs: number,
 ): Promise<ProduceReviewConfirmation> {
   if (!ref.lineUserId) {
     throw new ProduceValidationGateError(
@@ -437,6 +500,7 @@ export async function confirmProduceValidationReview(
     p_validation_digest: digest,
     p_line_user_id: ref.lineUserId,
     p_line_event_id: lineEventId,
+    p_line_timestamp_ms: lineTimestampMs,
   });
 
   if (error) {
@@ -444,7 +508,10 @@ export async function confirmProduceValidationReview(
       `validation confirmation failed: ${error.message}`,
     );
   }
-  const status = (data as { status?: string } | null)?.status;
+  return parseReviewConfirmationStatus((data as { status?: string } | null)?.status);
+}
+
+function parseReviewConfirmationStatus(status: string | undefined): ProduceReviewConfirmation {
   if (status !== undefined && REVIEW_CONFIRMATION_STATUSES.has(status)) {
     return status as ProduceReviewConfirmation;
   }

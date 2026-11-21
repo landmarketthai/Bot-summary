@@ -105,8 +105,7 @@ const silentLog = {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as any;
 
-async function run(options: DoubleOptions, push: (to: string, text: string) => Promise<unknown>) {
-  const db = new RpcDouble(options);
+async function run(options: DoubleOptions, push: (to: string, text: string) => Promise<unknown>, db = new RpcDouble(options)) {
   const result = await holdAndPresentFinalizerReview(
     db as never,
     new PendingSessionService(db as never),
@@ -171,11 +170,9 @@ describe("finalizer review presentation protocol", () => {
 
   it("does not push or park when the review cannot be recorded", async () => {
     let pushed = false;
-    const { db, result } = await run({ recordFails: true }, async () => { pushed = true; return {}; });
-
-    // Falls through to normal finalization; nothing was parked and nothing
-    // claims delivery.
-    expect(result).toBeNull();
+    const db = new RpcDouble({ recordFails: true });
+    await expect(run({}, async () => { pushed = true; return {}; }, db))
+      .rejects.toThrow("validation review could not be recorded");
     expect(pushed).toBe(false);
     expect(db.calls).toEqual(["record_produce_validation_review"]);
   });

@@ -28,7 +28,7 @@ export class PendingSessionAfterCloseBoundaryError extends Error {
 export class PendingSessionClosedError extends Error {
   constructor(
     sessionKey: string,
-    public readonly reason: "terminalized" | "deadline_elapsed" | "close_generation_conflict",
+    public readonly reason: "terminalized" | "deadline_elapsed" | "close_generation_conflict" | "recovery_draft_closed",
   ) {
     super(`pending session append rejected for ${sessionKey}: ${reason}`);
     this.name = "PendingSessionClosedError";
@@ -833,28 +833,16 @@ export class PendingSessionService {
     sessionKey: string,
     expectedGeneration: string,
     expectedIngestRevision: number | null,
+    expectedNextAttemptAt: string | null,
   ): Promise<boolean> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const { data, error } = await (this.supabase as any).rpc("hold_pending_validation_review", {
       p_session_key:                 sessionKey,
       p_expected_session_generation: expectedGeneration,
       p_expected_ingest_revision:    expectedIngestRevision,
+      p_expected_next_attempt_at:    expectedNextAttemptAt,
     });
     if (error) throw new Error(`pending validation hold failed: ${error.message}`);
-    return (data as { accepted?: boolean } | null)?.accepted === true;
-  }
-
-  /** Re-schedule finalization for a held generation once its review is confirmed. */
-  async resumeCloseFinalization(
-    sessionKey: string,
-    expectedGeneration: string,
-  ): Promise<boolean> {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const { data, error } = await (this.supabase as any).rpc("resume_pending_close_finalization", {
-      p_session_key:                 sessionKey,
-      p_expected_session_generation: expectedGeneration,
-    });
-    if (error) throw new Error(`pending close resume failed: ${error.message}`);
     return (data as { accepted?: boolean } | null)?.accepted === true;
   }
 
@@ -899,6 +887,7 @@ export class PendingSessionService {
         reason === "terminalized"
         || reason === "deadline_elapsed"
         || reason === "close_generation_conflict"
+        || reason === "recovery_draft_closed"
       ) {
         throw new PendingSessionClosedError(sessionKey, reason);
       }
@@ -936,6 +925,7 @@ export class PendingSessionService {
     expectedGeneration: string,
     expectedLineUserId: string | null,
     snapshotRevision:   number,
+    expectedNextAttemptAt: string | null,
     sessionHash:        string,
     rawText:            string,
     sessionPayload:     Record<string, unknown>,
@@ -959,6 +949,7 @@ export class PendingSessionService {
       p_session:             sessionPayload,
       p_items:               items,
       p_compatibility_hashes: compatibilityHashes,
+      p_expected_next_attempt_at: expectedNextAttemptAt,
     });
     if (error) throw new Error(`pending session finalize failed: ${error.message}`);
     return data as TryFinalizeResult;
@@ -1019,11 +1010,13 @@ export class PendingSessionService {
     sessionKey: string,
     sessionGeneration: string,
     ingestRevision: number,
+    expectedNextAttemptAt: string | null,
     errorMessage: string,
     retryAfterMs = 15_000,
   ): Promise<{ scheduled: boolean; nextAttemptAt: string }> {
     const now = new Date();
     const nextAttemptAt = new Date(now.getTime() + retryAfterMs).toISOString();
+    if (expectedNextAttemptAt == null) return { scheduled: false, nextAttemptAt };
     const { data, error } = await (this.supabase as SupabaseClient)
       .from("pending_sessions")
       .update({
@@ -1039,6 +1032,7 @@ export class PendingSessionService {
       .eq("session_key", sessionKey)
       .eq("session_generation", sessionGeneration)
       .eq("ingest_revision", ingestRevision)
+      .eq("next_attempt_at", expectedNextAttemptAt)
       .eq("terminalized", false)
       .select("session_generation");
     if (error) throw new Error(`defer transient finalization retry failed: ${error.message}`);
