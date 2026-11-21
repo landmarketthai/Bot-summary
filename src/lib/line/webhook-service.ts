@@ -65,6 +65,10 @@ import {
   type PendingSession,
 } from "@/lib/line/pending-session-service";
 import {
+  loadPlainTextProduceDocument,
+  parsePlainTextProduceDocument,
+} from "@/lib/line/pending-produce-document";
+import {
   boundaryRejectReply,
   headerOpenedWithRetainedReply,
   incompleteCloserReply,
@@ -1665,16 +1669,22 @@ export class WebhookService {
           return { eventId, eventType: event.type, status: "saved", parsed: false };
         }
         const structured = pending as StructuredPendingSession;
-        const parsed = structured.entry_origin != null
-          ? parseWeighSession(
-              pending.accumulated_text,
-              structured.business_date ?? bangkokToday(),
-              undefined,
-              buildSeedFromStructuredMetadata(structured),
-            )
-          : parseWeighSession(pending.accumulated_text, bangkokToday());
         let roundId = pending.accountability_round_id ?? null;
         try {
+          const parsed = structured.entry_origin != null
+            ? parseWeighSession(
+                pending.accumulated_text,
+                structured.business_date ?? bangkokToday(),
+                undefined,
+                buildSeedFromStructuredMetadata(structured),
+              )
+            : pending.plain_text_opened_line_event_id
+              ? parsePlainTextProduceDocument(
+                  await loadPlainTextProduceDocument(pendingService, pending, event.timestamp),
+                  pending,
+                  event.timestamp,
+                )
+              : parseWeighSession(pending.accumulated_text, bangkokToday());
           if ((pending as StructuredPendingSession).entry_origin == null) {
             const binding = await bindPlainTextRound(
               this.supabase,
@@ -1871,9 +1881,11 @@ export class WebhookService {
         && (pending as StructuredPendingSession).entry_origin == null
       ) {
         closeGateRefusal = await this.runPlainTextCloseGate(
+          pendingService,
           pending,
           text,
           eventId,
+          event.timestamp,
           log,
         );
         if (closeGateRefusal) markClose = false;
@@ -2961,11 +2973,9 @@ export class WebhookService {
   /**
    * P4A on the plain-text close, before the close boundary exists.
    *
-   * Returns the operator-facing refusal, or null to let the close proceed. The
-   * round is bound first — without it there is no withdrawal master and every
-   * return would validate against nothing. A parse-level failure returns null
-   * on purpose: the deferred finalizer already reports those in its own words,
-   * and calling a malformed line an "unknown product" would be misleading.
+   * Returns the operator-facing refusal, or null to let the close proceed.
+   * Parse failures stage the valid subset for correction. A clean parse binds
+   * the round before validating against its withdrawal master.
    *
    * Confirmable reviews use two closes: the first records and shows the
    * exception set; the second acknowledges exactly that set. Price differences
@@ -2981,13 +2991,33 @@ export class WebhookService {
    * is confirmable, so it must never be stamped as a delivered review.
    */
   private async runPlainTextCloseGate(
+    service:   PendingSessionService,
     pending:   PendingSession,
     closeText: string,
     eventId:   string,
+    timestamp: number,
     log:       ChildLogger,
   ): Promise<PlainTextCloseGateRefusal | null> {
-    const document = `${pending.accumulated_text}\n${closeText}`;
-    const parsed = parseWeighSession(document, bangkokToday());
+    let parsed: WeighSession;
+    try {
+      parsed = pending.plain_text_opened_line_event_id
+        ? parsePlainTextProduceDocument(
+            await loadPlainTextProduceDocument(service, pending, timestamp, {
+              line_event_id: eventId,
+              line_timestamp_ms: timestamp,
+              raw_text: closeText,
+            }),
+            pending,
+            timestamp,
+          )
+        : parseWeighSession(`${pending.accumulated_text}\n${closeText}`, bangkokToday());
+    } catch (error) {
+      log.error("plain-text produce close document unavailable", {
+        sessionKey: pending.session_key,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { refusalText: PRODUCE_ENTRY_GATE_UNAVAILABLE_REPLY };
+    }
     const finalizationErrors = getWeighSessionFinalizationErrors(parsed);
     if (finalizationErrors.length > 0) {
       // A malformed line no longer throws away every line that parsed cleanly.
@@ -3006,7 +3036,7 @@ export class WebhookService {
         provisionalValidation,
         finalizationErrors,
       );
-      const staged = await new PendingSessionService(this.supabase).savePartialCapture(
+      const staged = await service.savePartialCapture(
         pending.session_key,
         pending.session_generation,
         pending.ingest_revision,
@@ -3068,8 +3098,7 @@ export class WebhookService {
         // own LINE message, so one bad row no longer makes the operator resend
         // the good rows.
         const capture = buildProducePartialCapture(parsed, decision.result, []);
-        const staging = new PendingSessionService(this.supabase);
-        const staged = await staging.savePartialCapture(
+        const staged = await service.savePartialCapture(
           pending.session_key,
           pending.session_generation,
           pending.ingest_revision,
@@ -3099,7 +3128,7 @@ export class WebhookService {
           closeText,
         );
         const capture = buildProducePartialCapture(parsed, decision.result, []);
-        const staged = await new PendingSessionService(this.supabase).savePartialCapture(
+        const staged = await service.savePartialCapture(
           pending.session_key,
           pending.session_generation,
           pending.ingest_revision,

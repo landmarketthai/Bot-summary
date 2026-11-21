@@ -456,7 +456,7 @@ describe("0049 — structured finalization path", () => {
     const source = await Bun.file(new URL("./webhook-service.ts", import.meta.url)).text();
     const branch = source.slice(
       source.indexOf("const subunitConfirm = parseSubunitConfirmCommandLine"),
-      source.indexOf("if (subunitConfirm) {", source.indexOf("const subunitConfirm")) + 2500,
+      source.indexOf("if (isExactRecoverLatestCommand(text))", source.indexOf("const subunitConfirm")),
     );
     expect(branch).toContain("buildSeedFromStructuredMetadata(structured)");
     expect(branch).toContain("structured.business_date ?? bangkokToday()");
@@ -469,7 +469,7 @@ describe("0049 — structured finalization path", () => {
     const source = await Bun.file(finalizerPath).text();
     const seedBranch = source.slice(
       source.indexOf("if (seed) {"),
-      source.indexOf("} else if (hasHeaderInLedger("),
+      source.indexOf("} else {\n      finalText = await loadPlainTextProduceDocument("),
     );
     // Both ledgers are loaded and intersected — not the ingest ledger alone.
     expect(seedBranch).toContain("service.loadAdmissionRows(");
@@ -507,34 +507,15 @@ describe("0049 — structured finalization path", () => {
 
   it("changes nothing about the legacy admitted-set handling", async () => {
     const source = await Bun.file(finalizerPath).text();
-    const legacyBranch = source.slice(
-      source.indexOf("} else if (hasHeaderInLedger("),
-      source.indexOf("} catch (error) {"),
-    );
-    // The legacy/plain-text path now delegates ledger composition to the
-    // extracted plainTextIngestDocument helper (shared with กู้รายการล่าสุด
-    // recovery so both paths order the ledger identically). The contract
-    // this test protects is unchanged by that extraction: the legacy branch
-    // must never reach for the structured admitted-set machinery, and
-    // whatever it delegates to must still compose strictly from ingest
-    // rows' raw_text.
-    expect(legacyBranch).toContain("plainTextIngestDocument(");
-    expect(legacyBranch).not.toContain("buildAdmittedStructuredText");
-    expect(legacyBranch).not.toContain("loadAdmissionRows");
-
-    const helperStart = source.indexOf("export function plainTextIngestDocument(");
-    expect(helperStart).toBeGreaterThan(-1);
-    const helperEnd = source.indexOf("\nfunction hasHeaderInLedger(", helperStart);
-    expect(helperEnd).toBeGreaterThan(helperStart);
-    const helperBody = source.slice(helperStart, helperEnd);
-    expect(helperBody).toContain("ingestRows.map((row) => row.raw_text).join");
-    expect(helperBody).not.toContain("buildAdmittedStructuredText");
-    expect(helperBody).not.toContain("loadAdmissionRows");
+    const document = await Bun.file(new URL("./pending-produce-document.ts", import.meta.url)).text();
+    expect(source).toContain("finalText = await loadPlainTextProduceDocument(service, snapshot, closeTimestamp)");
+    expect(document).toContain("rows.map((row) => row.raw_text).join");
+    expect(document).not.toContain("loadAdmissionRows");
   });
 
   it("seeds the parser instead of reconstructing a header", async () => {
     const source = await Bun.file(finalizerPath).text();
-    expect(source).toContain("parseWeighSession(finalText, bangkokBusinessDateNow(), fallbackTime, seed)");
+    expect(source).toMatch(/parseWeighSession\(\s*finalText,\s*bangkokBusinessDateNow\(\),\s*bangkokTimeFromTimestamp\(Date.parse\(snapshot.created_at\)\),\s*seed,/);
   });
 
   it("hashes and persists the canonicalized business identity while retaining compatibility hashes", async () => {
@@ -546,9 +527,9 @@ describe("0049 — structured finalization path", () => {
   });
 
   it("keeps the legacy branch intact", async () => {
-    const source = await Bun.file(finalizerPath).text();
-    expect(source).toContain("} else if (hasHeaderInLedger(snapshot, ingestRows)) {");
-    expect(source).toContain("finalText = await service.rebuildForFinalization(snapshot, closeTimestamp);");
+    const document = await Bun.file(new URL("./pending-produce-document.ts", import.meta.url)).text();
+    expect(document).toContain("!opener && !hasHeaderInLedger(session, rows)");
+    expect(document).toContain("service.rebuildForFinalization(session, boundary)");
   });
 });
 

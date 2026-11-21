@@ -10,6 +10,10 @@ import {
   type TryFinalizeResult,
 } from "@/lib/line/pending-session-service";
 import {
+  loadPlainTextProduceDocument,
+  parsePlainTextProduceDocument,
+} from "@/lib/line/pending-produce-document";
+import {
   buildAdditionalSessionSummary,
   buildWeighSessionSummary,
   pushLineMessage,
@@ -40,7 +44,6 @@ import {
   getWeighSessionFinalizationErrors,
   parseWeighSession,
 } from "@/lib/parsers/weigh-session/parser";
-import { RE } from "@/lib/parsers/weigh-session/regex";
 import { logger } from "@/lib/logger";
 import { seedCentralPricesFromPersistedWithdrawals } from "@/lib/white-sheet/seed-from-withdrawal";
 import {
@@ -124,41 +127,6 @@ export function buildMissingItemsMessage(
   return failedClosed
     ? `หมดเวลารอและรายการยังไม่ครบ ยังขาด ${missing.length} รายการตามจำนวนที่แจ้งตอนปิด จึงไม่บันทึกรายการ`
     : `ยังปิดรายการไม่ได้ ยังขาด ${missing.length} รายการตามจำนวนที่แจ้งตอนปิด ระบบจะรอรายการที่ส่งค้างอยู่`;
-}
-
-export function plainTextIngestDocument(
-  openerLineEventId: string | null | undefined,
-  ingestRows: Array<{ line_event_id: string; raw_text: string }>,
-): string {
-  if (!openerLineEventId) {
-    return ingestRows.map((row) => row.raw_text).join("\n");
-  }
-  const opener = ingestRows.find((row) => row.line_event_id === openerLineEventId);
-  if (!opener) {
-    return ingestRows.map((row) => row.raw_text).join("\n");
-  }
-  return [opener, ...ingestRows.filter((row) => row.line_event_id !== openerLineEventId)]
-    .map((row) => row.raw_text)
-    .join("\n");
-}
-
-function hasHeaderInLedger(session: PendingSession, rows: Array<{ raw_text: string }>): boolean {
-  const normalizeHeader = (line: string) => line
-    .replace(/^\d{1,2}[:.]\d{2}\s+\S+\s+/, "")
-    .trim()
-    .replace(/\s+/g, " ");
-  const expectedHeader = session.accumulated_text
-    .split("\n")
-    .find((line) => line.trim() !== "");
-  if (!expectedHeader) return false;
-
-  return rows.some((row) =>
-    row.raw_text.split("\n").some((line) => {
-      const normalized = normalizeHeader(line);
-      return normalized === normalizeHeader(expectedHeader)
-        && !RE.SESSION_END.test(normalized)
-        && RE.SESSION_START.test(normalized);
-    }));
 }
 
 /**
@@ -464,11 +432,6 @@ export async function finalizePendingGeneration(
   let finalText = snapshot.accumulated_text;
   const reconstructionErrors: string[] = [];
   try {
-    const ingestRows = await service.loadIngestRows(
-      snapshot.session_key,
-      snapshot.session_generation,
-      closeTimestamp,
-    );
     if (seed) {
       // A structured session has no text header to find and none to invent.
       // Only the rows present in BOTH generation-scoped ledgers through the
@@ -477,6 +440,11 @@ export async function finalizePendingGeneration(
       // that integrity gate passes, the parsed document is accumulated_text
       // itself — the same field readSnapshot already validated at every
       // review/close/confirm step — not a replay of the raw ledger text.
+      const ingestRows = await service.loadIngestRows(
+        snapshot.session_key,
+        snapshot.session_generation,
+        closeTimestamp,
+      );
       const admissionRows = await service.loadAdmissionRows(
         snapshot.session_key,
         snapshot.session_generation,
@@ -487,13 +455,8 @@ export async function finalizePendingGeneration(
         ingestRows,
         snapshot.accumulated_text,
       );
-    } else if (hasHeaderInLedger(snapshot, ingestRows)) {
-      finalText = plainTextIngestDocument(
-        snapshot.plain_text_opened_line_event_id,
-        ingestRows,
-      );
     } else {
-      finalText = await service.rebuildForFinalization(snapshot, closeTimestamp);
+      finalText = await loadPlainTextProduceDocument(service, snapshot, closeTimestamp);
     }
   } catch (error) {
     const reconstructionError = error instanceof Error
@@ -531,12 +494,14 @@ export async function finalizePendingGeneration(
     reconstructionErrors.push(reconstructionError);
   }
 
-  const fallbackTime = bangkokTimeFromTimestamp(
-    new Date(snapshot.created_at).getTime(),
-  );
-  // Seeded parse for structured rows; identical call shape as before for legacy
-  // rows, where seed is null and the default parameter applies.
-  const parsed = parseWeighSession(finalText, bangkokBusinessDateNow(), fallbackTime, seed);
+  const parsed = seed || !snapshot.plain_text_opened_line_event_id
+    ? parseWeighSession(
+        finalText,
+        bangkokBusinessDateNow(),
+        bangkokTimeFromTimestamp(Date.parse(snapshot.created_at)),
+        seed,
+      )
+    : parsePlainTextProduceDocument(finalText, snapshot, closeTimestamp);
   const isAdditional = parsed.session_kind === "additional";
   const validationErrors = [
     ...reconstructionErrors,

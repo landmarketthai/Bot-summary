@@ -7,6 +7,9 @@
  * still an ordinary item message and the original business date survives.
  */
 import { describe, expect, it } from "bun:test";
+import { getRuntimeEnvironment } from "@/lib/runtime-environment";
+import { finalizePendingGeneration } from "./pending-session-finalizer";
+import type { PendingSession } from "./pending-session-service";
 import { WebhookService } from "./webhook-service";
 import type { LineMessageEvent } from "./types";
 
@@ -22,6 +25,9 @@ const CLOSE_RACED_LATE_ITEM_REPLY =
 
 interface Review {
   digest: string;
+  session_key: string;
+  session_generation: string;
+  validation_digest: string;
   presented_line_event_id: string;
   presented_delivered_at: string | null;
   confirmed_at: string | null;
@@ -29,6 +35,7 @@ interface Review {
 
 class PlainTextGateDatabase {
   reviews: Review[] = [];
+  resumedGenerations: unknown[] = [];
   closeRefusals: Array<{
     session_key: string;
     session_generation: string;
@@ -61,12 +68,22 @@ class PlainTextGateDatabase {
 
   from(table: string) {
     const filters: Array<(row: Row) => boolean> = [];
+    const orderBy: string[] = [];
     let updatePayload: Row | null = null;
     const source = () =>
       table === "produce_entry_validation_reviews"
         ? (this.reviews as unknown as Row[])
         : this.rows(table);
-    const matching = () => source().filter((row) => filters.every((f) => f(row)));
+    const matching = () => source().filter((row) => filters.every((f) => f(row)))
+      .sort((left, right) => {
+        for (const column of orderBy) {
+          const a = left[column] as number | string;
+          const b = right[column] as number | string;
+          if (a < b) return -1;
+          if (a > b) return 1;
+        }
+        return 0;
+      });
     const applyUpdate = () => {
       const rows = matching();
       if (updatePayload) {
@@ -80,8 +97,15 @@ class PlainTextGateDatabase {
         filters.push((row) => row[column] === value);
         return builder;
       },
+      lte: (column: string, value: number) => {
+        filters.push((row) => Number(row[column]) <= value);
+        return builder;
+      },
       limit: () => builder,
-      order: () => builder,
+      order: (column: string) => {
+        orderBy.push(column);
+        return builder;
+      },
       maybeSingle: async () => ({
         data: applyUpdate()[0] ?? null,
         error: null,
@@ -122,6 +146,9 @@ class PlainTextGateDatabase {
       if (!review) {
         review = {
           digest,
+          session_key: args.p_session_key as string,
+          session_generation: args.p_session_generation as string,
+          validation_digest: digest,
           presented_line_event_id: args.p_line_event_id as string,
           presented_delivered_at: null,
           confirmed_at: null,
@@ -172,6 +199,14 @@ class PlainTextGateDatabase {
     if (name === "admit_pending_session_event" || name === "register_pending_session_ingest") {
       return { data: null, error: null };
     }
+    if (name === "hold_pending_validation_review") {
+      this.pending.next_attempt_at = null;
+      return { data: { accepted: true }, error: null };
+    }
+    if (name === "resume_pending_close_finalization") {
+      this.resumedGenerations.push(args.p_expected_session_generation);
+      return { data: { accepted: true }, error: null };
+    }
     // P1-B: a refused close must leave durable, generation-scoped state behind,
     // or the generation waits forever with nothing scheduled.
     if (name === "mark_plain_text_close_refused") {
@@ -191,6 +226,9 @@ class PlainTextGateDatabase {
     if (name === "append_pending_session") {
       const pending = this.pending;
       if (args.p_mark_close) {
+        if (pending.close_event_timestamp_ms != null) {
+          return { data: { accepted: true, reason: "close_already_requested", session: pending }, error: null };
+        }
         pending.close_event_timestamp_ms = args.p_line_timestamp_ms;
         pending.close_line_event_id = args.p_line_event_id;
         pending.close_session_generation = pending.session_generation;
@@ -522,6 +560,89 @@ describe("P4A on the plain-text close", () => {
     expect(db.reviews.some((review) => !oldDigests.has(review.digest))).toBe(true);
     expect(db.reviews.every((review) => review.confirmed_at === null)).toBe(true);
     expect(db.pending.close_event_timestamp_ms).toBeNull();
+  });
+
+  it("includes the quantity in the first close and excludes ledger rows beyond it", async () => {
+    const header = "ดำ-ราชพฤกษ์ เบิก 11/8/2569";
+    const item = "1.แตงโม20บาท";
+    const close = textEvent("2ลูก\nจบรายการเบิก", "first-close");
+    const db = new PlainTextGateDatabase({
+      ...pendingRow([header, item, "5.มังคุด50บาท\n1โลก"].join("\n")),
+      plain_text_opened_line_event_id: "open",
+    }, []);
+    db.tables.pending_session_ingest = [
+      ["open", close.timestamp - 2, header],
+      ["item", close.timestamp - 1, item],
+      ["future-item", close.timestamp + 1, "5.มังคุด50บาท\n1โลก"],
+    ].map(([eventId, timestamp, rawText]) => ({
+      session_key: SESSION_KEY,
+      session_generation: GENERATION,
+      line_event_id: eventId,
+      line_timestamp_ms: timestamp,
+      raw_text: rawText,
+    }));
+    const replies: string[] = [];
+
+    await build(db, replies).processEvents([close], "dest");
+
+    expect(replies).toEqual([PRODUCE_CLOSE_PENDING_REPLY]);
+    expect(db.pending.close_event_timestamp_ms).toBe(close.timestamp);
+  });
+
+  it("confirms the held finalizer review from the original timestamp-ordered document", async () => {
+    const header = "ดำ-ราชพฤกษ์ เบิก";
+    const item = "4.มะม่วง2ขีด20บาท";
+    const quantity = "1โล";
+    const close = "จบรายการเบิก";
+    const boundary = Date.parse("2026-11-20T20:59:00Z");
+    const pending = pendingRow([header, quantity, close, item].join("\n"));
+    Object.assign(pending, {
+      plain_text_opened_line_event_id: "open",
+      close_event_timestamp_ms: boundary,
+      close_line_event_id: "first-close",
+      close_session_generation: GENERATION,
+      accountability_round_id: ROUND,
+      runtime_environment: getRuntimeEnvironment(),
+    });
+    const db = new PlainTextGateDatabase(pending, []);
+    db.tables.pending_session_ingest = [
+      ["open", boundary - 3, header],
+      ["quantity", boundary - 1, quantity],
+      ["first-close", boundary, close],
+      ["item", boundary - 2, item],
+      ["after-close", boundary + 1, "5.มังคุด50บาท\n1โล"],
+    ].map(([eventId, timestamp, rawText]) => ({
+      session_key: SESSION_KEY,
+      session_generation: GENERATION,
+      line_event_id: eventId,
+      line_timestamp_ms: timestamp,
+      raw_text: rawText,
+    }));
+    const pushes: string[] = [];
+    const result = await finalizePendingGeneration(db as never, pending as unknown as PendingSession,
+      async (_to, message) => { pushes.push(message); });
+    expect(result).toEqual({ status: "validation_held", reason: "entry_review_presented" });
+    expect(pushes.join("\n")).toContain("ยืนยันข้อ 4");
+    const digests = db.reviews.map((review) => review.digest);
+
+    const replies: string[] = [];
+    const webhook = build(db, replies);
+    // 04:01 Bangkok is in the next business day; the held document keeps 03:59.
+    await webhook.processEvents([{
+      ...textEvent("ยืนยันข้อ 4", "item-confirm"),
+      timestamp: boundary + 120_000,
+    }], "dest");
+    expect(replies.at(-1)).toContain("✅ ยืนยันข้อ 4 แล้ว");
+    await webhook.processEvents([{
+      ...textEvent("5.ฝรั่ง20บาท\n1โล\nจบรายการเบิก", "close-confirm"),
+      timestamp: boundary + 120_001,
+    }], "dest");
+
+    expect(replies.at(-1)).toBe(PRODUCE_CLOSE_PENDING_REPLY);
+    expect(db.reviews.map((review) => review.digest)).toEqual(digests);
+    expect(db.resumedGenerations).toEqual([GENERATION]);
+    expect(db.pending.close_line_event_id).toBe("first-close");
+    expect(db.pending.close_event_timestamp_ms).toBe(boundary);
   });
 });
 
