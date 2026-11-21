@@ -234,6 +234,15 @@ describe("duplicate guard", () => {
     expect(flags[2].flagged).toBe(false);
   });
 
+  it("an earlier-sent global loser does not displace the later-sent global winner", () => {
+    const evidences = [
+      { ...makeExtractedWithRef(500, "REF-001"), globallyDuplicate: true },
+      { ...makeExtractedWithRef(500, "REF-001"), globallyDuplicate: false },
+    ];
+    const flags = computeValidationFlags(evidences, null);
+    expect(flags.map((f) => f.flagged)).toEqual([true, false]);
+  });
+
   it("flags every repeat beyond the first (three copies → two flagged)", () => {
     const evidences = [
       makeExtractedWithRef(500, "REF-001"),
