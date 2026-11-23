@@ -249,6 +249,7 @@ type StockPageCategory = typeof STOCK_CATEGORIES[number];
 
 type StockMatrixItem = {
   productName: string;
+  originalProductName?: string | null;
   category: string;
   unit: string;
   houseStockQuantity: number | null;
@@ -265,13 +266,14 @@ function stockMatrixKey(productName: string, unit: string): string {
   return `${productName}\u0000${displayUnit(unit)}`;
 }
 
-function stockMatrixItems(report: MorningBriefReport): StockMatrixItem[] {
+function stockMatrixItems(report: MorningBriefReport, fruitDaily = false): StockMatrixItem[] {
   const byKey = new Map<string, StockMatrixItem>();
 
   for (const item of (["strong", "surplus", "reduce", "unknown"] as const)
     .flatMap((status) => report.purchasePlanning[status].items ?? [])) {
     byKey.set(stockMatrixKey(item.productName, item.unit), {
       productName: item.productName,
+      originalProductName: item.originalProductName,
       category: item.category,
       unit: item.unit,
       houseStockQuantity: item.houseStockQuantity ?? null,
@@ -293,7 +295,7 @@ function stockMatrixItems(report: MorningBriefReport): StockMatrixItem[] {
           category: item.category,
           unit: item.unit,
           houseStockQuantity: null,
-          marketStockQuantity: 0,
+          marketStockQuantity: fruitDaily ? null : 0,
           totalRemainingQuantity: null,
         });
       }
@@ -370,8 +372,8 @@ function EmptyEvidenceCard({ title, status, note }: {
   </View>;
 }
 
-function DataFooter({ generatedText }: { generatedText: string }) {
-  return <View style={S.footer} fixed>
+function DataFooter({ generatedText, compact = false }: { generatedText: string; compact?: boolean }) {
+  return <View style={compact ? [S.footer, F.footer] : S.footer} fixed>
     <Text>สร้างเมื่อ {generatedText}</Text>
     <Text render={({ pageNumber, totalPages }) => `หน้า ${pageNumber}/${totalPages}`} />
   </View>;
@@ -453,12 +455,211 @@ function FinancialKpis({ label, financial, showTitle = true, compact = false, sh
   </View>;
 }
 
+const F = StyleSheet.create({
+  page: { fontSize: 13 },
+  coverPage: { paddingTop: 80 },
+  coverHeading: { position: "absolute", top: 22, left: 24, right: 24 },
+  title: { fontSize: 23, fontWeight: "bold", marginBottom: 3 },
+  note: { fontSize: 12, color: "#4B5563" },
+  hero: { backgroundColor: "#FFF8E5", borderColor: "#E8D49C", borderWidth: 1, borderRadius: 6,
+    paddingHorizontal: 14, paddingVertical: 8, marginBottom: 9 },
+  heroValue: { fontSize: 27, fontWeight: "bold", color: "#654518" },
+  cards: { flexDirection: "row", gap: 8, marginBottom: 12 },
+  card: { flex: 1, borderRadius: 5, paddingHorizontal: 10, paddingVertical: 7 },
+  cardLabel: { fontSize: 13, color: "#374151" },
+  cardValue: { fontSize: 17, fontWeight: "bold" },
+  sectionTitle: { fontSize: 16, fontWeight: "bold", marginBottom: 4 },
+  row: { flexDirection: "row" },
+  cell: { paddingHorizontal: 8, paddingVertical: 5, justifyContent: "center",
+    borderBottomWidth: 0.6, borderRightWidth: 0.6, borderColor: "#CBD5E1" },
+  firstCell: { borderLeftWidth: 0.6 },
+  headerCell: { borderTopWidth: 0.6 },
+  stockCell: { fontSize: 14, minHeight: 29 },
+  group: { backgroundColor: "#EEF2F6", fontWeight: "bold", paddingHorizontal: 8, paddingVertical: 4 },
+  footer: { fontSize: 11 },
+});
+
+const FRUIT_MARKET_COLUMNS = [
+  { width: "34%", color: "#F4F5F7", label: "ตลาด/ผู้ขาย" },
+  { width: "22%", color: "#E0EEFB", label: "เบิกไปขาย (บาท)" },
+  { width: "22%", color: "#FFF0BF", label: "ยอดตามเบิก-คืน (บาท)" },
+  { width: "22%", color: "#DDF1DE", label: "ชั่งคืนดี (บาท)" },
+];
+const FRUIT_STOCK_COLUMNS = [
+  { width: "46%", color: "#FAFBFC", label: "รายการผลไม้ / หน่วย" },
+  { width: "18%", color: "#FFF0C9", label: "บ้านเจ๊" },
+  { width: "18%", color: "#D9E7EC", label: "ในตลาด" },
+  { width: "18%", color: "#DCEBD5", label: "รวมคงเหลือ" },
+];
+
+function FruitTableRow({ columns, values, stock = false, total = false }: {
+  columns: typeof FRUIT_MARKET_COLUMNS;
+  values?: string[];
+  stock?: boolean;
+  total?: boolean;
+}) {
+  return <View style={F.row} wrap={false}>
+    {columns.map(({ width, color, label }, index) => <View key={label} style={[
+      F.cell, index === 0 ? F.firstCell : {}, values ? {} : F.headerCell, stock ? F.stockCell : {},
+      { width, backgroundColor: color },
+    ]}>
+      <Text style={[
+        index > 0 ? (values ? S.right : S.center) : {},
+        !values || total ? { fontWeight: "bold" } : {},
+      ]}><TableLabel>{values?.[index] ?? label}</TableLabel></Text>
+    </View>)}
+  </View>;
+}
+
+function FruitDailyDoc({ report, generatedText, previewLabel }: {
+  report: MorningBriefReport;
+  generatedText: string;
+  previewLabel?: string;
+}) {
+  const date = formatThaiDate(report.businessDate);
+  const hasProduce = report.produceReadiness?.transactionCount !== 0;
+  const financial = report.produceFinancial?.fruit ?? report.fruitFinancial;
+  const marketFinancial = new Map<string, MorningBriefFruitFinancialSummary["markets"][number]>();
+  for (const market of financial?.markets ?? []) {
+    const previous = marketFinancial.get(market.marketLabel);
+    marketFinancial.set(market.marketLabel, previous ? {
+      marketLabel: market.marketLabel,
+      withdrawalValueSatang: previous.withdrawalValueSatang + market.withdrawalValueSatang,
+      salesValueSatang: previous.salesValueSatang + market.salesValueSatang,
+      goodReturnValueSatang: previous.goodReturnValueSatang + market.goodReturnValueSatang,
+      awaitingReturnCount: (previous.awaitingReturnCount ?? 0) + (market.awaitingReturnCount ?? 0),
+    } : market);
+  }
+  const readiness = new Map(report.produceReadiness?.markets.map((market) => [market.marketLabel, market]));
+  const salesMarkets = new Map(report.sales.markets?.map((market) => [market.marketLabel, market]));
+  const hasSectionBreakdown = financial != null || report.produceFinancial != null;
+  const marketLabels = hasProduce
+    ? hasSectionBreakdown ? [...marketFinancial.keys()] : [...new Set([...salesMarkets.keys(), ...readiness.keys()])]
+    : [];
+  const money = (value: number | null | undefined) => value == null ? "-" : bahtFromSatang(value);
+  const moneyWithUnit = (value: number | null | undefined) => value == null ? "-" : `${money(value)} บาท`;
+  // Older scoped reports may carry only the daily sales rollup.
+  const dailySales = financial?.salesValueSatang ?? (report.produceFinancial == null
+    && (report.sales.confirmedSalesSatang !== 0 || salesMarkets.size > 0) ? report.sales.confirmedSalesSatang : null);
+  const hasReturn = (label: string) => readiness.get(label)?.hasReturn
+    ?? ((marketFinancial.get(label)?.goodReturnValueSatang ?? 0) !== 0);
+  const hasAnyReturn = marketLabels.some(hasReturn);
+  const allReturnsComplete = marketLabels.length > 0 && marketLabels.every((label) =>
+    hasReturn(label) && (salesMarkets.get(label)?.awaitingReturnCount ?? 0) === 0
+    && (salesMarkets.get(label)?.incompleteReturnIssueCount ?? 0) === 0);
+  const sales = hasProduce && (dailySales !== 0 || hasAnyReturn) ? dailySales : null;
+  const cards = [
+    { label: "ยอดขายตามรายงาน", value: sales, color: "#FFF0BF" },
+    { label: "ยอดเบิกไปขาย", value: hasProduce ? financial?.withdrawalValueSatang : null, color: "#E0EEFB" },
+    { label: "ยอดชั่งคืนดี", value: hasProduce && (hasAnyReturn || financial?.goodReturnValueSatang)
+      ? financial?.goodReturnValueSatang : null, color: "#DDF1DE" },
+    { label: "สต็อกบ้านเจ๊", value: financial?.houseStockValueSatang, color: "#FFE8C8" },
+  ];
+  const groups = new Map<string, StockMatrixItem[]>();
+  for (const item of stockMatrixItems(report, true)) {
+    const category = stockCategory(item);
+    if (category !== "ผลไม้" && !(category === "อื่นๆ" && item.category === "ผลไม้")) continue;
+    const unit = displayUnit(item.unit);
+    const group = groups.get(unit) ?? [];
+    group.push(item);
+    groups.set(unit, group);
+  }
+  const stockGroups = [...groups].sort(([a], [b]) => a.localeCompare(b, "th"));
+  const totalQuantity = (item: StockMatrixItem) => item.houseStockQuantity == null || item.marketStockQuantity == null
+    ? null : item.totalRemainingQuantity ?? (Math.round(item.houseStockQuantity * 1000) + Math.round(item.marketStockQuantity * 1000)) / 1000;
+
+  return <Document title={`Morning Brief ผลไม้ ${report.businessDate}`}>
+    <Page size="A4" orientation="landscape" style={[S.page, F.page, F.coverPage]}>
+      <View style={F.coverHeading}>
+        <Text style={F.title}>สรุปยอดขายประจำวัน (ผลไม้) - {date}</Text>
+        <Text style={F.note}>ข้อมูลวันที่ {thaiNumericDate(report.businessDate)} • พบ {marketLabels.length} ตลาด</Text>
+      </View>
+      <View fixed style={F.coverHeading} render={({ pageNumber }) => pageNumber > 1
+        ? <>
+          <Text style={F.sectionTitle}>สรุปยอดตามตลาด - {date}</Text>
+          <FruitTableRow columns={FRUIT_MARKET_COLUMNS} />
+        </> : null} />
+      <View wrap={false}>
+        {previewLabel ? <Text style={[F.note, { marginBottom: 4 }]}>{previewLabel}</Text> : null}
+        <View style={F.hero}>
+          <Text style={F.heroValue}>{moneyWithUnit(sales)}</Text>
+          <Text style={F.note}>{sales == null ? "ยังไม่มีข้อมูลสำหรับสรุปยอดขาย" : "ยอดขายผลไม้ตามข้อมูลที่บันทึก"}</Text>
+        </View>
+        <View style={F.cards}>
+          {cards.map(({ label, value, color }, index) => <View key={label} style={[F.card, { backgroundColor: color }]}>
+            <Text style={F.cardLabel}>{label}</Text>
+            <Text style={F.cardValue}>{moneyWithUnit(value)}</Text>
+            {index === 3 && hasProduce ? <Text style={F.note}>พร้อมขาย {moneyWithUnit(financial?.readyValueSatang)}</Text> : null}
+          </View>)}
+        </View>
+      </View>
+      {marketLabels.length > 0 ? <>
+        <View wrap={false} minPresenceAhead={32}>
+          <Text style={F.sectionTitle}>สรุปยอดตามตลาด</Text>
+          <FruitTableRow columns={FRUIT_MARKET_COLUMNS} />
+        </View>
+        {marketLabels.map((label) => {
+          const market = marketFinancial.get(label);
+          const evidence = readiness.get(label);
+          const marketSales = salesMarkets.get(label);
+          const missingReturn = (market?.awaitingReturnCount ?? 0) > 0
+            || (marketSales?.awaitingReturnCount ?? 0) > 0 || (marketSales?.incompleteReturnIssueCount ?? 0) > 0;
+          return <FruitTableRow key={label} columns={FRUIT_MARKET_COLUMNS} values={[
+            label,
+            money(evidence?.hasWithdrawal === false ? null : market?.withdrawalValueSatang),
+            money(hasReturn(label) && !missingReturn ? market?.salesValueSatang
+              ?? (report.produceFinancial == null ? marketSales?.confirmedSalesSatang : null) : null),
+            money(hasReturn(label) ? market?.goodReturnValueSatang : null),
+          ]} />;
+        })}
+        <FruitTableRow columns={FRUIT_MARKET_COLUMNS} total values={[
+          "รวมทุกตลาด",
+          money(financial?.withdrawalValueSatang),
+          money(allReturnsComplete ? sales : null),
+          money(allReturnsComplete ? financial?.goodReturnValueSatang : null),
+        ]} />
+      </> : null}
+      <DataFooter generatedText={generatedText} compact />
+    </Page>
+    {stockGroups.length > 0 ? <Page size="A4" orientation="landscape" style={[S.page, F.page, { paddingTop: 109 }]}>
+      <View fixed style={F.coverHeading}>
+        <Text style={F.title}>รายการผลไม้คงเหลือ - {date}</Text>
+        <Text style={[F.note, { marginBottom: 6 }]}>ในตลาดคือของดีที่ชั่งคืน • รวมเมื่อมีทั้งยอดบ้านเจ๊และยอดในตลาด • - หมายถึงไม่มีข้อมูล</Text>
+        <FruitTableRow columns={FRUIT_STOCK_COLUMNS} stock />
+      </View>
+      {stockGroups.map(([unit, items], groupIndex) => {
+        const start = stockGroups.slice(0, groupIndex).reduce((count, [, rows]) => count + rows.length, 0);
+        const sum = (getQuantity: (item: StockMatrixItem) => number | null) => {
+          const values = items.map(getQuantity);
+          return unit === displayUnit("") || values.some((value) => value == null) ? "-"
+            : qty(values.reduce<number>((total, value) => total + (value ?? 0), 0));
+        };
+        const subtotal = <FruitTableRow columns={FRUIT_STOCK_COLUMNS} stock total values={[
+          `รวม (${unit})`, sum((item) => item.houseStockQuantity), sum((item) => item.marketStockQuantity), sum(totalQuantity),
+        ]} />;
+        return <React.Fragment key={unit}>
+          {items.map((item, index) => <View key={index} wrap={false}>
+            {index === 0 ? <Text style={F.group}>หน่วย {unit}</Text> : null}
+            <FruitTableRow columns={FRUIT_STOCK_COLUMNS} stock values={[
+              `${start + index + 1}. ${item.originalProductName ?? item.productName} (${unit})`,
+              stockQuantity(item.houseStockQuantity), stockQuantity(item.marketStockQuantity), stockQuantity(totalQuantity(item)),
+            ]} />
+            {index === items.length - 1 ? subtotal : null}
+          </View>)}
+        </React.Fragment>;
+      })}
+      <DataFooter generatedText={generatedText} compact />
+    </Page> : null}
+  </Document>;
+}
+
 export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { report: MorningBriefReport; generatedAt: Date; previewLabel?: string }) {
   const generatedText = new Intl.DateTimeFormat("th-TH", {
     dateStyle: "medium",
     timeStyle: "short",
     timeZone: "Asia/Bangkok",
   }).format(generatedAt);
+  if (report.reportScope === "fruit") return <FruitDailyDoc report={report} generatedText={generatedText} previewLabel={previewLabel} />;
   const financialBySection = report.produceFinancial ?? (report.fruitFinancial ? { fruit: report.fruitFinancial } : {});
   const financialSections = PRODUCE_SECTIONS.flatMap((section) => {
     const financial = financialBySection[section];
@@ -541,12 +742,12 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
   const hasQualityDetail = report.sales.pendingReviewSalesSatang !== 0 || report.sales.excludedFromSalesCount > 0
     || !report.sales.valueAuthoritative || salesBreakdownDiffers || Boolean(unclassified)
     || Boolean(report.produceReadiness?.markets.length);
-  const scopeLabel = report.reportScope === "fruit" ? "ผลไม้" : report.reportScope === "vegetable" ? "ผัก" : "";
+  const scopeLabel = report.reportScope === "vegetable" ? "ผัก" : "";
   return <Document title={`Morning Brief ${scopeLabel} ${report.businessDate}`}>
     {hasDailyActivity ? <><Page size="A4" orientation="landscape" style={S.page} wrap>
       <View style={S.header}>
         <Text style={S.summaryTitle}>สรุปยอดขายประจำวัน{scopeLabel ? ` (${scopeLabel})` : ""} - {formatThaiDate(report.businessDate)}</Text>
-        <Text style={S.subtitle}>Bot-summary | ข้อมูลวันที่ {thaiNumericDate(report.businessDate)} | {report.reportScope === "vegetable" ? "เฉพาะตลาดพาซิโอ้ผัก" : report.reportScope === "fruit" ? "ขอบเขตตลาดผลไม้" : "ภาพรวมยอดขายทุกหมวดและรายละเอียดตามตลาด"}</Text>
+        <Text style={S.subtitle}>Bot-summary | ข้อมูลวันที่ {thaiNumericDate(report.businessDate)} | {report.reportScope === "vegetable" ? "เฉพาะตลาดพาซิโอ้ผัก" : "ภาพรวมยอดขายทุกหมวดและรายละเอียดตามตลาด"}</Text>
       </View>
       <View style={S.dailyOverview} wrap={false}>
         <Text style={S.dailyOverviewTitle}>
