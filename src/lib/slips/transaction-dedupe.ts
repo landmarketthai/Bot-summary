@@ -101,20 +101,24 @@ export async function findSlipTransactionDuplicate(
   const original = (checks ?? []).find((row) => row.id !== params.excludeCheckId);
   if (!original) return { status: "unique", transactionId };
 
-  const { data: evidence } = await supabase
+  const { data: evidence, error: evidenceError } = await supabase
     .from("slip_evidences")
     .select("source_id, received_at, batch_id")
     .eq("id", original.evidence_id)
     .maybeSingle();
 
+  if (evidenceError || !evidence?.source_id) {
+    throw new Error("slip transaction original source unavailable");
+  }
+
   let originalMarketLabel: string | undefined;
   if (evidence?.batch_id) {
-    const { data: batch } = await supabase
+    const { data: batch, error: batchError } = await supabase
       .from("slip_batches")
       .select("market_name")
       .eq("id", evidence.batch_id)
       .maybeSingle();
-    originalMarketLabel = batch?.market_name ?? undefined;
+    originalMarketLabel = !batchError ? batch?.market_name?.trim() || undefined : undefined;
   }
 
   const originalBusinessDate = evidence?.received_at
@@ -156,15 +160,24 @@ export async function resolveGloballyAcceptedCheckIds(
   supabase: Supabase,
   referenceIds: string[],
 ): Promise<Set<string>> {
-  if (referenceIds.length === 0) return new Set();
+  const winners = await resolveGloballyAcceptedChecks(supabase, referenceIds);
+  return new Set([...winners.values()].map((row) => row.id));
+}
+
+export async function resolveGloballyAcceptedChecks(
+  supabase: Supabase,
+  referenceIds: string[],
+  requireAll = true,
+): Promise<Map<string, { id: string; evidence_id: string }>> {
+  if (referenceIds.length === 0) return new Map();
 
   const distinctReferenceIds = [...new Set(referenceIds)];
-  const winners = new Map<string, string>();
+  const winners = new Map<string, { id: string; evidence_id: string }>();
 
   for (const chunk of chunkReferenceIds(distinctReferenceIds, REFERENCE_LOOKUP_CHUNK_SIZE)) {
     const { data, error } = await supabase
       .from("slip_checks")
-      .select("id, reference_id, created_at")
+      .select("id, reference_id, created_at, evidence_id")
       .in("reference_id", chunk)
       .in("status", VERIFIED_SLIP_CHECK_STATUSES)
       .order("created_at", { ascending: true })
@@ -174,18 +187,18 @@ export async function resolveGloballyAcceptedCheckIds(
 
     for (const row of data ?? []) {
       if (!row.reference_id) continue;
-      if (!winners.has(row.reference_id)) winners.set(row.reference_id, row.id);
+      if (!winners.has(row.reference_id)) winners.set(row.reference_id, row);
     }
   }
 
   const unresolvedCount = distinctReferenceIds.filter(
     (referenceId) => !winners.has(referenceId),
   ).length;
-  if (unresolvedCount > 0) {
+  if (requireAll && unresolvedCount > 0) {
     throw new Error(
       `global reference resolution incomplete for ${unresolvedCount} reference id(s)`,
     );
   }
 
-  return new Set(winners.values());
+  return winners;
 }
