@@ -535,7 +535,9 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
     return hasStock ? [{ category, items, financial, hasStock }] : [];
   });
 
-  const showDataQuality = true;
+  // Vegetable PDFs are operational summaries: keep review evidence in the report/JSON,
+  // but omit diagnostic prose from the printed document (17 Nov clean reference).
+  const showDataQuality = report.reportScope !== "vegetable";
   const hasQualityDetail = report.sales.pendingReviewSalesSatang !== 0 || report.sales.excludedFromSalesCount > 0
     || !report.sales.valueAuthoritative || salesBreakdownDiffers || Boolean(unclassified)
     || Boolean(report.produceReadiness?.markets.length);
@@ -558,7 +560,7 @@ export function MorningBriefA4Doc({ report, generatedAt, previewLabel }: { repor
       <FinancialKpis label="รวมทุกสินค้า" financial={combined} showDataQuality={showDataQuality} />
       <DataFooter generatedText={generatedText} />
     </Page>
-    {marketRows.length > 0 || hasQualityDetail ? <Page size="A4" orientation="landscape" style={[S.page, { paddingTop: marketRows.length ? 120 : 75 }]} wrap>
+    {marketRows.length > 0 || (showDataQuality && hasQualityDetail) ? <Page size="A4" orientation="landscape" style={[S.page, { paddingTop: marketRows.length ? 120 : 75 }]} wrap>
       <View fixed style={{ position: "absolute", top: 22, left: 24, right: 24 }}>
         <Text style={{ fontSize: 24, fontWeight: "bold", marginBottom: 6 }}>{marketRows.length ? "สรุปยอดตามตลาด" : "สถานะข้อมูล"} - {formatThaiDate(report.businessDate)}</Text>
         {marketRows.length ? <View style={S.tr}>

@@ -139,7 +139,7 @@ describe("Morning Brief A4 PDF", () => {
     const bytes = await renderToBuffer(doc);
     expect((bytes.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(2);
   });
-  test("fruit and vegetable PDFs retain data-quality status and never mutate numeric inputs", async () => {
+  test("fruit retains diagnostic copy while vegetable PDF prints clean, without changing data", async () => {
     for (const scope of ["fruit", "vegetable"] as const) {
       for (const options of [{ damage: true }, { pending: true }, { invalidQuantity: true }]) {
         const scoped = await loadMorningBriefReport(scopeFixture(options).client, DATE, scope);
@@ -150,6 +150,17 @@ describe("Morning Brief A4 PDF", () => {
         expect(text).toContain("สรุปยอดตามตลาด");
         expect(text).toContain(scope === "vegetable" ? "เฉพาะตลาดพาซิโอ้ผัก" : "ผลไม้");
         if (!options.invalidQuantity) expect(text).toContain("รวมคงเหลือ");
+        if (scope === "vegetable") {
+          for (const phrase of ["รายละเอียดการตรวจข้อมูล", "สถานะข้อมูลตามตลาด", "ยอดรอตรวจ",
+            "รอชั่งคืน", "ยังไม่คำนวณ", "ยอดขายคำนวณได้", "รอยอดบ้าน", "รอข้อมูล",
+            "ปัญหาชั่งคืน", "ยอดตลาดยังไม่ยืนยัน"]) {
+            expect(text).not.toContain(phrase);
+          }
+          expect(text).toContain("สต็อกที่บ้าน");
+          expect(text).toContain("ชั่งคืนดี");
+        } else {
+          expect(text).toContain("รายละเอียดการตรวจข้อมูล");
+        }
         for (const phrase of ["รายละเอียดสินค้าและสถานะยอดขาย", "สินค้า / หน่วย",
           "รายละเอียดสินค้าและสถานะยอดขายซ้ำ"]) {
           expect(text).not.toContain(phrase);
@@ -205,8 +216,13 @@ describe("Morning Brief A4 PDF", () => {
       const doc = MorningBriefA4Doc({ report: fixture, generatedAt: new Date("2026-10-20T12:15:00+07:00") });
       const text = collectText(doc).replace(/\s+/g, " ");
       expect(text).toContain(scope === "fruit" ? "680.00" : "120.00");
-      expect(text).toContain("รายละเอียดการตรวจข้อมูล");
-      expect(text).toContain("สถานะข้อมูลตามตลาด");
+      if (scope === "fruit") {
+        expect(text).toContain("รายละเอียดการตรวจข้อมูล");
+        expect(text).toContain("สถานะข้อมูลตามตลาด");
+      } else {
+        expect(text).not.toContain("รายละเอียดการตรวจข้อมูล");
+        expect(text).not.toContain("สถานะข้อมูลตามตลาด");
+      }
       for (const group of Object.values(fixture.purchasePlanning)) {
         for (const item of group.items ?? []) expect(text).toContain(item.productName);
       }
