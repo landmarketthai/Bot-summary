@@ -143,7 +143,6 @@ describe("Morning Brief A4 PDF", () => {
     const bytes = await renderToBuffer(doc);
     expect((bytes.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(2);
   });
-
   test("places the fruit KPIs and market table on the cover, then groups 31 stock rows by unit", async () => {
     const base = await loadMorningBriefReport(scopeFixture().client, DATE, "fruit");
     const fixture = morningBriefLayoutFixture(base, 5, 31, 0, 0);
@@ -201,6 +200,18 @@ describe("Morning Brief A4 PDF", () => {
         expect(text).toContain("สรุปยอดตามตลาด");
         expect(text).toContain(scope === "vegetable" ? "เฉพาะตลาดพาซิโอ้ผัก" : "ผลไม้");
         if (!options.invalidQuantity) expect(text).toContain("รวมคงเหลือ");
+        if (scope === "vegetable") {
+          for (const phrase of ["รายละเอียดการตรวจข้อมูล", "สถานะข้อมูลตามตลาด", "ยอดรอตรวจ",
+            "รอชั่งคืน", "ยังไม่คำนวณ", "ยอดขายคำนวณได้", "รอยอดบ้าน", "รอข้อมูล",
+            "ปัญหาชั่งคืน", "ยอดตลาดยังไม่ยืนยัน"]) {
+            expect(text).not.toContain(phrase);
+          }
+          expect(text).toContain("สต็อกที่บ้าน");
+          expect(text).toContain("ชั่งคืนดี");
+        } else {
+          expect(text).not.toContain("รายละเอียดการตรวจข้อมูล");
+          expect(text).not.toContain("สถานะข้อมูลตามตลาด");
+        }
         for (const phrase of ["รายละเอียดสินค้าและสถานะยอดขาย", "สินค้า / หน่วย",
           "รายละเอียดสินค้าและสถานะยอดขายซ้ำ"]) {
           expect(text).not.toContain(phrase);
@@ -264,8 +275,7 @@ describe("Morning Brief A4 PDF", () => {
       const text = collectText(doc).replace(/\s+/g, " ");
       expect(text).toContain(scope === "fruit" ? "80.00" : "120.00");
       for (const diagnostic of ["รายละเอียดการตรวจข้อมูล", "สถานะข้อมูลตามตลาด"]) {
-        if (scope === "fruit") expect(text).not.toContain(diagnostic);
-        else expect(text).toContain(diagnostic);
+        expect(text).not.toContain(diagnostic);
       }
       for (const group of Object.values(fixture.purchasePlanning)) {
         for (const item of group.items ?? []) {
