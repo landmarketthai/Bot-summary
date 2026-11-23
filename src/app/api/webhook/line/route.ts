@@ -1,6 +1,7 @@
 import { after, NextRequest, NextResponse } from "next/server";
 import { verifyLineSignature } from "@/lib/line/verify";
 import { WebhookService } from "@/lib/line/webhook-service";
+import { runAssistantWorkerOnce } from "@/lib/ai/assistant/runtime";
 import { webhookResponseStatus } from "@/lib/line/webhook-response";
 import { createServiceClient } from "@/lib/supabase/server";
 import { logger } from "@/lib/logger";
@@ -48,6 +49,11 @@ export async function POST(req: NextRequest) {
   const supabase = await createServiceClient();
   const service = new WebhookService(supabase, {
     scheduleBackgroundTask: (task) => after(task),
+    // Fast path only: answer queued @Botsummary questions after the response,
+    // inside this route's maxDuration. The assistant cron is the durable path.
+    botSummaryAssistantKick: async (budgetMs) => {
+      await runAssistantWorkerOnce({ budgetMs, maxJobs: 3 });
+    },
   });
 
   const results = await service.processEvents(

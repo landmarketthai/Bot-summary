@@ -1,0 +1,27 @@
+name: ai-assistant-jobs
+
+# Durable worker sweep for @Botsummary AI answer jobs (crash recovery, lease
+# expiry, retries). Disabled by default. Activation order:
+#   1. merge reviewed code
+#   2. apply supabase/migrations/20261031090000_ai_assistant_jobs.sql
+#   3. verify the route safely in Preview
+#   4. set the repository variable AI_ASSISTANT_CRON_ENABLED=true
+# Until that variable is the literal string "true", scheduled and manual runs
+# are skipped. The route itself also no-ops unless BOT_SUMMARY_ANALYST_ENABLED=true.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  sweep:
+    if: ${{ vars.AI_ASSISTANT_CRON_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call AI assistant worker cron
+        run: |
+          curl -sf --max-time 70 \
+            -X GET \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            https://bot-summary.vercel.app/api/cron/ai-assistant-jobs
