@@ -177,7 +177,7 @@ beforeEach(() => {
   pdfError = null;
   pdfUrl = signedPdfUrl;
   process.env.NEXT_PUBLIC_SUPABASE_URL = pdfOrigin;
-  Date.now = () => Date.UTC(2026, 7, 23, 5, 0);
+  Date.now = () => Date.UTC(2026, 7, 23, 3, 0);
   deliveryRows = new Map(); allowPreflight = true; stateUnavailable = false; failPart = null; unknownAccepted = false;
   preflightArgs = undefined; parityArgs = undefined;
   parityResult = { matched: true, configuredCount: 1, requestedCount: 1, missingCount: 0, excessCount: 0 };
@@ -295,7 +295,7 @@ describe("daily morning brief cron", () => {
   });
 
   test("morning 23/08/2569 loads and formats the PREVIOUS business date, 22/08/2569", async () => {
-    Date.now = () => Date.UTC(2026, 7, 23, 5, 0);
+    Date.now = () => Date.UTC(2026, 7, 23, 3, 0);
 
     const response = await GET(request());
     expect(response.status).toBe(200);
@@ -374,10 +374,10 @@ describe("daily morning brief cron", () => {
     expect(pdfCalls).toHaveLength(0); expect(pushCalls).toHaveLength(0);
   });
   test("scheduled fruit marker cannot bypass slot or SQL date preflight", async () => {
-    Date.now = () => Date.UTC(2026, 7, 23, 5, 5);
+    Date.now = () => Date.UTC(2026, 7, 23, 3, 5);
     expect((await GET(request(scheduledQuery))).status).toBe(409);
     expect(parityArgs).toBeUndefined();
-    Date.now = () => Date.UTC(2026, 7, 23, 5, 0);
+    Date.now = () => Date.UTC(2026, 7, 23, 3, 0);
     allowPreflight = false;
     expect((await GET(request(scheduledQuery))).status).toBe(200);
     expect(preflightArgs).toBeDefined();
@@ -673,7 +673,16 @@ describe("daily morning brief cron", () => {
     expect(pushCalls).toHaveLength(0);
   });
 
-  test.each(["12:00:59", "12:01:30", "12:04:59"])("configured Fruit tolerates delayed arrival %s and dedupes", async (time) => {
+  test("old noon slot is rejected for configured fruit without creating a PDF or sending LINE", async () => {
+    Date.now = () => Date.parse("2026-08-23T12:00:00+07:00");
+    const response = await GET(request());
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ status: "outside_window", sent: false });
+    expect(pushCalls).toHaveLength(0);
+    expect(pdfCalls).toHaveLength(0);
+  });
+
+  test.each(["10:00:59", "10:01:30", "10:04:59"])("configured Fruit tolerates delayed arrival %s and dedupes", async (time) => {
     Date.now = () => Date.parse(`2026-08-23T${time}+07:00`);
     expect((await GET(request())).status).toBe(200);
     expect((await GET(request())).status).toBe(200);
@@ -683,7 +692,7 @@ describe("daily morning brief cron", () => {
 
   test("one captured arrival controls TS and SQL when clocks straddle the grace boundary", async () => {
     let calls = 0;
-    const arrival = Date.parse("2026-08-23T12:04:59+07:00");
+    const arrival = Date.parse("2026-08-23T10:04:59+07:00");
     Date.now = () => arrival + (calls++ ? 2_000 : 0);
     expect((await GET(request())).status).toBe(200);
     expect(preflightArgs?.p_now).toBe(new Date(arrival).toISOString());
