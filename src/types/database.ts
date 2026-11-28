@@ -1430,6 +1430,8 @@ export interface Database {
           failure_reason:        string | null;
           claim_token:           number;
           lease_until:           string | null;
+          ocr_retry_count:       number;
+          ocr_retry_first_at:    string | null;
           created_at:            string;
           updated_at:            string;
         };
@@ -2586,6 +2588,13 @@ export interface Database {
       };
       fail_slip_check: {
         Args: { p_check_id: string; p_token: number; p_reason: string };
+        Returns: Json;
+      };
+      defer_slip_check: {
+        Args: {
+          p_check_id: string; p_token: number; p_reason: string;
+          p_retry_after_seconds?: number | null; p_count_attempt?: boolean;
+        };
         Returns: Json;
       };
       list_slip_ocr_redrive: {

@@ -1,15 +1,22 @@
 name: slip-ledger-alert
 
-# Alert route is inert until SLIP_LEDGER_ALERT_ENABLED and a recipient are configured.
-# Keep manual-only while disabled; restore a schedule when the alert is activated.
+# Scheduled calls are additionally gated by the exact repository variable value
+# SLIP_LEDGER_ALERT_SCHEDULE_ENABLED=true. The route remains fail-closed until
+# its Vercel flag, recipient, token, and scheduler secret are configured.
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "*/10 * * * *"
 
 permissions:
   contents: read
 
 jobs:
   alert:
+    if: github.event_name != 'schedule' || vars.SLIP_LEDGER_ALERT_SCHEDULE_ENABLED == 'true'
+    concurrency:
+      group: slip-ledger-alert
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:

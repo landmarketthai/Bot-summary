@@ -261,6 +261,199 @@ describe("finalizeSlipBatch delivery state", () => {
   });
 });
 
+// ── finalizeSlipBatch: transient OCR terminalization wiring ──────────────
+
+function makeRetryTerminalizationFinalizer({
+  terminalizeError = null,
+  terminalizeCount = 1,
+  persistTerminalState = true,
+  summarySentAt = null,
+}: {
+  terminalizeError?: { code?: string; message: string } | null;
+  terminalizeCount?: unknown;
+  persistTerminalState?: boolean;
+  summarySentAt?: string | null;
+} = {}) {
+  const events: string[] = [];
+  const statusUpdates: Array<Record<string, unknown>> = [];
+  let checkStatus: "PROCESSING" | "FAILED" = "PROCESSING";
+  const evidenceRows = [{ id: "retry-evidence", batch_index: 1 }];
+
+  const supabase = {
+    async rpc(name: string, args?: Record<string, unknown>) {
+      if (name === "terminalize_slip_ocr_retries") {
+        if (args?.p_batch_id !== "batch-1") throw new Error("terminalize RPC received wrong batch id");
+        events.push("rpc:terminalize");
+        if (!terminalizeError && persistTerminalState) checkStatus = "FAILED";
+        return { data: terminalizeCount, error: terminalizeError };
+      }
+      if (name === "slip_batch_image_accounting") {
+        events.push("rpc:accounting");
+        return {
+          data: {
+            received_total: 1, attached: 1, waiting: 0, retry_pending: 0,
+            queue_dead: 0, failed_permanent: 0, late_after_finalize: 0, incomplete: 0,
+          },
+          error: null,
+        };
+      }
+      throw new Error(`Unexpected RPC: ${name}`);
+    },
+    from(table: string) {
+      if (table === "slip_batches") {
+        return {
+          select() {
+            return {
+              eq() {
+                return {
+                  async maybeSingle() {
+                    return {
+                      data: {
+                        id: "batch-1", status: "processing", summary_sent_at: summarySentAt,
+                        slip_date: "2026-11-10", open_event_ts_ms: null,
+                      },
+                      error: null,
+                    };
+                  },
+                };
+              },
+            };
+          },
+          update(values: Record<string, unknown>) {
+            statusUpdates.push(values);
+            return { eq: async () => ({ data: null, error: null }) };
+          },
+        };
+      }
+      if (table === "slip_evidences") {
+        return {
+          select() {
+            return {
+              eq() {
+                return {
+                  order() {
+                    events.push(checkStatus === "PROCESSING" ? "load:initial" : "load:reload");
+                    return Promise.resolve({ data: evidenceRows, error: null });
+                  },
+                };
+              },
+            };
+          },
+        };
+      }
+      if (table === "slip_checks") {
+        return {
+          select() {
+            return {
+              in() {
+                return Promise.resolve({
+                  data: [{
+                    id: "retry-check", evidence_id: "retry-evidence", status: checkStatus,
+                    slip_type: "UNKNOWN", gross_amount: null, discount_amount: null,
+                    transfer_amount: null, paid_amount: null, transaction_time: null,
+                    reference_id: null, failure_reason: "ocr_retry:extractor_http_timeout",
+                    extracted_json: null,
+                  }],
+                  error: null,
+                });
+              },
+            };
+          },
+        };
+      }
+      throw new Error(`Unexpected table: ${table}`);
+    },
+  } as unknown as SupabaseClient<Database>;
+
+  return { supabase, events, statusUpdates };
+}
+
+describe("finalizeSlipBatch: transient OCR terminalization wiring", () => {
+  it("terminalizes, reloads, then pushes the retry-cut summary without pending or a generic failure", async () => {
+    const fake = makeRetryTerminalizationFinalizer();
+    const sent: string[] = [];
+
+    await finalizeSlipBatch(fake.supabase, "batch-1", async (text) => {
+      fake.events.push("line:push");
+      sent.push(text);
+    }, { isTimeoutForced: true });
+
+    expect(fake.events.indexOf("rpc:terminalize")).toBeGreaterThan(fake.events.indexOf("load:initial"));
+    expect(fake.events.indexOf("load:reload")).toBeGreaterThan(fake.events.indexOf("rpc:terminalize"));
+    expect(fake.events.indexOf("line:push")).toBeGreaterThan(fake.events.indexOf("load:reload"));
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain("ลองอ่านซ้ำไม่ทันปิดชุด: 1 รูป");
+    expect(sent[0]).toContain("(ยังไม่รวมยอด)");
+    expect(sent[0]).not.toContain("อ่านไม่สำเร็จ: 1 รูป");
+    expect(sent[0]).not.toContain("ยังรอผล");
+    expect(sent[0]).not.toContain("ยังรอผล: -");
+    expect(fake.statusUpdates.find((update) => "success_count" in update)).toMatchObject({
+      success_count: 0, failed_count: 1, status: "failed",
+    });
+  });
+
+  it("fails before LINE and leaves the batch unchanged when terminalization RPC errors", async () => {
+    const fake = makeRetryTerminalizationFinalizer({
+      terminalizeError: { code: "57014", message: "statement timeout" },
+    });
+    const sent: string[] = [];
+
+    await expect(finalizeSlipBatch(fake.supabase, "batch-1", async (text) => {
+      sent.push(text);
+    }, { isTimeoutForced: true })).rejects.toThrow("57014");
+
+    expect(sent).toHaveLength(0);
+    expect(fake.statusUpdates).toHaveLength(0);
+  });
+
+  it("fails before LINE when the RPC count is numeric but the retry remains PROCESSING", async () => {
+    const fake = makeRetryTerminalizationFinalizer({ persistTerminalState: false });
+    const sent: string[] = [];
+
+    await expect(finalizeSlipBatch(fake.supabase, "batch-1", async (text) => {
+      sent.push(text);
+    }, { isTimeoutForced: true })).rejects.toThrow("did not persist terminal state");
+
+    expect(sent).toHaveLength(0);
+    expect(fake.statusUpdates).toHaveLength(0);
+  });
+
+  it("accepts count zero when another finalizer already persisted terminal state", async () => {
+    const fake = makeRetryTerminalizationFinalizer({ terminalizeCount: 0 });
+    const sent: string[] = [];
+
+    await finalizeSlipBatch(fake.supabase, "batch-1", async (text) => {
+      sent.push(text);
+    }, { isTimeoutForced: true });
+
+    expect(sent).toHaveLength(1);
+  });
+
+  it.each([null, "1", -1, 1.5])("rejects malformed terminalization count %p before LINE", async (count) => {
+    const fake = makeRetryTerminalizationFinalizer({ terminalizeCount: count });
+    const sent: string[] = [];
+    await expect(finalizeSlipBatch(fake.supabase, "batch-1", async (text) => {
+      sent.push(text);
+    }, { isTimeoutForced: true })).rejects.toThrow("malformed count");
+    expect(sent).toHaveLength(0);
+    expect(fake.statusUpdates).toHaveLength(0);
+  });
+
+  it("does not terminalize or push when summary_sent_at is already populated", async () => {
+    const fake = makeRetryTerminalizationFinalizer({ summarySentAt: "2026-11-10T12:00:00Z" });
+    const sent: string[] = [];
+
+    await finalizeSlipBatch(fake.supabase, "batch-1", async (text) => { sent.push(text); }, {
+      isTimeoutForced: true,
+    });
+
+    expect(fake.events).not.toContain("rpc:terminalize");
+    expect(fake.events).not.toContain("line:push");
+    expect(sent).toHaveLength(0);
+    expect(fake.statusUpdates).toHaveLength(0);
+  });
+});
+
 // ── finalizeSlipBatch: validation-guard-derived counters ──────────────────
 
 describe("finalizeSlipBatch: success_count and failed_count use validation-guard results", () => {
@@ -633,6 +826,42 @@ describe("buildBatchSummaryMessage trusted slip lines", () => {
     expect(msg).toContain("ไม่ต้องบวกเพิ่ม");
     expect(msg).not.toContain("provider_error");
     expect(msg).not.toContain("NEED_REVIEW");
+  });
+
+  it("includes explicitly Gemini-only same-day amount provisionally but counts it as review", () => {
+    const evidences = [
+      { ...makeEvidence("NEED_REVIEW", 3, { transferAmount: 275 }), ocrFallbackReason: "ocr_only_unverified" },
+    ];
+    const msg = buildBatchSummaryMessage(evidences, { slipDate: "10/6/2569" });
+    expect(msg).toContain("ยอดรวมที่อ่านได้: 275 บาท");
+    expect(msg).toContain("อ่านยอดได้: 1 รูป");
+    expect(msg).toContain("มีรูปที่ต้องตรวจทาน: 1 รูป");
+    expect(msg).toContain("รูปที่ 3 — 275 บาท: ยังตรวจสอบเงินเข้าไม่ได้");
+    expect(msg).toContain("รวมยอดแล้ว");
+  });
+
+  it("excludes an explicitly Gemini-only amount whose business date is invalid", () => {
+    const evidences = [
+      { ...makeEvidence("NEED_REVIEW", 4, {
+        transferAmount: 275,
+        transactionTime: "2026-06-09T10:00:00Z",
+      }), ocrFallbackReason: "ocr_only_unverified" },
+    ];
+    const msg = buildBatchSummaryMessage(evidences, { slipDate: "10/6/2569" });
+    expect(msg).toContain("ยังรวมยอดไม่ได้");
+    expect(msg).toContain("รูปที่ 4 — 275 บาท: วันที่โอนเงินไม่ตรงกับวันที่ขาย (ยังไม่รวมยอด)");
+    expect(msg).not.toContain("รูปที่ 4 = 275 บาท");
+  });
+
+  it.each([
+    "extractor_http_auth_error",
+    "extractor_http_not_found",
+    "extractor_http_bad_request",
+  ])("gives operators an actionable message for %s", (failureReason) => {
+    const evidence = { ...makeEvidence("FAILED", 6), failureReason };
+    const msg = buildBatchSummaryMessage([evidence], { slipDate: "10/6/2569" });
+    expect(msg).toContain("รูปที่ 6: ระบบอ่านรูปเชื่อมต่อผู้ให้บริการไม่ได้ กรุณาแจ้งผู้ดูแล");
+    expect(msg).not.toContain(failureReason);
   });
 
   it("includes same-day OCR fallback amount even when another slip fails during timeout", () => {

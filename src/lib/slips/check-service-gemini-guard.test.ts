@@ -1,8 +1,9 @@
 /**
- * Adversarial guard tests for the Gemini-first slip OCR wiring through the
+ * Adversarial guard tests for the Gemini-ONLY slip OCR wiring through the
  * fenced SlipCheckService path (claim_slip_check / complete_slip_check /
- * fail_slip_check). Every dependency is injected via the constructor: no bun
- * mock.module, no network, no DB, no LINE.
+ * fail_slip_check). There is no OpenAI/legacy fallback: every Gemini failure
+ * must fail the check closed (FAILED, nothing counted). Every dependency is
+ * injected via the constructor: no bun mock.module, no network, no DB, no LINE.
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -11,7 +12,7 @@ import { EasySlipVerificationError, type BankSlipVerifier, type EasySlipResult }
 import type { SlipExtraction } from "@/lib/slips/extraction-schema";
 import type { SlipExtractionInput, SlipExtractor } from "@/lib/slips/extractor";
 import { GeminiSlipExtractor } from "@/lib/slips/gemini-extractor";
-import { createProductionSlipExtractor, GeminiFirstSlipExtractor } from "@/lib/slips/production-extractor";
+import { createProductionSlipExtractor } from "@/lib/slips/production-extractor";
 import type { Database } from "@/types/database";
 
 const API_KEY = "AIza-test-secret-key";
@@ -138,9 +139,10 @@ function createFakeSupabase(opts: FakeOpts = {}) {
 // Fixtures
 // ---------------------------------------------------------------------------
 
-const legacyBank: SlipExtraction = {
+/** A plain bank-slip read, returned by injected (non-HTTP) Gemini stand-ins. */
+const bankRead: SlipExtraction = {
   slipType: "BANK_SLIP_NO_QR", grossAmount: null, discountAmount: null, paidAmount: null,
-  transferAmount: 315, referenceId: "LEGACY-REF", transactionTime: "2026-11-07T03:35:00.000Z",
+  transferAmount: 315, referenceId: "BANK-REF", transactionTime: "2026-11-07T03:35:00.000Z",
   senderName: "ผู้โอน", receiverName: "ร้านรับเงิน", receiverAccountTail: "1234",
   paymentChannelText: null, headlineTotalAmount: null, confidence: 0.9,
 };
@@ -199,6 +201,23 @@ function completedFields(fake: ReturnType<typeof createFakeSupabase>, i = 0) {
   return fake.callsOf("complete_slip_check")[i]?.args.p_fields as Record<string, unknown>;
 }
 
+/** Exactly one fenced FAILED write with `reason`, nothing completed or counted. */
+function expectFailedClosed(fake: ReturnType<typeof createFakeSupabase>, reason: string, checkId = "check-ev-1") {
+  expect(fake.callsOf("complete_slip_check")).toHaveLength(0);
+  expect(fake.callsOf("fail_slip_check")).toHaveLength(1);
+  expect(fake.callsOf("fail_slip_check")[0].args.p_reason).toBe(reason);
+  expect(fake.legacyWrites).toHaveLength(0);
+  expect(fake.checks.get(checkId)?.status).toBe("FAILED");
+}
+
+/** One FAILED LINE notice to the source, never a green "counted" summary. */
+function expectOneFailedPush(pushes: Array<{ to: string; text: string }>) {
+  expect(pushes).toHaveLength(1);
+  expect(pushes[0].to).toBe(SOURCE);
+  expect(pushes[0].text.startsWith("🔴")).toBe(true);
+  expect(pushes[0].text).not.toContain("🟢");
+}
+
 // ---------------------------------------------------------------------------
 // Env + console isolation
 // ---------------------------------------------------------------------------
@@ -233,7 +252,7 @@ afterEach(() => {
 // 1-3. EasySlip verified path never touches OCR
 // ---------------------------------------------------------------------------
 
-describe("EasySlip verified results bypass Gemini and legacy OCR", () => {
+describe("EasySlip verified results bypass Gemini OCR", () => {
   const cases: Array<[string, { isDuplicate: boolean; accountMatched: boolean }, string, boolean]> = [
     ["verified + matched + unique", { isDuplicate: false, accountMatched: true }, "EXTRACTED", true],
     ["verified but duplicate", { isDuplicate: true, accountMatched: true }, "NEED_REVIEW", false],
@@ -244,18 +263,15 @@ describe("EasySlip verified results bypass Gemini and legacy OCR", () => {
     enableEasySlip();
     const fake = createFakeSupabase();
     const gemini = countingExtractor(async () => { throw new Error("Gemini must not run"); });
-    const legacy = countingExtractor(async () => { throw new Error("legacy must not run"); });
     const bank = verifier(async () => ({ kind: "verified", ...flags,
-      extraction: { ...legacyBank, slipType: "BANK_SLIP_QR", referenceId: "EASYSLIP-REF", confidence: 1 } }));
+      extraction: { ...bankRead, slipType: "BANK_SLIP_QR", referenceId: "EASYSLIP-REF", confidence: 1 } }));
     const { pushes, push } = pushRecorder();
-    const service = new SlipCheckService(fake.client,
-      new GeminiFirstSlipExtractor(gemini.extractor, legacy.extractor), push, 300, bank.verifier);
+    const service = new SlipCheckService(fake.client, gemini.extractor, push, 300, bank.verifier);
 
     await service.processEvidence("ev-1");
 
     expect(bank.counter.calls).toBe(1);
     expect(gemini.counter.calls).toBe(0);
-    expect(legacy.counter.calls).toBe(0);
     expect(fake.callsOf("complete_slip_check")).toHaveLength(1);
     expect(fake.callsOf("fail_slip_check")).toHaveLength(0);
     const call = fake.callsOf("complete_slip_check")[0];
@@ -283,16 +299,13 @@ describe("EasySlip fallback to Gemini OCR never constitutes bank verification", 
       enableEasySlip();
       const fake = createFakeSupabase();
       const gemini = realGemini(() => geminiReply({ ...geminiBankJson, slip_type: slipType }));
-      const legacy = countingExtractor(async () => legacyBank);
       const bank = verifier(verify);
       const { pushes, push } = pushRecorder();
-      const service = new SlipCheckService(fake.client,
-        new GeminiFirstSlipExtractor(gemini.extractor, legacy.extractor), push, 300, bank.verifier);
+      const service = new SlipCheckService(fake.client, gemini.extractor, push, 300, bank.verifier);
 
       await service.processEvidence("ev-1");
 
       expect(gemini.calls).toHaveLength(1);
-      expect(legacy.counter.calls).toBe(0);
       expect(fake.callsOf("complete_slip_check")).toHaveLength(1);
       expect(fake.callsOf("complete_slip_check")[0].args.p_status).toBe("NEED_REVIEW");
       expect(completedFields(fake)).toMatchObject({
@@ -306,21 +319,50 @@ describe("EasySlip fallback to Gemini OCR never constitutes bank verification", 
     }
   });
 
-  it("EasySlip provider_error + Gemini 429 -> legacy bank read is still NEED_REVIEW, unverified", async () => {
+  it("EasySlip disabled: Gemini-only bank reads stay NEED_REVIEW and never look verified", async () => {
+    for (const slipType of ["BANK_SLIP_QR", "BANK_SLIP_NO_QR"] as const) {
+      const fake = createFakeSupabase();
+      const gemini = realGemini(() => geminiReply({ ...geminiBankJson, slip_type: slipType }));
+      const { pushes, push } = pushRecorder();
+      const service = new SlipCheckService(fake.client, gemini.extractor, push, 300, neverVerifier);
+
+      await service.processEvidence("ev-1");
+
+      expect(gemini.calls).toHaveLength(1);
+      expect(fake.callsOf("complete_slip_check")).toHaveLength(1);
+      expect(fake.callsOf("complete_slip_check")[0].args.p_status).toBe("NEED_REVIEW");
+      expect(completedFields(fake)).toMatchObject({
+        slip_type: slipType,
+        transfer_amount: 500,
+        reference_id: geminiBankJson.reference_id,
+        transaction_time: new Date(geminiBankJson.transaction_time).toISOString(),
+        extracted_json: {
+          verification: { provider: "gemini", bank_verified: false, reason: "ocr_only_unverified" },
+        },
+      });
+      expect(pushes).toHaveLength(1);
+      expect(pushes[0].text).not.toContain("🟢");
+      expect(pushes[0].text).not.toContain("ตรวจสอบเงินเข้าแล้ว");
+      expect(pushes[0].text).toContain("ยังไม่รวมยอดเงินอัตโนมัติ");
+    }
+  });
+
+  it("EasySlip provider_error + Gemini 429 -> FAILED, never completed or treated as verified", async () => {
     enableEasySlip();
     const fake = createFakeSupabase();
     const gemini = realGemini(() => new Response("quota", { status: 429 }));
-    const legacy = countingExtractor(async () => legacyBank);
     const bank = verifier(async () => { throw new EasySlipVerificationError("provider_error"); });
-    const service = new SlipCheckService(fake.client,
-      new GeminiFirstSlipExtractor(gemini.extractor, legacy.extractor), async () => {}, 300, bank.verifier);
+    const { pushes, push } = pushRecorder();
+    const service = new SlipCheckService(fake.client, gemini.extractor, push, 300, bank.verifier);
 
     await service.processEvidence("ev-1");
 
+    expect(bank.counter.calls).toBe(1);
     expect(gemini.calls).toHaveLength(1);
-    expect(legacy.counter.calls).toBe(1);
-    expect(fake.callsOf("complete_slip_check")[0].args.p_status).toBe("NEED_REVIEW");
-    expect(completedFields(fake)).toMatchObject({ extracted_json: { verification: { bank_verified: false } } });
+    expectFailedClosed(fake, "extractor_http_rate_limit");
+    expect(JSON.stringify(fake.rpcCalls)).not.toContain("bank_verified\":true");
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0].text).not.toContain("🟢");
   });
 });
 
@@ -349,13 +391,11 @@ describe("Gemini wallet slip amount semantics through SlipCheckService", () => {
   it.each(variants)("%s", async (_label, overrides) => {
     const fake = createFakeSupabase();
     const gemini = realGemini(() => geminiReply({ ...walletBase, ...overrides }));
-    const legacy = countingExtractor(async () => { throw new Error("legacy must not run"); });
-    const service = new SlipCheckService(fake.client,
-      new GeminiFirstSlipExtractor(gemini.extractor, legacy.extractor), async () => {}, 300, neverVerifier);
+    const service = new SlipCheckService(fake.client, gemini.extractor, async () => {}, 300, neverVerifier);
 
     await service.processEvidence("ev-wallet");
 
-    expect(legacy.counter.calls).toBe(0);
+    expect(gemini.calls).toHaveLength(1);
     const fields = completedFields(fake);
     expect(fields.gross_amount).toBe(100);
     expect(fields.paid_amount).toBe(40);
@@ -369,117 +409,147 @@ describe("Gemini wallet slip amount semantics through SlipCheckService", () => {
   it("never derives gross from paid + subsidy when no gross/headline is visible", async () => {
     const fake = createFakeSupabase();
     const gemini = realGemini(() => geminiReply({ ...walletBase, headline_total_amount: null, gross_amount: null }));
-    const legacy = countingExtractor(async () => ({
-      ...legacyBank, slipType: "GWALLET", grossAmount: null, headlineTotalAmount: null,
-      paidAmount: 40, discountAmount: 60, transferAmount: null,
-    }));
-    const service = new SlipCheckService(fake.client,
-      new GeminiFirstSlipExtractor(gemini.extractor, legacy.extractor),
-      async () => {}, 300, neverVerifier);
+    const service = new SlipCheckService(fake.client, gemini.extractor, async () => {}, 300, neverVerifier);
 
     await service.processEvidence("ev-wallet");
 
+    // The Gemini read itself is stored: gross stays null, no other provider is consulted.
+    expect(gemini.calls).toHaveLength(1);
+    expect(fake.callsOf("complete_slip_check")).toHaveLength(1);
+    expect(fake.callsOf("fail_slip_check")).toHaveLength(0);
     const fields = completedFields(fake);
-    expect(legacy.counter.calls).toBe(1);
     expect(fields.gross_amount).toBeNull();
     expect(fields.paid_amount).toBe(40);
+    expect(fields.reference_id).toBe("WALLET-REF");
+    // determineSlipCheckStatus: wallet with paid + time/ref but no gross -> PARTIAL_EXTRACTED.
     expect(fake.callsOf("complete_slip_check")[0].args.p_status).toBe("PARTIAL_EXTRACTED");
   });
+
+  it.each(["GWALLET", "THAI_HELP_THAI"] as const)(
+    "quarantines a bank image misclassified as %s when Gemini emits transfer_amount",
+    async (slipType) => {
+      const fake = createFakeSupabase();
+      const gemini = realGemini(() => geminiReply({
+        ...walletBase,
+        slip_type: slipType,
+        gross_amount: 100,
+        paid_amount: 40,
+        discount_amount: 60,
+        transfer_amount: 500,
+        reference_id: `MISCLASSIFIED-${slipType}`,
+      }));
+      const service = new SlipCheckService(fake.client, gemini.extractor, async () => {}, 300, neverVerifier);
+
+      await service.processEvidence(`ev-${slipType}`);
+
+      expect(gemini.calls).toHaveLength(1);
+      expect(fake.callsOf("complete_slip_check")).toHaveLength(1);
+      expect(fake.callsOf("complete_slip_check")[0].args.p_status).toBe("NEED_REVIEW");
+      expect(completedFields(fake)).toMatchObject({
+        slip_type: slipType,
+        transfer_amount: 500,
+        reference_id: `MISCLASSIFIED-${slipType}`,
+        extracted_json: {
+          verification: {
+            provider: "gemini",
+            bank_verified: false,
+            reason: "unverified_transfer_field",
+          },
+        },
+      });
+      expect(JSON.stringify(completedFields(fake))).not.toContain("\"bank_verified\":true");
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
-// 6-8. Gemini failure -> legacy fallback, exactly one terminal write
+// 6-8. Gemini failure fails closed with exactly one terminal write
 // ---------------------------------------------------------------------------
 
-describe("Gemini failure falls back to legacy exactly once with a single terminal write", () => {
-  it("Gemini 429: 1 fetch, legacy once, one complete, zero fail, one push", async () => {
+describe("Gemini failure fails the check closed with a single terminal write", () => {
+  it("Gemini 429: 1 fetch, no inline retry, one fail, zero complete, one FAILED push", async () => {
     const fake = createFakeSupabase();
     const gemini = realGemini(() => new Response("quota exhausted", { status: 429, headers: { "Retry-After": "1" } }));
-    const legacy = countingExtractor(async () => legacyBank);
     const { pushes, push } = pushRecorder();
-    const service = new SlipCheckService(fake.client,
-      new GeminiFirstSlipExtractor(gemini.extractor, legacy.extractor), push, 300, neverVerifier);
+    const service = new SlipCheckService(fake.client, gemini.extractor, push, 300, neverVerifier);
 
     await service.processEvidence("ev-1");
 
     expect(gemini.calls).toHaveLength(1);
-    expect(legacy.counter.calls).toBe(1);
     expect(fake.callsOf("claim_slip_check")).toHaveLength(1);
-    expect(fake.callsOf("complete_slip_check")).toHaveLength(1);
-    expect(fake.callsOf("fail_slip_check")).toHaveLength(0);
-    expect(fake.legacyWrites).toHaveLength(0);
-    expect(fake.callsOf("complete_slip_check")[0].args.p_status).toBe("EXTRACTED");
-    expect(completedFields(fake)).toMatchObject({ reference_id: "LEGACY-REF", transfer_amount: 315 });
-    expect(pushes).toHaveLength(1);
-    expect(pushes[0].to).toBe(SOURCE);
+    expectFailedClosed(fake, "extractor_http_rate_limit");
+    expectOneFailedPush(pushes);
   });
 
-  it("Gemini persistent 503: at most 2 fetches, then legacy once, one completion", async () => {
+  it("Gemini persistent 503: at most 2 fetches, then FAILED upstream_error", async () => {
     const fake = createFakeSupabase();
     const gemini = realGemini(() => new Response("unavailable", { status: 503 }));
-    const legacy = countingExtractor(async () => legacyBank);
     const { pushes, push } = pushRecorder();
-    const service = new SlipCheckService(fake.client,
-      new GeminiFirstSlipExtractor(gemini.extractor, legacy.extractor), push, 300, neverVerifier);
+    const service = new SlipCheckService(fake.client, gemini.extractor, push, 300, neverVerifier);
 
     await service.processEvidence("ev-1"); // one real ~1s inline backoff
 
     expect(gemini.calls.length).toBeGreaterThanOrEqual(1);
     expect(gemini.calls.length).toBeLessThanOrEqual(2);
-    expect(legacy.counter.calls).toBe(1);
-    expect(fake.callsOf("complete_slip_check")).toHaveLength(1);
-    expect(fake.callsOf("fail_slip_check")).toHaveLength(0);
-    expect(pushes).toHaveLength(1);
+    expectFailedClosed(fake, "extractor_http_upstream_error");
+    expectOneFailedPush(pushes);
   }, 10_000);
 
-  it("Gemini 503 then success on retry: 2 fetches, legacy never called", async () => {
+  it("Gemini 503 then success on retry: 2 fetches, Gemini read completed", async () => {
     const fake = createFakeSupabase();
     const gemini = realGemini((n) => (n === 1 ? new Response("x", { status: 503 }) : geminiReply()));
-    const legacy = countingExtractor(async () => legacyBank);
-    const service = new SlipCheckService(fake.client,
-      new GeminiFirstSlipExtractor(gemini.extractor, legacy.extractor), async () => {}, 300, neverVerifier);
+    const service = new SlipCheckService(fake.client, gemini.extractor, async () => {}, 300, neverVerifier);
 
     await service.processEvidence("ev-1");
 
     expect(gemini.calls).toHaveLength(2);
-    expect(legacy.counter.calls).toBe(0);
+    expect(fake.callsOf("complete_slip_check")).toHaveLength(1);
+    expect(fake.callsOf("fail_slip_check")).toHaveLength(0);
     expect(completedFields(fake)).toMatchObject({ reference_id: "GEMINI-REF", transfer_amount: 500 });
   }, 10_000);
 
-  it("Gemini invalid schema output falls back without retry", async () => {
+  it("Gemini invalid schema output: 1 fetch, no retry, FAILED invalid_output", async () => {
     const fake = createFakeSupabase();
     const gemini = realGemini(() => geminiReply({ ...geminiBankJson, extra_field: "x" }));
-    const legacy = countingExtractor(async () => legacyBank);
-    const service = new SlipCheckService(fake.client,
-      new GeminiFirstSlipExtractor(gemini.extractor, legacy.extractor), async () => {}, 300, neverVerifier);
+    const { pushes, push } = pushRecorder();
+    const service = new SlipCheckService(fake.client, gemini.extractor, push, 300, neverVerifier);
 
     await service.processEvidence("ev-1");
 
     expect(gemini.calls).toHaveLength(1);
-    expect(legacy.counter.calls).toBe(1);
-    expect(fake.callsOf("complete_slip_check")).toHaveLength(1);
+    expectFailedClosed(fake, "extractor_invalid_output");
+    expectOneFailedPush(pushes);
   });
 
-  it("Gemini and legacy both fail: exactly one fail_slip_check, no complete, check FAILED", async () => {
+  it("Gemini bank slip with null transfer amount is stored as NEED_REVIEW, not dropped or FAILED", async () => {
     const fake = createFakeSupabase();
-    const gemini = realGemini(() => new Response("quota", { status: 429 }));
-    const legacy = countingExtractor(async () => { throw new Error("Image extraction provider returned HTTP 500"); });
+    const gemini = realGemini(() => geminiReply({ ...geminiBankJson, transfer_amount: null }));
     const { pushes, push } = pushRecorder();
-    const service = new SlipCheckService(fake.client,
-      new GeminiFirstSlipExtractor(gemini.extractor, legacy.extractor), push, 300, neverVerifier);
+    const service = new SlipCheckService(fake.client, gemini.extractor, push, 300, neverVerifier);
 
     await service.processEvidence("ev-1");
 
     expect(gemini.calls).toHaveLength(1);
-    expect(legacy.counter.calls).toBe(1);
-    expect(fake.callsOf("complete_slip_check")).toHaveLength(0);
-    expect(fake.callsOf("fail_slip_check")).toHaveLength(1);
-    expect(fake.legacyWrites).toHaveLength(0);
-    // The legacy (fallback) error is what is recorded, not the Gemini 429.
-    expect(fake.callsOf("fail_slip_check")[0].args.p_reason).toBe("extractor_http_error");
-    expect(fake.checks.get("check-ev-1")?.status).toBe("FAILED");
+    expect(fake.callsOf("complete_slip_check")).toHaveLength(1);
+    expect(fake.callsOf("fail_slip_check")).toHaveLength(0);
+    expect(fake.callsOf("complete_slip_check")[0].args.p_status).toBe("NEED_REVIEW");
+    expect(completedFields(fake)).toMatchObject({ reference_id: "GEMINI-REF", transfer_amount: null });
+    expect(fake.checks.get("check-ev-1")?.status).toBe("NEED_REVIEW");
     expect(pushes).toHaveLength(1);
     expect(pushes[0].text).not.toContain("🟢");
+  });
+
+  it("arbitrary extractor Error: exactly one fail_slip_check, no complete, check FAILED", async () => {
+    const fake = createFakeSupabase();
+    const gemini = countingExtractor(async () => { throw new Error("something unexpected"); });
+    const { pushes, push } = pushRecorder();
+    const service = new SlipCheckService(fake.client, gemini.extractor, push, 300, neverVerifier);
+
+    await service.processEvidence("ev-1");
+
+    expect(gemini.counter.calls).toBe(1);
+    expectFailedClosed(fake, "unknown_extraction_failure");
+    expectOneFailedPush(pushes);
   });
 });
 
@@ -490,16 +560,14 @@ describe("Gemini failure falls back to legacy exactly once with a single termina
 describe("claim fencing prevents duplicate OCR spend and notifications", () => {
   it("claim_slip_check claimed:false -> no download, no extractor calls, no push", async () => {
     const fake = createFakeSupabase({ claim: () => ({ claimed: false, reason: "leased" }) });
-    const gemini = countingExtractor(async () => legacyBank);
-    const legacy = countingExtractor(async () => legacyBank);
+    const gemini = countingExtractor(async () => bankRead);
     const { pushes, push } = pushRecorder();
-    const service = new SlipCheckService(fake.client,
-      new GeminiFirstSlipExtractor(gemini.extractor, legacy.extractor), push, 300, neverVerifier);
+    const service = new SlipCheckService(fake.client, gemini.extractor, push, 300, neverVerifier);
 
     await service.processEvidence("ev-1");
 
     expect(fake.downloads).toHaveLength(0);
-    expect(gemini.counter.calls + legacy.counter.calls).toBe(0);
+    expect(gemini.counter.calls).toBe(0);
     expect(pushes).toHaveLength(0);
     expect(fake.callsOf("complete_slip_check")).toHaveLength(0);
     expect(fake.callsOf("fail_slip_check")).toHaveLength(0);
@@ -507,65 +575,57 @@ describe("claim fencing prevents duplicate OCR spend and notifications", () => {
 
   it("complete_slip_check stale_claim -> no push, no fail call", async () => {
     const fake = createFakeSupabase({ completeOutcome: "stale_claim" });
-    const gemini = countingExtractor(async () => legacyBank);
-    const legacy = countingExtractor(async () => legacyBank);
+    const gemini = countingExtractor(async () => bankRead);
     const { pushes, push } = pushRecorder();
-    const service = new SlipCheckService(fake.client,
-      new GeminiFirstSlipExtractor(gemini.extractor, legacy.extractor), push, 300, neverVerifier);
+    const service = new SlipCheckService(fake.client, gemini.extractor, push, 300, neverVerifier);
 
     await service.processEvidence("ev-1");
 
     expect(gemini.counter.calls).toBe(1);
-    expect(legacy.counter.calls).toBe(0);
     expect(fake.callsOf("complete_slip_check")).toHaveLength(1);
     expect(fake.callsOf("fail_slip_check")).toHaveLength(0);
     expect(pushes).toHaveLength(0);
   });
 
-  it("fail_slip_check stale_claim after both providers fail -> no push", async () => {
+  it("fail_slip_check stale_claim after Gemini fails -> no push", async () => {
     const fake = createFakeSupabase({ failOutcome: "stale_claim" });
     const gemini = countingExtractor(async () => { throw new Error("gemini down"); });
-    const legacy = countingExtractor(async () => { throw new Error("legacy down"); });
     const { pushes, push } = pushRecorder();
-    const service = new SlipCheckService(fake.client,
-      new GeminiFirstSlipExtractor(gemini.extractor, legacy.extractor), push, 300, neverVerifier);
+    const service = new SlipCheckService(fake.client, gemini.extractor, push, 300, neverVerifier);
 
     await service.processEvidence("ev-1");
 
     expect(fake.callsOf("fail_slip_check")).toHaveLength(1);
+    expect(fake.callsOf("complete_slip_check")).toHaveLength(0);
     expect(pushes).toHaveLength(0);
   });
 
   it("same evidence processed twice sequentially -> one extraction, one completion, one push", async () => {
     const fake = createFakeSupabase();
-    const gemini = countingExtractor(async () => legacyBank);
-    const legacy = countingExtractor(async () => legacyBank);
+    const gemini = countingExtractor(async () => bankRead);
     const { pushes, push } = pushRecorder();
-    const service = new SlipCheckService(fake.client,
-      new GeminiFirstSlipExtractor(gemini.extractor, legacy.extractor), push, 300, neverVerifier);
+    const service = new SlipCheckService(fake.client, gemini.extractor, push, 300, neverVerifier);
 
     await service.processEvidence("ev-1");
     await service.processEvidence("ev-1");
 
     expect(fake.callsOf("claim_slip_check")).toHaveLength(2);
-    expect(gemini.counter.calls + legacy.counter.calls).toBe(1);
+    expect(gemini.counter.calls).toBe(1);
     expect(fake.downloads).toHaveLength(1);
     expect(fake.callsOf("complete_slip_check")).toHaveLength(1);
     expect(pushes).toHaveLength(1);
   });
 
-  it("batch evidence completes once with no per-image push even after Gemini fallback", async () => {
+  it("batch evidence + Gemini 429 -> one fail, no complete, no per-image push", async () => {
     const fake = createFakeSupabase({ batchId: "batch-1" });
     const gemini = realGemini(() => new Response("quota", { status: 429 }));
-    const legacy = countingExtractor(async () => legacyBank);
     const { pushes, push } = pushRecorder();
-    const service = new SlipCheckService(fake.client,
-      new GeminiFirstSlipExtractor(gemini.extractor, legacy.extractor), push, 300, neverVerifier);
+    const service = new SlipCheckService(fake.client, gemini.extractor, push, 300, neverVerifier);
 
     await service.processEvidence("ev-1");
 
-    expect(legacy.counter.calls).toBe(1);
-    expect(fake.callsOf("complete_slip_check")).toHaveLength(1);
+    expect(gemini.calls).toHaveLength(1);
+    expectFailedClosed(fake, "extractor_http_rate_limit");
     expect(pushes).toHaveLength(0);
   });
 });
@@ -577,77 +637,87 @@ describe("claim fencing prevents duplicate OCR spend and notifications", () => {
 describe("burst of 25 concurrent evidences", () => {
   const ids = Array.from({ length: 25 }, (_, i) => `ev-${i + 1}`);
 
-  it("Gemini always 429 -> 25 fetches, 25 legacy, 25 completes, 0 fails", async () => {
+  it("Gemini always 429 -> 25 fetches, 25 fails, 0 completes", async () => {
     const fake = createFakeSupabase();
     const gemini = realGemini(() => new Response("quota", { status: 429 }));
-    const legacy = countingExtractor(async () => legacyBank);
     const { pushes, push } = pushRecorder();
-    const service = new SlipCheckService(fake.client,
-      new GeminiFirstSlipExtractor(gemini.extractor, legacy.extractor), push, 300, neverVerifier);
+    const service = new SlipCheckService(fake.client, gemini.extractor, push, 300, neverVerifier);
 
     await Promise.all(ids.map((id) => service.processEvidence(id)));
 
     expect(gemini.calls).toHaveLength(25);
-    expect(legacy.counter.calls).toBe(25);
-    expect(fake.callsOf("complete_slip_check")).toHaveLength(25);
-    expect(fake.callsOf("fail_slip_check")).toHaveLength(0);
-    expect(new Set(fake.callsOf("complete_slip_check").map((c) => c.args.p_check_id)).size).toBe(25);
+    expect(fake.callsOf("complete_slip_check")).toHaveLength(0);
+    const fails = fake.callsOf("fail_slip_check");
+    expect(fails).toHaveLength(25);
+    expect(new Set(fails.map((c) => c.args.p_check_id)).size).toBe(25);
+    expect(fails.every((c) => c.args.p_reason === "extractor_http_rate_limit")).toBe(true);
     expect(pushes).toHaveLength(25);
+    expect(pushes.every((p) => !p.text.includes("🟢"))).toBe(true);
   });
 
-  it("mixed: first 15 Gemini calls succeed, rest 429 -> 15 Gemini + 10 legacy, 25 completes", async () => {
+  it("mixed: first 15 Gemini calls succeed, rest 429 -> 15 completes, 10 fails", async () => {
     const fake = createFakeSupabase();
     const gemini = realGemini((n) => (n <= 15 ? geminiReply() : new Response("quota", { status: 429 })));
-    const legacy = countingExtractor(async () => legacyBank);
-    const service = new SlipCheckService(fake.client,
-      new GeminiFirstSlipExtractor(gemini.extractor, legacy.extractor), async () => {}, 300, neverVerifier);
+    const service = new SlipCheckService(fake.client, gemini.extractor, async () => {}, 300, neverVerifier);
 
     await Promise.all(ids.map((id) => service.processEvidence(id)));
 
     expect(gemini.calls).toHaveLength(25);
-    expect(legacy.counter.calls).toBe(10);
     const completes = fake.callsOf("complete_slip_check");
-    expect(completes).toHaveLength(25);
-    expect(fake.callsOf("fail_slip_check")).toHaveLength(0);
-    const refs = completes.map((c) => (c.args.p_fields as Record<string, unknown>).reference_id);
-    expect(refs.filter((r) => r === "GEMINI-REF")).toHaveLength(15);
-    expect(refs.filter((r) => r === "LEGACY-REF")).toHaveLength(10);
+    expect(completes).toHaveLength(15);
+    expect(completes.every((c) => (c.args.p_fields as Record<string, unknown>).reference_id === "GEMINI-REF")).toBe(true);
+    const fails = fake.callsOf("fail_slip_check");
+    expect(fails).toHaveLength(10);
+    expect(fails.every((c) => c.args.p_reason === "extractor_http_rate_limit")).toBe(true);
   });
 });
 
 // ---------------------------------------------------------------------------
-// 11. Feature flag wiring
+// 11. Feature flag wiring (Gemini-only: no fallback provider exists)
 // ---------------------------------------------------------------------------
 
 describe("createProductionSlipExtractor kill switch wired into SlipCheckService", () => {
-  const envs: Array<[string, Record<string, string | undefined>, boolean]> = [
-    ["flag unset", {}, false],
-    ["flag unset, key present", { GEMINI_API_KEY: API_KEY }, false],
-    ["flag TRUE (case)", { SLIP_GEMINI_OCR_ENABLED: "TRUE", GEMINI_API_KEY: API_KEY }, false],
-    ["flag 1", { SLIP_GEMINI_OCR_ENABLED: "1", GEMINI_API_KEY: API_KEY }, false],
-    ["flag yes", { SLIP_GEMINI_OCR_ENABLED: "yes", GEMINI_API_KEY: API_KEY }, false],
-    ["flag on, key missing", { SLIP_GEMINI_OCR_ENABLED: "true" }, false],
-    ["flag on, key blank", { SLIP_GEMINI_OCR_ENABLED: "true", GEMINI_API_KEY: "   " }, false],
-    ["flag on (trimmed), key present", { SLIP_GEMINI_OCR_ENABLED: " true ", GEMINI_API_KEY: API_KEY }, true],
+  const envs: Array<[string, Record<string, string | undefined>, string | null]> = [
+    ["flag unset", {}, "extractor_disabled"],
+    ["flag unset, key present", { GEMINI_API_KEY: API_KEY }, "extractor_disabled"],
+    ["flag TRUE (case)", { SLIP_GEMINI_OCR_ENABLED: "TRUE", GEMINI_API_KEY: API_KEY }, "extractor_disabled"],
+    ["flag 1", { SLIP_GEMINI_OCR_ENABLED: "1", GEMINI_API_KEY: API_KEY }, "extractor_disabled"],
+    ["flag yes", { SLIP_GEMINI_OCR_ENABLED: "yes", GEMINI_API_KEY: API_KEY }, "extractor_disabled"],
+    ["flag on, key missing", { SLIP_GEMINI_OCR_ENABLED: "true" }, "extractor_not_configured"],
+    ["flag on, key blank", { SLIP_GEMINI_OCR_ENABLED: "true", GEMINI_API_KEY: "   " }, "extractor_not_configured"],
+    ["flag on (trimmed), key present", { SLIP_GEMINI_OCR_ENABLED: " true ", GEMINI_API_KEY: API_KEY }, null],
   ];
 
-  it.each(envs)("%s", async (_label, env, geminiExpected) => {
+  it.each(envs)("%s", async (_label, env, expectedFailure) => {
     const fake = createFakeSupabase();
-    const gemini = countingExtractor(async () => legacyBank);
-    const legacy = countingExtractor(async () => legacyBank);
-    const factories = { gemini: 0, legacy: 0 };
+    const gemini = countingExtractor(async () => bankRead);
+    // Sentinel: an "openai" extractor offered through the removed `legacy`
+    // dep must never be reachable. The type system rejects the dep outright.
+    const openai = countingExtractor(async () => bankRead);
+    const factories = { gemini: 0, openai: 0 };
     const extractor = createProductionSlipExtractor(env, {
       gemini: () => { factories.gemini++; return gemini.extractor; },
-      legacy: () => { factories.legacy++; return legacy.extractor; },
+      // @ts-expect-error -- the legacy/OpenAI fallback dep no longer exists.
+      legacy: () => { factories.openai++; return openai.extractor; },
     });
-    const service = new SlipCheckService(fake.client, extractor, async () => {}, 300, neverVerifier);
+    const { pushes, push } = pushRecorder();
+    const service = new SlipCheckService(fake.client, extractor, push, 300, neverVerifier);
 
     await service.processEvidence("ev-1");
 
-    expect(gemini.counter.calls).toBe(geminiExpected ? 1 : 0);
-    expect(legacy.counter.calls).toBe(geminiExpected ? 0 : 1);
-    if (!geminiExpected) expect(factories.gemini).toBe(0);
-    expect(fake.callsOf("complete_slip_check")).toHaveLength(1);
+    expect(factories.openai).toBe(0);
+    expect(openai.counter.calls).toBe(0);
+    if (expectedFailure === null) {
+      expect(factories.gemini).toBe(1);
+      expect(gemini.counter.calls).toBe(1);
+      expect(fake.callsOf("complete_slip_check")).toHaveLength(1);
+      expect(fake.callsOf("fail_slip_check")).toHaveLength(0);
+    } else {
+      expect(factories.gemini).toBe(0);
+      expect(gemini.counter.calls).toBe(0);
+      expectFailedClosed(fake, expectedFailure);
+      expectOneFailedPush(pushes);
+    }
   });
 });
 
@@ -663,18 +733,17 @@ describe("Gemini API key never leaks into logs, LINE text, or stored fields", ()
     expect(JSON.stringify(fake.rpcCalls)).not.toContain(API_KEY);
   }
 
-  it("429 fallback path: key only in the request header, never in URL/logs/push/rpc", async () => {
+  it("429 fail-closed path: key only in the request header, never in URL/logs/push/rpc", async () => {
     const fake = createFakeSupabase();
     const gemini = realGemini(() => new Response(`error for key ${API_KEY}`, { status: 429 }));
-    const legacy = countingExtractor(async () => legacyBank);
     const { pushes, push } = pushRecorder();
-    const service = new SlipCheckService(fake.client,
-      new GeminiFirstSlipExtractor(gemini.extractor, legacy.extractor), push, 300, neverVerifier);
+    const service = new SlipCheckService(fake.client, gemini.extractor, push, 300, neverVerifier);
 
     await service.processEvidence("ev-1");
 
     expect(gemini.calls[0].headers["x-goog-api-key"]).toBe(API_KEY);
     expect(gemini.calls[0].url).not.toContain(API_KEY);
+    expectFailedClosed(fake, "extractor_http_rate_limit");
     assertNoLeak(fake, pushes);
   });
 
@@ -682,9 +751,7 @@ describe("Gemini API key never leaks into logs, LINE text, or stored fields", ()
     const fake = createFakeSupabase();
     const gemini = realGemini(() => geminiReply());
     const { pushes, push } = pushRecorder();
-    const service = new SlipCheckService(fake.client,
-      new GeminiFirstSlipExtractor(gemini.extractor, countingExtractor(async () => legacyBank).extractor),
-      push, 300, neverVerifier);
+    const service = new SlipCheckService(fake.client, gemini.extractor, push, 300, neverVerifier);
 
     await service.processEvidence("ev-1");
 
@@ -692,33 +759,29 @@ describe("Gemini API key never leaks into logs, LINE text, or stored fields", ()
     assertNoLeak(fake, pushes);
   });
 
-  it("both providers throw errors whose messages contain the key", async () => {
+  it("Gemini throws an error whose message contains the key", async () => {
     const fake = createFakeSupabase();
     const gemini = countingExtractor(async () => { throw new Error(`gemini failed with ${API_KEY}`); });
-    const legacy = countingExtractor(async () => { throw new Error(`legacy failed with ${API_KEY}`); });
     const { pushes, push } = pushRecorder();
-    const service = new SlipCheckService(fake.client,
-      new GeminiFirstSlipExtractor(gemini.extractor, legacy.extractor), push, 300, neverVerifier);
+    const service = new SlipCheckService(fake.client, gemini.extractor, push, 300, neverVerifier);
 
     await service.processEvidence("ev-1");
 
-    expect(fake.callsOf("fail_slip_check")).toHaveLength(1);
-    expect(fake.callsOf("fail_slip_check")[0].args.p_reason).toBe("unknown_extraction_failure");
+    expectFailedClosed(fake, "unknown_extraction_failure");
     assertNoLeak(fake, pushes);
   });
 
-  it("401 auth error with key echoed in body falls back without leaking", async () => {
+  it("401 auth error with key echoed in body fails closed without leaking", async () => {
     const fake = createFakeSupabase();
     const gemini = realGemini(() => new Response(`invalid key ${API_KEY}`, { status: 401 }));
-    const legacy = countingExtractor(async () => legacyBank);
     const { pushes, push } = pushRecorder();
-    const service = new SlipCheckService(fake.client,
-      new GeminiFirstSlipExtractor(gemini.extractor, legacy.extractor), push, 300, neverVerifier);
+    const service = new SlipCheckService(fake.client, gemini.extractor, push, 300, neverVerifier);
 
     await service.processEvidence("ev-1");
 
     expect(gemini.calls).toHaveLength(1);
-    expect(legacy.counter.calls).toBe(1);
+    expectFailedClosed(fake, "extractor_http_auth_error");
+    expectOneFailedPush(pushes);
     assertNoLeak(fake, pushes);
   });
 });

@@ -119,9 +119,10 @@ async function seedEvidence(batchStatus: string | null): Promise<{ evidenceId: s
 interface CheckRow {
   id: string; status: string; transfer_amount: string | null; claim_token: number;
   lease_until: string | null; failure_reason: string | null;
+  extracted_json: { verification?: { provider?: string; bank_verified?: boolean; reason?: string } } | null;
 }
 const checks = (evidenceId: string) => db.query<CheckRow>(
-  `SELECT id, status, transfer_amount, claim_token, lease_until, failure_reason
+  `SELECT id, status, transfer_amount, claim_token, lease_until, failure_reason, extracted_json
      FROM slip_checks WHERE evidence_id='${evidenceId}'`,
 );
 const expireLease = (evidenceId: string) => db.query(
@@ -156,7 +157,10 @@ describe.skipIf(!pgAvailable)("P1 OCR claim + fencing on PostgreSQL 17", () => {
     expect(fake.calls).toHaveLength(1);
     const rows = await checks(evidenceId);
     expect(rows).toHaveLength(1);
-    expect(rows[0].status).toBe("EXTRACTED");
+    expect(rows[0].status).toBe("NEED_REVIEW");
+    expect(rows[0].extracted_json?.verification).toMatchObject({
+      provider: "gemini", bank_verified: false, reason: "ocr_only_unverified",
+    });
     expect(Number(rows[0].transfer_amount)).toBe(111);
     expect(rows[0].claim_token).toBe(1);
     expect(rows[0].lease_until).toBeNull();
@@ -167,7 +171,8 @@ describe.skipIf(!pgAvailable)("P1 OCR claim + fencing on PostgreSQL 17", () => {
     const first = instantExtractor(100);
     await service(first.extractor).processEvidence(evidenceId);
     const before = (await checks(evidenceId))[0];
-    expect(before.status).toBe("EXTRACTED");
+    expect(before.status).toBe("NEED_REVIEW");
+    expect(before.extracted_json?.verification).toMatchObject({ bank_verified: false });
 
     const later = instantExtractor(999);
     await service(later.extractor).processEvidence(evidenceId);
@@ -219,7 +224,8 @@ describe.skipIf(!pgAvailable)("P1 OCR claim + fencing on PostgreSQL 17", () => {
     a.release(0); // stale A finishes last
     await workerA;
     const row = (await checks(evidenceId))[0];
-    expect(row.status).toBe("EXTRACTED");
+    expect(row.status).toBe("NEED_REVIEW");
+    expect(row.extracted_json?.verification).toMatchObject({ bank_verified: false });
     expect(Number(row.transfer_amount)).toBe(222);
     expect(row.claim_token).toBe(2);
     expect(pushes).toHaveLength(1); // only B notified (un-batched evidence)
@@ -242,7 +248,8 @@ describe.skipIf(!pgAvailable)("P1 OCR claim + fencing on PostgreSQL 17", () => {
     const retry = instantExtractor(333);
     await service(retry.extractor).processEvidence(evidenceId);
     const done = (await checks(evidenceId))[0];
-    expect(done.status).toBe("EXTRACTED");
+    expect(done.status).toBe("NEED_REVIEW");
+    expect(done.extracted_json?.verification).toMatchObject({ bank_verified: false });
     expect(Number(done.transfer_amount)).toBe(333);
     expect(done.claim_token).toBe(2);
   }, 60_000);
@@ -259,12 +266,13 @@ describe.skipIf(!pgAvailable)("P1 OCR claim + fencing on PostgreSQL 17", () => {
 
     const b = instantExtractor(222);
     await service(b.extractor).processEvidence(evidenceId);
-    expect((await checks(evidenceId))[0].status).toBe("EXTRACTED");
+    expect((await checks(evidenceId))[0].status).toBe("NEED_REVIEW");
 
     release();
     await workerA;
     const row = (await checks(evidenceId))[0];
-    expect(row.status).toBe("EXTRACTED");
+    expect(row.status).toBe("NEED_REVIEW");
+    expect(row.extracted_json?.verification).toMatchObject({ bank_verified: false });
     expect(row.failure_reason).toBeNull();
     expect(Number(row.transfer_amount)).toBe(222);
     expect(pushes).toHaveLength(1); // no FAILED notice from the stale worker
@@ -315,7 +323,9 @@ describe.skipIf(!pgAvailable)("P1 OCR claim + fencing on PostgreSQL 17", () => {
     const { evidenceId } = await seedEvidence("closing");
     const fake = instantExtractor(50);
     await service(fake.extractor).processEvidence(evidenceId);
-    expect((await checks(evidenceId))[0].status).toBe("EXTRACTED");
+    const row = (await checks(evidenceId))[0];
+    expect(row.status).toBe("NEED_REVIEW");
+    expect(row.extracted_json?.verification).toMatchObject({ bank_verified: false });
     expect(pushes).toHaveLength(0);
   }, 60_000);
 
@@ -324,7 +334,8 @@ describe.skipIf(!pgAvailable)("P1 OCR claim + fencing on PostgreSQL 17", () => {
     const fake = instantExtractor(75);
     await service(fake.extractor).processEvidence(evidenceId);
     const row = (await checks(evidenceId))[0];
-    expect(row.status).toBe("EXTRACTED");
+    expect(row.status).toBe("NEED_REVIEW");
+    expect(row.extracted_json?.verification).toMatchObject({ bank_verified: false });
     expect(Number(row.transfer_amount)).toBe(75);
     expect(pushes).toHaveLength(1);
   }, 60_000);
@@ -389,7 +400,9 @@ describe.skipIf(!pgAvailable)("P1 OCR claim + fencing on PostgreSQL 17", () => {
     const fake = instantExtractor(5);
     await service(fake.extractor, old).processEvidence(evidenceId);
     expect(fake.calls).toHaveLength(1);
-    expect((await checks(evidenceId))[0].status).toBe("EXTRACTED");
+    const row = (await checks(evidenceId))[0];
+    expect(row.status).toBe("NEED_REVIEW");
+    expect(row.extracted_json?.verification).toMatchObject({ bank_verified: false });
   }, 60_000);
 
   test("privileges: claim/complete/fail are service_role only", async () => {
@@ -420,7 +433,8 @@ describe.skipIf(!pgAvailable)("P1 OCR claim + fencing on PostgreSQL 17", () => {
     ).text();
     await db.exec(sqlText);
     const row = (await checks(evidenceId))[0];
-    expect(row.status).toBe("EXTRACTED");
+    expect(row.status).toBe("NEED_REVIEW");
+    expect(row.extracted_json?.verification).toMatchObject({ bank_verified: false });
     expect(row.claim_token).toBe(1);
   }, 60_000);
 });

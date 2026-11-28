@@ -115,6 +115,11 @@ describe.skipIf(!pgAvailable)("durable slip ledger health alert on PostgreSQL 17
     // A local re-apply must be harmless: rollout tooling may retry after an
     // uncertain client result, and CREATE OR REPLACE must preserve lockdown.
     await db.exec(migration);
+    // Reapply the additive provider-health migration after the legacy function.
+    // Otherwise this shared disposable DB would retain the old SQL body for later tests.
+    await db.exec(await Bun.file(join(
+      ROOT, "supabase", "migrations", "20261111090000_slip_ocr_provider_alert_health.sql",
+    )).text());
     expect(await db.scalar(`SELECT to_regclass('public.slip_ingest_alert_states') IS NOT NULL`)).toBe("true");
     for (const signature of [
       "public.slip_ingest_alert_health(integer,integer)",
@@ -148,6 +153,36 @@ describe.skipIf(!pgAvailable)("durable slip ledger health alert on PostgreSQL 17
     }
   });
 
+  test("provider-health rollback restores the legacy shape without dropping durable state", async () => {
+    const rollbackDb = await createSlipTestDb("slip_provider_health_rollback");
+    try {
+      const rollback = await Bun.file(join(
+        ROOT, "supabase", "rollback", "20261111090000_slip_ocr_provider_alert_health.down.sql",
+      )).text();
+      const migration = await Bun.file(join(
+        ROOT, "supabase", "migrations", "20261111090000_slip_ocr_provider_alert_health.sql",
+      )).text();
+
+      await rollbackDb.exec(rollback);
+      expect(await rollbackDb.scalar(`
+        SELECT public.slip_ingest_alert_health(2160, 2160) ? 'provider_failed_24h'
+      `)).toBe("false");
+      expect(await rollbackDb.scalar(`
+        SELECT to_regclass('public.slip_ingest_alert_states') IS NOT NULL
+      `)).toBe("true");
+
+      await rollbackDb.exec(migration);
+      expect(await rollbackDb.scalar(`
+        SELECT public.slip_ingest_alert_health(2160, 2160) ? 'provider_failed_24h'
+      `)).toBe("true");
+      expect(await rollbackDb.scalar(`
+        SELECT to_regclass('public.slip_ingest_alert_states') IS NOT NULL
+      `)).toBe("true");
+    } finally {
+      await rollbackDb.drop();
+    }
+  });
+
   test("healthy and normal delays below 36 minutes do not claim", async () => {
     let result = await claim();
     expect(result).toMatchObject({ claimed: false, reason: "healthy" });
@@ -167,6 +202,179 @@ describe.skipIf(!pgAvailable)("durable slip ledger health alert on PostgreSQL 17
     expect(result.health.retry_pending_total).toBe(1);
     expect(result.health.retry_stale).toBe(0);
     expect(result.health.unhealthy).toBe(false);
+  });
+
+  test("HTTP 400 alone opens an incident and cannot recover until its 24-hour window expires", async () => {
+    const batchId = await createBatch("G-http-400");
+    const message = await receiveUnbound(60, "G-http-400");
+    const rawId = await db.scalar(
+      `SELECT raw_message_id FROM public.slip_image_events WHERE line_message_id='${message}'`,
+    );
+    const evidenceId = await db.scalar(`
+      INSERT INTO public.slip_evidences (
+        raw_message_id, line_message_id, source_id, source_type, storage_path,
+        mime_type, byte_size, sha256, status, batch_id, batch_index
+      ) VALUES (
+        '${rawId}', 'http-400-evidence-${serial}', 'G-http-400', 'group',
+        'slips/http-400-${serial}.jpg', 'image/jpeg', 4,
+        lpad(to_hex(${serial}), 64, '0'), 'RECEIVED', '${batchId}', 1
+      ) RETURNING id
+    `);
+    await db.query(`
+      INSERT INTO public.slip_checks (evidence_id, status, failure_reason, updated_at)
+      VALUES ('${evidenceId}', 'FAILED', 'extractor_http_bad_request', now());
+      UPDATE public.slip_image_events
+         SET state='attached', batch_id='${batchId}', evidence_id='${evidenceId}',
+             resolved_at=now()
+       WHERE line_message_id='${message}';
+    `);
+
+    const incident = await claim();
+    expect(incident).toMatchObject({ claimed: true, kind: "incident" });
+    expect(incident.health).toMatchObject({
+      provider_failed_24h: 1,
+      unhealthy: true,
+      unbound_total: 0,
+      unbound_stale: 0,
+      received_stale: 0,
+      ingesting_stale: 0,
+      retry_pending_total: 0,
+      retry_stale: 0,
+      queue_dead: 0,
+      failed_permanent_24h: 0,
+      late_after_finalize_24h: 0,
+      ocr_missing_overdue: 0,
+      ocr_processing_overdue: 0,
+      oldest_open_age_seconds: null,
+    });
+    expect(await complete(incident, true)).toBe(true);
+
+    const stillUnhealthy = await claim();
+    expect(stillUnhealthy).toMatchObject({ claimed: false, reason: "throttled" });
+    expect(stillUnhealthy.health.provider_failed_24h).toBe(1);
+    expect(stillUnhealthy.health.unhealthy).toBe(true);
+    expect(await db.scalar(`SELECT is_unhealthy FROM public.slip_ingest_alert_states`)).toBe("true");
+
+    // UPDATE resets updated_at through a trigger; reinsert the aged fixture.
+    await db.query(`
+      DELETE FROM public.slip_checks WHERE evidence_id='${evidenceId}';
+      INSERT INTO public.slip_checks (evidence_id, status, failure_reason, updated_at)
+      VALUES (
+        '${evidenceId}', 'FAILED', 'extractor_http_bad_request',
+        now() - interval '24 hours 1 second'
+      );
+    `);
+    const recovery = await claim();
+    expect(recovery).toMatchObject({ claimed: true, kind: "recovery" });
+    expect(recovery.health.provider_failed_24h).toBe(0);
+    expect(recovery.health.unhealthy).toBe(false);
+    expect(recovery.retry_key).not.toBe(incident.retry_key);
+    expect(await complete(recovery, true)).toBe(true);
+    expect(await claim()).toMatchObject({ claimed: false, reason: "healthy" });
+  });
+
+  test("only recent terminal provider failures are actionable", async () => {
+    const batchId = await createBatch("G-provider-alert");
+    const reasons = [
+      "extractor_disabled",
+      "extractor_not_configured",
+      "extractor_http_auth_error",
+      "extractor_http_not_found",
+      "extractor_http_rate_limit",
+      "extractor_http_upstream_error",
+      "extractor_http_timeout",
+      "ocr_retry:extractor_http_rate_limit",
+      "extractor_invalid_output",
+      "receiver_mismatch",
+      "false_date",
+    ];
+    for (const [index, reason] of reasons.entries()) {
+      const message = await receiveUnbound(60, "G-provider-alert");
+      const rawId = await db.scalar(
+        `SELECT raw_message_id FROM public.slip_image_events WHERE line_message_id='${message}'`,
+      );
+      const evidenceId = await db.scalar(`
+        INSERT INTO public.slip_evidences (
+          raw_message_id, line_message_id, source_id, source_type, storage_path,
+          mime_type, byte_size, sha256, status, batch_id, batch_index
+        ) VALUES (
+          '${rawId}', 'provider-evidence-${serial}', 'G-provider-alert', 'group',
+          'slips/provider-${serial}.jpg', 'image/jpeg', 4,
+          lpad(to_hex(${serial}), 64, '0'), 'RECEIVED', '${batchId}', ${index + 1}
+        ) RETURNING id
+      `);
+      const updatedAt = reason === "extractor_disabled"
+        ? "now() - interval '24 hours 1 second'"
+        : "now()";
+      await db.query(`
+        INSERT INTO public.slip_checks (evidence_id, status, failure_reason, updated_at)
+        VALUES ('${evidenceId}', 'FAILED', '${reason}', ${updatedAt})
+      `);
+    }
+
+    const result = await claim();
+    expect(result).toMatchObject({ claimed: true, kind: "incident" });
+    expect(result.health.provider_failed_24h).toBe(7);
+    expect(result.health.unhealthy).toBe(true);
+    expect(await complete(result, true)).toBe(true);
+
+    await db.query(`
+      DELETE FROM public.slip_checks
+       WHERE status='FAILED'
+         AND updated_at > now() - interval '24 hours'
+         AND (failure_reason IN (
+           'extractor_disabled', 'extractor_not_configured',
+           'extractor_http_auth_error', 'extractor_http_not_found',
+           'extractor_http_rate_limit', 'extractor_http_upstream_error',
+           'extractor_http_timeout'
+         ) OR failure_reason LIKE 'ocr_retry:%')
+    `);
+    const recovery = await claim();
+    expect(recovery).toMatchObject({ claimed: true, kind: "recovery" });
+    expect(recovery.health.provider_failed_24h).toBe(0);
+    expect(recovery.health.unhealthy).toBe(false);
+  });
+
+  test("an old provider failure remains durably excluded after recent checks are removed", async () => {
+    const batchId = await createBatch("G-old-provider-alert");
+    const message = await receiveUnbound(60, "G-old-provider-alert");
+    const rawId = await db.scalar(
+      `SELECT raw_message_id FROM public.slip_image_events WHERE line_message_id='${message}'`,
+    );
+    const evidenceId = await db.scalar(`
+      INSERT INTO public.slip_evidences (
+        raw_message_id, line_message_id, source_id, source_type, storage_path,
+        mime_type, byte_size, sha256, status, batch_id, batch_index
+      ) VALUES (
+        '${rawId}', 'old-provider-evidence-${serial}', 'G-old-provider-alert', 'group',
+        'slips/old-provider-${serial}.jpg', 'image/jpeg', 4,
+        lpad(to_hex(${serial}), 64, '0'), 'RECEIVED', '${batchId}', 1
+      ) RETURNING id
+    `);
+    await db.query(`
+      INSERT INTO public.slip_checks (evidence_id, status, failure_reason, updated_at)
+      VALUES (
+        '${evidenceId}', 'FAILED', 'extractor_disabled',
+        now() - interval '24 hours 1 second'
+      )
+    `);
+
+    let health = parseJson<Record<string, number | boolean | null>>(
+      (await db.query<{ value: unknown }>(`
+        SELECT public.slip_ingest_alert_health(2160, 2160) AS value
+      `))[0].value,
+    );
+    expect(health.provider_failed_24h).toBe(0);
+    expect(health.unhealthy).toBe(false);
+
+    await db.query(`DELETE FROM public.slip_checks WHERE evidence_id='${evidenceId}'`);
+    health = parseJson<Record<string, number | boolean | null>>(
+      (await db.query<{ value: unknown }>(`
+        SELECT public.slip_ingest_alert_health(2160, 2160) AS value
+      `))[0].value,
+    );
+    expect(health.provider_failed_24h).toBe(0);
+    expect(health.unhealthy).toBe(false);
   });
 
   test("unresolved receipts older than seven days remain unhealthy, never report false recovery", async () => {
