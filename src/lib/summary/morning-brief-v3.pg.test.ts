@@ -75,6 +75,7 @@ describe.skipIf(!available)("Morning Brief V3 real PostgreSQL", () => {
     await db.exec("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO anon,authenticated,service_role;");
     await db.exec("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO anon,authenticated,service_role;");
     await db.exec(readFileSync(`${ROOT}/supabase/migrations/20261117090000_morning_brief_v3.sql`, "utf8"));
+    await db.exec(readFileSync(`${ROOT}/supabase/migrations/20261127043809_move_fruit_morning_brief_slot_1200_to_1000_bangkok.sql`, "utf8"));
   }, 30_000);
   beforeEach(async () => { await db.exec("TRUNCATE accountability_rounds,produce_transactions_all,pending_sessions,morning_brief_deliveries,morning_brief_checks,morning_brief_private.morning_brief_dispatch_config,morning_brief_private.morning_brief_cron_backup,cron.job,mock_http;"); }, 15_000);
   afterAll(async () => { if (db) await db.drop(); }, 15_000);
@@ -139,13 +140,13 @@ describe.skipIf(!available)("Morning Brief V3 real PostgreSQL", () => {
   });
   test("SQL slot identity agrees at second boundaries and delayed arrivals", async () => {
     for (const scope of ["fruit","vegetable"] as const) {
-      for (const time of ["11:59:59","12:00:59","12:01:30","12:04:59","12:05:00","14:00:59","14:04:59","14:05:00","14:31:30","18:04:59","18:05:00"]) {
+      for (const time of ["09:59:59","10:00:59","10:01:30","10:04:59","10:05:00","12:00:00","14:00:59","14:04:59","14:05:00","14:31:30","18:04:59","18:05:00"]) {
         const instant = `2026-11-17T${time}+07:00`;
         expect(await db.scalar(`SELECT coalesce(morning_brief_slot('${scope}',${quote(instant)})::text,'outside')`))
           .toBe(String(morningBriefSlotMinute(scope, Date.parse(instant)) ?? "outside"));
       }
     }
-    for (const time of ["12:00:59","12:01:30","12:04:59"]) {
+    for (const time of ["10:00:59","10:01:30","10:04:59"]) {
       expect(await db.scalar(`SELECT morning_brief_should_invoke('${date}','fruit',ARRAY['${target}'],'2026-11-17T${time}+07')`)).toBe("true");
     }
   });
@@ -260,7 +261,7 @@ describe.skipIf(!available)("Morning Brief V3 real PostgreSQL", () => {
   test("day-two recovery respects the 23h limit for Fruit and early Vegetable attempts", async () => {
     await ready();
     for (const [scope, first, recovery, eligible] of [
-      ["fruit","12:00","12:01:30",false],
+      ["fruit","10:00","10:01:30",false],
       ["vegetable","14:00","14:01:30",false],
       ["vegetable","18:04","14:04:59",true],
     ] as const) {
@@ -430,7 +431,7 @@ describe.skipIf(!available)("Morning Brief V3 real PostgreSQL", () => {
     const originalSupabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
     process.env.CRON_SECRET = "synthetic-contract";
     process.env.MORNING_BRIEF_LINE_TARGETS = "Csynthetic";
-    Date.now = () => Date.parse("2026-11-17T12:01:30+07:00");
+    Date.now = () => Date.parse("2026-11-17T10:01:30+07:00");
     await db.exec(`INSERT INTO morning_brief_private.morning_brief_dispatch_config VALUES('fruit',true,ARRAY['${(await import('./morning-brief-delivery')).briefTargetKey('Csynthetic')}'],${quote(httpCommand)});`);
     const request = () => new NextRequest(`http://localhost/api/cron/daily-morning-brief?date=${date}`, { headers: { authorization: "Bearer synthetic-contract" } });
     try {

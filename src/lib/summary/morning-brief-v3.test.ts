@@ -7,11 +7,11 @@ import { canonicalMarketLabel } from "@/lib/market";
 import { buildMorningBriefMessages } from "./morning-brief-message";
 import { fetchSalesProduceRows } from "@/lib/sales/load";
 
-test.each(["12:00:59", "12:01:30", "12:04:59"])("Fruit delayed arrival %s belongs to noon", (time) => {
-  expect(morningBriefSlotMinute("fruit", Date.parse(`2026-11-17T${time}+07:00`))).toBe(720);
+test.each(["10:00:59", "10:01:30", "10:04:59"])("Fruit delayed arrival %s belongs to 10am", (time) => {
+  expect(morningBriefSlotMinute("fruit", Date.parse(`2026-11-17T${time}+07:00`))).toBe(600);
 });
 test("grace is bounded, including the final vegetable slot", () => {
-  for (const time of ["12:05:00", "11:59:59", "12:30:00"]) expect(morningBriefSlot("fruit", Date.parse(`2026-11-17T${time}+07:00`))).toBe(false);
+  for (const time of ["10:05:00", "09:59:59", "10:30:00", "12:00:00"]) expect(morningBriefSlot("fruit", Date.parse(`2026-11-17T${time}+07:00`))).toBe(false);
   expect(morningBriefSlotMinute("vegetable", Date.parse("2026-11-17T18:04:59+07:00"))).toBe(1080);
   expect(morningBriefSlot("vegetable", Date.parse("2026-11-17T18:05:00+07:00"))).toBe(false);
 });
@@ -157,12 +157,12 @@ test("unvalued unassigned rows retain unknown withdrawal and an incomplete-total
   expect(buildMorningBriefMessages(fruit).join("\n")).toContain("ยอดรวมส่วนนี้ยังสรุปไม่ได้");
 });
 
-test("exactly nine vegetable slots, fruit still only noon, each with five-minute arrival grace", () => {
+test("exactly nine vegetable slots, fruit only at 10am, each with five-minute arrival grace", () => {
   const slots: string[] = [];
   for (let minute = 0; minute < 1440; minute++) {
     const now = Date.parse("2026-11-17T00:00:00+07:00") + minute * 60_000;
     if (morningBriefSlotMinute("vegetable", now) === minute) slots.push(`${Math.floor(minute / 60)}:${minute % 60}`);
-    expect(morningBriefSlot("fruit", now)).toBe(minute >= 720 && minute < 725);
+    expect(morningBriefSlot("fruit", now)).toBe(minute >= 600 && minute < 605);
   }
   expect(slots).toEqual(["14:0", "14:30", "15:0", "15:30", "16:0", "16:30", "17:0", "17:30", "18:0"]);
 });
