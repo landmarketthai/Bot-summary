@@ -1,0 +1,6 @@
+# AI Product Matching — draft, synthetic-only
+- Goal: deterministic exact aliases and local fuzzy ranking first, optional AI suggestion only for unresolved synthetic fixtures. Human approval is mandatory for any non-exact product identity.
+- Preserve raw product name, exact unit, grade, size, package and accountability scope. Classification is not identity. No auto approval of near names, no amount recalculation, no changes to historical rows.
+- Privacy: no real market records, amounts, people, round IDs, LINE messages, production data or secrets to any external AI provider. Existing synthetic candidate gate is reusable. Optional injected provider only, disabled by default, strict allowlist/validation, timeout and safe abstention; no live API calls in this PR.
+- Scope: standalone matching modules and synthetic test coverage, review-facing typed proposals; no production wiring, migrations, merge/deploy. Prior uncommitted Sales Integrity and completeness worktrees remain independent. Integration follows their release gate.
+- Acceptance: exact match/approved aliases, Unicode normalization, ranked suggestions, ambiguity/grade/unit protection, unknown/empty candidates, provider rejection and timeout, no input mutation, bounded candidate list, typecheck and regression. A suggestion is never a confirmed match.
