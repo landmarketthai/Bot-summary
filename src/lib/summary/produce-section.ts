@@ -6,8 +6,13 @@
  * table does not know fall back to the explicit stock category map. Durian is
  * fruit; fish / dry goods, unmapped special packs and unknown names are "other".
  */
+import { approvedCategoryFor, type ApprovedCategoryCode } from "@/lib/produce/product-code/category";
 import { PRODUCT_CODE_ENTRIES } from "@/lib/produce/product-code/dictionary";
 import { stockCategoryFor } from "@/lib/summary/stock-categories";
+
+const SECTION_BY_APPROVED_CODE: Record<ApprovedCategoryCode, ProduceSection> = {
+  ท: "fruit", ม: "fruit", ผ: "vegetable", ห: "vegetable", ป: "other", พ: "other", other: "other",
+};
 
 const CATEGORY_BY_EXACT_NAME = new Map(
   PRODUCT_CODE_ENTRIES.filter((entry) => entry.enabled).map((entry) => [entry.canonicalName, entry.category] as const),
@@ -66,6 +71,8 @@ export const PRODUCE_SECTION_LABEL: Record<ProduceSection, string> = {
 };
 
 export function produceSectionOf(productName: string): ProduceSection {
+  const approved = approvedCategoryFor(productName);
+  if (approved) return SECTION_BY_APPROVED_CODE[approved];
   if (BUSINESS_FRUIT.has(productName)) return "fruit";
   if (BUSINESS_VEGETABLE.has(productName) || FIELD_VEGETABLE.has(productName)) return "vegetable";
   if (FIELD_FRUIT.has(productName)) return "fruit";

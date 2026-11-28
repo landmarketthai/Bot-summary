@@ -1,3 +1,4 @@
+import { enterCategoryPolicy, loadApprovedCategoryPolicy } from "@/lib/produce/category-learning/rules";
 import { NextRequest, NextResponse } from "next/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createServiceClient } from "@/lib/supabase/server";
@@ -182,6 +183,9 @@ export async function GET(req: NextRequest) {
           newlyAcceptedCount: 0, previouslyAcceptedCount: status.data.acceptedCount, pdfDelivered: false }, { status: review ? 409 : 200 });
       }
     }
+    // One complete category snapshot for the report, its PDF and its messages
+    // (see category-learning/rules.ts); loaded only after every delivery gate.
+    enterCategoryPolicy(await loadApprovedCategoryPolicy(supabase));
     if (debugMode) {
       const report = await loadMorningBriefReport(supabase, businessDate, reportScope);
       const messages = report.readiness?.status === "not_ready" ? [] : buildMorningBriefMessages(report);
